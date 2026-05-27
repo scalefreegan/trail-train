@@ -15,6 +15,10 @@ web/public/coach.json
 # example with generic placeholders; copy it to profile.json and personalize.
 config/profile.json
 
+# Defense-in-depth: never let a stray in-repo backup folder leak snapshots.
+backups/
+trail-train-backups/
+
 # Logs
 *.log
 npm-debug.log*

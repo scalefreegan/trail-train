@@ -111,6 +111,45 @@ npm run sync:all     # strava + oura
 npm run coach        # regenerate readout + plan
 ```
 
+## Safety & backups
+
+Anything that's *not* in git lives only on your laptop and would be lost if it
+dies. Three layers of safety:
+
+**1. Tagged clean release on the remote.** `v0.1.0-rc.1` is an annotated tag
+at the first scrubbed snapshot, and `backup/<date>-clean` is an immutable
+branch at the same SHA. Both live on `origin` — pull them back any time:
+```bash
+git fetch --tags
+git checkout v0.1.0-rc.1
+# or
+git checkout -b restore origin/backup/2026-05-27-clean
+```
+
+**2. Local snapshot backups.** One command copies your personal data
+(Strava + Oura + coach snapshots, athlete profile, OAuth credentials) to a
+timestamped, mode-0700 directory outside the repo:
+```bash
+npm run backup           # writes ~/Documents/trail-train-backups/<YYYY-MM-DD-HHmm>/
+npm run restore:list     # list available backups
+npm run restore          # restore the most recent (snapshots + profile only)
+node ../scripts/restore.mjs --oauth                    # also restore OAuth tokens
+node ../scripts/restore.mjs --from 2026-05-26-1430     # pick a specific backup
+```
+Keeps the last 10 by default (`--keep N` to change), prunes older. OAuth
+files are written mode 0600. Wire into `launchd` / `cron` for automatic
+recurring backups.
+
+**3. Recovery flow if everything is lost.** All personal data is reproducible
+from the original sources:
+```bash
+git clone git@github.com:scalefreegan/trail-train.git
+cd trail-train/web && npm install
+cp ../config/profile.example.json ../config/profile.json   # then personalize
+# restore OAuth tokens from your backup OR re-auth from scratch
+npm run sync:all && npm run coach
+```
+
 ## Data privacy
 
 Personal Strava + Oura snapshots are gitignored. The OAuth tokens live in

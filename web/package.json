@@ -12,7 +12,10 @@
     "auth:oura": "node ../scripts/sync-oura.mjs --auth",
     "sync:oura": "node ../scripts/sync-oura.mjs",
     "sync:all": "node ../scripts/sync-strava.mjs && node ../scripts/sync-oura.mjs",
-    "coach": "node ../scripts/coach.mjs"
+    "coach": "node ../scripts/coach.mjs",
+    "backup": "node ../scripts/backup.mjs",
+    "restore": "node ../scripts/restore.mjs",
+    "restore:list": "node ../scripts/restore.mjs --list"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.100.14",
