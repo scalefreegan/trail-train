@@ -18,6 +18,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { loadFactsFromRoot } from "./facts.mjs";
+import { saveState, mergeAgentUpdate } from "./state.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const OUT_PATH = path.join(ROOT, "web", "public", "coach.json");
@@ -41,18 +42,25 @@ The athlete is ${profile.athlete_name}, training for the Mogollon Monster 100 (1
 They live in ${profile.location}. Local training trails: ${(profile.home_trails || []).join(", ") || "their home mountains"}.
 
 You will be given the path to a JSON facts file built from their Strava activities, Oura ring
-data, and his planned 20-week training block. You may also read the underlying snapshots
-at web/public/strava.json and web/public/oura.json for additional context if useful.
+data, weather conditions during each run, and their planned 20-week training block. You may
+also read the underlying snapshots at web/public/strava.json, web/public/oura.json, and
+web/public/state.json for additional context if useful.
+
+Persistent state lives in web/public/state.json — you already see its key contents in the facts
+file (plan_blocks, agent_notes, preferences). Treat the EXISTING plan_blocks as the prior plan.
+Do not regenerate from scratch every run — keep what still makes sense, only revise blocks
+where new data justifies a change. If the current plan still fits the picture, return it
+mostly unchanged.
 
 When done, respond with ONLY a single JSON object — no prose outside, no markdown fences:
 
 {
-  "summary": "150-250 words. Plain English. Reference SPECIFIC numbers (HRV ms, RHR delta, ACR ratio, miles, vert). Tie load, recovery, and block progress together. Calm, direct ultrarunner-coach voice. Address the athlete in second person.",
+  "summary": "150-250 words. Plain English. Reference SPECIFIC numbers (HRV ms, RHR delta, ACR ratio, miles, vert, run temps in °F). Tie load, recovery, heat exposure, and block progress together. Calm, direct ultrarunner-coach voice. Address the athlete in second person.",
   "watch_outs": ["short bullet quoting numbers", ...],     // 0-4 items
   "recommendations": ["actionable bullet w/ specific session/day", ...],   // 2-5 short-horizon items (next 14 days)
-  "plan_blocks": [                                          // 6 upcoming weeks, starting from current_week+1
+  "plan_blocks": [                                          // 6 upcoming weeks, starting from current_week+1. KEEP prior plan unless data justifies a change.
     {
-      "wk": 6,                                              // training-block week number (1..20)
+      "wk": 6,                                              // training-block week number (1..total_weeks)
       "label": "Specific endurance",                        // 1-3 word block theme
       "dist_mi": 60,                                        // planned miles for the week (you may adjust from target if recovery/load suggests it)
       "elev_ft": 10800,                                     // planned vert (ft)
@@ -61,21 +69,31 @@ When done, respond with ONLY a single JSON object — no prose outside, no markd
       "quality": 2                                          // # of quality (non-easy) sessions, 1-3
     },
     ...
-  ]
+  ],
+  "new_notes": ["concise observation worth remembering across sessions", ...]   // 0-3 items — appended to agent_notes in state.json
 }
 
 Rules:
 - Every claim anchored in the data. Quote real numbers.
 - If a metric is null, say so — don't fabricate.
-- Imperial units (miles, feet) for run data. Use 24h time for any time refs.
+- Imperial units (miles, feet) for run data; Fahrenheit for temperatures. Use 24h time.
 - No emojis. No platitudes. Direct, specific, useful.
 - The course climbs the rim 6×, max elev 7,912 ft. Heat / altitude / technical descent are the real wildcards.
 
-For plan_blocks specifically:
+For plan_blocks:
 - Start at current_week + 1 and emit exactly 6 blocks (or fewer if fewer remain before race week 20).
-- The base targets are in block.weekly_target — use those as the anchor, but you may nudge dist/elev up or down if the actual data warrants (e.g. behind on volume → close the gap; HRV suppressed → cut a build week).
-- Reflect Mogollon-specific prep: heat block starting ~12 weeks out, course rec near peak, taper proportional, race week = wk 20.
-- key_session should name a real home trail when possible (see local trails list above) or the race itself.`;
+- The base targets are in block.weekly_target. Prior agent decisions are in state.plan_blocks.
+  PREFER continuity — keep prior blocks if they still hold up; revise only what new data
+  justifies. State your reason in summary or new_notes when you change something.
+- Reflect Mogollon-specific prep: heat block in the build-out, course rec near peak, taper
+  proportional, race week = wk 20.
+- key_session should name a real home trail when possible (see local trails list above).
+
+For new_notes:
+- Persist insights that should survive across sessions: course-specific observations,
+  long-arc trends (e.g. "wk 4–6 vert bias has worked, keep that ratio"), constraints the
+  athlete has communicated. Existing agent_notes are visible in the facts file — don't
+  duplicate them. Empty array is fine if there's nothing new worth persisting.`;
 
 function runClaude({ prompt, systemPrompt, maxTurns, timeoutSec, cwd, allowedTools }) {
   return new Promise((resolve, reject) => {
@@ -200,6 +218,18 @@ in real numbers from the data.`;
   await fs.mkdir(path.dirname(OUT_PATH), { recursive: true });
   await fs.writeFile(OUT_PATH, JSON.stringify(payload, null, 2));
   await fs.unlink(factsPath).catch(() => {});
+
+  // Merge agent updates into persistent state.json (plan_blocks + new_notes).
+  // The agent does NOT overwrite state directly; this script controls writes
+  // so a malformed agent response can't corrupt persistent state.
+  if (facts.state) {
+    const merged = mergeAgentUpdate(facts.state, readout);
+    const saved = await saveState(ROOT, merged);
+    const prevCount = facts.state.plan_blocks?.length ?? 0;
+    const newCount = saved.plan_blocks?.length ?? 0;
+    const notesDelta = (saved.agent_notes?.length ?? 0) - (facts.state.agent_notes?.length ?? 0);
+    console.log(`✓ merged into state.json  (plan_blocks ${prevCount}→${newCount}, +${notesDelta} note${notesDelta === 1 ? "" : "s"})`);
+  }
 
   console.log(`✓ wrote ${OUT_PATH}  (${elapsed}s · ${numTurns ?? "?"} turns${cost != null ? ` · $${cost.toFixed(4)}` : ""})`);
   console.log("\n" + (readout.summary || "").trim() + "\n");

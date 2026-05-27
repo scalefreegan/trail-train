@@ -98,6 +98,36 @@ Reads `strava.json` + `oura.json`, computes deterministic facts, prompts
 Claude with full data context, and writes `web/public/coach.json` (summary,
 watch-outs, recommendations, and 6 weeks of `plan_blocks` with key sessions).
 
+## Persistent agentic state
+
+`web/public/state.json` (gitignored) holds the parts of the system that should
+survive across syncs and server restarts:
+
+- **race meta** — name, date, distance, elevation, course notes
+- **block targets** — 20 weeks of planned mileage + vert
+- **plan_blocks** — the agent's current 6-week recommendations (focus, key
+  session, quality count). Persists across runs — the agent **modifies**
+  this rather than regenerating from scratch each time.
+- **agent_notes** — running list of observations the coach has made and
+  wants to remember (capped at 30, newest kept).
+- **preferences** — athlete-set rules (training philosophy, weekly rest
+  day, fueling target, heat threshold). Agent reads but doesn't modify.
+
+Bootstrapped from defaults the first time `sync-strava` or `coach` runs.
+After that the file is the source of truth — edit it directly to change
+block targets, preferences, etc. `coach.mjs` merges agent updates atomically
+(write-then-rename) so a malformed agent response can never corrupt state.
+
+## Weather
+
+`sync-strava` calls Open-Meteo's free historical archive for each activity
+(no key, hourly resolution) to get `temp_min_c / temp_max_c / temp_avg_c /
+apparent_avg_c / humidity_avg` during the run window. Cached to
+`~/.cache/trail-train/weather.json` so re-syncs don't re-hit the API. The
+agent uses these to flag heat exposure (≥24 °C / 75 °F = "hot run") and
+suggest acclimation work — important when the race is in 80 °F+ Pine, AZ
+canyons. Skip with `--no-weather` if you ever need to.
+
 ## Live resync
 
 The masthead **resync all** button POSTs to `/api/refresh`, which runs all

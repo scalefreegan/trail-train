@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 web/dist/
+web/.vite/
 
 # Personal data snapshots — generated locally by `npm run sync:*`.
 # These contain Strava activity history, Oura sleep/HRV/RHR/tags, and the
@@ -10,6 +11,7 @@ web/dist/
 web/public/strava.json
 web/public/oura.json
 web/public/coach.json
+web/public/state.json
 
 # Athlete profile (name, location, local trails). The committed file is the
 # example with generic placeholders; copy it to profile.json and personalize.
