@@ -9,6 +9,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { fetchWeather, flushWeatherCache } from "./weather.mjs";
+import { loadState } from "./state.mjs";
 
 const CONFIG_PATH = path.join(os.homedir(), ".config", "strava-mcp", "config.json");
 const OUT_PATH = path.join(process.cwd(), "web", "public", "strava.json");
@@ -20,6 +22,7 @@ function arg(name, fallback) {
 
 const START = arg("start", "2026-01-06");
 const END   = arg("end",   new Date().toISOString().slice(0, 10));
+const SKIP_WEATHER = process.argv.includes("--no-weather");
 
 async function loadConfig() {
   return JSON.parse(await fs.readFile(CONFIG_PATH, "utf8"));
@@ -93,28 +96,66 @@ function estRpe(a) {
 }
 
 async function main() {
+  // Touch state.json so it gets bootstrapped on first sync (dashboard can
+  // read it even before the first coach run).
+  const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+  await loadState(ROOT);
+
   const cfg = await loadConfig();
   const token = await ensureToken(cfg);
   console.log(`• fetching activities ${START} → ${END}…`);
   const raw = await fetchActivities(token, START, END);
   const runs = raw.filter((a) => a.type === "Run" || a.sport_type === "TrailRun");
 
-  const activities = runs.map((a) => ({
-    id: String(a.id),
-    date: a.start_date_local || a.start_date,
-    title: a.name,
-    sport: a.sport_type || a.type,
-    type: classify(a),
-    distance_m: a.distance,
-    elevation_m: a.total_elevation_gain,
-    moving_s: a.moving_time,
-    elapsed_s: a.elapsed_time,
-    avg_hr: a.average_heartrate ?? null,
-    max_hr: a.max_heartrate ?? null,
-    avg_pace_s_per_km: a.distance > 0 ? a.moving_time / (a.distance / 1000) : null,
-    rpe: estRpe(a),
-    strava_url: `https://www.strava.com/activities/${a.id}`,
-  })).sort((x, y) => y.date.localeCompare(x.date));
+  const activities = runs.map((a) => {
+    const startLatLng = Array.isArray(a.start_latlng) && a.start_latlng.length === 2 ? a.start_latlng : null;
+    const startLocal = a.start_date_local || a.start_date;
+    return {
+      id: String(a.id),
+      date: startLocal,
+      start_utc: a.start_date,
+      start_time_local: startLocal ? startLocal.slice(11, 16) : null, // "HH:MM"
+      utc_offset_s: a.utc_offset ?? null,
+      timezone: a.timezone ?? null,
+      start_latlng: startLatLng,
+      title: a.name,
+      sport: a.sport_type || a.type,
+      type: classify(a),
+      distance_m: a.distance,
+      elevation_m: a.total_elevation_gain,
+      moving_s: a.moving_time,
+      elapsed_s: a.elapsed_time,
+      avg_hr: a.average_heartrate ?? null,
+      max_hr: a.max_heartrate ?? null,
+      avg_pace_s_per_km: a.distance > 0 ? a.moving_time / (a.distance / 1000) : null,
+      rpe: estRpe(a),
+      strava_url: `https://www.strava.com/activities/${a.id}`,
+      weather: null,   // populated below
+    };
+  }).sort((x, y) => y.date.localeCompare(x.date));
+
+  // Weather (Open-Meteo) — sequential to be nice to the free tier. Cached.
+  if (!SKIP_WEATHER) {
+    console.log(`• fetching weather for ${activities.length} activities…`);
+    let wHit = 0, wMiss = 0;
+    for (const a of activities) {
+      if (!a.start_latlng || !a.start_utc) { wMiss += 1; continue; }
+      try {
+        const w = await fetchWeather({
+          lat: a.start_latlng[0],
+          lng: a.start_latlng[1],
+          startIso: a.start_utc,
+          durationS: a.elapsed_s || a.moving_s || 3600,
+        });
+        if (w) { a.weather = w; wHit += 1; }
+        else   { wMiss += 1; }
+      } catch (e) {
+        wMiss += 1;
+      }
+    }
+    await flushWeatherCache();
+    console.log(`  weather: ${wHit} resolved · ${wMiss} skipped`);
+  }
 
   const totals = activities.reduce(
     (s, a) => ({

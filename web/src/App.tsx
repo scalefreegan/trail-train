@@ -193,6 +193,7 @@ type StravaRaw = {
   activities: Array<{
     id: string;
     date: string;
+    start_time_local?: string | null;
     title: string;
     sport: string;
     type: Activity["type"];
@@ -202,6 +203,13 @@ type StravaRaw = {
     avg_hr: number | null;
     rpe: number;
     strava_url: string;
+    weather?: {
+      temp_min_c: number;
+      temp_max_c: number;
+      temp_avg_c: number;
+      apparent_avg_c: number | null;
+      humidity_avg: number | null;
+    } | null;
   }>;
 };
 
@@ -251,9 +259,11 @@ function StravaProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { reload(); }, [reload, refreshKey]);
 
   const value = useMemo<StravaCtx>(() => {
+    const cToF = (c: number) => Math.round(c * 9 / 5 + 32);
     const activities: Activity[] = (data?.activities ?? []).map((a) => ({
       id: a.id,
       date: a.date,
+      start_time_local: a.start_time_local ?? null,
       title: a.title,
       type: a.type,
       distance_mi: a.distance_m / M_PER_MI,
@@ -261,6 +271,9 @@ function StravaProvider({ children }: { children: React.ReactNode }) {
       moving_s: a.moving_s,
       rpe: Math.max(1, Math.min(5, Math.round(a.rpe))) as Activity["rpe"],
       strava_url: a.strava_url,
+      temp_max_f: a.weather?.temp_max_c != null ? cToF(a.weather.temp_max_c) : null,
+      temp_avg_f: a.weather?.temp_avg_c != null ? cToF(a.weather.temp_avg_c) : null,
+      humidity_avg: a.weather?.humidity_avg ?? null,
     }));
 
     const weekly: { wk: number; dist_mi: number; elev_ft: number; sessions: number }[] =
@@ -389,6 +402,7 @@ const RACE = {
 type Activity = {
   id: string;
   date: string;
+  start_time_local?: string | null;
   title: string;
   type: "run" | "long" | "vert" | "easy" | "workout";
   distance_mi: number;
@@ -396,6 +410,9 @@ type Activity = {
   moving_s: number;
   rpe: 1 | 2 | 3 | 4 | 5;
   strava_url?: string;
+  temp_max_f?: number | null;
+  temp_avg_f?: number | null;
+  humidity_avg?: number | null;
 };
 
 /* ---- 20-week training block targets (race = week 20 = Sept 12) ---- */
@@ -1907,6 +1924,7 @@ function ActivityLog() {
                 ) : (
                   <div className="display-roman" style={{ fontSize: 17, lineHeight: 1.15 }}>{a.title}</div>
                 )}
+                <ActivityMeta activity={a} />
               </div>
               <span className="numerals col-dist" style={{ fontSize: 17, fontWeight: 700 }}>{u.dist(a.distance_mi)}</span>
               <span className="numerals col-vert" style={{ fontSize: 17, color: "var(--moss-deep)", fontWeight: 700 }}>
@@ -1939,6 +1957,51 @@ const TYPE_META: Record<Activity["type"], { label: string; color: string }> = {
   easy:     { label: "EZ",  color: "var(--ink-mute)" },
   workout:  { label: "WRK", color: "var(--rust)" },
 };
+function ActivityMeta({ activity }: { activity: Activity }) {
+  const bits: React.ReactNode[] = [];
+  if (activity.start_time_local) {
+    bits.push(
+      <span key="time" className="numerals" style={{ color: "var(--ink-mute)" }}>
+        {activity.start_time_local}
+      </span>
+    );
+  }
+  if (activity.temp_max_f != null) {
+    const hot = activity.temp_max_f >= 75;
+    const cold = activity.temp_max_f <= 40;
+    const color = hot ? "var(--blaze)" : cold ? "var(--moss-deep)" : "var(--ink-mute)";
+    bits.push(
+      <span
+        key="temp"
+        className="numerals"
+        title={`max ${activity.temp_max_f}°F · avg ${activity.temp_avg_f}°F${activity.humidity_avg != null ? ` · ${activity.humidity_avg}% rh` : ""}`}
+        style={{
+          color,
+          border: `1px solid ${color}`,
+          padding: "1px 5px",
+          fontSize: 10,
+          letterSpacing: "0.06em",
+        }}
+      >
+        {activity.temp_max_f}°F
+      </span>
+    );
+  }
+  if (bits.length === 0) return null;
+  return (
+    <div style={{
+      marginTop: 4,
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      fontFamily: "var(--font-mono)",
+      fontSize: 11,
+    }}>
+      {bits}
+    </div>
+  );
+}
+
 function TypeBadge({ type }: { type: Activity["type"] }) {
   const m = TYPE_META[type];
   return (
@@ -2158,6 +2221,33 @@ type AgentReadout = {
   recommendations?: string[];
   plan_blocks?: PlanBlock[];
 };
+
+type PersistentState = {
+  version: number;
+  last_updated: string | null;
+  race?: { name: string; date: string; distance_mi: number; elevation_ft: number };
+  block?: {
+    start_date: string;
+    total_weeks: number;
+    targets: { wk: number; target_dist: number; target_elev: number }[];
+  };
+  plan_blocks?: PlanBlock[];
+  agent_notes?: { at: string; note: string }[];
+  preferences?: Record<string, unknown>;
+};
+
+function usePersistentState() {
+  const { key: refreshKey } = useRefresh();
+  const [data, setData] = useState<PersistentState | null>(null);
+  const [missing, setMissing] = useState(false);
+  useEffect(() => {
+    fetch(`/state.json?t=${Date.now()}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then(setData)
+      .catch(() => setMissing(true));
+  }, [refreshKey]);
+  return { data, missing };
+}
 
 function useAgentReadout() {
   const { key: refreshKey } = useRefresh();
@@ -2773,24 +2863,34 @@ function TypingDots() {
 function Plan() {
   const u = useUnits();
   const { currentWeek } = useStrava();
-  const { data: agent, missing } = useAgentReadout();
+  const { data: state, missing: stateMissing } = usePersistentState();
+  const { missing: agentMissing } = useAgentReadout();
 
-  // Build the 6-week window: prefer agent's plan_blocks, fall back to BLOCK_TARGETS planned values.
+  // Prefer persisted state.plan_blocks (agent-managed, survives across runs).
+  // Fall back to planned targets from state.block.targets, then to hardcoded
+  // BLOCK_TARGETS while everything is loading.
+  const targets = state?.block?.targets ?? BLOCK_TARGETS;
+  const totalWeeks = state?.block?.total_weeks ?? TOTAL_WEEKS;
+
   const fallback: PlanBlock[] = useMemo(() => {
-    const start = Math.min(TOTAL_WEEKS, currentWeek + 1);
-    const end = Math.min(TOTAL_WEEKS, currentWeek + 6);
-    return BLOCK_TARGETS.slice(start - 1, end).map((b) => ({
+    const start = Math.min(totalWeeks, currentWeek + 1);
+    const end = Math.min(totalWeeks, currentWeek + 6);
+    return targets.slice(start - 1, end).map((b) => ({
       wk: b.wk,
-      label: b.wk === TOTAL_WEEKS ? "Race week" : "Planned",
+      label: b.wk === totalWeeks ? "Race week" : "Planned",
       dist_mi: b.target_dist,
       elev_ft: b.target_elev,
       focus: "Awaiting agent recommendations — run `npm run coach` for live focus.",
     }));
-  }, [currentWeek]);
+  }, [currentWeek, targets, totalWeeks]);
 
-  const agentBlocks = agent?.plan_blocks ?? null;
-  const blocks: PlanBlock[] = agentBlocks && agentBlocks.length > 0 ? agentBlocks : fallback;
-  const source = agentBlocks ? "live · agent" : missing ? "fallback · planned targets only" : "loading…";
+  const stateBlocks = state?.plan_blocks ?? null;
+  const blocks: PlanBlock[] = stateBlocks && stateBlocks.length > 0 ? stateBlocks : fallback;
+  const source = stateBlocks && stateBlocks.length > 0
+    ? `persisted · ${state?.last_updated ? new Date(state.last_updated).toLocaleDateString("en-US", { month: "short", day: "2-digit" }) : "agent"}`
+    : agentMissing || stateMissing
+      ? "fallback · planned targets only"
+      : "loading…";
 
   return (
     <section id="plan" className="sec-pad" style={{ paddingTop: 96, paddingBottom: 96 }}>
@@ -2802,10 +2902,10 @@ function Plan() {
               The <em style={{ color: "var(--blaze)" }}>weeks</em> ahead.
             </h2>
           </div>
-          <span className="eyebrow" style={{ color: agentBlocks ? "var(--moss)" : "var(--ink-mute)" }}>
+          <span className="eyebrow" style={{ color: stateBlocks && stateBlocks.length > 0 ? "var(--moss)" : "var(--ink-mute)" }}>
             <span style={{
               display: "inline-block", width: 7, height: 7, borderRadius: "50%",
-              background: agentBlocks ? "var(--moss)" : "var(--blaze)",
+              background: stateBlocks && stateBlocks.length > 0 ? "var(--moss)" : "var(--blaze)",
               marginRight: 8, verticalAlign: "1px",
             }} />
             {source}
@@ -2818,10 +2918,10 @@ function Plan() {
           {blocks.map((w, i) => {
             const offset = w.wk - currentWeek;
             const tag = offset === 1 ? "next"
-                      : w.wk === TOTAL_WEEKS ? "RACE"
+                      : w.wk === totalWeeks ? "RACE"
                       : `in ${offset} wks`;
             const accent = offset === 1 ? "var(--blaze)"
-                         : w.wk === TOTAL_WEEKS ? "var(--blaze)"
+                         : w.wk === totalWeeks ? "var(--blaze)"
                          : "var(--ink-mute)";
             return (
               <motion.div
@@ -2837,7 +2937,7 @@ function Plan() {
                 <div style={{ position: "relative" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                     <span className="eyebrow">week {w.wk}</span>
-                    <span className="eyebrow" style={{ color: accent, letterSpacing: w.wk === TOTAL_WEEKS ? "0.22em" : undefined }}>
+                    <span className="eyebrow" style={{ color: accent, letterSpacing: w.wk === totalWeeks ? "0.22em" : undefined }}>
                       {tag}
                     </span>
                   </div>

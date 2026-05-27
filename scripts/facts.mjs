@@ -7,6 +7,10 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { loadState } from "./state.mjs";
+
+// Heat exposure threshold (Celsius) — mirrors weather.mjs WEATHER_HOT_THRESHOLD_C.
+const HOT_THRESHOLD_C = 24;
 
 /**
  * Load athlete profile (name, location, home trails). Falls back to the
@@ -70,14 +74,27 @@ const avgNum = (arr) => {
   const vs = arr.filter((v) => typeof v === "number");
   return vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null;
 };
-const weekIndex = (date) => {
+const weekIndexFor = (date, blockStart) => {
   const d = new Date(date).getTime();
-  const s = new Date(BLOCK_START + "T00:00:00").getTime();
+  const s = new Date(blockStart + "T00:00:00").getTime();
   return Math.floor((d - s) / 86400000 / 7) + 1;
 };
 
-export function computeFacts(strava, oura) {
+const C_TO_F = (c) => c * 9 / 5 + 32;
+
+/**
+ * @param {object} strava   — parsed strava.json
+ * @param {object|null} oura — parsed oura.json
+ * @param {object} state    — loaded state.json (provides block targets, race meta)
+ */
+export function computeFacts(strava, oura, state) {
   const now = Date.now();
+  const race = state?.race ?? RACE;
+  const blockStart  = state?.block?.start_date ?? BLOCK_START;
+  const totalWeeks  = state?.block?.total_weeks ?? TOTAL_WEEKS;
+  const blockTargets = state?.block?.targets ?? BLOCK_TARGETS;
+  const heatThresholdC = state?.preferences?.heat_threshold_c ?? 24;
+
   const acts = (strava?.activities ?? []).map((a) => ({
     ...a,
     distance_mi: a.distance_m / M_PER_MI,
@@ -90,6 +107,17 @@ export function computeFacts(strava, oura) {
   const d28_dist = sumNum(d28.map((a) => a.distance_mi));
   const d7_elev = sumNum(d7.map((a) => a.elevation_ft));
   const d28_elev = sumNum(d28.map((a) => a.elevation_ft));
+
+  // Heat exposure aggregates
+  const tempsWithWeather7  = d7.map((a) => a.weather?.temp_avg_c).filter((v) => typeof v === "number");
+  const tempsWithWeather28 = d28.map((a) => a.weather?.temp_avg_c).filter((v) => typeof v === "number");
+  const heat_avg_c_d7  = avgNum(tempsWithWeather7);
+  const heat_avg_c_d28 = avgNum(tempsWithWeather28);
+  const hotRunsD28 = d28.filter((a) => (a.weather?.temp_max_c ?? -Infinity) >= heatThresholdC);
+  const heat_max_c_d28 = d28
+    .map((a) => a.weather?.temp_max_c)
+    .filter((v) => typeof v === "number")
+    .reduce((m, v) => Math.max(m, v), -Infinity);
 
   const ouraDays = oura?.days ?? [];
   const o7  = ouraDays.filter((d) => within(d.day, 7, now));
@@ -109,33 +137,33 @@ export function computeFacts(strava, oura) {
       comment: t.comment,
     })));
 
-  const weekly = Array.from({ length: TOTAL_WEEKS }, (_, i) => ({
+  const weekly = Array.from({ length: totalWeeks }, (_, i) => ({
     wk: i + 1, dist_mi: 0, elev_ft: 0, sessions: 0,
   }));
   for (const a of acts) {
-    const w = weekIndex(a.date);
-    if (w >= 1 && w <= TOTAL_WEEKS) {
+    const w = weekIndexFor(a.date, blockStart);
+    if (w >= 1 && w <= totalWeeks) {
       weekly[w - 1].dist_mi += a.distance_mi;
       weekly[w - 1].elev_ft += a.elevation_ft;
       weekly[w - 1].sessions += 1;
     }
   }
-  const currentWeek = Math.max(1, Math.min(TOTAL_WEEKS, weekIndex(new Date().toISOString())));
+  const currentWeek = Math.max(1, Math.min(totalWeeks, weekIndexFor(new Date().toISOString(), blockStart)));
   const block_dist_actual = sumNum(weekly.slice(0, currentWeek).map((w) => w.dist_mi));
   const block_elev_actual = sumNum(weekly.slice(0, currentWeek).map((w) => w.elev_ft));
-  const block_dist_expected = sumNum(BLOCK_TARGETS.slice(0, currentWeek).map((w) => w.target_dist));
-  const block_elev_expected = sumNum(BLOCK_TARGETS.slice(0, currentWeek).map((w) => w.target_elev));
+  const block_dist_expected = sumNum(blockTargets.slice(0, currentWeek).map((w) => w.target_dist));
+  const block_elev_expected = sumNum(blockTargets.slice(0, currentWeek).map((w) => w.target_elev));
 
   const longest = d7.reduce((m, a) => (!m || a.distance_mi > m.distance_mi ? a : m), null);
-  const daysUntilRace = Math.ceil((new Date(RACE.date).getTime() - now) / 86400000);
+  const daysUntilRace = Math.ceil((new Date(race.date).getTime() - now) / 86400000);
 
   return {
     today: new Date().toISOString().slice(0, 10),
-    race: { ...RACE, days_until: daysUntilRace },
+    race: { ...race, days_until: daysUntilRace },
     block: {
       current_week: currentWeek,
-      total_weeks: TOTAL_WEEKS,
-      block_start: BLOCK_START,
+      total_weeks: totalWeeks,
+      block_start: blockStart,
       dist_actual_mi: +block_dist_actual.toFixed(1),
       dist_expected_mi: +block_dist_expected.toFixed(1),
       dist_delta_pct: +(((block_dist_actual - block_dist_expected) / Math.max(1, block_dist_expected)) * 100).toFixed(1),
@@ -143,7 +171,7 @@ export function computeFacts(strava, oura) {
       elev_expected_ft: Math.round(block_elev_expected),
       elev_delta_pct: +(((block_elev_actual - block_elev_expected) / Math.max(1, block_elev_expected)) * 100).toFixed(1),
       weekly_actual: weekly.map((w) => ({ wk: w.wk, dist_mi: +w.dist_mi.toFixed(1), elev_ft: Math.round(w.elev_ft), sessions: w.sessions })),
-      weekly_target: BLOCK_TARGETS,
+      weekly_target: blockTargets,
     },
     load: {
       d7_dist_mi: +d7_dist.toFixed(1),
@@ -160,6 +188,20 @@ export function computeFacts(strava, oura) {
         elevation_ft: Math.round(longest.elevation_ft),
         moving_h: +(longest.moving_s / 3600).toFixed(2),
       } : null,
+      heat_threshold_c: heatThresholdC,
+      heat_threshold_f: +C_TO_F(heatThresholdC).toFixed(0),
+      heat_avg_c_d7:    heat_avg_c_d7  != null ? +heat_avg_c_d7.toFixed(1)  : null,
+      heat_avg_f_d7:    heat_avg_c_d7  != null ? +C_TO_F(heat_avg_c_d7).toFixed(0) : null,
+      heat_avg_c_d28:   heat_avg_c_d28 != null ? +heat_avg_c_d28.toFixed(1) : null,
+      heat_max_c_d28:   Number.isFinite(heat_max_c_d28) ? +heat_max_c_d28.toFixed(1) : null,
+      heat_max_f_d28:   Number.isFinite(heat_max_c_d28) ? +C_TO_F(heat_max_c_d28).toFixed(0) : null,
+      hot_runs_d28:     hotRunsD28.length,
+      hot_runs_d28_details: hotRunsD28.slice(0, 5).map((a) => ({
+        date: a.date.slice(0, 10),
+        title: a.title,
+        temp_max_c: a.weather.temp_max_c,
+        temp_max_f: +C_TO_F(a.weather.temp_max_c).toFixed(0),
+      })),
     },
     recovery: oura ? {
       hrv_d7:  hrv_d7  != null ? +hrv_d7.toFixed(1)  : null,
@@ -175,24 +217,33 @@ export function computeFacts(strava, oura) {
     } : null,
     recent_runs: acts.slice(0, 14).map((a) => ({
       date: a.date.slice(0, 10),
+      start_time_local: a.start_time_local || null,
       title: a.title,
       type: a.type,
       distance_mi: +a.distance_mi.toFixed(1),
       elevation_ft: Math.round(a.elevation_ft),
       moving_h: +(a.moving_s / 3600).toFixed(2),
       avg_hr: a.avg_hr,
+      temp_avg_f: a.weather?.temp_avg_c != null ? +C_TO_F(a.weather.temp_avg_c).toFixed(0) : null,
+      temp_max_f: a.weather?.temp_max_c != null ? +C_TO_F(a.weather.temp_max_c).toFixed(0) : null,
+      apparent_avg_f: a.weather?.apparent_avg_c != null ? +C_TO_F(a.weather.apparent_avg_c).toFixed(0) : null,
+      humidity_avg: a.weather?.humidity_avg ?? null,
     })),
+    plan_blocks: state?.plan_blocks ?? [],
+    agent_notes: (state?.agent_notes ?? []).slice(-10),
+    preferences: state?.preferences ?? {},
   };
 }
 
 export async function loadFactsFromRoot(projectRoot) {
   const stravaPath = path.join(projectRoot, "web", "public", "strava.json");
   const ouraPath   = path.join(projectRoot, "web", "public", "oura.json");
-  const [strava, oura, profile] = await Promise.all([
+  const [strava, oura, profile, state] = await Promise.all([
     fs.readFile(stravaPath, "utf8").then(JSON.parse).catch(() => null),
     fs.readFile(ouraPath,   "utf8").then(JSON.parse).catch(() => null),
     loadProfile(projectRoot),
+    loadState(projectRoot),
   ]);
   if (!strava) throw new Error("strava.json missing — run sync:strava");
-  return { profile, ...computeFacts(strava, oura) };
+  return { profile, state, ...computeFacts(strava, oura, state) };
 }
