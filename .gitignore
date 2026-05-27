@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output
+web/dist/
+
+# Personal data snapshots — generated locally by `npm run sync:*`.
+# These contain Strava activity history, Oura sleep/HRV/RHR/tags, and the
+# agent's per-snapshot readout. Do NOT commit to a public repo.
+web/public/strava.json
+web/public/oura.json
+web/public/coach.json
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Editor / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# Env files
+.env
+.env.local
+.env.*.local
