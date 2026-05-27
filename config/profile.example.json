@@ -1,0 +1,9 @@
+{
+  "athlete_name": "the athlete",
+  "location": "their home mountains",
+  "home_trails": [
+    "your local long-route trail",
+    "your local vert trail",
+    "your local tempo trail"
+  ]
+}
