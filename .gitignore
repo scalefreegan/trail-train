@@ -11,6 +11,10 @@ web/public/strava.json
 web/public/oura.json
 web/public/coach.json
 
+# Athlete profile (name, location, local trails). The committed file is the
+# example with generic placeholders; copy it to profile.json and personalize.
+config/profile.json
+
 # Logs
 *.log
 npm-debug.log*
