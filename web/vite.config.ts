@@ -31,9 +31,10 @@ function refreshApi(): Plugin {
         }
 
         const steps = [
-          { id: 'strava', label: 'syncing strava',  script: 'scripts/sync-strava.mjs', args: [] },
-          { id: 'oura',   label: 'syncing oura',    script: 'scripts/sync-oura.mjs',   args: [] },
-          { id: 'coach',  label: 'running coach',   script: 'scripts/coach.mjs',       args: [] },
+          { id: 'strava', label: 'syncing strava',  script: 'scripts/sync-strava.mjs',     args: [] },
+          { id: 'oura',   label: 'syncing oura',    script: 'scripts/sync-oura.mjs',       args: [] },
+          { id: 'gcal',   label: 'syncing calendar', script: 'scripts/sync-google-cal.mjs', args: [] },
+          { id: 'coach',  label: 'running coach',   script: 'scripts/coach.mjs',           args: [] },
         ] as const
 
         let aborted = false
@@ -73,8 +74,8 @@ function refreshApi(): Plugin {
           for (const s of steps) {
             if (aborted) break
             const r = await runStep(s)
-            if (!r.ok && s.id !== 'oura') {
-              // strava and coach are required; oura is optional (might be unconfigured)
+            if (!r.ok && s.id !== 'oura' && s.id !== 'gcal') {
+              // strava and coach are required; oura and gcal are optional (might be unconfigured)
               send('done', { ok: false, failed_at: s.id })
               res.end()
               return
@@ -102,6 +103,10 @@ You have full read access to:
   - web/public/state.json   (persistent state — race meta, block targets, plan_blocks, agent_notes, preferences)
   - web/public/strava.json  (raw Strava snapshot — distance/elev/HR/dates/titles/start_latlng/weather, with strava_url)
   - web/public/oura.json    (Oura snapshot — sleep, readiness, HRV, RHR, tags)
+  - web/public/google-cal.json  (Google Calendar — past 7 + next 30 days of events, classified by training relevance)
+
+Use the calendar for schedule realism — if the athlete asks about a specific day's session,
+check that day's events first. Flag conflicts (travel, races, work blocks).
 
 Use the Read tool to look up specifics. Ground every claim in the data — quote real numbers (HRV ms, RHR delta, ACR ratio, miles, vert, dates, run temps in °F).
 

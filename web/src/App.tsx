@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "motion/react";
 /*  Refresh context — drives a "resync everything" pulse               */
 /* ------------------------------------------------------------------ */
 
-type RefreshStep = "strava" | "oura" | "coach";
+type RefreshStep = "strava" | "oura" | "gcal" | "coach";
 type StepStatus = "pending" | "running" | "done" | "error";
 type RefreshCtx = {
   key: number;
@@ -23,7 +23,7 @@ const RefreshContext = createContext<RefreshCtx>({
 });
 const useRefresh = () => useContext(RefreshContext);
 
-const REFRESH_STEPS: RefreshStep[] = ["strava", "oura", "coach"];
+const REFRESH_STEPS: RefreshStep[] = ["strava", "oura", "gcal", "coach"];
 
 function RefreshProvider({ children }: { children: React.ReactNode }) {
   const [key, setKey] = useState(0);
@@ -36,7 +36,7 @@ function RefreshProvider({ children }: { children: React.ReactNode }) {
   const refresh = useCallback(async () => {
     if (syncing) return;
     setSyncing(true);
-    setStatus({ strava: "pending", oura: "pending", coach: "pending" });
+    setStatus({ strava: "pending", oura: "pending", gcal: "pending", coach: "pending" });
     setCurrentStep(null);
     setLastLog("");
 
@@ -1830,6 +1830,183 @@ function ConnectOuraPrompt({ error }: { error: string | null }) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Schedule panel — Google Calendar upcoming events                   */
+/* ------------------------------------------------------------------ */
+
+const CLASSIFICATION_META: Record<GCalEvent["classification"], { color: string; tag: string }> = {
+  race:        { color: "var(--blaze)",      tag: "RACE" },
+  travel:      { color: "var(--rust)",       tag: "TRVL" },
+  appointment: { color: "var(--moss-deep)",  tag: "APPT" },
+  training:    { color: "var(--moss)",       tag: "TRN" },
+  work:        { color: "var(--ink-mute)",   tag: "WORK" },
+  other:       { color: "var(--ink-mute)",   tag: "···" },
+};
+
+function SchedulePanel() {
+  const { data: cal, connected, missing } = useGoogleCal();
+  const scrollDown = () => {
+    const el = document.getElementById("setup-google");
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    el.dispatchEvent(new CustomEvent("almanac:open"));
+  };
+
+  // Build a 14-day window grouped by day
+  const days = useMemo(() => {
+    const now = new Date();
+    const out: { date: string; label: string; events: GCalEvent[] }[] = [];
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(now.getTime() + i * 86400_000);
+      const iso = d.toISOString().slice(0, 10);
+      out.push({
+        date: iso,
+        label: d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }),
+        events: [],
+      });
+    }
+    if (cal) {
+      for (const e of cal.events) {
+        if (!e.start) continue;
+        const startMs = new Date(e.start).getTime();
+        if (startMs < now.getTime() - 60 * 60_000) continue;
+        const dayIso = e.start.slice(0, 10);
+        const slot = out.find((d) => d.date === dayIso);
+        if (slot) slot.events.push(e);
+      }
+    }
+    return out;
+  }, [cal]);
+
+  return (
+    <section id="schedule" className="sec-pad" style={{ paddingTop: 96, position: "relative" }}>
+      <div className="container">
+        <div className="section-head" style={{ marginBottom: 28 }}>
+          <div>
+            <span className="eyebrow">§ III · The Schedule</span>
+            <h2 className="display display-section" style={{ margin: "4px 0 0" }}>
+              <em>What's</em> on the calendar.
+            </h2>
+          </div>
+          <span className="eyebrow">
+            {connected
+              ? `${cal!.summary.upcoming_events} upcoming · ${cal!.summary.races_upcoming} races · ${cal!.summary.travel_days_upcoming.length} travel days`
+              : missing ? "calendar not connected" : "loading…"}
+          </span>
+        </div>
+        <div className="double-rule" style={{ marginBottom: 36 }} />
+
+        {!connected && !missing && (
+          <div style={{ fontSize: 14, color: "var(--ink-mute)" }}>loading google calendar…</div>
+        )}
+        {!connected && missing && (
+          <div className="card card-corner" style={{ padding: 24, position: "relative" }}>
+            <ContourBackdrop seed={31} opacity={0.16} />
+            <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
+              <span className="stamp">calendar not connected</span>
+              <p style={{ fontSize: 14, color: "var(--ink-soft)", margin: 0, flex: 1, minWidth: 220 }}>
+                Google Calendar gives the agent schedule context — travel, races, work blocks, appointments — so it can build a plan that fits your week.
+              </p>
+              <button onClick={scrollDown} className="chip blaze active">
+                set up google ↓
+              </button>
+            </div>
+          </div>
+        )}
+        {connected && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
+            {days.map((d, i) => {
+              const isToday = i === 0;
+              const isWeekend = ["Sat", "Sun"].includes(d.label.split(" ")[0]);
+              return (
+                <motion.div
+                  key={d.date}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3, delay: i * 0.02 }}
+                  className="card"
+                  style={{
+                    padding: 14,
+                    position: "relative",
+                    minHeight: 90,
+                    borderColor: isToday ? "var(--blaze)" : isWeekend ? "var(--moss-deep)" : "var(--ink)",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <span className="eyebrow" style={{ color: isToday ? "var(--blaze)" : "var(--ink)" }}>
+                      {isToday ? "today" : d.label.toLowerCase()}
+                    </span>
+                    {d.events.length > 0 && (
+                      <span className="eyebrow numerals" style={{ color: "var(--ink-mute)" }}>
+                        {d.events.length}
+                      </span>
+                    )}
+                  </div>
+                  {d.events.length === 0 ? (
+                    <div style={{ marginTop: 14, fontSize: 12, color: "var(--ink-mute)", fontStyle: "italic" }}>
+                      clear
+                    </div>
+                  ) : (
+                    <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0", display: "flex", flexDirection: "column", gap: 6 }}>
+                      {d.events.slice(0, 4).map((e) => {
+                        const meta = CLASSIFICATION_META[e.classification] || CLASSIFICATION_META.other;
+                        const time = e.all_day
+                          ? "all day"
+                          : e.start
+                            ? new Date(e.start).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+                            : "";
+                        const inner = (
+                          <span style={{ display: "flex", alignItems: "baseline", gap: 6, minWidth: 0 }}>
+                            <span style={{
+                              fontFamily: "var(--font-mono)",
+                              fontSize: 9,
+                              letterSpacing: "0.14em",
+                              color: meta.color,
+                              borderLeft: `2px solid ${meta.color}`,
+                              paddingLeft: 6,
+                              flexShrink: 0,
+                            }}>{meta.tag}</span>
+                            <span style={{
+                              fontSize: 12,
+                              lineHeight: 1.3,
+                              color: "var(--ink)",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              flex: 1,
+                            }}>
+                              {time && <span className="numerals" style={{ color: "var(--ink-mute)", marginRight: 5, fontSize: 11 }}>{time}</span>}
+                              {e.summary}
+                            </span>
+                          </span>
+                        );
+                        return (
+                          <li key={e.id}>
+                            {e.html_link ? (
+                              <a href={e.html_link} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none", display: "block" }}>
+                                {inner}
+                              </a>
+                            ) : inner}
+                          </li>
+                        );
+                      })}
+                      {d.events.length > 4 && (
+                        <li style={{ fontSize: 11, color: "var(--ink-mute)", fontFamily: "var(--font-mono)", paddingLeft: 8 }}>
+                          + {d.events.length - 4} more
+                        </li>
+                      )}
+                    </ul>
+                  )}
+                </motion.div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Activity Log                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -1845,7 +2022,7 @@ function ActivityLog() {
       <div className="container">
         <div className="section-head" style={{ marginBottom: 24 }}>
           <div>
-            <span className="eyebrow">§ III · The Log</span>
+            <span className="eyebrow">§ IV · The Log</span>
             <h2 className="display display-section" style={{ margin: "4px 0 0" }}>
               <em>Pulled</em> from Strava.
             </h2>
@@ -2236,6 +2413,44 @@ type PersistentState = {
   preferences?: Record<string, unknown>;
 };
 
+type GCalEvent = {
+  id: string;
+  summary: string;
+  description?: string;
+  start: string | null;
+  end: string | null;
+  all_day: boolean;
+  duration_min: number | null;
+  location: string | null;
+  classification: "race" | "travel" | "appointment" | "training" | "work" | "other";
+  html_link: string | null;
+};
+type GCalRaw = {
+  fetched_at: string;
+  window: { time_min: string; time_max: string };
+  calendar_id: string;
+  summary: {
+    total_events: number;
+    upcoming_events: number;
+    races_upcoming: number;
+    travel_days_upcoming: string[];
+  };
+  events: GCalEvent[];
+};
+
+function useGoogleCal() {
+  const { key: refreshKey } = useRefresh();
+  const [data, setData] = useState<GCalRaw | null>(null);
+  const [missing, setMissing] = useState(false);
+  useEffect(() => {
+    fetch(`/google-cal.json?t=${Date.now()}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then(setData)
+      .catch(() => setMissing(true));
+  }, [refreshKey]);
+  return { data, missing, connected: !!data };
+}
+
 function usePersistentState() {
   const { key: refreshKey } = useRefresh();
   const [data, setData] = useState<PersistentState | null>(null);
@@ -2293,7 +2508,7 @@ function CoachReadout() {
         <div className="coach-grid">
           {/* LEFT — narrative & inputs */}
           <div>
-            <span className="eyebrow">§ IV · The Coach</span>
+            <span className="eyebrow">§ V · The Coach</span>
             <h2 className="display display-section" style={{ margin: "4px 0 24px" }}>
               An <em style={{ color: "var(--blaze)" }}>agent</em><br />that <em>knows</em> the route.
             </h2>
@@ -2897,7 +3112,7 @@ function Plan() {
       <div className="container">
         <div className="section-head" style={{ marginBottom: 28 }}>
           <div>
-            <span className="eyebrow">§ V · The Plan</span>
+            <span className="eyebrow">§ VI · The Plan</span>
             <h2 className="display display-section" style={{ margin: "4px 0 0" }}>
               The <em style={{ color: "var(--blaze)" }}>weeks</em> ahead.
             </h2>
@@ -2995,22 +3210,30 @@ function SetupAccordion() {
   const strava = useStrava();
   const stravaOk = strava.activities.length > 0 && !strava.error;
   const { connected: ouraOk } = useOura();
+  const { connected: googleOk } = useGoogleCal();
   const { data: agent } = useAgentReadout();
   const coachOk = !!agent;
-  const [open, setOpen] = useState<"strava" | "oura" | "coach" | null>(null);
+  const [open, setOpen] = useState<"strava" | "oura" | "google" | "coach" | null>(null);
   const ouraRef = useRef<HTMLLIElement | null>(null);
+  const googleRef = useRef<HTMLLIElement | null>(null);
 
-  // External trigger: opens the Oura panel when the BodyPanel button is clicked
+  // External triggers: SchedulePanel + BodyPanel buttons dispatch
+  // "almanac:open" on the respective accordion row to expand it.
   useEffect(() => {
-    const el = ouraRef.current;
-    if (!el) return;
-    const onOpen = () => setOpen("oura");
-    el.addEventListener("almanac:open", onOpen as EventListener);
-    return () => el.removeEventListener("almanac:open", onOpen as EventListener);
+    const oel = ouraRef.current;
+    const gel = googleRef.current;
+    const onOpenOura = () => setOpen("oura");
+    const onOpenGoogle = () => setOpen("google");
+    oel?.addEventListener("almanac:open", onOpenOura as EventListener);
+    gel?.addEventListener("almanac:open", onOpenGoogle as EventListener);
+    return () => {
+      oel?.removeEventListener("almanac:open", onOpenOura as EventListener);
+      gel?.removeEventListener("almanac:open", onOpenGoogle as EventListener);
+    };
   }, []);
 
   const items: {
-    key: "strava" | "oura" | "coach";
+    key: "strava" | "oura" | "google" | "coach";
     title: string;
     connected: boolean;
     note: string;
@@ -3073,6 +3296,49 @@ function SetupAccordion() {
       ),
     },
     {
+      key: "google",
+      title: "Google Calendar",
+      connected: googleOk,
+      note: googleOk ? "connected" : "click to set up",
+      render: () => (
+        <ol style={olStyle}>
+          <li>
+            Enable the Calendar API for your GCP project:{" "}
+            <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener noreferrer" style={linkBlaze}>
+              calendar-json.googleapis.com ↗
+            </a>
+          </li>
+          <li>
+            Configure the OAuth consent screen (External, testing mode is fine) and add
+            your own email under "Test users".
+          </li>
+          <li>
+            Create an OAuth 2.0 Client ID (Web application):
+            <div style={{ marginTop: 6, color: "var(--ink-mute)", fontSize: 13 }}>
+              redirect URI: <code style={codeChip}>http://localhost:5174/google-callback</code><br />
+              scopes: <code style={codeChip}>calendar.readonly</code>
+            </div>
+          </li>
+          <li>
+            Save credentials to <code style={codeChip}>~/.config/google/config.json</code>:
+            <pre style={codeBlock}>{`{
+  "clientId": "...",
+  "clientSecret": "...",
+  "redirectUri": "http://localhost:5174/google-callback"
+}`}</pre>
+          </li>
+          <li>
+            Authorize once (opens browser):
+            <pre style={codeBlock}>npm run auth:google</pre>
+          </li>
+          <li>
+            Pull events anytime:
+            <pre style={codeBlock}>npm run sync:google</pre>
+          </li>
+        </ol>
+      ),
+    },
+    {
       key: "coach",
       title: "Claude coach",
       connected: coachOk,
@@ -3114,8 +3380,8 @@ function SetupAccordion() {
           return (
             <li
               key={it.key}
-              ref={it.key === "oura" ? ouraRef : undefined}
-              id={it.key === "oura" ? "setup-oura" : `setup-${it.key}`}
+              ref={it.key === "oura" ? ouraRef : it.key === "google" ? googleRef : undefined}
+              id={`setup-${it.key}`}
               style={{ borderBottom: "1px solid var(--ink)" }}
             >
               <button
@@ -3268,6 +3534,7 @@ function AppBody() {
         <Hero />
         <div key={`stats-${key}`}><StatsPanel /></div>
         <div key={`body-${key}`}><BodyPanel /></div>
+        <div key={`sched-${key}`}><SchedulePanel /></div>
         <div key={`log-${key}`}><ActivityLog /></div>
         <CoachReadout />
         <Plan />

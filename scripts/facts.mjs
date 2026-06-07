@@ -236,14 +236,38 @@ export function computeFacts(strava, oura, state) {
 }
 
 export async function loadFactsFromRoot(projectRoot) {
-  const stravaPath = path.join(projectRoot, "web", "public", "strava.json");
-  const ouraPath   = path.join(projectRoot, "web", "public", "oura.json");
-  const [strava, oura, profile, state] = await Promise.all([
+  const stravaPath  = path.join(projectRoot, "web", "public", "strava.json");
+  const ouraPath    = path.join(projectRoot, "web", "public", "oura.json");
+  const calPath     = path.join(projectRoot, "web", "public", "google-cal.json");
+  const [strava, oura, cal, profile, state] = await Promise.all([
     fs.readFile(stravaPath, "utf8").then(JSON.parse).catch(() => null),
     fs.readFile(ouraPath,   "utf8").then(JSON.parse).catch(() => null),
+    fs.readFile(calPath,    "utf8").then(JSON.parse).catch(() => null),
     loadProfile(projectRoot),
     loadState(projectRoot),
   ]);
   if (!strava) throw new Error("strava.json missing — run sync:strava");
-  return { profile, state, ...computeFacts(strava, oura, state) };
+  const base = { profile, state, ...computeFacts(strava, oura, state) };
+  if (cal) {
+    base.calendar = {
+      fetched_at: cal.fetched_at,
+      summary: cal.summary,
+      // Upcoming events for the next 14 days, classified — agent uses these
+      // for schedule constraints (travel, races, work blocks, appointments).
+      upcoming_14d: (cal.events || [])
+        .filter((e) => e.start && new Date(e.start) >= new Date())
+        .filter((e) => new Date(e.start) <= new Date(Date.now() + 14 * 86400_000))
+        .slice(0, 40)
+        .map((e) => ({
+          start: e.start,
+          end: e.end,
+          all_day: e.all_day,
+          duration_min: e.duration_min,
+          summary: e.summary,
+          location: e.location,
+          classification: e.classification,
+        })),
+    };
+  }
+  return base;
 }
