@@ -52,6 +52,13 @@ whether the athlete has travel, a race, or a long work block on the candidate da
 travel day or evening race appears, work around it (move long run earlier, deload the day
 after a flight, etc.).
 
+The athlete's preferences.personal_constraints (plain-English rules they've set) are HARD
+constraints. Every proposed session must respect them. Scan facts.calendar.upcoming_14d
+against each constraint before locking in a key_session — e.g. if a constraint says events
+with "X" block long-run timing on weekends, do not schedule a long-run key_session on a
+day with an "X" event without explicitly noting the workaround (e.g. "5:30am start to
+finish before Em event").
+
 Persistent state lives in web/public/state.json — you already see its key contents in the facts
 file (plan_blocks, agent_notes, preferences). Treat the EXISTING plan_blocks as the prior plan.
 Do not regenerate from scratch every run — keep what still makes sense, only revise blocks
