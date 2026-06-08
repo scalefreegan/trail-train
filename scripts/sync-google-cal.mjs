@@ -19,7 +19,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import http from "node:http";
 import { exec } from "node:child_process";
-import { readEnvCredentials, loadTokens, saveTokens, REDIRECT_URI } from "./google-keys.mjs";
+import { readCredentials, loadTokens, saveTokens } from "./google-keys.mjs";
 
 const OUT_PATH = path.join(process.cwd(), "web", "public", "google-cal.json");
 const AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -47,15 +47,15 @@ function openBrowser(url) {
   exec(cmd, () => {});
 }
 
-function authFlow({ clientId, clientSecret }) {
+function authFlow({ clientId, clientSecret, redirectUri }) {
   return new Promise((resolve, reject) => {
     const state = Math.random().toString(36).slice(2);
     const url = new URL(AUTHORIZE_URL);
-    const redirect = new URL(REDIRECT_URI);
+    const redirect = new URL(redirectUri);
     const port = Number(redirect.port) || 5174;
     url.searchParams.set("response_type", "code");
     url.searchParams.set("client_id", clientId);
-    url.searchParams.set("redirect_uri", REDIRECT_URI);
+    url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("scope", SCOPES.join(" "));
     url.searchParams.set("access_type", "offline");
     url.searchParams.set("prompt", "consent");
@@ -79,7 +79,7 @@ function authFlow({ clientId, clientSecret }) {
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({
             code, client_id: clientId, client_secret: clientSecret,
-            redirect_uri: REDIRECT_URI, grant_type: "authorization_code",
+            redirect_uri: redirectUri, grant_type: "authorization_code",
           }),
         });
         if (!r.ok) throw new Error(`token exchange ${r.status}: ${await r.text()}`);
@@ -188,11 +188,12 @@ function classify(ev) {
 }
 
 async function main() {
-  const creds = readEnvCredentials();    // throws helpful error if missing
+  const creds = readCredentials();    // throws helpful error if missing
+  console.log(`• creds source: ${creds.source}`);
 
   if (AUTH) {
     await authFlow(creds);
-    console.log(`✓ authorized — tokens saved.`);
+    console.log(`✓ authorized — tokens saved to ~/.config/google/tokens.json`);
     return;
   }
 
@@ -221,8 +222,13 @@ async function main() {
 
   const upcoming = events.filter((e) => e.start && new Date(e.start) > now);
   const upcoming_by_day = {};
+  // Local-zone YYYY-MM-DD so keys match Google's event.start (which is in
+  // the calendar's local zone). toISOString() would shift by a day in
+  // the user's evening hours.
+  const localIso = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   for (let i = 0; i < 14; i++) {
-    const d = new Date(now.getTime() + i * 86400_000).toISOString().slice(0, 10);
+    const d = localIso(new Date(now.getTime() + i * 86400_000));
     upcoming_by_day[d] = upcoming.filter((e) => (e.start || "").startsWith(d));
   }
   const summary = {

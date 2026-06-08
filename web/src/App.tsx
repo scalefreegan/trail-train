@@ -1854,12 +1854,16 @@ function SchedulePanel() {
   // Build a 14-day window grouped by day
   const days = useMemo(() => {
     const now = new Date();
+    // Local-zone YYYY-MM-DD — must match how Google returns event start.date
+    // (in the calendar's local zone). Using toISOString() here would key by
+    // UTC and shift events into the wrong column after ~5-7pm local time.
+    const localIso = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     const out: { date: string; label: string; events: GCalEvent[] }[] = [];
     for (let i = 0; i < 14; i++) {
       const d = new Date(now.getTime() + i * 86400_000);
-      const iso = d.toISOString().slice(0, 10);
       out.push({
-        date: iso,
+        date: localIso(d),
         label: d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }),
         events: [],
       });
