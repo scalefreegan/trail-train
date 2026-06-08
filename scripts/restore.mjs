@@ -81,7 +81,7 @@ async function main() {
     mapping.push(
       { from: "oauth/strava-mcp.config.json", to: path.join(os.homedir(), ".config/strava-mcp/config.json") },
       { from: "oauth/oura.config.json",       to: path.join(os.homedir(), ".config/oura/config.json") },
-      { from: "oauth/google.config.json",     to: path.join(os.homedir(), ".config/google/config.json") },
+      { from: "oauth/google.tokens.json",     to: path.join(os.homedir(), ".config/google/tokens.json") },
     );
   }
 

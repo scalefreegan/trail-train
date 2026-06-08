@@ -3320,15 +3320,12 @@ function SetupAccordion() {
             </div>
           </li>
           <li>
-            Save credentials to <code style={codeChip}>~/.config/google/config.json</code>:
-            <pre style={codeBlock}>{`{
-  "clientId": "...",
-  "clientSecret": "...",
-  "redirectUri": "http://localhost:5174/google-callback"
-}`}</pre>
+            Export client_id and client_secret as env vars (e.g. in <code style={codeChip}>~/.keys</code> sourced by your shell):
+            <pre style={codeBlock}>{`export GOOGLE_CAL_API_CLIENT_ID=...
+export GOOGLE_CAL_API_CLIENT_SECRET=...`}</pre>
           </li>
           <li>
-            Authorize once (opens browser):
+            Authorize once (opens browser, writes tokens to <code style={codeChip}>~/.config/google/tokens.json</code>):
             <pre style={codeBlock}>npm run auth:google</pre>
           </li>
           <li>

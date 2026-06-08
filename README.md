@@ -96,15 +96,12 @@ work blocks, appointments. Setup mirrors Oura's OAuth dance:
 3. Create an OAuth 2.0 Client ID (Web application):
    - Redirect URI: `http://localhost:5174/google-callback`
    - Scope: `calendar.readonly`
-4. Save credentials to `~/.config/google/config.json`:
-   ```json
-   {
-     "clientId": "...",
-     "clientSecret": "...",
-     "redirectUri": "http://localhost:5174/google-callback"
-   }
+4. Export client_id + client_secret as env vars (e.g. in `~/.keys`, sourced by your shell):
+   ```bash
+   export GOOGLE_CAL_API_CLIENT_ID=...
+   export GOOGLE_CAL_API_CLIENT_SECRET=...
    ```
-5. Authorize once:
+5. Authorize once (writes tokens to `~/.config/google/tokens.json`):
    ```bash
    npm run auth:google
    ```
