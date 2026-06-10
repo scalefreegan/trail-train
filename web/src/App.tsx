@@ -1,487 +1,99 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import {
+  RefreshProvider, useRefresh, REFRESH_STEPS,
+  UnitsProvider, useUnits,
+  StravaProvider, useStrava,
+  OuraProvider, useOura, type OuraDay,
+  useGoogleCal, usePersistentState, useAgentReadout,
+  computeCoachFacts, type CoachFacts, type Flag,
+  type Activity, type AgentReadout, type PlanBlock, type GCalEvent,
+  RACE, BLOCK_TARGETS, TOTAL_WEEKS,
+  daysUntil, relativeAgo, fmtDuration,
+} from "./data";
 
-/* ------------------------------------------------------------------ */
-/*  Refresh context — drives a "resync everything" pulse               */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  BASECAMP — pre-dawn ops surface for ultra training                 */
+/*  command bar · race ribbon · vitals band · trajectory ·             */
+/*  road ahead (plan ∪ calendar) · log — with the coach as a           */
+/*  persistent rail that never leaves your side.                       */
+/* ================================================================== */
 
-type RefreshStep = "strava" | "oura" | "gcal" | "coach";
-type StepStatus = "pending" | "running" | "done" | "error";
-type RefreshCtx = {
-  key: number;
-  syncing: boolean;
-  lastSync: number;
-  status: Partial<Record<RefreshStep, StepStatus>>;
-  currentStep: RefreshStep | null;
-  lastLog: string;
-  refresh: () => void;
+const SEVERITY_COLOR: Record<Flag["severity"], string> = {
+  info:  "var(--pine)",
+  watch: "var(--lamp)",
+  warn:  "var(--ember)",
 };
-const RefreshContext = createContext<RefreshCtx>({
-  key: 0, syncing: false, lastSync: Date.now(),
-  status: {}, currentStep: null, lastLog: "",
-  refresh: () => {},
-});
-const useRefresh = () => useContext(RefreshContext);
 
-const REFRESH_STEPS: RefreshStep[] = ["strava", "oura", "gcal", "coach"];
+/* ------------------------------------------------------------------ */
+/*  Shared atoms                                                       */
+/* ------------------------------------------------------------------ */
 
-function RefreshProvider({ children }: { children: React.ReactNode }) {
-  const [key, setKey] = useState(0);
-  const [syncing, setSyncing] = useState(false);
-  const [lastSync, setLastSync] = useState(() => Date.now() - 12 * 60 * 1000);
-  const [status, setStatus] = useState<Partial<Record<RefreshStep, StepStatus>>>({});
-  const [currentStep, setCurrentStep] = useState<RefreshStep | null>(null);
-  const [lastLog, setLastLog] = useState("");
-
-  const refresh = useCallback(async () => {
-    if (syncing) return;
-    setSyncing(true);
-    setStatus({ strava: "pending", oura: "pending", gcal: "pending", coach: "pending" });
-    setCurrentStep(null);
-    setLastLog("");
-
-    try {
-      const res = await fetch("/api/refresh", { method: "POST" });
-      if (!res.body) throw new Error("no body");
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-
-      const parseEvent = (block: string) => {
-        const lines = block.split("\n");
-        let evt = "message", data = "";
-        for (const l of lines) {
-          if (l.startsWith("event:")) evt = l.slice(6).trim();
-          else if (l.startsWith("data:")) data += l.slice(5).trim();
-        }
-        if (!data) return;
-        let payload: any;
-        try { payload = JSON.parse(data); } catch { return; }
-        if (evt === "step") {
-          const s = payload.id as RefreshStep;
-          if (payload.status === "start") {
-            setCurrentStep(s);
-            setStatus((prev) => ({ ...prev, [s]: "running" }));
-            setLastLog(payload.label || `running ${s}`);
-          } else if (payload.status === "done") {
-            setStatus((prev) => ({ ...prev, [s]: "done" }));
-          } else if (payload.status === "error") {
-            setStatus((prev) => ({ ...prev, [s]: "error" }));
-          }
-        } else if (evt === "log") {
-          setLastLog(payload.line);
-        } else if (evt === "done") {
-          if (payload.ok) setLastSync(Date.now());
-          setCurrentStep(null);
-        }
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf("\n\n")) >= 0) {
-          const block = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          parseEvent(block);
-        }
-      }
-    } catch (e) {
-      setLastLog(`error: ${(e as Error).message}`);
-    } finally {
-      // bump key so subscribers refetch /strava.json etc
-      setKey((k) => k + 1);
-      setSyncing(false);
-    }
-  }, [syncing]);
-
+function SectionTag({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
   return (
-    <RefreshContext.Provider value={{
-      key, syncing, lastSync,
-      status, currentStep, lastLog,
-      refresh,
-    }}>
-      {children}
-    </RefreshContext.Provider>
+    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, margin: "26px 0 10px" }}>
+      <span className="eyebrow" style={{ color: "var(--lamp)", display: "inline-flex", alignItems: "center", gap: 8 }}>
+        <span style={{ width: 5, height: 5, background: "var(--lamp)", transform: "rotate(45deg)", display: "inline-block" }} />
+        {children}
+      </span>
+      {right}
+    </div>
+  );
+}
+
+function Spark({ values, color = "var(--mist-dim)", height = 34, fill = true }: {
+  values: number[]; color?: string; height?: number; fill?: boolean;
+}) {
+  const vs = values.length > 1 ? values : [0, 0];
+  const max = Math.max(...vs, 1);
+  const min = Math.min(...vs, 0);
+  const span = max - min || 1;
+  const w = 100, h = 28;
+  const step = w / (vs.length - 1);
+  const path = vs.map((v, i) => `${i === 0 ? "M" : "L"} ${(i * step).toFixed(2)} ${(h - ((v - min) / span) * (h - 2) - 1).toFixed(2)}`).join(" ");
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ display: "block", width: "100%", height }}>
+      {fill && <path d={`${path} L ${w} ${h} L 0 ${h} Z`} fill={color} opacity="0.09" />}
+      <motion.path
+        d={path} fill="none" stroke={color} strokeWidth="1.2"
+        strokeLinecap="round" strokeLinejoin="round"
+        initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
+        transition={{ duration: 1.2, ease: "easeOut" }}
+      />
+      <circle cx={w} cy={h - ((vs[vs.length - 1] - min) / span) * (h - 2) - 1} r="1.8" fill={color} />
+    </svg>
+  );
+}
+
+function Delta({ value, suffix = "", good }: { value: number | null; suffix?: string; good: boolean | null }) {
+  if (value == null) return <span className="eyebrow numerals">—</span>;
+  const color = good == null ? "var(--mist-mute)" : good ? "var(--pine)" : "var(--ember)";
+  return (
+    <span className="numerals" style={{ fontSize: 10, letterSpacing: "0.08em", color }}>
+      {value > 0 ? "▲" : value < 0 ? "▼" : "•"} {Math.abs(value).toFixed(Math.abs(value) < 10 ? 1 : 0)}{suffix}
+    </span>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  Units context — imperial / metric toggle                           */
+/*  Contour backdrop — faint ridge lines behind key panels             */
 /* ------------------------------------------------------------------ */
 
-type System = "imperial" | "metric";
-type UnitsCtx = {
-  system: System;
-  toggle: () => void;
-  // value formatters (input always in imperial source units)
-  dist: (mi: number, digits?: number) => string;       // raw number string
-  elev: (ft: number) => string;
-  distUnit: string;                                     // "mi" | "km"
-  elevUnit: string;                                     // "ft" | "m"
-  paceUnit: string;                                     // "/mi" | "/km"
-  paceFmt: (sec: number, mi: number) => string;        // "8:42"
-  // raw converters (for charts / math)
-  distVal: (mi: number) => number;
-  elevVal: (ft: number) => number;
-};
-
-const MI_TO_KM = 1.609344;
-const FT_TO_M = 0.3048;
-
-const UnitsContext = createContext<UnitsCtx | null>(null);
-const useUnits = () => {
-  const v = useContext(UnitsContext);
-  if (!v) throw new Error("UnitsProvider missing");
-  return v;
-};
-
-function UnitsProvider({ children }: { children: React.ReactNode }) {
-  const [system, setSystem] = useState<System>(() =>
-    (typeof localStorage !== "undefined" && (localStorage.getItem("units") as System)) || "imperial"
-  );
-  const toggle = useCallback(() => {
-    setSystem((s) => {
-      const next = s === "imperial" ? "metric" : "imperial";
-      try { localStorage.setItem("units", next); } catch {}
-      return next;
-    });
-  }, []);
-
-  const value = useMemo<UnitsCtx>(() => {
-    const metric = system === "metric";
-    const distVal = (mi: number) => (metric ? mi * MI_TO_KM : mi);
-    const elevVal = (ft: number) => (metric ? ft * FT_TO_M : ft);
-    return {
-      system,
-      toggle,
-      distVal,
-      elevVal,
-      distUnit: metric ? "km" : "mi",
-      elevUnit: metric ? "m" : "ft",
-      paceUnit: metric ? "/km" : "/mi",
-      dist: (mi, digits = 1) => distVal(mi).toLocaleString("en-US", {
-        minimumFractionDigits: digits, maximumFractionDigits: digits,
-      }),
-      elev: (ft) => Math.round(elevVal(ft)).toLocaleString("en-US"),
-      paceFmt: (sec, mi) => {
-        if (!mi) return "—";
-        const distanceUnits = metric ? mi * MI_TO_KM : mi;
-        const perUnit = sec / distanceUnits;
-        const m = Math.floor(perUnit / 60);
-        const s = Math.round(perUnit % 60);
-        return `${m}:${s.toString().padStart(2, "0")}`;
-      },
-    };
-  }, [system, toggle]);
-
-  return <UnitsContext.Provider value={value}>{children}</UnitsContext.Provider>;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Strava data context — loads /strava.json snapshot                  */
-/* ------------------------------------------------------------------ */
-
-const M_PER_MI = 1609.344;
-const M_PER_FT = 0.3048;
-
-type StravaRaw = {
-  fetched_at: string;
-  window: { start: string; end: string };
-  totals: { distance_km: number; elevation_m: number; moving_s: number; count: number };
-  activities: Array<{
-    id: string;
-    date: string;
-    start_time_local?: string | null;
-    title: string;
-    sport: string;
-    type: Activity["type"];
-    distance_m: number;
-    elevation_m: number;
-    moving_s: number;
-    avg_hr: number | null;
-    rpe: number;
-    strava_url: string;
-    weather?: {
-      temp_min_c: number;
-      temp_max_c: number;
-      temp_avg_c: number;
-      apparent_avg_c: number | null;
-      humidity_avg: number | null;
-    } | null;
-  }>;
-};
-
-type StravaCtx = {
-  loading: boolean;
-  error: string | null;
-  fetchedAt: Date | null;
-  activities: Activity[];
-  // weekly buckets by training block week (1..20)
-  weekly: { wk: number; dist_mi: number; elev_ft: number; sessions: number }[];
-  currentWeek: number; // 1..20
-  reload: () => void;
-};
-const StravaContext = createContext<StravaCtx | null>(null);
-const useStrava = () => {
-  const v = useContext(StravaContext);
-  if (!v) throw new Error("StravaProvider missing");
-  return v;
-};
-
-function weekIndex(date: string, blockStart: string) {
-  const d = new Date(date).getTime();
-  const s = new Date(blockStart + "T00:00:00").getTime();
-  const days = Math.floor((d - s) / 86400000);
-  return Math.floor(days / 7) + 1; // 1-indexed
-}
-
-function StravaProvider({ children }: { children: React.ReactNode }) {
-  const { key: refreshKey } = useRefresh();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [data, setData] = useState<StravaRaw | null>(null);
-
-  const reload = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    fetch(`/strava.json?t=${Date.now()}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json() as Promise<StravaRaw>;
-      })
-      .then(setData)
-      .catch((e) => setError(String(e.message || e)))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => { reload(); }, [reload, refreshKey]);
-
-  const value = useMemo<StravaCtx>(() => {
-    const cToF = (c: number) => Math.round(c * 9 / 5 + 32);
-    const activities: Activity[] = (data?.activities ?? []).map((a) => ({
-      id: a.id,
-      date: a.date,
-      start_time_local: a.start_time_local ?? null,
-      title: a.title,
-      type: a.type,
-      distance_mi: a.distance_m / M_PER_MI,
-      elevation_ft: a.elevation_m / M_PER_FT,
-      moving_s: a.moving_s,
-      rpe: Math.max(1, Math.min(5, Math.round(a.rpe))) as Activity["rpe"],
-      strava_url: a.strava_url,
-      temp_max_f: a.weather?.temp_max_c != null ? cToF(a.weather.temp_max_c) : null,
-      temp_avg_f: a.weather?.temp_avg_c != null ? cToF(a.weather.temp_avg_c) : null,
-      humidity_avg: a.weather?.humidity_avg ?? null,
-    }));
-
-    const weekly: { wk: number; dist_mi: number; elev_ft: number; sessions: number }[] =
-      Array.from({ length: TOTAL_WEEKS }, (_, i) => ({
-        wk: i + 1, dist_mi: 0, elev_ft: 0, sessions: 0,
-      }));
-    for (const a of activities) {
-      const w = weekIndex(a.date, BLOCK_START);
-      if (w >= 1 && w <= TOTAL_WEEKS) {
-        weekly[w - 1].dist_mi += a.distance_mi;
-        weekly[w - 1].elev_ft += a.elevation_ft;
-        weekly[w - 1].sessions += 1;
-      }
-    }
-    const today = new Date();
-    const cw = Math.max(1, Math.min(TOTAL_WEEKS, weekIndex(today.toISOString(), BLOCK_START)));
-
-    return {
-      loading, error,
-      fetchedAt: data ? new Date(data.fetched_at) : null,
-      activities, weekly, currentWeek: cw,
-      reload,
-    };
-  }, [data, loading, error, reload]);
-
-  return <StravaContext.Provider value={value}>{children}</StravaContext.Provider>;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Oura context — loads /oura.json snapshot                           */
-/* ------------------------------------------------------------------ */
-
-type OuraDay = {
-  day: string;
-  sleep_score?: number | null;
-  readiness_score?: number | null;
-  activity_score?: number | null;
-  total_sleep_s?: number | null;
-  rem_sleep_s?: number | null;
-  deep_sleep_s?: number | null;
-  avg_hrv?: number | null;
-  avg_hr?: number | null;
-  lowest_hr?: number | null;
-  temp_deviation_c?: number | null;
-  steps?: number | null;
-  tags?: { tag_type_code: string | null; comment: string | null; tags: string[] }[];
-};
-type OuraRaw = {
-  fetched_at: string;
-  window: { start: string; end: string };
-  summary: Record<string, number | null>;
-  days: OuraDay[];
-};
-type OuraCtx = {
-  loading: boolean;
-  connected: boolean;
-  error: string | null;
-  fetchedAt: Date | null;
-  days: OuraDay[];
-  latest: OuraDay | null;
-  summary: OuraRaw["summary"];
-};
-const OuraContext = createContext<OuraCtx | null>(null);
-const useOura = () => {
-  const v = useContext(OuraContext);
-  if (!v) throw new Error("OuraProvider missing");
-  return v;
-};
-
-function OuraProvider({ children }: { children: React.ReactNode }) {
-  const { key: refreshKey } = useRefresh();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [data, setData] = useState<OuraRaw | null>(null);
-
-  useEffect(() => {
-    setLoading(true);
-    setError(null);
-    fetch(`/oura.json?t=${Date.now()}`)
-      .then((r) => (r.ok ? (r.json() as Promise<OuraRaw>) : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then(setData)
-      .catch((e) => setError(String(e.message || e)))
-      .finally(() => setLoading(false));
-  }, [refreshKey]);
-
-  const value = useMemo<OuraCtx>(() => {
-    const days = (data?.days ?? []).slice().sort((a, b) => b.day.localeCompare(a.day));
-    return {
-      loading,
-      error,
-      connected: !!data && days.length > 0,
-      fetchedAt: data ? new Date(data.fetched_at) : null,
-      days,
-      latest: days[0] ?? null,
-      summary: data?.summary ?? {},
-    };
-  }, [data, loading, error]);
-
-  return <OuraContext.Provider value={value}>{children}</OuraContext.Provider>;
-}
-
-function relativeAgo(ts: number) {
-  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m ago`;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Data (mock — wired for Strava MCP swap)                            */
-/* ------------------------------------------------------------------ */
-
-const RACE = {
-  name: "Mogollon Monster 100",
-  short: "MM100",
-  distance_mi: 102.3,
-  elevation_ft: 15900,
-  max_elev_ft: 7912,
-  cutoff_h: 38,
-  date: new Date("2026-09-12T06:00:00"),
-  location: "Mogollon Rim · Pine, AZ",
-};
-
-type Activity = {
-  id: string;
-  date: string;
-  start_time_local?: string | null;
-  title: string;
-  type: "run" | "long" | "vert" | "easy" | "workout";
-  distance_mi: number;
-  elevation_ft: number;
-  moving_s: number;
-  rpe: 1 | 2 | 3 | 4 | 5;
-  strava_url?: string;
-  temp_max_f?: number | null;
-  temp_avg_f?: number | null;
-  humidity_avg?: number | null;
-};
-
-/* ---- 20-week training block targets (race = week 20 = Sept 12) ---- */
-/*  Block start = Monday April 27, 2026 (race week begins Mon Sept 7)   */
-
-const BLOCK_START = "2026-04-27";
-
-const BLOCK_TARGETS: { wk: number; target_dist: number; target_elev: number }[] = [
-  { wk: 1,  target_dist: 38, target_elev: 5800 },
-  { wk: 2,  target_dist: 46, target_elev: 7400 },
-  { wk: 3,  target_dist: 52, target_elev: 8900 },
-  { wk: 4,  target_dist: 36, target_elev: 5400 },
-  { wk: 5,  target_dist: 54, target_elev: 9500 },
-  { wk: 6,  target_dist: 60, target_elev: 10800 },
-  { wk: 7,  target_dist: 55, target_elev: 9800 },
-  { wk: 8,  target_dist: 62, target_elev: 11200 },
-  { wk: 9,  target_dist: 38, target_elev: 5800 },
-  { wk: 10, target_dist: 70, target_elev: 13400 },
-  { wk: 11, target_dist: 78, target_elev: 14600 },
-  { wk: 12, target_dist: 72, target_elev: 13200 },
-  { wk: 13, target_dist: 42, target_elev: 6100 },
-  { wk: 14, target_dist: 68, target_elev: 12400 },
-  { wk: 15, target_dist: 58, target_elev: 9400 },
-  { wk: 16, target_dist: 52, target_elev: 8200 },
-  { wk: 17, target_dist: 42, target_elev: 6200 },
-  { wk: 18, target_dist: 30, target_elev: 4200 },
-  { wk: 19, target_dist: 18, target_elev: 2400 },
-  { wk: 20, target_dist: 102.3, target_elev: 15900 },
-];
-
-const TOTAL_WEEKS = 20;
-
-/* ------------------------------------------------------------------ */
-/*  Helpers                                                            */
-/* ------------------------------------------------------------------ */
-
-const within = (iso: string, days: number) => {
-  const now = new Date("2026-05-26T12:00:00").getTime();
-  return now - new Date(iso).getTime() < days * 86400 * 1000;
-};
-
-const daysUntil = (d: Date) => {
-  const now = new Date("2026-05-26T12:00:00").getTime();
-  return Math.max(0, Math.ceil((d.getTime() - now) / 86400000));
-};
-
-/* ------------------------------------------------------------------ */
-/*  Contour topographic backdrop SVG                                   */
-/* ------------------------------------------------------------------ */
-
-function ContourBackdrop({ seed = 1, opacity = 0.5 }: { seed?: number; opacity?: number }) {
-  // generate concentric, slightly-perturbed closed contours that read as topo
+function Contours({ seed = 1, opacity = 0.1 }: { seed?: number; opacity?: number }) {
   const paths = useMemo(() => {
     const out: string[] = [];
     const cx = 50 + seed * 7;
     const cy = 50 + seed * 3;
-    const rings = 14;
-    for (let r = 0; r < rings; r++) {
-      const radius = 6 + r * 6;
-      const points = 60;
+    for (let r = 0; r < 12; r++) {
+      const radius = 8 + r * 7;
       let d = "";
-      for (let i = 0; i <= points; i++) {
-        const t = (i / points) * Math.PI * 2;
-        // pseudo-random perturbation, deterministic per seed
+      for (let i = 0; i <= 60; i++) {
+        const t = (i / 60) * Math.PI * 2;
         const k = Math.sin(t * (3 + (r % 3)) + seed * 1.3 + r * 0.4);
         const k2 = Math.cos(t * (2 + (seed % 4)) + r * 0.7);
-        const rad = radius + k * 1.6 + k2 * 1.2;
+        const rad = radius + k * 1.8 + k2 * 1.3;
         const x = cx + Math.cos(t) * rad;
-        const y = cy + Math.sin(t) * rad * 0.78;
+        const y = cy + Math.sin(t) * rad * 0.7;
         d += (i === 0 ? "M" : "L") + x.toFixed(2) + " " + y.toFixed(2) + " ";
       }
       out.push(d + "Z");
@@ -490,40 +102,179 @@ function ContourBackdrop({ seed = 1, opacity = 0.5 }: { seed?: number; opacity?:
   }, [seed]);
 
   return (
-    <svg
-      className="topo-bg"
-      viewBox="0 0 100 100"
-      preserveAspectRatio="xMidYMid slice"
-      style={{ opacity }}
-      aria-hidden
-    >
+    <svg className="topo-bg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice" style={{ opacity }} aria-hidden>
       {paths.map((d, i) => (
-        <path
-          key={i}
-          d={d}
-          fill="none"
-          stroke="var(--sand)"
-          strokeWidth={i % 5 === 0 ? 0.35 : 0.18}
-          strokeOpacity={0.7}
-        />
+        <path key={i} d={d} fill="none" stroke="var(--edge-bright)" strokeWidth={i % 4 === 0 ? 0.4 : 0.2} />
       ))}
     </svg>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  Elevation profile SVG for the race                                 */
+/*  Command bar — identity, block, countdown, sync, units              */
 /* ------------------------------------------------------------------ */
 
-function ElevationProfile() {
+function UnitsToggle() {
+  const { system, toggle } = useUnits();
+  const imperial = system === "imperial";
+  return (
+    <button
+      onClick={toggle}
+      title={`switch to ${imperial ? "metric" : "imperial"}`}
+      style={{
+        display: "inline-flex", border: "1px solid var(--edge-bright)",
+        fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.12em",
+        textTransform: "uppercase", position: "relative", height: 26, overflow: "hidden",
+      }}
+    >
+      <motion.div
+        layout
+        transition={{ type: "spring", stiffness: 380, damping: 30 }}
+        style={{ position: "absolute", top: 0, bottom: 0, left: imperial ? 0 : "50%", width: "50%", background: "var(--lamp)" }}
+      />
+      <span style={{ padding: "0 9px", display: "grid", placeItems: "center", color: imperial ? "var(--night)" : "var(--mist-mute)", position: "relative", zIndex: 1, transition: "color 180ms" }}>mi·ft</span>
+      <span style={{ padding: "0 9px", display: "grid", placeItems: "center", color: imperial ? "var(--mist-mute)" : "var(--night)", position: "relative", zIndex: 1, transition: "color 180ms" }}>km·m</span>
+    </button>
+  );
+}
+
+function BarStat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+  return (
+    <div style={{ padding: "0 18px", borderLeft: "1px solid var(--edge)", display: "flex", flexDirection: "column", gap: 1, justifyContent: "center" }}>
+      <span className="eyebrow" style={{ fontSize: 8, letterSpacing: "0.24em" }}>{label}</span>
+      <span className="numerals" style={{ fontSize: 14, fontWeight: 600, color: accent ? "var(--lamp)" : "var(--mist)" }}>{value}</span>
+    </div>
+  );
+}
+
+function CommandBar() {
+  const { syncing, lastSync, refresh, currentStep, lastLog, status } = useRefresh();
+  const { fetchedAt, currentWeek } = useStrava();
+  const stamp = fetchedAt ? fetchedAt.getTime() : lastSync;
+  const dleft = daysUntil(RACE.date);
+  const [, force] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => force((n) => n + 1), 20_000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <header style={{
+      position: "sticky", top: 0, zIndex: 50,
+      background: "rgba(12, 17, 14, 0.92)", backdropFilter: "blur(10px)",
+      borderBottom: "1px solid var(--edge)",
+    }}>
+      <div style={{ maxWidth: 1680, margin: "0 auto", padding: "0 28px", height: 52, display: "flex", alignItems: "center", gap: 18 }}>
+        {/* wordmark */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 4 }}>
+          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden>
+            <path d="M1 14 L6 5 L9 10 L12 3 L17 14 Z" fill="none" stroke="var(--lamp)" strokeWidth="1.4" strokeLinejoin="round" />
+            <circle cx="12" cy="3" r="1.6" fill="var(--lamp)" />
+          </svg>
+          <span className="display" style={{ fontSize: 17, letterSpacing: "-0.02em" }}>
+            Basecamp
+          </span>
+          <span className="eyebrow" style={{ fontSize: 8, marginTop: 3 }}>{RACE.short} ops</span>
+        </div>
+
+        {/* mid stats */}
+        <div className="commandbar-mid" style={{ flex: 1 }}>
+          <BarStat label="block week" value={`${String(currentWeek).padStart(2, "0")} / ${TOTAL_WEEKS}`} />
+          <BarStat label="race in" value={`${dleft} days`} accent />
+          <BarStat label="race day" value={RACE.date.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase()} />
+        </div>
+
+        {/* sync cluster */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
+          <span
+            className="eyebrow"
+            title={lastLog}
+            style={{
+              color: syncing ? "var(--lamp)" : "var(--mist-mute)",
+              maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}
+          >
+            {syncing
+              ? (currentStep ? `${currentStep}… ${lastLog || ""}` : "starting…")
+              : `synced ${relativeAgo(stamp)}`}
+          </span>
+          {syncing && (
+            <span style={{ display: "inline-flex", gap: 4 }}>
+              {REFRESH_STEPS.map((s) => (
+                <span
+                  key={s}
+                  title={`${s}: ${status[s] ?? "pending"}`}
+                  className={status[s] === "running" ? "pulse" : undefined}
+                  style={{
+                    width: 6, height: 6, transform: "rotate(45deg)",
+                    background:
+                      status[s] === "done" ? "var(--pine)" :
+                      status[s] === "running" ? "var(--lamp)" :
+                      status[s] === "error" ? "var(--ember)" : "var(--edge-bright)",
+                  }}
+                />
+              ))}
+            </span>
+          )}
+          <UnitsToggle />
+          <button
+            onClick={refresh}
+            disabled={syncing}
+            className="chip"
+            style={{
+              borderColor: "var(--lamp)",
+              color: syncing ? "var(--night)" : "var(--lamp)",
+              background: syncing ? "var(--lamp)" : "transparent",
+              cursor: syncing ? "wait" : "pointer",
+              display: "inline-flex", alignItems: "center", gap: 6,
+            }}
+          >
+            <span style={{ display: "inline-block", animation: syncing ? "spin 0.9s linear infinite" : undefined }}>↻</span>
+            {syncing ? "syncing" : "resync"}
+          </button>
+        </div>
+      </div>
+      {/* sync progress filament */}
+      <AnimatePresence>
+        {syncing && (
+          <motion.div
+            initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} exit={{ scaleX: 0, transformOrigin: "right" }}
+            transition={{ duration: 0.9, ease: "easeInOut" }}
+            style={{ position: "absolute", bottom: -1, left: 0, right: 0, height: 1.5, background: "var(--lamp)", transformOrigin: "left" }}
+          />
+        )}
+      </AnimatePresence>
+    </header>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Race ribbon — name, countdown, elevation profile in one band       */
+/* ------------------------------------------------------------------ */
+
+const AID_STATIONS = [
+  { mi: 11.1, name: "See Canyon" },
+  { mi: 21.5, name: "Horton" },
+  { mi: 26.8, name: "Fish Hatchery" },
+  { mi: 39.2, name: "Myrtle" },
+  { mi: 42.8, name: "Buck Springs" },
+  { mi: 52.4, name: "Pinchot Cabin" },
+  { mi: 58.7, name: "General Springs · Crew" },
+  { mi: 61.1, name: "Washington Park" },
+  { mi: 72.3, name: "Geronimo" },
+  { mi: 81.8, name: "Donahue" },
+  { mi: 85.6, name: "Dickerson Flat" },
+  { mi: 90.5, name: "Pine Canyon" },
+  { mi: 101.1, name: "Pine TH · Finish" },
+];
+
+function ElevationRibbon() {
   const u = useUnits();
-  // 100-mile fictional profile w/ aid stations
   const pts = useMemo(() => {
     const n = 220;
     const arr: { x: number; y: number }[] = [];
     for (let i = 0; i < n; i++) {
       const x = (i / (n - 1)) * 100;
-      // 6 rim climbs + roll — Mogollon profile
       const y =
         50 +
         Math.sin((i / n) * Math.PI * 6) * 20 +
@@ -535,107 +286,37 @@ function ElevationProfile() {
     return arr;
   }, []);
 
-  const aids = [
-    { mi: 11.1, name: "See Canyon" },
-    { mi: 21.5, name: "Horton" },
-    { mi: 26.8, name: "Fish Hatchery" },
-    { mi: 39.2, name: "Myrtle" },
-    { mi: 42.8, name: "Buck Springs" },
-    { mi: 52.4, name: "Pinchot Cabin" },
-    { mi: 58.7, name: "General Springs · Crew" },
-    { mi: 61.1, name: "Washington Park" },
-    { mi: 72.3, name: "Geronimo" },
-    { mi: 81.8, name: "Donahue" },
-    { mi: 85.6, name: "Dickerson Flat" },
-    { mi: 90.5, name: "Pine Canyon" },
-    { mi: 101.1, name: "Pine TH · Finish" },
-  ];
-
-  const linePath = "M" + pts.map((p) => p.x.toFixed(2) + " " + p.y.toFixed(2)).join(" L ");
-  const areaPath = linePath + ` L 100 100 L 0 100 Z`;
+  const linePath = "M" + pts.map((p) => p.x.toFixed(2) + " " + (p.y * 0.56).toFixed(2)).join(" L ");
+  const areaPath = linePath + ` L 100 60 L 0 60 Z`;
 
   return (
-    <svg viewBox="0 0 100 60" className="block w-full h-full" preserveAspectRatio="none">
+    <svg viewBox="0 0 100 60" preserveAspectRatio="none" style={{ display: "block", width: "100%", height: "100%" }}>
       <defs>
-        <linearGradient id="elevFill" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="var(--moss)" stopOpacity="0.85" />
-          <stop offset="100%" stopColor="var(--moss)" stopOpacity="0.05" />
+        <linearGradient id="ribbonFill" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor="var(--lamp)" stopOpacity="0.22" />
+          <stop offset="100%" stopColor="var(--lamp)" stopOpacity="0.01" />
         </linearGradient>
-        <pattern id="hatch" patternUnits="userSpaceOnUse" width="3" height="3" patternTransform="rotate(45)">
-          <line x1="0" y1="0" x2="0" y2="3" stroke="var(--moss-deep)" strokeWidth="0.5" opacity="0.35" />
-        </pattern>
       </defs>
-
-      {/* horizon grid */}
-      {[15, 30, 45].map((y) => (
-        <line key={y} x1="0" x2="100" y1={y * 0.6} y2={y * 0.6} stroke="var(--ink)" strokeWidth="0.08" strokeDasharray="0.6 0.8" opacity="0.4" />
+      {[20, 35, 50].map((y) => (
+        <line key={y} x1="0" x2="100" y1={y} y2={y} stroke="var(--edge)" strokeWidth="0.18" strokeDasharray="0.6 1" />
       ))}
-
+      <motion.path d={areaPath} fill="url(#ribbonFill)" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 1.2, delay: 0.4 }} />
       <motion.path
-        d={areaPath}
-        fill="url(#elevFill)"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 1.2, delay: 0.3 }}
+        d={linePath} fill="none" stroke="var(--lamp)" strokeWidth="0.5"
+        initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
+        transition={{ duration: 2, ease: [0.2, 0.8, 0.2, 1] }}
       />
-      <motion.path
-        d={areaPath}
-        fill="url(#hatch)"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 0.55 }}
-        transition={{ duration: 1.5, delay: 0.6 }}
-      />
-      <motion.path
-        d={linePath}
-        fill="none"
-        stroke="var(--ink)"
-        strokeWidth="0.45"
-        initial={{ pathLength: 0 }}
-        animate={{ pathLength: 1 }}
-        transition={{ duration: 2.2, ease: [0.2, 0.8, 0.2, 1] }}
-      />
-
-      {/* aid stations */}
-      {aids.map((a, i) => {
-        const idx = Math.min(pts.length - 1, Math.max(0, Math.round((a.mi / 102.3) * (pts.length - 1))));
+      {AID_STATIONS.map((a, i) => {
+        const idx = Math.min(pts.length - 1, Math.max(0, Math.round((a.mi / RACE.distance_mi) * (pts.length - 1))));
         const p = pts[idx];
         return (
           <g key={a.name}>
-            <motion.line
-              x1={p.x}
-              x2={p.x}
-              y1={p.y}
-              y2={p.y - 8}
-              stroke="var(--blaze)"
-              strokeWidth="0.18"
-              initial={{ pathLength: 0 }}
-              animate={{ pathLength: 1 }}
-              transition={{ duration: 0.6, delay: 1.5 + i * 0.08 }}
-            />
             <motion.circle
-              cx={p.x}
-              cy={p.y - 8}
-              r="0.7"
-              fill="var(--blaze)"
-              initial={{ scale: 0 }}
-              animate={{ scale: 1 }}
-              transition={{ duration: 0.4, delay: 1.6 + i * 0.08 }}
-            />
-            {i % 2 === 0 && (
-              <motion.text
-                x={p.x}
-                y={p.y - 9.5}
-                fontSize="1.5"
-                fontFamily="JetBrains Mono"
-                fill="var(--ink)"
-                textAnchor="middle"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.5, delay: 1.8 + i * 0.08 }}
-              >
-                {Math.round(u.distVal(a.mi))}
-              </motion.text>
-            )}
+              cx={p.x} cy={p.y * 0.56} r="0.8" fill="var(--night)" stroke="var(--mist-dim)" strokeWidth="0.25"
+              initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.3, delay: 1.2 + i * 0.06 }}
+            >
+              <title>{a.name} · {u.dist(a.mi, 1)} {u.distUnit}</title>
+            </motion.circle>
           </g>
         );
       })}
@@ -643,570 +324,271 @@ function ElevationProfile() {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Sparkline                                                          */
-/* ------------------------------------------------------------------ */
-
-function Sparkline({ values, color = "var(--ink)" }: { values: number[]; color?: string }) {
-  const max = Math.max(...values, 1);
-  const min = Math.min(...values, 0);
-  const span = max - min || 1;
-  const w = 200;
-  const h = 56;
-  const step = w / (values.length - 1);
-  const path = values
-    .map((v, i) => `${i === 0 ? "M" : "L"} ${i * step} ${h - ((v - min) / span) * h}`)
-    .join(" ");
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="block w-full h-14" preserveAspectRatio="none">
-      <path d={`${path} L ${w} ${h} L 0 ${h} Z`} fill={color} opacity="0.08" />
-      <motion.path
-        d={path}
-        fill="none"
-        stroke={color}
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        initial={{ pathLength: 0 }}
-        animate={{ pathLength: 1 }}
-        transition={{ duration: 1.4, ease: "easeOut" }}
-      />
-      {values.map((v, i) => (
-        <circle
-          key={i}
-          cx={i * step}
-          cy={h - ((v - min) / span) * h}
-          r={i === values.length - 1 ? 2.4 : 1.1}
-          fill={color}
-        />
-      ))}
-    </svg>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Header / Masthead                                                  */
-/* ------------------------------------------------------------------ */
-
-function UnitsToggle() {
-  const { system, toggle } = useUnits();
-  const imperial = system === "imperial";
-  return (
-    <button
-      onClick={toggle}
-      title={`switch to ${imperial ? "metric" : "imperial"}`}
-      style={{
-        display: "inline-flex",
-        border: "1px solid var(--ink)",
-        fontFamily: "var(--font-mono)",
-        fontSize: 11,
-        letterSpacing: "0.14em",
-        textTransform: "uppercase",
-        background: "var(--paper-fade)",
-        position: "relative",
-        height: 26,
-        cursor: "pointer",
-        overflow: "hidden",
-      }}
-    >
-      <motion.div
-        layout
-        transition={{ type: "spring", stiffness: 380, damping: 30 }}
-        style={{
-          position: "absolute",
-          top: 0, bottom: 0,
-          left: imperial ? 0 : "50%",
-          width: "50%",
-          background: "var(--ink)",
-        }}
-      />
-      <span style={{
-        padding: "0 10px", display: "grid", placeItems: "center",
-        color: imperial ? "var(--paper)" : "var(--ink)",
-        position: "relative", zIndex: 1, transition: "color 180ms",
-      }}>mi · ft</span>
-      <span style={{
-        padding: "0 10px", display: "grid", placeItems: "center",
-        color: imperial ? "var(--ink)" : "var(--paper)",
-        position: "relative", zIndex: 1, transition: "color 180ms",
-      }}>km · m</span>
-    </button>
-  );
-}
-
-function Masthead() {
-  const { syncing, lastSync, refresh, currentStep, lastLog, status } = useRefresh();
-  const { fetchedAt } = useStrava();
-  const stamp = fetchedAt ? fetchedAt.getTime() : lastSync;
-  const [, force] = useState(0);
-  // tick the "ago" label every 20s
-  useEffect(() => {
-    const id = setInterval(() => force((n) => n + 1), 20_000);
-    return () => clearInterval(id);
-  }, []);
-
-  return (
-    <header style={{ borderBottom: "1px solid var(--ink)", position: "sticky", top: 0, background: "var(--paper)", zIndex: 50 }}>
-      <div className="container masthead-row">
-        <div style={{ display: "flex", alignItems: "baseline", gap: 14 }}>
-          <span className="display-roman" style={{ fontSize: 22, fontStyle: "italic" }}>Trail&nbsp;Almanac</span>
-          <span className="eyebrow">Vol. I · No. 21</span>
-        </div>
-        <nav className="masthead-nav">
-          {["Dashboard", "Log", "Coach", "Plan"].map((n, i) => (
-            <a
-              key={n}
-              href={`#${n.toLowerCase()}`}
-              className="eyebrow"
-              style={{
-                textDecoration: "none",
-                color: i === 0 ? "var(--blaze)" : "var(--ink)",
-                paddingBottom: 2,
-                borderBottom: i === 0 ? "2px solid var(--blaze)" : "2px solid transparent",
-              }}
-            >{n}</a>
-          ))}
-        </nav>
-        <div className="masthead-right">
-          <UnitsToggle />
-          <span
-            className="eyebrow"
-            style={{
-              color: syncing ? "var(--blaze)" : "var(--ink-mute)",
-              maxWidth: 320,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-            title={lastLog}
-          >
-            {syncing
-              ? (currentStep ? `${currentStep}…  ${lastLog || ""}` : "starting…")
-              : `snapshot ${relativeAgo(stamp)}`}
-          </span>
-          {syncing && (
-            <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
-              {REFRESH_STEPS.map((s) => (
-                <span
-                  key={s}
-                  title={`${s}: ${status[s] ?? "pending"}`}
-                  style={{
-                    width: 8, height: 8, borderRadius: "50%",
-                    background:
-                      status[s] === "done" ? "var(--moss)" :
-                      status[s] === "running" ? "var(--blaze)" :
-                      status[s] === "error" ? "var(--blaze-deep)" :
-                      "var(--paper-deep)",
-                    border: "1px solid var(--ink)",
-                    animation: status[s] === "running" ? "spin 1.2s linear infinite" : undefined,
-                    transformOrigin: "center",
-                  }}
-                />
-              ))}
-            </span>
-          )}
-          <button
-            onClick={refresh}
-            disabled={syncing}
-            className="chip blaze"
-            style={{
-              background: syncing ? "var(--blaze)" : "transparent",
-              color: syncing ? "var(--paper-fade)" : "var(--ink)",
-              borderColor: "var(--blaze)",
-              display: "inline-flex", alignItems: "center", gap: 6,
-              cursor: syncing ? "wait" : "pointer",
-            }}
-          >
-            <span
-              style={{
-                display: "inline-block",
-                animation: syncing ? "spin 0.8s linear infinite" : undefined,
-                transformOrigin: "center",
-              }}
-            >↻</span>
-            <span>{syncing ? "resyncing" : "resync all"}</span>
-          </button>
-        </div>
-      </div>
-    </header>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Hero                                                               */
-/* ------------------------------------------------------------------ */
-
-function Hero() {
+function RaceRibbon() {
   const u = useUnits();
   const dleft = daysUntil(RACE.date);
-  const dateStr = RACE.date.toLocaleDateString("en-US", {
-    weekday: "long", month: "long", day: "numeric", year: "numeric",
-  });
 
   return (
-    <section style={{ position: "relative", paddingTop: 56, paddingBottom: 0 }}>
-      <ContourBackdrop seed={3} opacity={0.4} />
-      <div className="container" style={{ position: "relative" }}>
-        {/* Top metadata strip */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 36 }}>
-          <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
-            <span className="stamp">Block 7 / 20 · Specific Strength</span>
-            <span className="eyebrow">{RACE.location}</span>
+    <motion.section
+      className="panel notch"
+      initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}
+      style={{ overflow: "hidden" }}
+    >
+      <Contours seed={4} opacity={0.12} />
+      <div style={{ position: "relative", padding: "22px 26px 0", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 24, flexWrap: "wrap" }}>
+        <div>
+          <div className="eyebrow" style={{ marginBottom: 8 }}>objective — {RACE.location.toLowerCase()}</div>
+          <h1 className="display" style={{ fontSize: "clamp(30px, 4.4vw, 54px)", margin: 0 }}>
+            Mogollon <span style={{ color: "var(--lamp)" }}>Monster</span> 100
+          </h1>
+          <div className="eyebrow" style={{ marginTop: 10, color: "var(--mist-dim)" }}>
+            {u.dist(RACE.distance_mi)} {u.distUnit} · {u.elev(RACE.elevation_ft)} {u.elevUnit}↑ · max {u.elev(RACE.max_elev_ft)} {u.elevUnit} · cutoff {RACE.cutoff_h}h · sept 12 · 06:00
           </div>
-          <div className="eyebrow">{dateStr}</div>
         </div>
-
-        <div className="hero-grid">
-          <div>
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.7 }}
-              className="eyebrow"
-              style={{ marginBottom: 16, color: "var(--blaze)" }}
-            >
-              Training for —
-            </motion.div>
-            <motion.h1
-              className="display display-hero"
-              style={{ margin: 0 }}
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.9, delay: 0.15 }}
-            >
-              Mogollon
-            </motion.h1>
-            <motion.h1
-              className="display-roman display-hero-mid"
-              style={{ margin: "-0.04em 0 0 0.14em", color: "var(--moss-deep)" }}
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.9, delay: 0.3 }}
-            >
-              Monster
-            </motion.h1>
-            <motion.h1
-              className="display display-hero-blaze"
-              style={{
-                margin: "-0.05em 0 0 0",
-                color: "var(--blaze)",
-                fontVariationSettings: '"opsz" 144, "SOFT" 80, "WONK" 1',
-              }}
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.9, delay: 0.45 }}
-            >
-              100
-            </motion.h1>
-
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: 0.6, delay: 0.9 }}
-              style={{ display: "flex", gap: 28, marginTop: 24, alignItems: "baseline" }}
-            >
-              <span className="eyebrow">
-                {u.dist(RACE.distance_mi)} {u.distUnit} · {u.elev(RACE.elevation_ft)} {u.elevUnit}↑ · {u.elev(RACE.max_elev_ft)} {u.elevUnit} max · cut-off {RACE.cutoff_h}h
-              </span>
-              <span style={{ flex: 1, borderTop: "1px dashed var(--ink-mute)", transform: "translateY(-4px)" }} />
-              <span className="eyebrow">Sept 12 · 06:00 MST</span>
-            </motion.div>
+        <div style={{ textAlign: "right" }}>
+          <div className="eyebrow">race in</div>
+          <div className="numerals" style={{ fontSize: 64, fontWeight: 600, lineHeight: 0.95, letterSpacing: "-0.05em", color: "var(--lamp)" }}>
+            {String(dleft).padStart(3, "0")}
           </div>
-
-          {/* Countdown panel */}
-          <motion.div
-            initial={{ opacity: 0, x: 30 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.8, delay: 0.6 }}
-            style={{ position: "relative" }}
-          >
-            <div className="card card-corner" style={{ padding: 28 }}>
-              <ContourBackdrop seed={11} opacity={0.25} />
-              <div style={{ position: "relative" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                  <span className="eyebrow">Days remaining</span>
-                  <span className="eyebrow">T-minus</span>
-                </div>
-                <div
-                  className="numerals"
-                  style={{
-                    fontSize: 132,
-                    lineHeight: 0.85,
-                    fontWeight: 700,
-                    letterSpacing: "-0.06em",
-                    marginTop: 8,
-                    color: "var(--ink)",
-                  }}
-                >
-                  {String(dleft).padStart(3, "0")}
-                </div>
-                <div className="rule" style={{ marginTop: 20, marginBottom: 16 }} />
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-                  <Stat tiny label="Weeks" value={Math.floor(dleft / 7)} />
-                  <Stat tiny label="Long runs" value={Math.floor(dleft / 7) - 2} />
-                  <Stat tiny label="Race days" value={1} />
-                </div>
-              </div>
-            </div>
-          </motion.div>
+          <div className="eyebrow">days · {Math.floor(dleft / 7)} long runs left</div>
         </div>
-
-        {/* Elevation profile */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 1 }}
-          style={{ marginTop: 56, position: "relative" }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
-            <span className="eyebrow">
-              Race profile · climbs the rim 6× · {u.elev(5300)} → {u.elev(RACE.max_elev_ft)} {u.elevUnit}
-            </span>
-            <span className="eyebrow">click bib for splits ↗</span>
-          </div>
-          <div style={{ height: 220, borderTop: "1px solid var(--ink)", borderBottom: "1px solid var(--ink)" }}>
-            <ElevationProfile />
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
-            {[0, 0.25, 0.5, 0.75, 1].map((frac) => {
-              const v = Math.round(u.distVal(RACE.distance_mi * frac));
-              return (
-                <span key={frac} className="eyebrow numerals">
-                  {String(v).padStart(3, "0")} {u.distUnit}
-                </span>
-              );
-            })}
-          </div>
-        </motion.div>
       </div>
-    </section>
-  );
-}
-
-function Stat({ label, value, tiny }: { label: string; value: number | string; tiny?: boolean }) {
-  return (
-    <div>
-      <div className="eyebrow" style={{ fontSize: tiny ? 9 : 10 }}>{label}</div>
-      <div
-        className="numerals"
-        style={{
-          fontSize: tiny ? 22 : 36,
-          fontWeight: 700,
-          marginTop: 4,
-          letterSpacing: "-0.04em",
-          color: "var(--ink)",
-        }}
-      >{value}</div>
-    </div>
+      <div style={{ position: "relative", height: 96, marginTop: 6 }}>
+        <ElevationRibbon />
+      </div>
+      <div style={{ position: "relative", display: "flex", justifyContent: "space-between", padding: "6px 26px 12px", borderTop: "1px solid var(--edge)" }}>
+        {[0, 0.25, 0.5, 0.75, 1].map((f) => (
+          <span key={f} className="eyebrow numerals" style={{ fontSize: 9 }}>
+            {String(Math.round(u.distVal(RACE.distance_mi * f))).padStart(3, "0")} {u.distUnit}
+          </span>
+        ))}
+      </div>
+    </motion.section>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  Activity stats — week/month + distance/elevation toggles           */
+/*  Vitals band — load + recovery in one unified grammar               */
 /* ------------------------------------------------------------------ */
 
-type Range = "week" | "month";
-type Metric = "distance" | "elevation" | "time";
+type Vital = {
+  key: string;
+  label: string;
+  value: string;
+  unit?: string;
+  delta?: { value: number | null; suffix?: string; good: boolean | null };
+  series: number[];
+  color: string;
+  note?: string;
+};
 
-function StatsPanel() {
+function VitalsBand() {
   const u = useUnits();
   const { activities } = useStrava();
-  const [range, setRange] = useState<Range>("week");
-  const [metric, setMetric] = useState<Metric>("distance");
+  const oura = useOura();
+  const facts = useFacts();
 
-  const days = range === "week" ? 7 : 30;
-  const filtered = activities.filter((a) => within(a.date, days));
-
-  const dist = filtered.reduce((s, a) => s + a.distance_mi, 0);
-  const elev = filtered.reduce((s, a) => s + a.elevation_ft, 0);
-  const time = filtered.reduce((s, a) => s + a.moving_s, 0);
-
-  const target = range === "week" ? { dist: 55, elev: 9500, time: 5.5 * 3600 } : { dist: 220, elev: 38000, time: 22 * 3600 };
-  const pct = (val: number, t: number) => Math.min(100, Math.round((val / t) * 100));
-
-  const dailyBuckets = useMemo(() => {
-    const n = days;
+  // daily distance + vert series, last 30 days (oldest → newest)
+  const daily = useMemo(() => {
+    const n = 30;
     const dist = Array(n).fill(0) as number[];
     const elev = Array(n).fill(0) as number[];
     const now = Date.now();
     for (const a of activities) {
       const d = Math.floor((now - new Date(a.date).getTime()) / 86400000);
       if (d >= 0 && d < n) {
-        dist[n - 1 - d] += u.distVal(a.distance_mi);
-        elev[n - 1 - d] += u.elevVal(a.elevation_ft);
+        dist[n - 1 - d] += a.distance_mi;
+        elev[n - 1 - d] += a.elevation_ft;
       }
     }
     return { dist, elev };
-  }, [days, u, activities]);
+  }, [activities]);
 
-  const big =
-    metric === "distance" ? u.dist(dist, 1) :
-    metric === "elevation" ? u.elev(elev) :
-    `${Math.floor(time / 3600)}h ${Math.floor((time % 3600) / 60)}m`;
-  const unit =
-    metric === "distance" ? u.distUnit :
-    metric === "elevation" ? `${u.elevUnit}↑` : "moving";
+  const ouraTail = oura.days.slice(0, 30).slice().reverse();
+  const seriesOf = (f: (d: OuraDay) => number | null | undefined) => ouraTail.map((d) => f(d) ?? 0);
 
-  const targetDisplay =
-    metric === "distance" ? `${u.dist(target.dist, 0)} ${u.distUnit}` :
-    metric === "elevation" ? `${u.elev(target.elev)} ${u.elevUnit}` :
-    `${Math.floor(target.time / 3600)}h`;
-  const targetVal = metric === "distance" ? target.dist : metric === "elevation" ? target.elev : target.time;
-  const actualVal = metric === "distance" ? dist : metric === "elevation" ? elev : time;
-  const progress = pct(actualVal, targetVal);
+  // most recent non-null reading (last night's sync can lag a metric or two)
+  const latestVal = (f: (d: OuraDay) => number | null | undefined): number | null => {
+    for (const d of oura.days) {
+      const v = f(d);
+      if (v != null) return v;
+    }
+    return null;
+  };
+  const readiness = latestVal((d) => d.readiness_score);
+  const hrv = latestVal((d) => d.avg_hrv);
+  const rhr = latestVal((d) => d.lowest_hr);
+  const sleepS = latestVal((d) => d.total_sleep_s);
+  const latest = oura.latest;
+
+  const vitals: Vital[] = [
+    {
+      key: "dist",
+      label: "7d distance",
+      value: u.dist(facts.d7_dist_mi, 0),
+      unit: u.distUnit,
+      delta: { value: (facts.acr_dist - 1) * 100, suffix: "% v28", good: facts.acr_dist <= 1.5 && facts.acr_dist >= 0.8 ? true : false },
+      series: daily.dist,
+      color: "var(--lamp)",
+      note: `${facts.sessions_d7} sessions`,
+    },
+    {
+      key: "vert",
+      label: "7d vert",
+      value: u.elev(facts.d7_elev_ft),
+      unit: `${u.elevUnit}↑`,
+      delta: { value: (facts.acr_elev - 1) * 100, suffix: "% v28", good: facts.acr_elev <= 1.5 },
+      series: daily.elev,
+      color: "var(--lamp)",
+      note: `acr ${facts.acr_elev.toFixed(2)}×`,
+    },
+    {
+      key: "acr",
+      label: "acute : chronic",
+      value: facts.acr_dist.toFixed(2),
+      unit: "×",
+      delta: undefined,
+      series: daily.dist,
+      color: facts.acr_dist > 1.5 ? "var(--ember)" : facts.acr_dist < 0.8 ? "var(--lamp)" : "var(--pine)",
+      note: facts.acr_dist > 1.5 ? "load spike" : facts.acr_dist < 0.8 ? "volume low" : "in band",
+    },
+    {
+      key: "block",
+      label: "block vs plan",
+      value: `${facts.block_dist_delta_pct >= 0 ? "+" : ""}${facts.block_dist_delta_pct.toFixed(0)}`,
+      unit: "%",
+      delta: { value: facts.block_elev_delta_pct, suffix: "% vert", good: facts.block_elev_delta_pct >= 0 },
+      series: daily.dist,
+      color: facts.block_dist_delta_pct >= 0 ? "var(--pine)" : "var(--ember)",
+      note: "cumulative dist",
+    },
+    {
+      key: "readiness",
+      label: "readiness",
+      value: readiness != null ? String(readiness) : "—",
+      delta: { value: readiness != null && facts.readiness_d7 != null ? readiness - facts.readiness_d7 : null, suffix: " v7d", good: readiness != null && facts.readiness_d7 != null ? readiness >= facts.readiness_d7 : null },
+      series: seriesOf((d) => d.readiness_score),
+      color: "var(--pine)",
+      note: latest?.temp_deviation_c != null ? `temp ${latest.temp_deviation_c > 0 ? "+" : ""}${latest.temp_deviation_c.toFixed(2)}°C` : undefined,
+    },
+    {
+      key: "hrv",
+      label: "hrv",
+      value: hrv != null ? String(Math.round(hrv)) : "—",
+      unit: "ms",
+      delta: { value: facts.hrv_ratio != null ? (facts.hrv_ratio - 1) * 100 : null, suffix: "% 7v28", good: facts.hrv_ratio != null ? facts.hrv_ratio >= 0.95 : null },
+      series: seriesOf((d) => d.avg_hrv),
+      color: "var(--creek)",
+      note: latest?.avg_hr != null ? `sleep hr ${Math.round(latest.avg_hr)}` : undefined,
+    },
+    {
+      key: "rhr",
+      label: "resting hr",
+      value: rhr != null ? String(Math.round(rhr)) : "—",
+      unit: "bpm",
+      delta: { value: facts.rhr_drift, suffix: " drift", good: facts.rhr_drift != null ? facts.rhr_drift < 3 : null },
+      series: seriesOf((d) => d.lowest_hr),
+      color: "var(--creek)",
+    },
+    {
+      key: "sleep",
+      label: "sleep",
+      value: sleepS != null ? fmtDuration(sleepS) : "—",
+      delta: { value: facts.sleep_debt_h != null ? -facts.sleep_debt_h : null, suffix: "h debt", good: facts.sleep_debt_h != null ? facts.sleep_debt_h <= 0 : null },
+      series: seriesOf((d) => (d.total_sleep_s ?? 0) / 3600),
+      color: "var(--creek)",
+      note: latest?.sleep_score != null ? `score ${latest.sleep_score}` : undefined,
+    },
+  ];
 
   return (
-    <section id="dashboard" className="sec-pad" style={{ paddingTop: 96, position: "relative" }}>
-      <div className="container">
-        <div className="section-head" style={{ marginBottom: 28 }}>
-          <div>
-            <span className="eyebrow">§ I · The Numbers</span>
-            <h2 className="display display-section" style={{ margin: "4px 0 0", color: "var(--ink)" }}>
-              What the legs <em style={{ fontStyle: "italic", color: "var(--blaze)" }}>have&nbsp;done</em>.
-            </h2>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className={"chip" + (range === "week" ? " active" : "")} onClick={() => setRange("week")}>
-              7 day
-            </button>
-            <button className={"chip" + (range === "month" ? " active" : "")} onClick={() => setRange("month")}>
-              30 day
-            </button>
-          </div>
-        </div>
-
-        <div className="double-rule" style={{ marginBottom: 36 }} />
-
-        <GoalTrajectory />
-
-        <div className="stats-grid">
-          {/* Big number card */}
-          <div className="card card-corner" style={{ padding: 32, position: "relative", minHeight: 320 }}>
-            <ContourBackdrop seed={5} opacity={0.3} />
-            <div style={{ position: "relative", display: "flex", flexDirection: "column", height: "100%" }}>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span className="eyebrow">{range === "week" ? "this week" : "this month"}</span>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {(["distance", "elevation", "time"] as Metric[]).map((m) => (
-                    <button
-                      key={m}
-                      className={"chip blaze" + (metric === m ? " active" : "")}
-                      onClick={() => setMetric(m)}
-                    >{m === "distance" ? u.distUnit : m === "elevation" ? `${u.elevUnit}↑` : "hr"}</button>
-                  ))}
-                </div>
-              </div>
-
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={metric + range}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  transition={{ duration: 0.35 }}
-                  style={{ marginTop: 18 }}
-                >
-                  <div
-                    className="numerals"
-                    style={{
-                      fontSize: 118,
-                      lineHeight: 0.86,
-                      letterSpacing: "-0.06em",
-                      fontWeight: 700,
-                    }}
-                  >{big}</div>
-                  <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginTop: 6 }}>
-                    <span className="display" style={{ fontSize: 28, color: "var(--moss-deep)" }}>{unit}</span>
-                    <span className="eyebrow">target {targetDisplay} · {progress}%</span>
-                  </div>
-                </motion.div>
-              </AnimatePresence>
-
-              <div style={{ marginTop: "auto" }}>
-                <ProgressBar pct={progress} />
-              </div>
+    <section>
+      <SectionTag
+        right={
+          <span className="eyebrow">
+            {oura.connected ? `ring · ${oura.days.length} nights` : "ring not connected"} · strava · {activities.length} runs
+          </span>
+        }
+      >
+        vitals — load × recovery
+      </SectionTag>
+      <div className="vitals-band">
+        {vitals.map((v, i) => (
+          <motion.div
+            key={v.key}
+            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.08 + i * 0.05 }}
+            style={{ padding: "14px 14px 10px", minWidth: 0 }}
+          >
+            <span className="eyebrow" style={{ fontSize: 8.5, whiteSpace: "nowrap", display: "block" }}>{v.label}</span>
+            <div className="numerals" style={{ fontSize: 27, fontWeight: 600, letterSpacing: "-0.04em", marginTop: 7, color: v.value === "—" ? "var(--mist-mute)" : "var(--mist)" }}>
+              {v.value}
+              {v.unit && <span style={{ fontSize: 11, fontWeight: 400, color: "var(--mist-mute)", marginLeft: 4 }}>{v.unit}</span>}
             </div>
-          </div>
-
-          {/* Sparkline card — dual: distance + elevation */}
-          <div className="card" style={{ padding: 28, position: "relative" }}>
-            <ContourBackdrop seed={8} opacity={0.18} />
-            <div style={{ position: "relative" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                <span className="eyebrow">Daily</span>
-                <span className="eyebrow">d-{days} → today</span>
-              </div>
-
-              <div style={{ marginTop: 14 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                  <span className="eyebrow" style={{ color: "var(--blaze)" }}>distance · {u.distUnit}</span>
-                  <span className="numerals" style={{ fontSize: 12, color: "var(--ink-mute)" }}>
-                    max {Math.round(Math.max(...dailyBuckets.dist))}
-                  </span>
-                </div>
-                <div style={{ height: 44, marginTop: 4 }}>
-                  <Sparkline values={dailyBuckets.dist} color="var(--blaze)" />
-                </div>
-              </div>
-
-              <div style={{ marginTop: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                  <span className="eyebrow" style={{ color: "var(--moss-deep)" }}>elevation · {u.elevUnit}↑</span>
-                  <span className="numerals" style={{ fontSize: 12, color: "var(--ink-mute)" }}>
-                    max {Math.round(Math.max(...dailyBuckets.elev)).toLocaleString()}
-                  </span>
-                </div>
-                <div style={{ height: 44, marginTop: 4 }}>
-                  <Sparkline values={dailyBuckets.elev} color="var(--moss-deep)" />
-                </div>
-              </div>
-
-              <div className="rule" style={{ marginTop: 18, marginBottom: 12 }} />
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-                <Stat label="sessions" value={filtered.length} tiny />
-                <Stat label="avg RPE" value={(filtered.reduce((s, a) => s + a.rpe, 0) / Math.max(1, filtered.length)).toFixed(1)} tiny />
-              </div>
+            <div style={{ marginTop: 4, minHeight: 12, whiteSpace: "nowrap" }}>
+              {v.delta && <Delta value={v.delta.value} suffix={v.delta.suffix} good={v.delta.good} />}
             </div>
-          </div>
-
-          {/* Block snapshot */}
-          <div className="card" style={{ padding: 28, position: "relative" }}>
-            <ContourBackdrop seed={2} opacity={0.18} />
-            <div style={{ position: "relative" }}>
-              <span className="eyebrow">Block · 7/20</span>
-              <div className="display-roman" style={{ fontSize: 30, marginTop: 8, lineHeight: 1.05 }}>
-                Specific<br/>Strength.
-              </div>
-              <div className="rule" style={{ marginTop: 20, marginBottom: 14 }} />
-              <BlockProgress />
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 18 }}>
-                {["vert ladders", "hill bounds", "back-to-backs"].map((t) => (
-                  <span key={t} className="eyebrow"
-                    style={{
-                      padding: "4px 8px",
-                      border: "1px dashed var(--ink-mute)",
-                      color: "var(--ink-soft)",
-                    }}>{t}</span>
-                ))}
-              </div>
+            <div style={{ marginTop: 8 }}>
+              {v.series.some((x) => x > 0)
+                ? <Spark values={v.series} color={v.color} height={30} />
+                : <div style={{ height: 30, display: "grid", placeItems: "center", border: "1px dashed var(--edge)" }}>
+                    <span className="eyebrow" style={{ fontSize: 8 }}>no data</span>
+                  </div>}
             </div>
-          </div>
-        </div>
+            <div className="eyebrow" style={{ fontSize: 8, marginTop: 6, color: "var(--mist-mute)", minHeight: 10 }}>
+              {v.note ?? ""}
+            </div>
+          </motion.div>
+        ))}
       </div>
+      {!oura.connected && !oura.loading && <ConnectStrip kind="oura" />}
+      <SleepStagesInline />
     </section>
   );
 }
 
+function SleepStagesInline() {
+  const { latest, connected } = useOura();
+  if (!connected || !latest) return null;
+  const total = latest.total_sleep_s ?? 0;
+  if (!total) return null;
+  const deep = (latest.deep_sleep_s ?? 0) / total;
+  const rem = (latest.rem_sleep_s ?? 0) / total;
+  const light = Math.max(0, 1 - deep - rem);
+  const segs = [
+    { pct: deep, label: "deep", color: "var(--creek)" },
+    { pct: rem, label: "rem", color: "var(--lamp)" },
+    { pct: light, label: "light", color: "var(--edge-bright)" },
+  ];
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 8, padding: "0 2px" }}>
+      <span className="eyebrow" style={{ fontSize: 8.5, whiteSpace: "nowrap" }}>last night</span>
+      <div style={{ flex: 1, display: "flex", height: 6, background: "var(--night-deep)", border: "1px solid var(--edge)" }}>
+        {segs.map((s, i) => (
+          <motion.div
+            key={s.label}
+            initial={{ width: 0 }} animate={{ width: `${s.pct * 100}%` }}
+            transition={{ duration: 0.7, delay: 0.3 + i * 0.12, ease: "easeOut" }}
+            style={{ background: s.color }}
+            title={`${s.label} · ${(s.pct * 100).toFixed(0)}%`}
+          />
+        ))}
+      </div>
+      <span className="eyebrow numerals" style={{ fontSize: 8.5, whiteSpace: "nowrap" }}>
+        {segs.map((s) => `${s.label} ${(s.pct * 100).toFixed(0)}%`).join(" · ")}
+      </span>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
-/*  Goal Trajectory — cumulative actual vs plan, with "today" marker   */
+/*  Trajectory — cumulative actual vs plan, the centerpiece chart      */
 /* ------------------------------------------------------------------ */
 
-type SeriesKey = "dist" | "elev";
-
-function GoalTrajectory() {
+function Trajectory() {
   const u = useUnits();
   const { weekly, currentWeek } = useStrava();
-  const [view, setView] = useState<SeriesKey>("dist");
+  const [view, setView] = useState<"dist" | "elev">("dist");
 
   const data = useMemo(() => {
     const cumTarget: number[] = [];
@@ -1231,632 +613,132 @@ function GoalTrajectory() {
   const expectedToday = data.cumTarget[currentWeek - 1] || 1;
   const actualToday = data.cumActual[currentWeek - 1] ?? 0;
   const deltaPct = ((actualToday - expectedToday) / expectedToday) * 100;
-  const projectedFinal =
-    actualToday > 0
-      ? (actualToday / expectedToday) * totalTarget
-      : totalTarget;
+  const projectedFinal = actualToday > 0 ? (actualToday / expectedToday) * totalTarget : totalTarget;
 
-  const fmt = (n: number) =>
-    view === "dist" ? u.dist(n, 0) : u.elev(n);
+  const fmt = (n: number) => (view === "dist" ? u.dist(n, 0) : u.elev(n));
   const unit = view === "dist" ? u.distUnit : `${u.elevUnit}↑`;
+  const ahead = deltaPct >= 0;
+  const lineColor = ahead ? "var(--pine)" : "var(--ember)";
 
-  // svg geometry
-  const W = 100, H = 38;
+  const W = 100, H = 40;
   const maxY = Math.max(totalTarget, projectedFinal) * 1.05;
   const xAt = (i: number) => (i / (TOTAL_WEEKS - 1)) * W;
-  const yAt = (v: number) => H - (v / maxY) * H;
+  const yAt = (v: number) => H - (v / maxY) * (H - 4);
 
-  const targetPath = data.cumTarget
-    .map((v, i) => `${i === 0 ? "M" : "L"} ${xAt(i).toFixed(2)} ${yAt(v).toFixed(2)}`)
-    .join(" ");
+  const targetPath = data.cumTarget.map((v, i) => `${i === 0 ? "M" : "L"} ${xAt(i).toFixed(2)} ${yAt(v).toFixed(2)}`).join(" ");
   const actualPath = data.cumActual
     .map((v, i) => (v == null ? "" : `${i === 0 ? "M" : "L"} ${xAt(i).toFixed(2)} ${yAt(v).toFixed(2)}`))
-    .join(" ")
-    .replace(/^L/, "M");
+    .join(" ").replace(/^L/, "M");
 
   const todayX = xAt(currentWeek - 1);
-  const expectedY = yAt(expectedToday);
-  const actualY = yAt(actualToday);
-  const projColor = deltaPct >= 0 ? "var(--moss)" : "var(--blaze)";
 
-  return (
-    <section style={{ paddingTop: 56, position: "relative" }}>
-      <div className="section-head" style={{ marginBottom: 18 }}>
-        <div>
-          <span className="eyebrow">§ I·b · Block trajectory</span>
-          <h3 className="display-roman" style={{ fontSize: 36, margin: "4px 0 0", lineHeight: 1.05 }}>
-            {view === "dist" ? "Cumulative miles" : "Cumulative climb"}
-            <span style={{ color: "var(--ink-mute)", fontStyle: "italic", fontWeight: 400 }}> · vs plan</span>
-          </h3>
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button className={"chip" + (view === "dist" ? " active" : "")} onClick={() => setView("dist")}>
-            distance
-          </button>
-          <button className={"chip" + (view === "elev" ? " active" : "")} onClick={() => setView("elev")}>
-            elevation
-          </button>
-        </div>
-      </div>
-
-      <div className="card" style={{ padding: 28, position: "relative" }}>
-        <ContourBackdrop seed={13} opacity={0.16} />
-        <div className="trajectory-grid">
-          <div>
-            <svg viewBox={`0 0 ${W} ${H + 8}`} className="block w-full" preserveAspectRatio="none" style={{ height: 280 }}>
-              <defs>
-                <linearGradient id="actualFill" x1="0" x2="0" y1="0" y2="1">
-                  <stop offset="0%" stopColor={projColor} stopOpacity="0.35" />
-                  <stop offset="100%" stopColor={projColor} stopOpacity="0.02" />
-                </linearGradient>
-              </defs>
-
-              {/* horizontal grid */}
-              {[0.25, 0.5, 0.75, 1].map((f) => (
-                <line key={f} x1="0" x2={W} y1={H - f * H} y2={H - f * H}
-                  stroke="var(--ink)" strokeWidth="0.06" strokeDasharray="0.6 0.8" opacity="0.35" />
-              ))}
-
-              {/* vertical week ticks */}
-              {Array.from({ length: TOTAL_WEEKS }).map((_, i) => {
-                const isQuarter = (i + 1) % 4 === 0;
-                return (
-                  <line key={i} x1={xAt(i)} x2={xAt(i)} y1={H - 0.6} y2={H + (isQuarter ? 1.8 : 1)}
-                    stroke="var(--ink)" strokeWidth="0.08" opacity={isQuarter ? 0.7 : 0.3} />
-                );
-              })}
-
-              {/* target dashed path */}
-              <motion.path
-                d={targetPath}
-                fill="none"
-                stroke="var(--ink-mute)"
-                strokeWidth="0.35"
-                strokeDasharray="0.9 0.7"
-                initial={{ pathLength: 0 }}
-                animate={{ pathLength: 1 }}
-                transition={{ duration: 1.4, ease: "easeOut" }}
-              />
-
-              {/* actual area */}
-              <motion.path
-                d={`${actualPath} L ${xAt(currentWeek - 1)} ${H} L 0 ${H} Z`}
-                fill="url(#actualFill)"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 1, delay: 0.5 }}
-              />
-              {/* actual line */}
-              <motion.path
-                d={actualPath}
-                fill="none"
-                stroke={projColor}
-                strokeWidth="0.6"
-                strokeLinecap="round"
-                initial={{ pathLength: 0 }}
-                animate={{ pathLength: 1 }}
-                transition={{ duration: 1.4, ease: [0.2, 0.7, 0.2, 1], delay: 0.2 }}
-              />
-
-              {/* projection from today → final (if ahead/behind, extrapolate) */}
-              <motion.line
-                x1={todayX}
-                y1={actualY}
-                x2={xAt(TOTAL_WEEKS - 1)}
-                y2={yAt(projectedFinal)}
-                stroke={projColor}
-                strokeWidth="0.25"
-                strokeDasharray="0.5 0.6"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 0.8 }}
-                transition={{ duration: 0.6, delay: 1.4 }}
-              />
-
-              {/* today vertical line */}
-              <motion.line
-                x1={todayX} x2={todayX} y1="0" y2={H}
-                stroke="var(--blaze)"
-                strokeWidth="0.18"
-                initial={{ pathLength: 0 }}
-                animate={{ pathLength: 1 }}
-                transition={{ duration: 0.6, delay: 1.1 }}
-              />
-              <text
-                x={todayX} y={-1}
-                fontSize="1.6"
-                fontFamily="JetBrains Mono"
-                fill="var(--blaze)"
-                textAnchor="middle"
-              >▼ today · wk {currentWeek}</text>
-
-              {/* expected today dot */}
-              <circle cx={todayX} cy={expectedY} r="0.7" fill="var(--ink)" />
-              {/* actual today dot */}
-              <circle cx={todayX} cy={actualY} r="1.0" fill={projColor} stroke="var(--paper)" strokeWidth="0.18" />
-
-              {/* race finish marker */}
-              <circle cx={W} cy={yAt(totalTarget)} r="0.8" fill="var(--blaze)" />
-              <text
-                x={W - 0.6} y={yAt(totalTarget) - 1.4}
-                fontSize="1.5"
-                fontFamily="JetBrains Mono"
-                fill="var(--blaze)"
-                textAnchor="end"
-              >race · wk 20</text>
-            </svg>
-
-            {/* x-axis week labels */}
-            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
-              {[1, 5, 10, 15, 20].map((w) => (
-                <span key={w} className="eyebrow numerals">wk {String(w).padStart(2, "0")}</span>
-              ))}
-            </div>
-          </div>
-
-          {/* Right rail: numbers */}
-          <div style={{ borderLeft: "1px solid var(--ink-mute)", paddingLeft: 24, display: "flex", flexDirection: "column", gap: 18 }}>
-            <div>
-              <span className="eyebrow">expected today</span>
-              <div className="numerals" style={{ fontSize: 36, fontWeight: 700, letterSpacing: "-0.04em", marginTop: 2 }}>
-                {fmt(expectedToday)} <span style={{ fontSize: 14, color: "var(--ink-mute)", fontWeight: 400 }}>{unit}</span>
-              </div>
-            </div>
-            <div>
-              <span className="eyebrow">actual today</span>
-              <div className="numerals" style={{ fontSize: 36, fontWeight: 700, letterSpacing: "-0.04em", marginTop: 2, color: projColor }}>
-                {fmt(actualToday)} <span style={{ fontSize: 14, color: "var(--ink-mute)", fontWeight: 400 }}>{unit}</span>
-              </div>
-              <div className="eyebrow numerals" style={{ marginTop: 6, color: projColor }}>
-                {deltaPct >= 0 ? "▲" : "▼"} {Math.abs(deltaPct).toFixed(1)}% vs plan
-              </div>
-            </div>
-
-            <div className="rule" />
-
-            <div>
-              <span className="eyebrow">block goal</span>
-              <div className="numerals" style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.04em", marginTop: 2 }}>
-                {fmt(totalTarget)} <span style={{ fontSize: 13, color: "var(--ink-mute)", fontWeight: 400 }}>{unit}</span>
-              </div>
-              <div className="eyebrow" style={{ marginTop: 2 }}>20-wk total to MM100</div>
-            </div>
-
-            <div>
-              <span className="eyebrow">projected finish</span>
-              <div className="numerals" style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-0.04em", marginTop: 2, color: projColor }}>
-                {fmt(projectedFinal)} {unit}
-              </div>
-              <div className="eyebrow numerals" style={{ marginTop: 2 }}>
-                if current trend holds
-              </div>
-            </div>
-
-            {/* Legend */}
-            <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 6, fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--ink-soft)" }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ width: 18, height: 2, background: projColor }} /> actual
-              </span>
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ width: 18, height: 0, borderTop: "1.5px dashed var(--ink-mute)" }} /> plan target
-              </span>
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ width: 18, height: 0, borderTop: "1px dashed " + projColor }} /> projection
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function ProgressBar({ pct }: { pct: number }) {
-  return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-        <span className="eyebrow">progress</span>
-        <span className="eyebrow numerals">{pct}%</span>
-      </div>
-      <div
-        style={{
-          position: "relative",
-          height: 10,
-          background: "var(--paper-deep)",
-          border: "1px solid var(--ink)",
-        }}
-      >
-        <motion.div
-          initial={{ width: 0 }}
-          animate={{ width: `${pct}%` }}
-          transition={{ duration: 1.1, ease: [0.2, 0.7, 0.2, 1] }}
-          style={{
-            position: "absolute",
-            inset: 0,
-            right: "auto",
-            background:
-              "repeating-linear-gradient(45deg, var(--blaze) 0 6px, var(--blaze-deep) 6px 12px)",
-          }}
-        />
-        {/* tick marks */}
-        {[25, 50, 75].map((t) => (
-          <div key={t} style={{
-            position: "absolute", left: `${t}%`, top: -2, bottom: -2,
-            width: 1, background: "var(--ink)", opacity: 0.6,
-          }} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function BlockProgress() {
-  return (
-    <div style={{ display: "flex", gap: 4, alignItems: "flex-end" }}>
-      {Array.from({ length: 20 }).map((_, i) => {
-        const done = i < 7;
-        const current = i === 6;
-        const future = i > 6;
-        const h = 24 + (i % 5) * 6;
-        return (
-          <motion.div
-            key={i}
-            initial={{ height: 0 }}
-            animate={{ height: h }}
-            transition={{ duration: 0.5, delay: i * 0.04 }}
-            style={{
-              width: 10,
-              background: done ? "var(--blaze)" : current ? "var(--ink)" : "transparent",
-              border: future ? "1px solid var(--ink-mute)" : "1px solid var(--ink)",
-            }}
-          />
-        );
-      })}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Body Panel — Oura sleep / readiness / HRV / RHR                    */
-/* ------------------------------------------------------------------ */
-
-function fmtDuration(secs?: number | null) {
-  if (!secs && secs !== 0) return "—";
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  return `${h}h ${m.toString().padStart(2, "0")}m`;
-}
-
-function trendColor(latest: number | null | undefined, avg: number | null | undefined, higherIsBetter = true) {
-  if (latest == null || avg == null) return "var(--ink)";
-  const diff = latest - avg;
-  const sig = higherIsBetter ? diff : -diff;
-  if (Math.abs(diff) < (avg * 0.02)) return "var(--ink)";
-  return sig > 0 ? "var(--moss)" : "var(--blaze)";
-}
-
-function BodyPanel() {
-  const { connected, loading, days, latest, summary, error } = useOura();
-
-  // Build trailing sparkline series (oldest → newest, last 30 days)
-  const seriesLen = 30;
-  const tail = days.slice(0, seriesLen).slice().reverse();
-  const sleepSeries     = tail.map((d) => d.sleep_score      ?? 0);
-  const readinessSeries = tail.map((d) => d.readiness_score  ?? 0);
-  const hrvSeries       = tail.map((d) => d.avg_hrv          ?? 0);
-  const rhrSeries       = tail.map((d) => d.lowest_hr        ?? 0);
-
-  return (
-    <section id="body" className="sec-pad" style={{ paddingTop: 96, position: "relative" }}>
-      <div className="container">
-        <div className="section-head" style={{ marginBottom: 28 }}>
-          <div>
-            <span className="eyebrow">§ II · The Body</span>
-            <h2 className="display display-section" style={{ margin: "4px 0 0" }}>
-              What the <em style={{ color: "var(--blaze)" }}>ring</em> says.
-            </h2>
-          </div>
-          <span className="eyebrow">
-            {connected
-              ? `${days.length} nights · oura ring`
-              : loading
-                ? "loading…"
-                : "ring not connected"}
-          </span>
-        </div>
-
-        <div className="double-rule" style={{ marginBottom: 36 }} />
-
-        {!connected && !loading && (
-          <ConnectOuraPrompt error={error} />
-        )}
-
-        {connected && latest && (
-          <>
-            <div className="stats-grid" style={{ marginTop: 0 }}>
-              <BodyMetric
-                label="sleep score"
-                value={latest.sleep_score ?? null}
-                unit=""
-                avg={summary.avg7_sleep_score ?? null}
-                series={sleepSeries}
-                color="var(--blaze)"
-                secondary={fmtDuration(latest.total_sleep_s ?? null)}
-                secondaryLabel="total sleep"
-                higherIsBetter
-              />
-              <BodyMetric
-                label="readiness"
-                value={latest.readiness_score ?? null}
-                unit=""
-                avg={summary.avg7_readiness ?? null}
-                series={readinessSeries}
-                color="var(--moss-deep)"
-                secondary={latest.temp_deviation_c != null ? `${latest.temp_deviation_c > 0 ? "+" : ""}${latest.temp_deviation_c.toFixed(2)}°C` : "—"}
-                secondaryLabel="body temp dev"
-                higherIsBetter
-              />
-              <BodyMetric
-                label="hrv · avg"
-                value={latest.avg_hrv != null ? Math.round(latest.avg_hrv) : null}
-                unit="ms"
-                avg={summary.avg7_hrv ?? null}
-                series={hrvSeries}
-                color="var(--rust)"
-                secondary={latest.avg_hr != null ? `${Math.round(latest.avg_hr)} bpm` : "—"}
-                secondaryLabel="sleeping HR"
-                higherIsBetter
-              />
-              <BodyMetric
-                label="rhr · low"
-                value={latest.lowest_hr != null ? Math.round(latest.lowest_hr) : null}
-                unit="bpm"
-                avg={summary.avg7_lowest_hr ?? null}
-                series={rhrSeries}
-                color="var(--ink)"
-                secondary={latest.steps != null ? latest.steps.toLocaleString() : "—"}
-                secondaryLabel="steps"
-                higherIsBetter={false}
-              />
-            </div>
-
-            <TagsStrip days={days.slice(0, 14)} />
-
-            <SleepStageBar latest={latest} />
-          </>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function BodyMetric({
-  label, value, unit, avg, series, color, secondary, secondaryLabel, higherIsBetter,
-}: {
-  label: string;
-  value: number | null;
-  unit: string;
-  avg: number | null;
-  series: number[];
-  color: string;
-  secondary?: string;
-  secondaryLabel?: string;
-  higherIsBetter: boolean;
-}) {
-  const tColor = trendColor(value, avg, higherIsBetter);
-  const delta = value != null && avg != null ? value - avg : null;
-
-  return (
-    <div className="card" style={{ padding: 24, position: "relative" }}>
-      <ContourBackdrop seed={label.length} opacity={0.18} />
-      <div style={{ position: "relative" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-          <span className="eyebrow">{label}</span>
-          {avg != null && (
-            <span className="eyebrow numerals" style={{ color: "var(--ink-mute)" }}>
-              7d avg {Math.round(avg)}
-            </span>
-          )}
-        </div>
-        <div className="numerals" style={{
-          fontSize: 64,
-          lineHeight: 0.95,
-          fontWeight: 700,
-          letterSpacing: "-0.04em",
-          marginTop: 8,
-          color: value == null ? "var(--ink-mute)" : "var(--ink)",
-        }}>
-          {value ?? "—"}
-          {unit && <span style={{ fontSize: 20, color: "var(--ink-mute)", marginLeft: 6, fontWeight: 400 }}>{unit}</span>}
-        </div>
-        {delta != null && (
-          <div className="eyebrow numerals" style={{ marginTop: 4, color: tColor }}>
-            {delta > 0 ? "▲" : delta < 0 ? "▼" : "•"} {Math.abs(delta).toFixed(unit === "ms" || unit === "bpm" ? 0 : 1)} vs 7d
-          </div>
-        )}
-        <div style={{ height: 44, marginTop: 14 }}>
-          {series.some((v) => v > 0) ? <Sparkline values={series} color={color} /> : <EmptySpark />}
-        </div>
-        {secondaryLabel && (
-          <>
-            <div className="rule" style={{ marginTop: 16, marginBottom: 10 }} />
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-              <span className="eyebrow">{secondaryLabel}</span>
-              <span className="numerals" style={{ fontSize: 16, fontWeight: 600 }}>{secondary}</span>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function EmptySpark() {
-  return (
-    <div style={{
-      height: "100%",
-      display: "grid", placeItems: "center",
-      border: "1px dashed var(--ink-mute)",
-    }}>
-      <span className="eyebrow" style={{ color: "var(--ink-mute)" }}>no data</span>
-    </div>
-  );
-}
-
-function SleepStageBar({ latest }: { latest: OuraDay }) {
-  const total = (latest.total_sleep_s ?? 0);
-  if (!total) return null;
-  const deep = (latest.deep_sleep_s ?? 0) / total;
-  const rem  = (latest.rem_sleep_s ?? 0) / total;
-  const light = Math.max(0, 1 - deep - rem);
-  const segs = [
-    { pct: deep,  label: "deep",  color: "var(--moss-deep)" },
-    { pct: rem,   label: "rem",   color: "var(--blaze)" },
-    { pct: light, label: "light", color: "var(--sand)" },
+  const stats: { label: string; value: string; color?: string }[] = [
+    { label: "expected", value: `${fmt(expectedToday)} ${unit}` },
+    { label: "actual", value: `${fmt(actualToday)} ${unit}`, color: lineColor },
+    { label: "delta", value: `${ahead ? "+" : ""}${deltaPct.toFixed(1)}%`, color: lineColor },
+    { label: "projected wk20", value: `${fmt(projectedFinal)} ${unit}`, color: lineColor },
+    { label: "block goal", value: `${fmt(totalTarget)} ${unit}` },
   ];
 
   return (
-    <div className="card" style={{ marginTop: 18, padding: 20, position: "relative" }}>
-      <ContourBackdrop seed={42} opacity={0.14} />
-      <div style={{ position: "relative" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
-          <span className="eyebrow">last night · stages</span>
-          <span className="numerals" style={{ fontSize: 13, color: "var(--ink-mute)" }}>
-            {new Date(latest.day).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}
-          </span>
+    <section>
+      <SectionTag
+        right={
+          <div style={{ display: "flex", gap: 6 }}>
+            <button className={"chip" + (view === "dist" ? " active" : "")} onClick={() => setView("dist")}>dist</button>
+            <button className={"chip" + (view === "elev" ? " active" : "")} onClick={() => setView("elev")}>vert</button>
+          </div>
+        }
+      >
+        trajectory — wk {currentWeek} of {TOTAL_WEEKS}
+      </SectionTag>
+
+      <div className="panel notch" style={{ overflow: "hidden" }}>
+        <Contours seed={13} opacity={0.08} />
+        {/* inline stat row — the old right-rail, flattened into the panel */}
+        <div style={{ position: "relative", display: "flex", flexWrap: "wrap", borderBottom: "1px solid var(--edge)" }}>
+          {stats.map((s, i) => (
+            <div key={s.label} style={{ padding: "12px 20px", borderLeft: i > 0 ? "1px solid var(--edge)" : "none", flex: "1 1 auto" }}>
+              <div className="eyebrow" style={{ fontSize: 8.5 }}>{s.label}</div>
+              <div className="numerals" style={{ fontSize: 19, fontWeight: 600, letterSpacing: "-0.03em", marginTop: 3, color: s.color ?? "var(--mist)" }}>
+                {s.value}
+              </div>
+            </div>
+          ))}
         </div>
-        <div style={{ display: "flex", height: 14, border: "1px solid var(--ink)" }}>
-          {segs.map((s, i) => (
-            <motion.div
-              key={s.label}
-              initial={{ width: 0 }}
-              animate={{ width: `${s.pct * 100}%` }}
-              transition={{ duration: 0.8, delay: 0.1 + i * 0.15, ease: "easeOut" }}
-              style={{ background: s.color, borderRight: i < segs.length - 1 ? "1px solid var(--paper)" : "none" }}
-              title={`${s.label} · ${(s.pct * 100).toFixed(0)}%`}
+
+        <div style={{ position: "relative", padding: "18px 20px 8px" }}>
+          <svg viewBox={`0 0 ${W} ${H + 6}`} preserveAspectRatio="none" style={{ display: "block", width: "100%", height: 270 }}>
+            {[0.25, 0.5, 0.75, 1].map((f) => (
+              <line key={f} x1="0" x2={W} y1={H - f * (H - 4)} y2={H - f * (H - 4)} stroke="var(--edge)" strokeWidth="0.1" strokeDasharray="0.6 1" />
+            ))}
+            {Array.from({ length: TOTAL_WEEKS }).map((_, i) => (
+              <line key={i} x1={xAt(i)} x2={xAt(i)} y1={H} y2={H + ((i + 1) % 4 === 0 ? 2 : 1)} stroke="var(--edge-bright)" strokeWidth="0.12" />
+            ))}
+
+            {/* plan target */}
+            <motion.path
+              d={targetPath} fill="none" stroke="var(--mist-mute)" strokeWidth="0.28" strokeDasharray="0.7 1.1" opacity="0.8"
+              initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4, ease: "easeOut" }}
             />
-          ))}
+            {/* actual */}
+            <motion.path
+              d={actualPath} fill="none" stroke={lineColor} strokeWidth="0.6" strokeLinecap="round"
+              initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
+              transition={{ duration: 1.4, ease: [0.2, 0.7, 0.2, 1], delay: 0.2 }}
+            />
+            {/* projection */}
+            <motion.line
+              x1={todayX} y1={yAt(actualToday)} x2={xAt(TOTAL_WEEKS - 1)} y2={yAt(projectedFinal)}
+              stroke={lineColor} strokeWidth="0.22" strokeDasharray="0.5 0.7"
+              initial={{ opacity: 0 }} animate={{ opacity: 0.7 }} transition={{ duration: 0.6, delay: 1.3 }}
+            />
+            {/* today */}
+            <motion.line
+              x1={todayX} x2={todayX} y1="1" y2={H} stroke="var(--lamp)" strokeWidth="0.18"
+              initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 0.6, delay: 1 }}
+            />
+            <text x={todayX + 1} y={3.4} fontSize="1.9" fontFamily="Spline Sans Mono" fill="var(--lamp)">wk {currentWeek} · today</text>
+            <circle cx={todayX} cy={yAt(expectedToday)} r="0.6" fill="var(--mist-mute)" />
+            <circle cx={todayX} cy={yAt(actualToday)} r="0.95" fill={lineColor} stroke="var(--night)" strokeWidth="0.2" />
+            {/* race marker */}
+            <circle cx={W} cy={yAt(totalTarget)} r="0.8" fill="var(--lamp)" />
+            <text x={W - 0.8} y={yAt(totalTarget) - 1.6} fontSize="1.8" fontFamily="Spline Sans Mono" fill="var(--lamp)" textAnchor="end">race</text>
+          </svg>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, paddingBottom: 8 }}>
+            {[1, 5, 10, 15, 20].map((w) => (
+              <span key={w} className="eyebrow numerals" style={{ fontSize: 8.5 }}>wk {String(w).padStart(2, "0")}</span>
+            ))}
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 18, marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-soft)" }}>
-          {segs.map((s) => (
-            <span key={s.label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ width: 10, height: 10, background: s.color, border: "1px solid var(--ink)" }} />
-              {s.label} · {(s.pct * 100).toFixed(0)}%
-            </span>
-          ))}
-        </div>
       </div>
-    </div>
-  );
-}
-
-function TagsStrip({ days }: { days: OuraDay[] }) {
-  const flat = days.flatMap((d) =>
-    (d.tags ?? []).map((t) => ({ day: d.day, ...t }))
-  );
-  if (flat.length === 0) return null;
-  return (
-    <div style={{ marginTop: 18 }}>
-      <span className="eyebrow">recent tags · 14d</span>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-        {flat.map((t, i) => (
-          <span
-            key={i}
-            className="eyebrow"
-            style={{
-              border: "1px dashed var(--ink-mute)",
-              padding: "4px 8px",
-              color: "var(--ink-soft)",
-              background: "var(--paper-fade)",
-            }}
-          >
-            {new Date(t.day).toLocaleDateString("en-US", { month: "short", day: "2-digit" })}
-            {" · "}
-            {(t.tags?.length ? t.tags.join(", ") : t.tag_type_code) || "tagged"}
-            {t.comment ? ` — “${t.comment}”` : ""}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-const codeChip: React.CSSProperties = {
-  background: "var(--paper-deep)",
-  padding: "2px 6px",
-  fontFamily: "var(--font-mono)",
-  fontSize: 12,
-};
-const codeBlock: React.CSSProperties = {
-  background: "var(--paper-deep)",
-  padding: 10,
-  border: "1px solid var(--ink-mute)",
-  fontFamily: "var(--font-mono)",
-  fontSize: 12,
-  marginTop: 6,
-  overflow: "auto",
-};
-
-function ConnectOuraPrompt({ error }: { error: string | null }) {
-  const scroll = () => {
-    const el = document.getElementById("setup-oura");
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
-    // open the accordion
-    el.dispatchEvent(new CustomEvent("almanac:open"));
-  };
-  return (
-    <div className="card card-corner" style={{ padding: 24, position: "relative" }}>
-      <ContourBackdrop seed={17} opacity={0.16} />
-      <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
-        <span className="stamp">ring not connected</span>
-        <p style={{ fontSize: 14, color: "var(--ink-soft)", margin: 0, flex: 1, minWidth: 220 }}>
-          Sleep, readiness, HRV and resting HR via Oura's OAuth2 flow — set up runs locally.
-        </p>
-        <button
-          onClick={scroll}
-          className="chip blaze active"
-          style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
-        >
-          set up oura ↓
-        </button>
-        {error && (
-          <span className="eyebrow" style={{ color: "var(--ink-mute)", width: "100%", marginTop: 4 }}>
-            last fetch: {error}
-          </span>
-        )}
-      </div>
-    </div>
+    </section>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  Schedule panel — Google Calendar upcoming events                   */
+/*  Road ahead — next 14 days (calendar) ∪ next 6 weeks (plan)         */
 /* ------------------------------------------------------------------ */
 
 const CLASSIFICATION_META: Record<GCalEvent["classification"], { color: string; tag: string }> = {
-  race:        { color: "var(--blaze)",      tag: "RACE" },
-  travel:      { color: "var(--rust)",       tag: "TRVL" },
-  appointment: { color: "var(--moss-deep)",  tag: "APPT" },
-  training:    { color: "var(--moss)",       tag: "TRN" },
-  work:        { color: "var(--ink-mute)",   tag: "WORK" },
-  other:       { color: "var(--ink-mute)",   tag: "···" },
+  race:        { color: "var(--ember)", tag: "RACE" },
+  travel:      { color: "var(--lamp)", tag: "TRVL" },
+  appointment: { color: "var(--creek)", tag: "APPT" },
+  training:    { color: "var(--pine)", tag: "TRN" },
+  work:        { color: "var(--mist-mute)", tag: "WORK" },
+  other:       { color: "var(--mist-mute)", tag: "···" },
 };
 
-function SchedulePanel() {
-  const { data: cal, connected, missing } = useGoogleCal();
-  const scrollDown = () => {
-    const el = document.getElementById("setup-google");
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
-    el.dispatchEvent(new CustomEvent("almanac:open"));
-  };
+function RoadAhead() {
+  const u = useUnits();
+  const { currentWeek } = useStrava();
+  const { data: cal, connected: calOk, missing: calMissing } = useGoogleCal();
+  const { data: state, missing: stateMissing } = usePersistentState();
+  const { missing: agentMissing } = useAgentReadout();
 
-  // Build a 14-day window grouped by day
+  /* ---- 14-day calendar strip ---- */
   const days = useMemo(() => {
     const now = new Date();
-    // Local-zone YYYY-MM-DD — must match how Google returns event start.date
-    // (in the calendar's local zone). Using toISOString() here would key by
-    // UTC and shift events into the wrong column after ~5-7pm local time.
     const localIso = (d: Date) =>
       `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     const out: { date: string; label: string; events: GCalEvent[] }[] = [];
@@ -1864,271 +746,271 @@ function SchedulePanel() {
       const d = new Date(now.getTime() + i * 86400_000);
       out.push({
         date: localIso(d),
-        label: d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }),
+        label: d.toLocaleDateString("en-US", { weekday: "short", day: "numeric" }),
         events: [],
       });
     }
     if (cal) {
       for (const e of cal.events) {
         if (!e.start) continue;
-        // All-day starts are date-only strings that Date() parses as UTC
-        // midnight — already "past" for most of the local day. Skip the
-        // recency check for them; the slot lookup (today..+13, local dates)
-        // already excludes past days.
         if (!e.all_day) {
           const startMs = new Date(e.start).getTime();
           if (startMs < now.getTime() - 60 * 60_000) continue;
         }
-        const dayIso = e.start.slice(0, 10);
-        const slot = out.find((d) => d.date === dayIso);
+        const slot = out.find((d) => d.date === e.start!.slice(0, 10));
         if (slot) slot.events.push(e);
       }
     }
     return out;
   }, [cal]);
 
-  return (
-    <section id="schedule" className="sec-pad" style={{ paddingTop: 96, position: "relative" }}>
-      <div className="container">
-        <div className="section-head" style={{ marginBottom: 28 }}>
-          <div>
-            <span className="eyebrow">§ III · The Schedule</span>
-            <h2 className="display display-section" style={{ margin: "4px 0 0" }}>
-              <em>What's</em> on the calendar.
-            </h2>
-          </div>
-          <span className="eyebrow">
-            {connected
-              ? `${cal!.summary.upcoming_events} upcoming · ${cal!.summary.races_upcoming} races · ${cal!.summary.travel_days_upcoming.length} travel days`
-              : missing ? "calendar not connected" : "loading…"}
-          </span>
-        </div>
-        <div className="double-rule" style={{ marginBottom: 36 }} />
+  /* ---- plan blocks (persisted agent plan, else block targets) ---- */
+  const targets = state?.block?.targets ?? BLOCK_TARGETS;
+  const totalWeeks = state?.block?.total_weeks ?? TOTAL_WEEKS;
+  const fallback: PlanBlock[] = useMemo(() => {
+    const start = Math.min(totalWeeks, currentWeek + 1);
+    const end = Math.min(totalWeeks, currentWeek + 6);
+    return targets.slice(start - 1, end).map((b) => ({
+      wk: b.wk,
+      label: b.wk === totalWeeks ? "Race week" : "Planned",
+      dist_mi: b.target_dist,
+      elev_ft: b.target_elev,
+      focus: "Awaiting agent recommendations — resync to generate.",
+    }));
+  }, [currentWeek, targets, totalWeeks]);
+  const stateBlocks = state?.plan_blocks ?? null;
+  const blocks: PlanBlock[] = stateBlocks && stateBlocks.length > 0 ? stateBlocks : fallback;
+  const live = !!(stateBlocks && stateBlocks.length > 0);
+  const maxDist = Math.max(...blocks.map((b) => b.dist_mi), 1);
 
-        {!connected && !missing && (
-          <div style={{ fontSize: 14, color: "var(--ink-mute)" }}>loading google calendar…</div>
-        )}
-        {!connected && missing && (
-          <div className="card card-corner" style={{ padding: 24, position: "relative" }}>
-            <ContourBackdrop seed={31} opacity={0.16} />
-            <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
-              <span className="stamp">calendar not connected</span>
-              <p style={{ fontSize: 14, color: "var(--ink-soft)", margin: 0, flex: 1, minWidth: 220 }}>
-                Google Calendar gives the agent schedule context — travel, races, work blocks, appointments — so it can build a plan that fits your week.
-              </p>
-              <button onClick={scrollDown} className="chip blaze active">
-                set up google ↓
-              </button>
-            </div>
-          </div>
-        )}
-        {connected && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
-            {days.map((d, i) => {
-              const isToday = i === 0;
-              const isWeekend = ["Sat", "Sun"].includes(d.label.split(" ")[0]);
-              return (
-                <motion.div
-                  key={d.date}
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3, delay: i * 0.02 }}
-                  className="card"
-                  style={{
-                    padding: 14,
-                    position: "relative",
-                    minHeight: 90,
-                    borderColor: isToday ? "var(--blaze)" : isWeekend ? "var(--moss-deep)" : "var(--ink)",
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                    <span className="eyebrow" style={{ color: isToday ? "var(--blaze)" : "var(--ink)" }}>
-                      {isToday ? "today" : d.label.toLowerCase()}
-                    </span>
-                    {d.events.length > 0 && (
-                      <span className="eyebrow numerals" style={{ color: "var(--ink-mute)" }}>
-                        {d.events.length}
-                      </span>
-                    )}
-                  </div>
-                  {d.events.length === 0 ? (
-                    <div style={{ marginTop: 14, fontSize: 12, color: "var(--ink-mute)", fontStyle: "italic" }}>
-                      clear
-                    </div>
-                  ) : (
-                    <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0", display: "flex", flexDirection: "column", gap: 6 }}>
-                      {d.events.slice(0, 4).map((e) => {
-                        const meta = CLASSIFICATION_META[e.classification] || CLASSIFICATION_META.other;
-                        const time = e.all_day
-                          ? "all day"
-                          : e.start
-                            ? new Date(e.start).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
-                            : "";
-                        const inner = (
-                          <span style={{ display: "flex", alignItems: "baseline", gap: 6, minWidth: 0 }}>
-                            <span style={{
-                              fontFamily: "var(--font-mono)",
-                              fontSize: 9,
-                              letterSpacing: "0.14em",
-                              color: meta.color,
-                              borderLeft: `2px solid ${meta.color}`,
-                              paddingLeft: 6,
-                              flexShrink: 0,
-                            }}>{meta.tag}</span>
-                            <span style={{
-                              fontSize: 12,
-                              lineHeight: 1.3,
-                              color: "var(--ink)",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                              flex: 1,
-                            }}>
-                              {time && <span className="numerals" style={{ color: "var(--ink-mute)", marginRight: 5, fontSize: 11 }}>{time}</span>}
-                              {e.summary}
-                            </span>
-                          </span>
-                        );
-                        return (
-                          <li key={e.id}>
-                            {e.html_link ? (
-                              <a href={e.html_link} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none", display: "block" }}>
-                                {inner}
-                              </a>
-                            ) : inner}
-                          </li>
-                        );
-                      })}
-                      {d.events.length > 4 && (
-                        <li style={{ fontSize: 11, color: "var(--ink-mute)", fontFamily: "var(--font-mono)", paddingLeft: 8 }}>
-                          + {d.events.length - 4} more
-                        </li>
-                      )}
-                    </ul>
+  return (
+    <section>
+      <SectionTag
+        right={
+          <span className="eyebrow">
+            {calOk
+              ? `${cal!.summary.upcoming_events} events · ${cal!.summary.races_upcoming} races · ${cal!.summary.travel_days_upcoming.length} travel days`
+              : calMissing ? "calendar not connected" : "loading calendar…"}
+            {" — plan "}
+            <span style={{ color: live ? "var(--pine)" : "var(--mist-mute)" }}>
+              {live
+                ? `agent · ${state?.last_updated ? new Date(state.last_updated).toLocaleDateString("en-US", { month: "short", day: "2-digit" }).toLowerCase() : ""}`
+                : agentMissing || stateMissing ? "targets only" : "loading…"}
+            </span>
+          </span>
+        }
+      >
+        the road ahead — 14 days · 6 weeks
+      </SectionTag>
+
+      {/* calendar strip */}
+      {calOk ? (
+        <div className="horizon-days" style={{ marginBottom: 1 }}>
+          {days.map((d, i) => {
+            const isToday = i === 0;
+            const isWeekend = ["Sat", "Sun"].includes(d.label.split(" ")[0]);
+            return (
+              <motion.div
+                key={d.date}
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3, delay: i * 0.015 }}
+                style={{ padding: "9px 10px", minHeight: 74, position: "relative", overflow: "hidden" }}
+              >
+                {isToday && <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, background: "var(--lamp)" }} />}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                  <span className="eyebrow" style={{ fontSize: 8.5, color: isToday ? "var(--lamp)" : isWeekend ? "var(--mist-dim)" : "var(--mist-mute)" }}>
+                    {isToday ? "today" : d.label.toLowerCase()}
+                  </span>
+                  {d.events.length > 2 && (
+                    <span className="eyebrow numerals" style={{ fontSize: 8 }}>+{d.events.length - 2}</span>
                   )}
-                </motion.div>
-              );
-            })}
-          </div>
-        )}
+                </div>
+                <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+                  {d.events.length === 0 ? (
+                    <span style={{ fontSize: 10, color: "var(--edge-bright)", fontFamily: "var(--font-mono)" }}>—</span>
+                  ) : (
+                    d.events.slice(0, 2).map((e) => {
+                      const meta = CLASSIFICATION_META[e.classification] || CLASSIFICATION_META.other;
+                      const time = e.all_day ? "" : e.start ? new Date(e.start).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).toLowerCase().replace(" ", "") : "";
+                      const inner = (
+                        <span style={{ display: "block", fontSize: 10.5, lineHeight: 1.3, borderLeft: `2px solid ${meta.color}`, paddingLeft: 5, color: "var(--mist-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {time && <span className="numerals" style={{ color: "var(--mist-mute)", marginRight: 4, fontSize: 9 }}>{time}</span>}
+                          {e.summary}
+                        </span>
+                      );
+                      return e.html_link
+                        ? <a key={e.id} href={e.html_link} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }} title={e.summary}>{inner}</a>
+                        : <span key={e.id} title={e.summary}>{inner}</span>;
+                    })
+                  )}
+                </div>
+              </motion.div>
+            );
+          })}
+        </div>
+      ) : calMissing ? (
+        <ConnectStrip kind="google" />
+      ) : null}
+
+      {/* plan weeks — rows, not cards */}
+      <div className="panel" style={{ marginTop: calOk ? 0 : 8, borderTop: calOk ? "none" : undefined }}>
+        {blocks.map((w, i) => {
+          const offset = w.wk - currentWeek;
+          const isNext = offset === 1;
+          const isRace = w.wk === totalWeeks;
+          return (
+            <motion.div
+              key={w.wk}
+              initial={{ opacity: 0, x: -8 }} whileInView={{ opacity: 1, x: 0 }} viewport={{ once: true }}
+              transition={{ duration: 0.35, delay: i * 0.05 }}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "70px minmax(0,1.2fr) minmax(0,1fr) 120px",
+                gap: 16,
+                alignItems: "center",
+                padding: "13px 18px",
+                borderTop: i > 0 ? "1px solid var(--edge)" : "none",
+                background: isNext ? "var(--lamp-glow)" : isRace ? "rgba(240, 102, 77, 0.06)" : "transparent",
+              }}
+            >
+              <div>
+                <div className="eyebrow" style={{ fontSize: 8, color: isNext ? "var(--lamp)" : isRace ? "var(--ember)" : "var(--mist-mute)" }}>
+                  {isNext ? "next" : isRace ? "race" : `+${offset} wk`}
+                </div>
+                <div className="numerals" style={{ fontSize: 19, fontWeight: 600, marginTop: 1 }}>w{String(w.wk).padStart(2, "0")}</div>
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div className="display" style={{ fontSize: 15, fontWeight: 600 }}>
+                  {w.label}
+                  {w.quality != null && <span className="numerals" style={{ fontSize: 10, color: "var(--mist-mute)", marginLeft: 8 }}>Q{w.quality}</span>}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--mist-dim)", marginTop: 3, lineHeight: 1.45 }}>{w.focus}</div>
+              </div>
+              <div style={{ minWidth: 0 }}>
+                {w.key_session ? (
+                  <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--mist-dim)", lineHeight: 1.45, borderLeft: "2px solid var(--lamp)", paddingLeft: 8 }}>
+                    <span className="eyebrow" style={{ fontSize: 7.5, color: "var(--lamp)", display: "block" }}>key session</span>
+                    {w.key_session}
+                  </div>
+                ) : (
+                  <span style={{ fontSize: 11, color: "var(--edge-bright)", fontFamily: "var(--font-mono)" }}>—</span>
+                )}
+              </div>
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                  <span className="numerals" style={{ fontSize: 14, fontWeight: 600 }}>{u.dist(w.dist_mi, 0)}<span style={{ fontSize: 9, color: "var(--mist-mute)" }}> {u.distUnit}</span></span>
+                  <span className="numerals" style={{ fontSize: 11, color: "var(--mist-dim)" }}>{u.elev(w.elev_ft)}<span style={{ fontSize: 9, color: "var(--mist-mute)" }}> {u.elevUnit}↑</span></span>
+                </div>
+                <div style={{ height: 3, background: "var(--night-deep)", marginTop: 6 }}>
+                  <motion.div
+                    initial={{ width: 0 }} whileInView={{ width: `${(w.dist_mi / maxDist) * 100}%` }} viewport={{ once: true }}
+                    transition={{ duration: 0.7, delay: 0.2 + i * 0.05 }}
+                    style={{ height: "100%", background: isRace ? "var(--ember)" : "var(--lamp)" }}
+                  />
+                </div>
+              </div>
+            </motion.div>
+          );
+        })}
       </div>
     </section>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  Activity Log                                                       */
+/*  Log — compact field table                                          */
 /* ------------------------------------------------------------------ */
 
-function ActivityLog() {
-  const [hover, setHover] = useState<string | null>(null);
-  const [limit, setLimit] = useState(20);
-  const { lastSync, syncing } = useRefresh();
+const TYPE_META: Record<Activity["type"], { label: string; color: string }> = {
+  run:     { label: "RUN", color: "var(--mist-dim)" },
+  long:    { label: "LNG", color: "var(--lamp)" },
+  vert:    { label: "VRT", color: "var(--pine)" },
+  easy:    { label: "EZ",  color: "var(--mist-mute)" },
+  workout: { label: "WRK", color: "var(--ember)" },
+};
+
+function LogTable() {
+  const [limit, setLimit] = useState(12);
   const { activities, loading, error } = useStrava();
+  const { syncing } = useRefresh();
   const u = useUnits();
   const visible = activities.slice(0, limit);
+
   return (
-    <section id="log" className="sec-pad" style={{ paddingTop: 96, position: "relative" }}>
-      <div className="container">
-        <div className="section-head" style={{ marginBottom: 24 }}>
-          <div>
-            <span className="eyebrow">§ IV · The Log</span>
-            <h2 className="display display-section" style={{ margin: "4px 0 0" }}>
-              <em>Pulled</em> from Strava.
-            </h2>
-          </div>
-          <div className="eyebrow" style={{ color: syncing ? "var(--blaze)" : undefined }}>
-            {syncing ? "pulling strava…" : `${activities.length} runs · snapshot ${relativeAgo(lastSync)}`}
-          </div>
+    <section>
+      <SectionTag right={<span className="eyebrow">{syncing ? "pulling strava…" : `${activities.length} activities`}</span>}>
+        the log
+      </SectionTag>
+      <div className="panel">
+        <div className="log-grid" style={{ padding: "10px 18px", borderBottom: "1px solid var(--edge-bright)" }}>
+          <span className="eyebrow" style={{ fontSize: 8.5 }}>date</span>
+          <span className="eyebrow" style={{ fontSize: 8.5 }}>activity</span>
+          <span className="eyebrow col-type" style={{ fontSize: 8.5 }}>type</span>
+          <span className="eyebrow" style={{ fontSize: 8.5, textAlign: "right" }}>{u.distUnit}</span>
+          <span className="eyebrow" style={{ fontSize: 8.5, textAlign: "right" }}>{u.elevUnit}↑</span>
+          <span className="eyebrow col-pace" style={{ fontSize: 8.5, textAlign: "right" }}>pace{u.paceUnit}</span>
+          <span className="eyebrow col-rpe" style={{ fontSize: 8.5 }}>rpe</span>
         </div>
 
-        <div className="double-rule" style={{ marginBottom: 0 }} />
+        {loading && activities.length === 0 && (
+          <div style={{ padding: "28px 0", textAlign: "center" }}><span className="eyebrow">loading strava snapshot…</span></div>
+        )}
+        {error && (
+          <div style={{ padding: "28px 0", textAlign: "center" }}>
+            <span className="eyebrow" style={{ color: "var(--ember)" }}>couldn't load strava.json — run `node scripts/sync-strava.mjs`</span>
+          </div>
+        )}
 
-        <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-          <li className="log-grid" style={{ padding: "10px 0", borderBottom: "1px solid var(--ink)" }}>
-            <span className="eyebrow col-date">date</span>
-            <span className="eyebrow col-type">type</span>
-            <span className="eyebrow col-title">title</span>
-            <span className="eyebrow col-dist">dist ({u.distUnit})</span>
-            <span className="eyebrow col-vert">vert ({u.elevUnit})</span>
-            <span className="eyebrow col-pace">pace{u.paceUnit}</span>
-            <span className="eyebrow col-rpe">rpe</span>
-          </li>
-
-          {loading && activities.length === 0 && (
-            <li style={{ padding: "32px 0", textAlign: "center" }}>
-              <span className="eyebrow">loading strava snapshot…</span>
-            </li>
-          )}
-          {error && (
-            <li style={{ padding: "32px 0", textAlign: "center" }}>
-              <span className="eyebrow" style={{ color: "var(--blaze)" }}>
-                couldn't load strava.json — run `node scripts/sync-strava.mjs`
-              </span>
-            </li>
-          )}
-          {visible.map((a, i) => (
-            <motion.li
-              key={a.id}
-              className="log-grid"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.4, delay: i * 0.03 }}
-              onMouseEnter={() => setHover(a.id)}
-              onMouseLeave={() => setHover(null)}
-              style={{
-                padding: "14px 0",
-                borderBottom: "1px solid var(--ink-mute)",
-                background: hover === a.id ? "rgba(196, 57, 29, 0.05)" : "transparent",
-                transition: "background 120ms",
-                cursor: "pointer",
-              }}
-            >
-              <span className="numerals col-date" style={{ fontSize: 13, color: "var(--ink-soft)" }}>
-                {new Date(a.date).toLocaleDateString("en-US", { month: "short", day: "2-digit" })}
-              </span>
-              <span className="col-type"><TypeBadge type={a.type} /></span>
-              <div className="col-title" style={{ minWidth: 0 }}>
-                {a.strava_url ? (
-                  <a
-                    href={a.strava_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="display-roman"
-                    style={{
-                      fontSize: 17,
-                      lineHeight: 1.15,
-                      color: "var(--ink)",
-                      textDecoration: "none",
-                      display: "block",
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {a.title} <span style={{ color: "var(--ink-mute)", fontSize: 12 }}>↗</span>
-                  </a>
-                ) : (
-                  <div className="display-roman" style={{ fontSize: 17, lineHeight: 1.15 }}>{a.title}</div>
+        {visible.map((a, i) => (
+          <motion.div
+            key={a.id}
+            className="log-grid"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3, delay: Math.min(i * 0.025, 0.4) }}
+            style={{ padding: "11px 18px", borderTop: i > 0 ? "1px solid var(--edge)" : "none" }}
+            onMouseEnter={(e) => ((e.currentTarget as HTMLDivElement).style.background = "var(--panel-raise)")}
+            onMouseLeave={(e) => ((e.currentTarget as HTMLDivElement).style.background = "transparent")}
+          >
+            <span className="numerals" style={{ fontSize: 11.5, color: "var(--mist-mute)" }}>
+              {new Date(a.date).toLocaleDateString("en-US", { month: "short", day: "2-digit" }).toLowerCase()}
+            </span>
+            <div style={{ minWidth: 0 }}>
+              {a.strava_url ? (
+                <a href={a.strava_url} target="_blank" rel="noopener noreferrer"
+                  style={{ fontSize: 13.5, fontWeight: 500, color: "var(--mist)", textDecoration: "none", display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {a.title} <span style={{ color: "var(--mist-mute)", fontSize: 10 }}>↗</span>
+                </a>
+              ) : (
+                <span style={{ fontSize: 13.5, fontWeight: 500 }}>{a.title}</span>
+              )}
+              <span className="numerals" style={{ fontSize: 9.5, color: "var(--mist-mute)", display: "flex", gap: 8, marginTop: 2 }}>
+                {a.start_time_local && <span>{a.start_time_local}</span>}
+                {a.temp_max_f != null && (
+                  <span
+                    title={`max ${a.temp_max_f}°F · avg ${a.temp_avg_f}°F${a.humidity_avg != null ? ` · ${a.humidity_avg}% rh` : ""}`}
+                    style={{ color: a.temp_max_f >= 75 ? "var(--ember)" : a.temp_max_f <= 40 ? "var(--creek)" : "var(--mist-mute)" }}
+                  >{a.temp_max_f}°F</span>
                 )}
-                <ActivityMeta activity={a} />
-              </div>
-              <span className="numerals col-dist" style={{ fontSize: 17, fontWeight: 700 }}>{u.dist(a.distance_mi)}</span>
-              <span className="numerals col-vert" style={{ fontSize: 17, color: "var(--moss-deep)", fontWeight: 700 }}>
-                {u.elev(a.elevation_ft)}
               </span>
-              <span className="numerals col-pace" style={{ fontSize: 13, color: "var(--ink-soft)" }}>
-                {u.paceFmt(a.moving_s, a.distance_mi)}{u.paceUnit}
+            </div>
+            <span className="col-type">
+              <span className="eyebrow" style={{ fontSize: 8.5, color: TYPE_META[a.type].color, border: `1px solid ${TYPE_META[a.type].color}`, padding: "2px 5px" }}>
+                {TYPE_META[a.type].label}
               </span>
-              <span className="col-rpe"><RpeDots rpe={a.rpe} /></span>
-            </motion.li>
-          ))}
-        </ul>
+            </span>
+            <span className="numerals" style={{ fontSize: 14, fontWeight: 600, textAlign: "right" }}>{u.dist(a.distance_mi)}</span>
+            <span className="numerals" style={{ fontSize: 14, fontWeight: 600, textAlign: "right", color: "var(--mist-dim)" }}>{u.elev(a.elevation_ft)}</span>
+            <span className="numerals col-pace" style={{ fontSize: 11.5, color: "var(--mist-mute)", textAlign: "right" }}>{u.paceFmt(a.moving_s, a.distance_mi)}</span>
+            <span className="col-rpe" style={{ display: "inline-flex", gap: 3 }}>
+              {Array.from({ length: 5 }).map((_, j) => (
+                <span key={j} style={{ width: 6, height: 6, transform: "rotate(45deg)", background: j < a.rpe ? "var(--lamp)" : "transparent", border: "1px solid var(--edge-bright)" }} />
+              ))}
+            </span>
+          </motion.div>
+        ))}
 
         {activities.length > limit && (
-          <div style={{ textAlign: "center", marginTop: 18 }}>
+          <div style={{ textAlign: "center", padding: 12, borderTop: "1px solid var(--edge)" }}>
             <button className="chip" onClick={() => setLimit((l) => l + 20)}>
-              show {Math.min(20, activities.length - limit)} more ↓ · {activities.length - limit} hidden
+              show {Math.min(20, activities.length - limit)} more · {activities.length - limit} hidden
             </button>
           </div>
         )}
@@ -2137,654 +1019,18 @@ function ActivityLog() {
   );
 }
 
-const TYPE_META: Record<Activity["type"], { label: string; color: string }> = {
-  run:      { label: "RUN", color: "var(--ink)" },
-  long:     { label: "LNG", color: "var(--blaze)" },
-  vert:     { label: "VRT", color: "var(--moss-deep)" },
-  easy:     { label: "EZ",  color: "var(--ink-mute)" },
-  workout:  { label: "WRK", color: "var(--rust)" },
-};
-function ActivityMeta({ activity }: { activity: Activity }) {
-  const bits: React.ReactNode[] = [];
-  if (activity.start_time_local) {
-    bits.push(
-      <span key="time" className="numerals" style={{ color: "var(--ink-mute)" }}>
-        {activity.start_time_local}
-      </span>
-    );
-  }
-  if (activity.temp_max_f != null) {
-    const hot = activity.temp_max_f >= 75;
-    const cold = activity.temp_max_f <= 40;
-    const color = hot ? "var(--blaze)" : cold ? "var(--moss-deep)" : "var(--ink-mute)";
-    bits.push(
-      <span
-        key="temp"
-        className="numerals"
-        title={`max ${activity.temp_max_f}°F · avg ${activity.temp_avg_f}°F${activity.humidity_avg != null ? ` · ${activity.humidity_avg}% rh` : ""}`}
-        style={{
-          color,
-          border: `1px solid ${color}`,
-          padding: "1px 5px",
-          fontSize: 10,
-          letterSpacing: "0.06em",
-        }}
-      >
-        {activity.temp_max_f}°F
-      </span>
-    );
-  }
-  if (bits.length === 0) return null;
-  return (
-    <div style={{
-      marginTop: 4,
-      display: "flex",
-      gap: 8,
-      alignItems: "center",
-      fontFamily: "var(--font-mono)",
-      fontSize: 11,
-    }}>
-      {bits}
-    </div>
-  );
-}
-
-function TypeBadge({ type }: { type: Activity["type"] }) {
-  const m = TYPE_META[type];
-  return (
-    <span
-      className="eyebrow"
-      style={{
-        border: `1px solid ${m.color}`,
-        color: m.color,
-        padding: "3px 6px",
-        textAlign: "center",
-        letterSpacing: "0.16em",
-      }}
-    >{m.label}</span>
-  );
-}
-function RpeDots({ rpe }: { rpe: number }) {
-  return (
-    <span style={{ display: "inline-flex", gap: 3 }}>
-      {Array.from({ length: 5 }).map((_, i) => (
-        <span
-          key={i}
-          style={{
-            width: 8, height: 8,
-            background: i < rpe ? "var(--blaze)" : "transparent",
-            border: "1px solid var(--ink)",
-            borderRadius: "50%",
-          }}
-        />
-      ))}
-    </span>
-  );
-}
-
 /* ------------------------------------------------------------------ */
-/*  Coach facts — deterministic computation over Strava + Oura         */
+/*  Agent rail — readout + flags + chat, always at your side           */
 /* ------------------------------------------------------------------ */
 
-type Flag = { severity: "info" | "watch" | "warn"; label: string; detail: string };
-type CoachFacts = {
-  // load
-  d7_dist_mi: number;
-  d28_dist_mi: number;
-  d7_elev_ft: number;
-  d28_elev_ft: number;
-  acr_dist: number;     // 7d / (28d/4)
-  acr_elev: number;
-  longest_d7_mi: number;
-  longest_d7_title: string | null;
-  sessions_d7: number;
-
-  // recovery
-  hrv_d7: number | null;
-  hrv_d28: number | null;
-  hrv_ratio: number | null;       // d7 / d28
-  rhr_d7: number | null;
-  rhr_d28: number | null;
-  rhr_drift: number | null;       // d7 - d28
-  readiness_d7: number | null;
-  sleep_d7_total_h: number | null;
-  sleep_debt_h: number | null;    // 7×8h target - actual
-  recent_tags: { day: string; label: string }[];
-
-  // block
-  block_dist_actual: number;
-  block_dist_expected: number;
-  block_dist_delta_pct: number;
-  block_elev_actual: number;
-  block_elev_expected: number;
-  block_elev_delta_pct: number;
-
-  flags: Flag[];
-  recommendations: string[];
-};
-
-function avg(values: (number | null | undefined)[]): number | null {
-  const vs = values.filter((v): v is number => typeof v === "number");
-  return vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null;
-}
-function sum(values: (number | null | undefined)[]): number {
-  return values.reduce((acc: number, v) => acc + (typeof v === "number" ? v : 0), 0);
-}
-function withinDays(iso: string, days: number, now = Date.now()): boolean {
-  return now - new Date(iso).getTime() < days * 86400 * 1000;
-}
-
-function computeCoachFacts(
-  activities: Activity[],
-  ouraDays: OuraDay[],
-  weekly: { wk: number; dist_mi: number; elev_ft: number }[],
-  currentWeek: number,
-): CoachFacts {
-  const now = Date.now();
-
-  // load
-  const d7  = activities.filter((a) => withinDays(a.date,  7, now));
-  const d28 = activities.filter((a) => withinDays(a.date, 28, now));
-  const d7_dist_mi  = sum(d7.map((a) => a.distance_mi));
-  const d28_dist_mi = sum(d28.map((a) => a.distance_mi));
-  const d7_elev_ft  = sum(d7.map((a) => a.elevation_ft));
-  const d28_elev_ft = sum(d28.map((a) => a.elevation_ft));
-  const longest = d7.reduce<Activity | null>((m, a) => (!m || a.distance_mi > m.distance_mi ? a : m), null);
-
-  // recovery
-  const o7  = ouraDays.filter((d) => withinDays(d.day,  7, now));
-  const o28 = ouraDays.filter((d) => withinDays(d.day, 28, now));
-  const hrv_d7  = avg(o7.map((d) => d.avg_hrv));
-  const hrv_d28 = avg(o28.map((d) => d.avg_hrv));
-  const rhr_d7  = avg(o7.map((d) => d.lowest_hr));
-  const rhr_d28 = avg(o28.map((d) => d.lowest_hr));
-  const readiness_d7 = avg(o7.map((d) => d.readiness_score));
-  const sleep_total_s = sum(o7.map((d) => d.total_sleep_s));
-  const sleep_d7_total_h = sleep_total_s ? sleep_total_s / 3600 : null;
-  const sleep_debt_h = sleep_d7_total_h != null ? 7 * 8 - sleep_d7_total_h : null;
-
-  const recent_tags = ouraDays
-    .filter((d) => withinDays(d.day, 7, now))
-    .flatMap((d) => (d.tags ?? []).map((t) => ({
-      day: d.day,
-      label: (t.tags && t.tags[0]) || t.tag_type_code || "tag",
-    })));
-
-  // block
-  const block_dist_actual = sum(weekly.slice(0, currentWeek).map((w) => w.dist_mi));
-  const block_elev_actual = sum(weekly.slice(0, currentWeek).map((w) => w.elev_ft));
-  const block_dist_expected = sum(BLOCK_TARGETS.slice(0, currentWeek).map((w) => w.target_dist));
-  const block_elev_expected = sum(BLOCK_TARGETS.slice(0, currentWeek).map((w) => w.target_elev));
-  const block_dist_delta_pct = ((block_dist_actual - block_dist_expected) / Math.max(1, block_dist_expected)) * 100;
-  const block_elev_delta_pct = ((block_elev_actual - block_elev_expected) / Math.max(1, block_elev_expected)) * 100;
-
-  // acute:chronic ratio (1.0 = consistent, >1.5 = load spike, <0.8 = detraining)
-  const acr_dist = d28_dist_mi > 0 ? d7_dist_mi / (d28_dist_mi / 4) : 1;
-  const acr_elev = d28_elev_ft > 0 ? d7_elev_ft / (d28_elev_ft / 4) : 1;
-
-  // flags
-  const flags: Flag[] = [];
-  if (acr_dist > 1.5) flags.push({ severity: "warn", label: "load spike · distance",
-    detail: `7d miles ${(acr_dist).toFixed(2)}× the 28d weekly avg — sharp ramp.` });
-  else if (acr_dist > 1.3) flags.push({ severity: "watch", label: "load rising · distance",
-    detail: `7d miles ${(acr_dist).toFixed(2)}× the 28d avg.` });
-  if (acr_elev > 1.5) flags.push({ severity: "warn", label: "load spike · vert",
-    detail: `7d vert ${(acr_elev).toFixed(2)}× the 28d avg — easy to bury yourself here.` });
-  if (acr_dist < 0.7 && d28_dist_mi > 30) flags.push({ severity: "watch", label: "volume drop",
-    detail: `7d miles only ${(acr_dist).toFixed(2)}× the 28d avg — taper or under-doing it?` });
-
-  if (hrv_d7 != null && hrv_d28 != null) {
-    const ratio = hrv_d7 / hrv_d28;
-    if (ratio < 0.88) flags.push({ severity: "warn", label: "HRV suppressed",
-      detail: `7d HRV ${Math.round(hrv_d7)} ms vs 28d ${Math.round(hrv_d28)} ms (${((ratio - 1) * 100).toFixed(0)}%).` });
-    else if (ratio < 0.95) flags.push({ severity: "watch", label: "HRV trending down",
-      detail: `7d HRV ${Math.round(hrv_d7)} ms vs 28d ${Math.round(hrv_d28)} ms.` });
-  }
-  if (rhr_d7 != null && rhr_d28 != null && rhr_d7 - rhr_d28 >= 3)
-    flags.push({ severity: "warn", label: "RHR elevated",
-      detail: `7d resting HR +${(rhr_d7 - rhr_d28).toFixed(1)} bpm vs 28d baseline — under-recovery signal.` });
-
-  if (sleep_d7_total_h != null && sleep_d7_total_h < 49) // 7h avg
-    flags.push({ severity: "warn", label: "sleep debt",
-      detail: `${sleep_d7_total_h.toFixed(1)}h slept in 7 days · ${(56 - sleep_d7_total_h).toFixed(1)}h under target.` });
-
-  if (readiness_d7 != null && readiness_d7 < 70)
-    flags.push({ severity: "watch", label: "readiness depressed",
-      detail: `7d readiness avg ${readiness_d7.toFixed(0)}.` });
-
-  if (block_dist_delta_pct < -10)
-    flags.push({ severity: "watch", label: "behind block plan · distance",
-      detail: `${block_dist_delta_pct.toFixed(1)}% under expected cumulative.` });
-  if (block_elev_delta_pct > 15)
-    flags.push({ severity: "info", label: "ahead on vert",
-      detail: `+${block_elev_delta_pct.toFixed(0)}% over expected — banking climbing-specific fitness.` });
-
-  // recommendations from flags
-  const recommendations: string[] = [];
-  if (flags.some((f) => f.label.startsWith("load spike") || f.label === "HRV suppressed" || f.label === "RHR elevated"))
-    recommendations.push("Swap the next quality session for an easy aerobic day. Re-assess in 72h.");
-  if (flags.some((f) => f.label === "sleep debt"))
-    recommendations.push("Protect Tuesday & Friday nights this week — no late screens, lights out by 22:30.");
-  if (flags.some((f) => f.label === "HRV suppressed" || f.label === "RHR elevated"))
-    recommendations.push("Skip caffeine after 14:00 and add a 10-min Z1 cooldown after every run.");
-  if (block_dist_delta_pct < -5 && !flags.some((f) => f.label === "HRV suppressed"))
-    recommendations.push("Add one easy 60-90min Z1 day to the week without raising intensity.");
-  if (flags.length === 0)
-    recommendations.push("All systems green. Hold the current load, finish the block as planned.");
-  recommendations.push(`Next quality target: long with 1500m+ vert at MM100-relevant grade.`);
-
-  return {
-    d7_dist_mi, d28_dist_mi, d7_elev_ft, d28_elev_ft, acr_dist, acr_elev,
-    longest_d7_mi: longest?.distance_mi ?? 0,
-    longest_d7_title: longest?.title ?? null,
-    sessions_d7: d7.length,
-    hrv_d7, hrv_d28, hrv_ratio: hrv_d7 != null && hrv_d28 != null ? hrv_d7 / hrv_d28 : null,
-    rhr_d7, rhr_d28, rhr_drift: rhr_d7 != null && rhr_d28 != null ? rhr_d7 - rhr_d28 : null,
-    readiness_d7, sleep_d7_total_h, sleep_debt_h, recent_tags,
-    block_dist_actual, block_dist_expected, block_dist_delta_pct,
-    block_elev_actual, block_elev_expected, block_elev_delta_pct,
-    flags, recommendations,
-  };
-}
-
-/* ------------------------------------------------------------------ */
-/*  Agent coach output (loaded from /coach.json if present)            */
-/* ------------------------------------------------------------------ */
-
-type PlanBlock = {
-  wk: number;
-  label: string;
-  dist_mi: number;
-  elev_ft: number;
-  focus: string;
-  key_session?: string;
-  quality?: number;
-};
-type AgentReadout = {
-  generated_at: string;
-  model: string;
-  summary: string;
-  watch_outs?: string[];
-  recommendations?: string[];
-  plan_blocks?: PlanBlock[];
-};
-
-type PersistentState = {
-  version: number;
-  last_updated: string | null;
-  race?: { name: string; date: string; distance_mi: number; elevation_ft: number };
-  block?: {
-    start_date: string;
-    total_weeks: number;
-    targets: { wk: number; target_dist: number; target_elev: number }[];
-  };
-  plan_blocks?: PlanBlock[];
-  agent_notes?: { at: string; note: string }[];
-  preferences?: Record<string, unknown>;
-};
-
-type GCalEvent = {
-  id: string;
-  summary: string;
-  description?: string;
-  start: string | null;
-  end: string | null;
-  all_day: boolean;
-  duration_min: number | null;
-  location: string | null;
-  classification: "race" | "travel" | "appointment" | "training" | "work" | "other";
-  html_link: string | null;
-};
-type GCalRaw = {
-  fetched_at: string;
-  window: { time_min: string; time_max: string };
-  calendar_id: string;
-  summary: {
-    total_events: number;
-    upcoming_events: number;
-    races_upcoming: number;
-    travel_days_upcoming: string[];
-  };
-  events: GCalEvent[];
-};
-
-function useGoogleCal() {
-  const { key: refreshKey } = useRefresh();
-  const [data, setData] = useState<GCalRaw | null>(null);
-  const [missing, setMissing] = useState(false);
-  useEffect(() => {
-    fetch(`/google-cal.json?t=${Date.now()}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d) => { setData(d); setMissing(false); })
-      .catch(() => setMissing(true));
-  }, [refreshKey]);
-  return { data, missing, connected: !!data };
-}
-
-function usePersistentState() {
-  const { key: refreshKey } = useRefresh();
-  const [data, setData] = useState<PersistentState | null>(null);
-  const [missing, setMissing] = useState(false);
-  useEffect(() => {
-    fetch(`/state.json?t=${Date.now()}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then(setData)
-      .catch(() => setMissing(true));
-  }, [refreshKey]);
-  return { data, missing };
-}
-
-function useAgentReadout() {
-  const { key: refreshKey } = useRefresh();
-  const [data, setData] = useState<AgentReadout | null>(null);
-  const [missing, setMissing] = useState(false);
-  useEffect(() => {
-    fetch(`/coach.json?t=${Date.now()}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then(setData)
-      .catch(() => setMissing(true));
-  }, [refreshKey]);
-  return { data, missing };
-}
-
-/* ------------------------------------------------------------------ */
-/*  Coach readout — deterministic + optional agent                     */
-/* ------------------------------------------------------------------ */
-
-const SEVERITY_COLOR: Record<Flag["severity"], string> = {
-  info:  "var(--moss)",
-  watch: "var(--rust)",
-  warn:  "var(--blaze)",
-};
-
-function CoachReadout() {
-  const u = useUnits();
-  const { activities } = useStrava();
-  const { days: ouraDays, connected: ouraConnected } = useOura();
-  const { weekly, currentWeek } = useStrava();
-  const { data: agent, missing: agentMissing } = useAgentReadout();
-
-  const facts = useMemo(
+function useFacts(): CoachFacts {
+  const { activities, weekly, currentWeek } = useStrava();
+  const { days: ouraDays } = useOura();
+  return useMemo(
     () => computeCoachFacts(activities, ouraDays, weekly, currentWeek),
     [activities, ouraDays, weekly, currentWeek],
   );
-
-  const fmtD = (mi: number) => `${u.dist(mi, 0)} ${u.distUnit}`;
-  const fmtE = (ft: number) => `${u.elev(ft)} ${u.elevUnit}`;
-
-  return (
-    <section id="coach" className="sec-pad" style={{ paddingTop: 96, position: "relative" }}>
-      <div className="container">
-        <div className="coach-grid">
-          {/* LEFT — narrative & inputs */}
-          <div>
-            <span className="eyebrow">§ V · The Coach</span>
-            <h2 className="display display-section" style={{ margin: "4px 0 24px" }}>
-              An <em style={{ color: "var(--blaze)" }}>agent</em><br />that <em>knows</em> the route.
-            </h2>
-
-            <div style={{ marginTop: 4, marginBottom: 18 }}>
-              <span className="eyebrow">data ingested</span>
-              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4, fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--ink-soft)" }}>
-                <span>· strava — {activities.length} activities · 28d {fmtD(facts.d28_dist_mi)} / {fmtE(facts.d28_elev_ft)}</span>
-                <span style={{ color: ouraConnected ? "var(--ink-soft)" : "var(--ink-mute)" }}>
-                  · oura  — {ouraConnected ? `${ouraDays.length} nights · HRV ${facts.hrv_d7 ? Math.round(facts.hrv_d7) : "—"} ms · RHR ${facts.rhr_d7 ? Math.round(facts.rhr_d7) : "—"} bpm` : "not connected"}
-                </span>
-                <span>· block  — wk {currentWeek}/{TOTAL_WEEKS} · {facts.block_dist_delta_pct >= 0 ? "+" : ""}{facts.block_dist_delta_pct.toFixed(1)}% dist · {facts.block_elev_delta_pct >= 0 ? "+" : ""}{facts.block_elev_delta_pct.toFixed(1)}% vert</span>
-              </div>
-            </div>
-
-            <div className="rule" style={{ marginTop: 24, marginBottom: 14 }} />
-            <span className="eyebrow">agent status</span>
-            <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8 }}>
-              <span style={{
-                width: 8, height: 8, borderRadius: "50%",
-                background: agent ? "var(--moss)" : "var(--blaze)",
-                display: "inline-block",
-              }} />
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--ink-soft)" }}>
-                {agent
-                  ? `${agent.model} · generated ${relativeAgo(new Date(agent.generated_at).getTime())}`
-                  : agentMissing
-                    ? "no readout yet · `npm run coach`"
-                    : "loading…"}
-              </span>
-            </div>
-          </div>
-
-          {/* RIGHT — facts + agent + chat stacked */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-            <FactsPanel facts={facts} u={u} ouraConnected={ouraConnected} />
-            <AgentPanel agent={agent} missing={agentMissing} />
-            <ChatPanel />
-          </div>
-        </div>
-      </div>
-    </section>
-  );
 }
-
-function FactsPanel({
-  facts, u, ouraConnected,
-}: { facts: CoachFacts; u: UnitsCtx; ouraConnected: boolean }) {
-  return (
-    <div className="card card-corner" style={{ padding: 28, position: "relative" }}>
-      <ContourBackdrop seed={9} opacity={0.2} />
-      <div style={{ position: "relative" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-          <span className="eyebrow">facts · computed locally</span>
-          <span className="eyebrow numerals" style={{ color: "var(--ink-mute)" }}>
-            block wk {/* current week */}
-          </span>
-        </div>
-
-        {/* metric grid: 3 columns */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3, 1fr)",
-            gap: 18,
-            marginTop: 18,
-          }}
-        >
-          <FactStat
-            label="acute : chronic"
-            value={facts.acr_dist.toFixed(2)}
-            sub={`dist · ${u.dist(facts.d7_dist_mi, 0)} ${u.distUnit} / 7d`}
-            color={facts.acr_dist > 1.5 ? "var(--blaze)" : facts.acr_dist < 0.8 ? "var(--rust)" : "var(--ink)"}
-          />
-          <FactStat
-            label="vert acr"
-            value={facts.acr_elev.toFixed(2)}
-            sub={`${u.elev(facts.d7_elev_ft)} ${u.elevUnit}↑ · 7d`}
-            color={facts.acr_elev > 1.5 ? "var(--blaze)" : "var(--moss-deep)"}
-          />
-          <FactStat
-            label="block trajectory"
-            value={`${facts.block_elev_delta_pct >= 0 ? "+" : ""}${facts.block_elev_delta_pct.toFixed(0)}%`}
-            sub="vert vs plan"
-            color={facts.block_elev_delta_pct >= 0 ? "var(--moss)" : "var(--blaze)"}
-          />
-
-          {ouraConnected ? (
-            <>
-              <FactStat
-                label="HRV · 7d"
-                value={facts.hrv_d7 != null ? `${Math.round(facts.hrv_d7)} ms` : "—"}
-                sub={facts.hrv_ratio != null ? `${facts.hrv_ratio < 1 ? "▼" : "▲"} ${((facts.hrv_ratio - 1) * 100).toFixed(0)}% vs 28d` : "—"}
-                color={facts.hrv_ratio != null && facts.hrv_ratio < 0.9 ? "var(--blaze)" : "var(--ink)"}
-              />
-              <FactStat
-                label="RHR drift"
-                value={facts.rhr_drift != null ? `${facts.rhr_drift >= 0 ? "+" : ""}${facts.rhr_drift.toFixed(1)} bpm` : "—"}
-                sub={facts.rhr_d7 != null ? `7d avg ${Math.round(facts.rhr_d7)} bpm` : "—"}
-                color={facts.rhr_drift != null && facts.rhr_drift >= 3 ? "var(--blaze)" : "var(--ink)"}
-              />
-              <FactStat
-                label="sleep · 7d"
-                value={facts.sleep_d7_total_h != null ? `${facts.sleep_d7_total_h.toFixed(1)} h` : "—"}
-                sub={facts.sleep_debt_h != null ? `${facts.sleep_debt_h > 0 ? "−" : "+"}${Math.abs(facts.sleep_debt_h).toFixed(1)}h vs target` : "—"}
-                color={facts.sleep_d7_total_h != null && facts.sleep_d7_total_h < 49 ? "var(--blaze)" : "var(--ink)"}
-              />
-            </>
-          ) : (
-            <div style={{ gridColumn: "span 3", padding: 14, border: "1px dashed var(--ink-mute)", textAlign: "center" }}>
-              <span className="eyebrow" style={{ color: "var(--ink-mute)" }}>
-                Oura not connected — recovery facts unavailable
-              </span>
-            </div>
-          )}
-        </div>
-
-        {/* flags */}
-        {facts.flags.length > 0 ? (
-          <>
-            <div className="rule" style={{ marginTop: 24, marginBottom: 14 }} />
-            <span className="eyebrow">flags</span>
-            <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0", display: "flex", flexDirection: "column", gap: 6 }}>
-              {facts.flags.map((f, i) => (
-                <motion.li
-                  key={i}
-                  initial={{ opacity: 0, x: -8 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: i * 0.05 }}
-                  style={{ display: "flex", alignItems: "flex-start", gap: 10, fontSize: 13, lineHeight: 1.5 }}
-                >
-                  <span style={{
-                    width: 4, alignSelf: "stretch",
-                    background: SEVERITY_COLOR[f.severity], flexShrink: 0,
-                  }} />
-                  <div>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.14em", textTransform: "uppercase", color: SEVERITY_COLOR[f.severity] }}>
-                      {f.severity} · {f.label}
-                    </span>
-                    <div style={{ color: "var(--ink-soft)", marginTop: 2 }}>{f.detail}</div>
-                  </div>
-                </motion.li>
-              ))}
-            </ul>
-          </>
-        ) : (
-          <>
-            <div className="rule" style={{ marginTop: 24, marginBottom: 14 }} />
-            <span className="eyebrow" style={{ color: "var(--moss)" }}>● all systems green</span>
-          </>
-        )}
-
-        {/* recommendations */}
-        <div className="rule" style={{ marginTop: 18, marginBottom: 14 }} />
-        <span className="eyebrow">next actions</span>
-        <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0", display: "flex", flexDirection: "column", gap: 6 }}>
-          {facts.recommendations.map((r, i) => (
-            <li key={i} style={{ display: "flex", gap: 8, fontSize: 14, lineHeight: 1.5, color: "var(--ink)" }}>
-              <span style={{ color: "var(--blaze)" }}>→</span>
-              <span>{r}</span>
-            </li>
-          ))}
-        </ul>
-
-        {facts.recent_tags.length > 0 && (
-          <>
-            <div className="rule" style={{ marginTop: 18, marginBottom: 12 }} />
-            <span className="eyebrow">context · 7d tags</span>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-              {facts.recent_tags.map((t, i) => (
-                <span key={i} className="eyebrow" style={{
-                  border: "1px dashed var(--ink-mute)", padding: "3px 7px", color: "var(--ink-soft)",
-                }}>
-                  {t.label}
-                </span>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function FactStat({
-  label, value, sub, color,
-}: { label: string; value: string; sub: string; color: string }) {
-  return (
-    <div>
-      <div className="eyebrow" style={{ fontSize: 9 }}>{label}</div>
-      <div className="numerals" style={{
-        fontSize: 24, fontWeight: 700, letterSpacing: "-0.03em",
-        marginTop: 4, color,
-      }}>{value}</div>
-      <div className="eyebrow numerals" style={{ marginTop: 2, color: "var(--ink-mute)" }}>{sub}</div>
-    </div>
-  );
-}
-
-function AgentPanel({ agent, missing }: { agent: AgentReadout | null; missing: boolean }) {
-  if (!agent) {
-    return (
-      <div className="card" style={{ padding: 24, position: "relative", borderStyle: "dashed", borderColor: "var(--ink-mute)" }}>
-        <span className="eyebrow">agent readout · awaiting</span>
-        <p style={{ fontSize: 14, color: "var(--ink-soft)", marginTop: 8, lineHeight: 1.5 }}>
-          {missing
-            ? "No headless run yet for this snapshot. Spawns `claude -p` via your Claude Code subscription, reads the facts + raw snapshots, writes coach.json."
-            : "loading…"}
-        </p>
-        <pre style={{
-          background: "var(--paper-deep)",
-          padding: 10,
-          border: "1px solid var(--ink-mute)",
-          fontFamily: "var(--font-mono)",
-          fontSize: 12,
-          marginTop: 10,
-        }}>npm run coach</pre>
-        <p style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 6 }}>
-          Uses your Claude Code subscription — no API key.
-        </p>
-      </div>
-    );
-  }
-  return (
-    <div className="card card-corner" style={{ padding: 28, position: "relative" }}>
-      <ContourBackdrop seed={11} opacity={0.18} />
-      <div style={{ position: "relative" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-          <span className="eyebrow">agent readout · {agent.model}</span>
-          <span className="eyebrow numerals" style={{ color: "var(--ink-mute)" }}>
-            {new Date(agent.generated_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
-          </span>
-        </div>
-        <div style={{ marginTop: 16, fontSize: 15, lineHeight: 1.6, color: "var(--ink)", whiteSpace: "pre-wrap" }}>
-          {agent.summary}
-        </div>
-        {agent.watch_outs && agent.watch_outs.length > 0 && (
-          <>
-            <div className="rule" style={{ marginTop: 18, marginBottom: 12 }} />
-            <span className="eyebrow">watch-outs</span>
-            <ul style={{ paddingLeft: 18, margin: "8px 0 0", fontSize: 14, lineHeight: 1.6 }}>
-              {agent.watch_outs.map((w, i) => <li key={i}>{w}</li>)}
-            </ul>
-          </>
-        )}
-        {agent.recommendations && agent.recommendations.length > 0 && (
-          <>
-            <div className="rule" style={{ marginTop: 14, marginBottom: 12 }} />
-            <span className="eyebrow">agent recommendations</span>
-            <ul style={{ paddingLeft: 18, margin: "8px 0 0", fontSize: 14, lineHeight: 1.6 }}>
-              {agent.recommendations.map((r, i) => <li key={i}>{r}</li>)}
-            </ul>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Plan — upcoming weeks                                              */
-/* ------------------------------------------------------------------ */
-
-/* ------------------------------------------------------------------ */
-/*  Chat panel — interactive headless agent                            */
-/* ------------------------------------------------------------------ */
 
 type ChatMessage = {
   id: string;
@@ -2798,11 +1044,15 @@ const SUGGESTED_PROMPTS = [
   "what should I do this weekend?",
   "why is my HRV up?",
   "swap a session this week",
-  "heat block plan?",
   "race-day fueling strategy",
 ];
 
-function ChatPanel() {
+function AgentRail() {
+  const { data: agent, missing: agentMissing } = useAgentReadout();
+  const facts = useFacts();
+  const [readoutOpen, setReadoutOpen] = useState(true);
+
+  /* chat state */
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
@@ -2810,22 +1060,20 @@ function ChatPanel() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // auto-scroll on new messages
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, pending]);
+
+  // collapse the readout once a conversation starts, to give chat room
+  useEffect(() => {
+    if (messages.length > 0) setReadoutOpen(false);
+  }, [messages.length > 0]);
 
   const send = useCallback(async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed || pending) return;
 
-    const userMsg: ChatMessage = {
-      id: `u-${Date.now()}`,
-      role: "user",
-      content: trimmed,
-    };
+    const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: "user", content: trimmed };
     const newHistory = [...messages, userMsg];
     setMessages(newHistory);
     setInput("");
@@ -2841,9 +1089,7 @@ function ChatPanel() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: ctrl.signal,
-        body: JSON.stringify({
-          messages: newHistory.map((m) => ({ role: m.role, content: m.content })),
-        }),
+        body: JSON.stringify({ messages: newHistory.map((m) => ({ role: m.role, content: m.content })) }),
       });
       if (!res.body) throw new Error("no body");
       const reader = res.body.getReader();
@@ -2855,15 +1101,9 @@ function ChatPanel() {
           const sec = Math.floor((Date.now() - t0) / 1000);
           setStatusLine(`thinking… ${sec}s`);
         } else if (event === "message") {
-          setMessages((prev) => [
-            ...prev,
-            { id: `a-${Date.now()}`, role: "assistant", content: payload.content, meta: payload.meta },
-          ]);
+          setMessages((prev) => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: payload.content, meta: payload.meta }]);
         } else if (event === "error") {
-          setMessages((prev) => [
-            ...prev,
-            { id: `e-${Date.now()}`, role: "assistant", content: payload.message, meta: { error: true } },
-          ]);
+          setMessages((prev) => [...prev, { id: `e-${Date.now()}`, role: "assistant", content: payload.message, meta: { error: true } }]);
         } else if (event === "done") {
           setStatusLine("");
         }
@@ -2888,10 +1128,7 @@ function ChatPanel() {
       }
     } catch (e) {
       if ((e as any).name !== "AbortError") {
-        setMessages((prev) => [
-          ...prev,
-          { id: `e-${Date.now()}`, role: "assistant", content: `network error: ${(e as Error).message}`, meta: { error: true } },
-        ]);
+        setMessages((prev) => [...prev, { id: `e-${Date.now()}`, role: "assistant", content: `network error: ${(e as Error).message}`, meta: { error: true } }]);
       }
     } finally {
       setPending(false);
@@ -2907,111 +1144,187 @@ function ChatPanel() {
   };
 
   return (
-    <div className="card card-corner" style={{ padding: 0, position: "relative", overflow: "hidden" }}>
-      <ContourBackdrop seed={29} opacity={0.16} />
-      <div style={{ position: "relative", padding: 24, paddingBottom: 0 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-          <span className="eyebrow">chat · headless claude</span>
-          <span className="eyebrow numerals" style={{ color: pending ? "var(--blaze)" : "var(--ink-mute)" }}>
-            {pending ? statusLine : `${messages.length} messages`}
-          </span>
+    <aside className="rail-sticky">
+      <div className="panel notch" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden" }}>
+        {/* status header */}
+        <div style={{ padding: "13px 18px", borderBottom: "1px solid var(--edge)", display: "flex", alignItems: "center", gap: 10 }}>
+          <span className={agent ? undefined : "pulse"} style={{ width: 7, height: 7, borderRadius: "50%", background: agent ? "var(--pine)" : "var(--lamp)", flexShrink: 0 }} />
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div className="eyebrow" style={{ color: "var(--mist-dim)" }}>the coach</div>
+            <div className="numerals" style={{ fontSize: 10, color: "var(--mist-mute)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {agent
+                ? `${agent.model} · ${relativeAgo(new Date(agent.generated_at).getTime())}`
+                : agentMissing ? "no readout — resync to generate" : "loading…"}
+            </div>
+          </div>
+          {pending && <span className="eyebrow numerals" style={{ color: "var(--lamp)" }}>{statusLine}</span>}
         </div>
-      </div>
 
-      {/* Message list */}
-      <div
-        ref={scrollRef}
-        style={{
-          position: "relative",
-          padding: "16px 24px",
-          maxHeight: 420,
-          minHeight: 80,
-          overflowY: "auto",
-          display: "flex",
-          flexDirection: "column",
-          gap: 14,
-        }}
-      >
+        {/* scrollable body: flags + readout + chat thread */}
+        <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <FlagsRow flags={facts.flags} />
+          <ReadoutBlock agent={agent} missing={agentMissing} open={readoutOpen} setOpen={setReadoutOpen} facts={facts} />
+
+          {/* chat thread */}
+          <div style={{ padding: "14px 18px", display: "flex", flexDirection: "column", gap: 12, flex: 1 }}>
+            {messages.length === 0 && (
+              <p style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--mist-mute)" }}>
+                Ask anything — load, recovery, this weekend's plan, fueling.
+                The coach reads your live Strava, Oura and calendar snapshots before answering.
+              </p>
+            )}
+            {messages.map((m) => <ChatBubble key={m.id} msg={m} />)}
+            {pending && <ChatBubble msg={{ id: "pending", role: "assistant", content: "", pending: true }} />}
+          </div>
+        </div>
+
+        {/* suggested prompts */}
         {messages.length === 0 && (
-          <div style={{ fontSize: 14, lineHeight: 1.55, color: "var(--ink-mute)", fontStyle: "italic" }}>
-            Ask anything about your training — load, recovery, this weekend's plan, race-day strategy.
-            The agent reads your Strava + Oura snapshots and the latest readout before answering.
+          <div style={{ padding: "0 18px 10px", display: "flex", gap: 5, flexWrap: "wrap" }}>
+            {SUGGESTED_PROMPTS.map((p) => (
+              <button key={p} className="chip" style={{ fontSize: 9, textTransform: "none", letterSpacing: "0.04em" }} onClick={() => send(p)} disabled={pending}>
+                {p}
+              </button>
+            ))}
           </div>
         )}
-        {messages.map((m) => <ChatBubble key={m.id} msg={m} />)}
-        {pending && <ChatBubble msg={{ id: "pending", role: "assistant", content: "", pending: true }} />}
-      </div>
 
-      {/* Suggested prompts */}
-      {messages.length === 0 && (
-        <div style={{ position: "relative", padding: "0 24px 12px", display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {SUGGESTED_PROMPTS.map((p) => (
-            <button
-              key={p}
-              className="chip"
-              onClick={() => send(p)}
-              disabled={pending}
-              style={{ fontSize: 11 }}
-            >
-              {p}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Input */}
-      <div style={{
-        position: "relative",
-        padding: "12px 24px 18px",
-        borderTop: "1px solid var(--ink)",
-        display: "flex", gap: 12, alignItems: "flex-end",
-      }}>
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send(input);
-            }
-          }}
-          placeholder="ask the coach… (⏎ to send, ⇧⏎ for newline)"
-          disabled={pending}
-          rows={1}
-          style={{
-            flex: 1,
-            background: "transparent",
-            border: "none",
-            borderBottom: "1px solid var(--ink)",
-            padding: "8px 4px",
-            font: "15px var(--font-body)",
-            color: "var(--ink)",
-            outline: "none",
-            resize: "none",
-            minHeight: 36,
-            maxHeight: 140,
-            fontFamily: "var(--font-body)",
-          }}
-        />
-        {pending ? (
-          <button className="chip" onClick={cancel} style={{ background: "var(--blaze)", color: "var(--paper)", borderColor: "var(--blaze)" }}>
-            cancel ⏹
-          </button>
-        ) : (
-          <button
-            className="chip"
-            onClick={() => send(input)}
-            disabled={!input.trim()}
-            style={{
-              background: input.trim() ? "var(--ink)" : "transparent",
-              color: input.trim() ? "var(--paper)" : "var(--ink-mute)",
-              cursor: input.trim() ? "pointer" : "not-allowed",
+        {/* input */}
+        <div style={{ borderTop: "1px solid var(--edge)", padding: "10px 14px", display: "flex", gap: 10, alignItems: "flex-end", background: "var(--night-deep)" }}>
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send(input);
+              }
             }}
-          >
-            send ⏎
-          </button>
-        )}
+            placeholder="ask the coach…"
+            disabled={pending}
+            rows={1}
+            style={{
+              flex: 1, background: "transparent", border: "none", outline: "none", resize: "none",
+              padding: "6px 2px", font: "13px var(--font-body)", color: "var(--mist)",
+              minHeight: 30, maxHeight: 120,
+            }}
+          />
+          {pending ? (
+            <button className="chip" onClick={cancel} style={{ borderColor: "var(--ember)", color: "var(--ember)" }}>stop</button>
+          ) : (
+            <button
+              className="chip"
+              onClick={() => send(input)}
+              disabled={!input.trim()}
+              style={{
+                background: input.trim() ? "var(--lamp)" : "transparent",
+                borderColor: input.trim() ? "var(--lamp)" : "var(--edge-bright)",
+                color: input.trim() ? "var(--night)" : "var(--mist-mute)",
+                cursor: input.trim() ? "pointer" : "not-allowed",
+              }}
+            >send ⏎</button>
+          )}
+        </div>
       </div>
+    </aside>
+  );
+}
+
+function FlagsRow({ flags }: { flags: Flag[] }) {
+  if (flags.length === 0) {
+    return (
+      <div style={{ padding: "10px 18px", borderBottom: "1px solid var(--edge)" }}>
+        <span className="eyebrow" style={{ color: "var(--pine)" }}>● all systems green</span>
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: "10px 18px 12px", borderBottom: "1px solid var(--edge)" }}>
+      <div className="eyebrow" style={{ fontSize: 8.5, marginBottom: 8 }}>flags · computed locally</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {flags.map((f, i) => (
+          <motion.div
+            key={i}
+            initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.05 }}
+            title={f.detail}
+            style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 11.5, lineHeight: 1.45 }}
+          >
+            <span style={{ width: 3, alignSelf: "stretch", background: SEVERITY_COLOR[f.severity], flexShrink: 0 }} />
+            <div style={{ minWidth: 0 }}>
+              <span className="eyebrow" style={{ fontSize: 8.5, color: SEVERITY_COLOR[f.severity] }}>{f.label}</span>
+              <div style={{ color: "var(--mist-dim)", marginTop: 1 }}>{f.detail}</div>
+            </div>
+          </motion.div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ReadoutBlock({ agent, missing, open, setOpen, facts }: {
+  agent: AgentReadout | null; missing: boolean;
+  open: boolean; setOpen: (b: boolean) => void;
+  facts: CoachFacts;
+}) {
+  if (!agent) {
+    return (
+      <div style={{ padding: "12px 18px", borderBottom: "1px solid var(--edge)" }}>
+        <span className="eyebrow" style={{ fontSize: 8.5 }}>readout · awaiting</span>
+        <p style={{ fontSize: 12, color: "var(--mist-mute)", marginTop: 6, lineHeight: 1.5 }}>
+          {missing
+            ? <>No agent readout for this snapshot yet — hit <span style={{ color: "var(--lamp)" }}>resync</span> (runs <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>claude -p</code> on your subscription) or <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>npm run coach</code>.</>
+            : "loading…"}
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div style={{ borderBottom: "1px solid var(--edge)" }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{ width: "100%", padding: "11px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", textAlign: "left" }}
+      >
+        <span className="eyebrow" style={{ fontSize: 8.5 }}>readout · {new Date(agent.generated_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).toLowerCase()}</span>
+        <span className="eyebrow" style={{ fontSize: 9, color: "var(--lamp)" }}>{open ? "− collapse" : "+ expand"}</span>
+      </button>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.28, ease: [0.2, 0.7, 0.2, 1] }}
+            style={{ overflow: "hidden" }}
+          >
+            <div style={{ padding: "0 18px 14px" }}>
+              <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--mist)", whiteSpace: "pre-wrap" }}>{agent.summary}</p>
+              {agent.watch_outs && agent.watch_outs.length > 0 && (
+                <>
+                  <div className="eyebrow" style={{ fontSize: 8.5, margin: "12px 0 5px", color: "var(--lamp)" }}>watch-outs</div>
+                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, lineHeight: 1.55, color: "var(--mist-dim)" }}>
+                    {agent.watch_outs.map((w, i) => <li key={i}>{w}</li>)}
+                  </ul>
+                </>
+              )}
+              {agent.recommendations && agent.recommendations.length > 0 && (
+                <>
+                  <div className="eyebrow" style={{ fontSize: 8.5, margin: "12px 0 5px", color: "var(--pine)" }}>recommendations</div>
+                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, lineHeight: 1.55, color: "var(--mist-dim)" }}>
+                    {agent.recommendations.map((r, i) => <li key={i}>{r}</li>)}
+                  </ul>
+                </>
+              )}
+              {facts.recent_tags.length > 0 && (
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 12 }}>
+                  {facts.recent_tags.map((t, i) => (
+                    <span key={i} className="eyebrow" style={{ fontSize: 8, border: "1px dashed var(--edge-bright)", padding: "2px 6px", color: "var(--mist-mute)" }}>
+                      {t.label}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -3022,43 +1335,28 @@ function ChatBubble({ msg }: { msg: ChatMessage }) {
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.25 }}
+      initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}
       style={{ display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start" }}
     >
-      <div style={{
-        display: "flex", alignItems: "center", gap: 8, marginBottom: 4,
-        flexDirection: isUser ? "row-reverse" : "row",
-      }}>
-        <span className="eyebrow" style={{
-          fontSize: 9,
-          color: isError ? "var(--blaze)" : isUser ? "var(--blaze)" : "var(--moss-deep)",
-        }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3, flexDirection: isUser ? "row-reverse" : "row" }}>
+        <span className="eyebrow" style={{ fontSize: 8, color: isError ? "var(--ember)" : isUser ? "var(--mist-mute)" : "var(--lamp)" }}>
           {isUser ? "you" : isError ? "error" : "coach"}
         </span>
         {msg.meta?.num_turns != null && (
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-mute)" }}>
-            {msg.meta.num_turns} turns
-            {msg.meta.cost_usd != null && ` · $${msg.meta.cost_usd.toFixed(3)}`}
+          <span className="numerals" style={{ fontSize: 8.5, color: "var(--mist-mute)" }}>
+            {msg.meta.num_turns} turns{msg.meta.cost_usd != null && ` · $${msg.meta.cost_usd.toFixed(3)}`}
           </span>
         )}
       </div>
       <div style={{
-        maxWidth: "92%",
-        padding: msg.pending ? "10px 14px" : "10px 14px",
-        background: isUser
-          ? "var(--ink)"
-          : isError
-            ? "rgba(196, 57, 29, 0.08)"
-            : "var(--paper-fade)",
-        color: isUser ? "var(--paper-fade)" : isError ? "var(--blaze)" : "var(--ink)",
-        border: isUser ? "1px solid var(--ink)" : isError ? "1px solid var(--blaze)" : "1px solid var(--ink-mute)",
-        fontFamily: isUser ? "var(--font-body)" : "var(--font-body)",
-        fontSize: 14,
-        lineHeight: 1.55,
-        whiteSpace: "pre-wrap",
-        wordBreak: "break-word",
+        maxWidth: "94%",
+        padding: "9px 12px",
+        background: isUser ? "var(--panel-raise)" : isError ? "rgba(240, 102, 77, 0.08)" : "var(--night-deep)",
+        border: `1px solid ${isUser ? "var(--edge-bright)" : isError ? "var(--ember)" : "var(--edge)"}`,
+        borderLeft: isUser ? undefined : `2px solid ${isError ? "var(--ember)" : "var(--lamp)"}`,
+        color: isError ? "var(--ember)" : "var(--mist)",
+        fontSize: 12.5, lineHeight: 1.55,
+        whiteSpace: "pre-wrap", wordBreak: "break-word",
       }}>
         {msg.pending ? <TypingDots /> : msg.content}
       </div>
@@ -3072,151 +1370,68 @@ function TypingDots() {
       {[0, 1, 2].map((i) => (
         <motion.span
           key={i}
-          animate={{ opacity: [0.3, 1, 0.3] }}
+          animate={{ opacity: [0.25, 1, 0.25] }}
           transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.18 }}
-          style={{
-            width: 6, height: 6, borderRadius: "50%",
-            background: "var(--ink-mute)",
-            display: "inline-block",
-          }}
+          style={{ width: 5, height: 5, background: "var(--lamp)", display: "inline-block", transform: "rotate(45deg)" }}
         />
       ))}
     </span>
   );
 }
 
-function Plan() {
-  const u = useUnits();
-  const { currentWeek } = useStrava();
-  const { data: state, missing: stateMissing } = usePersistentState();
-  const { missing: agentMissing } = useAgentReadout();
+/* ------------------------------------------------------------------ */
+/*  Connection strips + footer setup drawer                            */
+/* ------------------------------------------------------------------ */
 
-  // Prefer persisted state.plan_blocks (agent-managed, survives across runs).
-  // Fall back to planned targets from state.block.targets, then to hardcoded
-  // BLOCK_TARGETS while everything is loading.
-  const targets = state?.block?.targets ?? BLOCK_TARGETS;
-  const totalWeeks = state?.block?.total_weeks ?? TOTAL_WEEKS;
-
-  const fallback: PlanBlock[] = useMemo(() => {
-    const start = Math.min(totalWeeks, currentWeek + 1);
-    const end = Math.min(totalWeeks, currentWeek + 6);
-    return targets.slice(start - 1, end).map((b) => ({
-      wk: b.wk,
-      label: b.wk === totalWeeks ? "Race week" : "Planned",
-      dist_mi: b.target_dist,
-      elev_ft: b.target_elev,
-      focus: "Awaiting agent recommendations — run `npm run coach` for live focus.",
-    }));
-  }, [currentWeek, targets, totalWeeks]);
-
-  const stateBlocks = state?.plan_blocks ?? null;
-  const blocks: PlanBlock[] = stateBlocks && stateBlocks.length > 0 ? stateBlocks : fallback;
-  const source = stateBlocks && stateBlocks.length > 0
-    ? `persisted · ${state?.last_updated ? new Date(state.last_updated).toLocaleDateString("en-US", { month: "short", day: "2-digit" }) : "agent"}`
-    : agentMissing || stateMissing
-      ? "fallback · planned targets only"
-      : "loading…";
-
+function ConnectStrip({ kind }: { kind: "oura" | "google" }) {
+  const copy = kind === "oura"
+    ? { label: "ring not connected", text: "Sleep, readiness, HRV and resting HR via Oura's OAuth2 — setup runs locally.", target: "setup-oura" }
+    : { label: "calendar not connected", text: "Google Calendar gives the coach schedule context — travel, races, work blocks.", target: "setup-google" };
+  const scroll = () => {
+    const el = document.getElementById(copy.target);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    el.dispatchEvent(new CustomEvent("almanac:open"));
+  };
   return (
-    <section id="plan" className="sec-pad" style={{ paddingTop: 96, paddingBottom: 96 }}>
-      <div className="container">
-        <div className="section-head" style={{ marginBottom: 28 }}>
-          <div>
-            <span className="eyebrow">§ VI · The Plan</span>
-            <h2 className="display display-section" style={{ margin: "4px 0 0" }}>
-              The <em style={{ color: "var(--blaze)" }}>weeks</em> ahead.
-            </h2>
-          </div>
-          <span className="eyebrow" style={{ color: stateBlocks && stateBlocks.length > 0 ? "var(--moss)" : "var(--ink-mute)" }}>
-            <span style={{
-              display: "inline-block", width: 7, height: 7, borderRadius: "50%",
-              background: stateBlocks && stateBlocks.length > 0 ? "var(--moss)" : "var(--blaze)",
-              marginRight: 8, verticalAlign: "1px",
-            }} />
-            {source}
-          </span>
-        </div>
-
-        <div className="double-rule" style={{ marginBottom: 36 }} />
-
-        <div className="plan-grid">
-          {blocks.map((w, i) => {
-            const offset = w.wk - currentWeek;
-            const tag = offset === 1 ? "next"
-                      : w.wk === totalWeeks ? "RACE"
-                      : `in ${offset} wks`;
-            const accent = offset === 1 ? "var(--blaze)"
-                         : w.wk === totalWeeks ? "var(--blaze)"
-                         : "var(--ink-mute)";
-            return (
-              <motion.div
-                key={w.wk}
-                initial={{ opacity: 0, y: 18 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ duration: 0.5, delay: i * 0.06 }}
-                className="card"
-                style={{ padding: 22, position: "relative" }}
-              >
-                <ContourBackdrop seed={w.wk} opacity={0.16} />
-                <div style={{ position: "relative" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                    <span className="eyebrow">week {w.wk}</span>
-                    <span className="eyebrow" style={{ color: accent, letterSpacing: w.wk === totalWeeks ? "0.22em" : undefined }}>
-                      {tag}
-                    </span>
-                  </div>
-                  <div className="display-roman" style={{ fontSize: 26, marginTop: 8, lineHeight: 1.05 }}>
-                    {w.label}
-                  </div>
-                  <p style={{ fontSize: 13, color: "var(--ink-soft)", marginTop: 8, lineHeight: 1.5 }}>{w.focus}</p>
-                  {w.key_session && (
-                    <div style={{
-                      marginTop: 10,
-                      padding: "8px 10px",
-                      border: "1px dashed var(--ink-mute)",
-                      background: "rgba(196, 57, 29, 0.04)",
-                      fontSize: 12,
-                      lineHeight: 1.45,
-                    }}>
-                      <span className="eyebrow" style={{ fontSize: 9, color: "var(--blaze)" }}>key session</span>
-                      <div style={{ marginTop: 2, fontFamily: "var(--font-mono)", color: "var(--ink)" }}>
-                        {w.key_session}
-                      </div>
-                    </div>
-                  )}
-                  <div className="rule" style={{ margin: "18px 0 12px" }} />
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-                    <MiniStat label={u.distUnit} value={u.dist(w.dist_mi, 0)} />
-                    <MiniStat label={`${u.elevUnit}↑`} value={u.elev(w.elev_ft)} />
-                    <MiniStat label="Q" value={w.quality ?? "—"} />
-                  </div>
-                </div>
-              </motion.div>
-            );
-          })}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function MiniStat({ label, value }: { label: string; value: number | string }) {
-  return (
-    <div>
-      <span className="eyebrow" style={{ fontSize: 9 }}>{label}</span>
-      <div className="numerals" style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-0.03em" }}>
-        {typeof value === "number" ? value.toLocaleString() : value}
-      </div>
+    <div style={{
+      marginTop: 8, padding: "10px 16px", border: "1px dashed var(--edge-bright)",
+      display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap",
+    }}>
+      <span className="eyebrow" style={{ color: "var(--lamp)" }}>◆ {copy.label}</span>
+      <span style={{ fontSize: 12, color: "var(--mist-mute)", flex: 1, minWidth: 200 }}>{copy.text}</span>
+      <button className="chip" onClick={scroll} style={{ borderColor: "var(--lamp)", color: "var(--lamp)" }}>set up ↓</button>
     </div>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Footer colophon                                                    */
-/* ------------------------------------------------------------------ */
+const codeChip: React.CSSProperties = {
+  background: "var(--night-deep)",
+  border: "1px solid var(--edge)",
+  padding: "1px 6px",
+  fontFamily: "var(--font-mono)",
+  fontSize: 11,
+};
+const codeBlock: React.CSSProperties = {
+  background: "var(--night-deep)",
+  padding: 10,
+  border: "1px solid var(--edge)",
+  fontFamily: "var(--font-mono)",
+  fontSize: 11.5,
+  marginTop: 6,
+  overflow: "auto",
+  color: "var(--mist-dim)",
+};
+const olStyle: React.CSSProperties = {
+  fontSize: 13,
+  lineHeight: 1.7,
+  color: "var(--mist-dim)",
+  paddingLeft: 20,
+  margin: 0,
+};
+const linkLamp: React.CSSProperties = { color: "var(--lamp)", textDecoration: "underline" };
 
-function SetupAccordion() {
+function SetupDrawer() {
   const strava = useStrava();
   const stravaOk = strava.activities.length > 0 && !strava.error;
   const { connected: ouraOk } = useOura();
@@ -3227,8 +1442,6 @@ function SetupAccordion() {
   const ouraRef = useRef<HTMLLIElement | null>(null);
   const googleRef = useRef<HTMLLIElement | null>(null);
 
-  // External triggers: SchedulePanel + BodyPanel buttons dispatch
-  // "almanac:open" on the respective accordion row to expand it.
   useEffect(() => {
     const oel = ouraRef.current;
     const gel = googleRef.current;
@@ -3246,26 +1459,19 @@ function SetupAccordion() {
     key: "strava" | "oura" | "google" | "coach";
     title: string;
     connected: boolean;
-    note: string;
     render: () => React.ReactNode;
   }[] = [
     {
       key: "strava",
       title: "Strava",
       connected: stravaOk,
-      note: stravaOk ? "connected" : "click to set up",
       render: () => (
         <ol style={olStyle}>
           <li>
-            Set up the strava-mcp client (one time). The repo: <a href="https://github.com/r-huijts/strava-mcp" target="_blank" rel="noopener noreferrer" style={linkBlaze}>r-huijts/strava-mcp ↗</a>
+            Set up the strava-mcp client (one time): <a href="https://github.com/r-huijts/strava-mcp" target="_blank" rel="noopener noreferrer" style={linkLamp}>r-huijts/strava-mcp ↗</a>
           </li>
-          <li>
-            Confirm credentials saved at <code style={codeChip}>~/.config/strava-mcp/config.json</code>.
-          </li>
-          <li>
-            Pull data from <code style={codeChip}>web/</code>:
-            <pre style={codeBlock}>npm run sync:strava</pre>
-          </li>
+          <li>Confirm credentials saved at <code style={codeChip}>~/.config/strava-mcp/config.json</code>.</li>
+          <li>Pull data from <code style={codeChip}>web/</code>:<pre style={codeBlock}>npm run sync:strava</pre></li>
         </ol>
       ),
     },
@@ -3273,15 +1479,12 @@ function SetupAccordion() {
       key: "oura",
       title: "Oura ring",
       connected: ouraOk,
-      note: ouraOk ? "connected" : "click to set up",
       render: () => (
         <ol style={olStyle}>
           <li>
             Register an app:{" "}
-            <a href="https://cloud.ouraring.com/oauth/applications" target="_blank" rel="noopener noreferrer" style={linkBlaze}>
-              cloud.ouraring.com/oauth/applications ↗
-            </a>
-            <div style={{ marginTop: 6, color: "var(--ink-mute)", fontSize: 13 }}>
+            <a href="https://cloud.ouraring.com/oauth/applications" target="_blank" rel="noopener noreferrer" style={linkLamp}>cloud.ouraring.com/oauth/applications ↗</a>
+            <div style={{ marginTop: 6, color: "var(--mist-mute)", fontSize: 12 }}>
               redirect URI: <code style={codeChip}>http://localhost:5174/oura-callback</code><br />
               scopes: <code style={codeChip}>daily heartrate tag personal</code>
             </div>
@@ -3294,14 +1497,8 @@ function SetupAccordion() {
   "redirectUri": "http://localhost:5174/oura-callback"
 }`}</pre>
           </li>
-          <li>
-            Authorize once (opens browser):
-            <pre style={codeBlock}>npm run auth:oura</pre>
-          </li>
-          <li>
-            Pull data anytime:
-            <pre style={codeBlock}>npm run sync:oura</pre>
-          </li>
+          <li>Authorize once (opens browser):<pre style={codeBlock}>npm run auth:oura</pre></li>
+          <li>Pull data anytime:<pre style={codeBlock}>npm run sync:oura</pre></li>
         </ol>
       ),
     },
@@ -3309,22 +1506,16 @@ function SetupAccordion() {
       key: "google",
       title: "Google Calendar",
       connected: googleOk,
-      note: googleOk ? "connected" : "click to set up",
       render: () => (
         <ol style={olStyle}>
           <li>
             Enable the Calendar API for your GCP project:{" "}
-            <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener noreferrer" style={linkBlaze}>
-              calendar-json.googleapis.com ↗
-            </a>
+            <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener noreferrer" style={linkLamp}>calendar-json.googleapis.com ↗</a>
           </li>
-          <li>
-            Configure the OAuth consent screen (External, testing mode is fine) and add
-            your own email under "Test users".
-          </li>
+          <li>Configure the OAuth consent screen (External, testing mode is fine) and add your own email under "Test users".</li>
           <li>
             Create an OAuth 2.0 Client ID (Web application):
-            <div style={{ marginTop: 6, color: "var(--ink-mute)", fontSize: 13 }}>
+            <div style={{ marginTop: 6, color: "var(--mist-mute)", fontSize: 12 }}>
               redirect URI: <code style={codeChip}>http://localhost:5174/google-callback</code><br />
               scopes: <code style={codeChip}>calendar.readonly</code>
             </div>
@@ -3333,18 +1524,12 @@ function SetupAccordion() {
             Save the client credentials to <code style={codeChip}>~/.config/google/config.json</code>:
             <pre style={codeBlock}>{`{ "clientId": "...", "clientSecret": "...",
   "redirectUri": "http://localhost:5174/google-callback" }`}</pre>
-            <div style={{ marginTop: 6, color: "var(--ink-mute)", fontSize: 13 }}>
+            <div style={{ marginTop: 6, color: "var(--mist-mute)", fontSize: 12 }}>
               (or export <code style={codeChip}>GOOGLE_CAL_API_CLIENT_ID</code> / <code style={codeChip}>GOOGLE_CAL_API_CLIENT_SECRET</code> as env vars)
             </div>
           </li>
-          <li>
-            Authorize once (opens browser, writes tokens to <code style={codeChip}>~/.config/google/tokens.json</code>):
-            <pre style={codeBlock}>npm run auth:google</pre>
-          </li>
-          <li>
-            Pull events anytime:
-            <pre style={codeBlock}>npm run sync:google</pre>
-          </li>
+          <li>Authorize once (opens browser, writes tokens to <code style={codeChip}>~/.config/google/tokens.json</code>):<pre style={codeBlock}>npm run auth:google</pre></li>
+          <li>Pull events anytime:<pre style={codeBlock}>npm run sync:google</pre></li>
         </ol>
       ),
     },
@@ -3352,39 +1537,35 @@ function SetupAccordion() {
       key: "coach",
       title: "Claude coach",
       connected: coachOk,
-      note: coachOk ? "readout generated" : "click to set up",
       render: () => (
         <ol style={olStyle}>
           <li>
             Make sure the Claude Code CLI is installed and logged in:
             <pre style={codeBlock}>claude --version</pre>
-            <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
-              Uses your existing Claude Code subscription via headless <code style={codeChip}>claude -p</code> — no API key needed. Same pattern as <code style={codeChip}>agent-trade</code>.
+            <span style={{ fontSize: 12, color: "var(--mist-mute)" }}>
+              Uses your existing Claude Code subscription via headless <code style={codeChip}>claude -p</code> — no API key needed.
             </span>
           </li>
           <li>
             From <code style={codeChip}>web/</code> run:
             <pre style={codeBlock}>npm run coach</pre>
-            <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
-              Computes deterministic facts → writes them to a temp file → spawns <code style={codeChip}>claude -p</code> with Read tool access → captures the JSON output → writes <code style={codeChip}>web/public/coach.json</code>. The dashboard auto-loads it.
+            <span style={{ fontSize: 12, color: "var(--mist-mute)" }}>
+              Computes deterministic facts → spawns <code style={codeChip}>claude -p</code> with Read access → writes <code style={codeChip}>web/public/coach.json</code>. The dashboard auto-loads it.
             </span>
           </li>
-          <li>
-            Or chain it after a sync:
-            <pre style={codeBlock}>npm run sync:all && npm run coach</pre>
-          </li>
+          <li>Or chain it after a sync:<pre style={codeBlock}>npm run sync:all && npm run coach</pre></li>
         </ol>
       ),
     },
   ];
 
   return (
-    <div style={{ marginTop: 36 }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12 }}>
-        <span className="eyebrow">Connections · click to expand</span>
-        <span className="eyebrow" style={{ color: "var(--ink-mute)" }}>tokens stay local</span>
+    <footer style={{ marginTop: 40, borderTop: "1px solid var(--edge)", paddingTop: 18 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 6 }}>
+        <span className="eyebrow">connections · tokens stay local</span>
+        <span className="eyebrow" style={{ fontSize: 8.5 }}>basecamp · set in bricolage grotesque + spline sans mono</span>
       </div>
-      <ul style={{ listStyle: "none", padding: 0, margin: 0, borderTop: "1px solid var(--ink)" }}>
+      <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
         {items.map((it) => {
           const isOpen = open === it.key;
           return (
@@ -3392,66 +1573,34 @@ function SetupAccordion() {
               key={it.key}
               ref={it.key === "oura" ? ouraRef : it.key === "google" ? googleRef : undefined}
               id={`setup-${it.key}`}
-              style={{ borderBottom: "1px solid var(--ink)" }}
+              style={{ borderBottom: "1px solid var(--edge)" }}
             >
               <button
                 onClick={() => setOpen(isOpen ? null : it.key)}
-                style={{
-                  width: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "14px 0",
-                  cursor: "pointer",
-                  background: "transparent",
-                  textAlign: "left",
-                }}
+                style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", textAlign: "left" }}
               >
-                <span style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                  <span
-                    aria-hidden
-                    style={{
-                      display: "inline-block",
-                      transform: isOpen ? "rotate(45deg)" : "rotate(0deg)",
-                      transition: "transform 220ms",
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 14,
-                      color: "var(--blaze)",
-                      width: 12,
-                    }}
-                  >+</span>
-                  <span className="display-roman" style={{ fontSize: 24, fontStyle: "italic", lineHeight: 1 }}>
-                    {it.title}
-                  </span>
-                  <span
-                    className="eyebrow"
-                    style={{
-                      display: "inline-flex", alignItems: "center", gap: 6,
-                      color: it.connected ? "var(--moss)" : "var(--blaze)",
-                    }}
-                  >
-                    <span style={{
-                      width: 7, height: 7, borderRadius: "50%",
-                      background: it.connected ? "var(--moss)" : "var(--blaze)",
-                      display: "inline-block",
-                    }} />
-                    {it.note}
+                <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <span aria-hidden style={{
+                    display: "inline-block", width: 12,
+                    transform: isOpen ? "rotate(45deg)" : "rotate(0deg)", transition: "transform 200ms",
+                    fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--lamp)",
+                  }}>+</span>
+                  <span className="display" style={{ fontSize: 16, fontWeight: 600 }}>{it.title}</span>
+                  <span className="eyebrow" style={{ fontSize: 8.5, display: "inline-flex", alignItems: "center", gap: 6, color: it.connected ? "var(--pine)" : "var(--lamp)" }}>
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: it.connected ? "var(--pine)" : "var(--lamp)", display: "inline-block" }} />
+                    {it.connected ? "connected" : "set up"}
                   </span>
                 </span>
-                <span className="eyebrow">{isOpen ? "hide" : "show"} steps</span>
+                <span className="eyebrow" style={{ fontSize: 8.5 }}>{isOpen ? "hide" : "show"}</span>
               </button>
               <AnimatePresence initial={false}>
                 {isOpen && (
                   <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: "auto", opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.32, ease: [0.2, 0.7, 0.2, 1] }}
+                    initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.3, ease: [0.2, 0.7, 0.2, 1] }}
                     style={{ overflow: "hidden" }}
                   >
-                    <div style={{ padding: "8px 0 28px 26px", maxWidth: 720 }}>
-                      {it.render()}
-                    </div>
+                    <div style={{ padding: "4px 0 24px 24px", maxWidth: 680 }}>{it.render()}</div>
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -3459,96 +1608,38 @@ function SetupAccordion() {
           );
         })}
       </ul>
-    </div>
-  );
-}
-
-const olStyle: React.CSSProperties = {
-  fontSize: 14,
-  lineHeight: 1.7,
-  color: "var(--ink)",
-  paddingLeft: 20,
-  margin: 0,
-};
-const linkBlaze: React.CSSProperties = { color: "var(--blaze)", textDecoration: "underline" };
-
-function Colophon() {
-  return (
-    <footer style={{ borderTop: "1px solid var(--ink)", paddingTop: 36, paddingBottom: 48 }}>
-      <div className="container">
-        <div className="footer-grid">
-          <div>
-            <div className="display-roman" style={{ fontSize: 28, fontStyle: "italic" }}>Trail Almanac</div>
-            <p style={{ fontSize: 13, color: "var(--ink-mute)", marginTop: 8, lineHeight: 1.5, maxWidth: 320 }}>
-              A field-journal dashboard for ultra training. Local-hosted. Strava-fed. Coached by an
-              agent that remembers your block.
-            </p>
-          </div>
-          <FooterCol title="Sources" items={["Strava API", "Oura ring v2", "claude-code"]} />
-          <FooterCol title="Status" items={["live · 4f2", "sync 12m ago", "v 0.1.0"]} />
-        </div>
-        <SetupAccordion />
-        <div className="double-rule" style={{ marginTop: 36, marginBottom: 16 }} />
-        <div style={{ display: "flex", justifyContent: "space-between" }}>
-          <span className="eyebrow">© trail almanac · mogollon bound · 2026</span>
-          <span className="eyebrow">set in fraunces · instrument · jet brains</span>
-        </div>
+      <div style={{ display: "flex", justifyContent: "space-between", padding: "14px 0 0" }}>
+        <span className="eyebrow" style={{ fontSize: 8.5 }}>© basecamp · mogollon bound · 2026</span>
+        <span className="eyebrow" style={{ fontSize: 8.5 }}>strava · oura · google calendar · claude code</span>
       </div>
     </footer>
   );
 }
 
-function FooterCol({ title, items }: { title: string; items: string[] }) {
-  return (
-    <div>
-      <span className="eyebrow">{title}</span>
-      <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0" }}>
-        {items.map((it) => (
-          <li key={it} style={{ fontSize: 13, color: "var(--ink-soft)", padding: "4px 0", borderBottom: "1px dotted var(--ink-mute)" }}>
-            {it}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 /* ------------------------------------------------------------------ */
-/*  App                                                                */
+/*  App shell                                                          */
 /* ------------------------------------------------------------------ */
 
 function AppBody() {
-  const { key, syncing } = useRefresh();
+  const { key } = useRefresh();
   return (
     <>
-      <Masthead />
-      <div style={{ position: "relative" }}>
-        <AnimatePresence>
-          {syncing && (
-            <motion.div
-              initial={{ scaleX: 0 }}
-              animate={{ scaleX: 1 }}
-              exit={{ scaleX: 0, transformOrigin: "right" }}
-              transition={{ duration: 0.9, ease: "easeInOut" }}
-              style={{
-                position: "fixed",
-                top: 56, left: 0, right: 0,
-                height: 2,
-                background: "var(--blaze)",
-                transformOrigin: "left",
-                zIndex: 60,
-              }}
-            />
-          )}
-        </AnimatePresence>
-        <Hero />
-        <div key={`stats-${key}`}><StatsPanel /></div>
-        <div key={`body-${key}`}><BodyPanel /></div>
-        <div key={`sched-${key}`}><SchedulePanel /></div>
-        <div key={`log-${key}`}><ActivityLog /></div>
-        <CoachReadout />
-        <Plan />
-        <Colophon />
+      <CommandBar />
+      <div className="shell">
+        <div className="ops-grid">
+          {/* main column */}
+          <main style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
+            <RaceRibbon />
+            <div key={`vitals-${key}`}><VitalsBand /></div>
+            <div key={`traj-${key}`}><Trajectory /></div>
+            <div key={`road-${key}`}><RoadAhead /></div>
+            <div key={`log-${key}`}><LogTable /></div>
+            <SetupDrawer />
+          </main>
+
+          {/* the coach — persistent rail */}
+          <AgentRail />
+        </div>
       </div>
     </>
   );
