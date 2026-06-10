@@ -585,10 +585,34 @@ function SleepStagesInline() {
 /*  Trajectory — cumulative actual vs plan, the centerpiece chart      */
 /* ------------------------------------------------------------------ */
 
+function useMeasuredWidth() {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      setWidth(entries[0].contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return { ref, width };
+}
+
+function weekDates(wk: number): string {
+  const start = new Date(new Date("2026-04-27T00:00:00").getTime() + (wk - 1) * 7 * 86400_000);
+  const end = new Date(start.getTime() + 6 * 86400_000);
+  const f = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase();
+  return `${f(start)} – ${f(end)}`;
+}
+
 function Trajectory() {
   const u = useUnits();
   const { weekly, currentWeek } = useStrava();
   const [view, setView] = useState<"dist" | "elev">("dist");
+  const [hoverWk, setHoverWk] = useState<number | null>(null); // 0-indexed
+  const { ref: measureRef, width } = useMeasuredWidth();
 
   const data = useMemo(() => {
     const cumTarget: number[] = [];
@@ -620,17 +644,41 @@ function Trajectory() {
   const ahead = deltaPct >= 0;
   const lineColor = ahead ? "var(--pine)" : "var(--ember)";
 
-  const W = 100, H = 40;
+  /* ---- pixel geometry: no viewBox stretching, so text stays crisp ---- */
+  const H = 280;
+  const PAD = { top: 26, right: 16, bottom: 26, left: 16 };
+  const plotW = Math.max(0, width - PAD.left - PAD.right);
+  const plotH = H - PAD.top - PAD.bottom;
   const maxY = Math.max(totalTarget, projectedFinal) * 1.05;
-  const xAt = (i: number) => (i / (TOTAL_WEEKS - 1)) * W;
-  const yAt = (v: number) => H - (v / maxY) * (H - 4);
+  const xAt = (i: number) => PAD.left + (i / (TOTAL_WEEKS - 1)) * plotW;
+  const yAt = (v: number) => PAD.top + (1 - v / maxY) * plotH;
 
-  const targetPath = data.cumTarget.map((v, i) => `${i === 0 ? "M" : "L"} ${xAt(i).toFixed(2)} ${yAt(v).toFixed(2)}`).join(" ");
+  const targetPath = data.cumTarget.map((v, i) => `${i === 0 ? "M" : "L"} ${xAt(i).toFixed(1)} ${yAt(v).toFixed(1)}`).join(" ");
   const actualPath = data.cumActual
-    .map((v, i) => (v == null ? "" : `${i === 0 ? "M" : "L"} ${xAt(i).toFixed(2)} ${yAt(v).toFixed(2)}`))
+    .map((v, i) => (v == null ? "" : `${i === 0 ? "M" : "L"} ${xAt(i).toFixed(1)} ${yAt(v).toFixed(1)}`))
     .join(" ").replace(/^L/, "M");
 
   const todayX = xAt(currentWeek - 1);
+
+  /* ---- hover: snap to nearest week ---- */
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const i = Math.round(((x - PAD.left) / Math.max(1, plotW)) * (TOTAL_WEEKS - 1));
+    setHoverWk(Math.max(0, Math.min(TOTAL_WEEKS - 1, i)));
+  };
+
+  const hover = hoverWk != null ? {
+    i: hoverWk,
+    x: xAt(hoverWk),
+    plan: data.cumTarget[hoverWk],
+    actual: data.cumActual[hoverWk],
+    wkTarget: view === "dist" ? BLOCK_TARGETS[hoverWk].target_dist : BLOCK_TARGETS[hoverWk].target_elev,
+    wkActual: hoverWk < currentWeek ? (view === "dist" ? weekly[hoverWk].dist_mi : weekly[hoverWk].elev_ft) : null,
+  } : null;
+  const hoverDelta = hover && hover.actual != null && hover.plan > 0
+    ? ((hover.actual - hover.plan) / hover.plan) * 100 : null;
+  const tipOnLeft = hover != null && width > 0 && hover.x > width * 0.62;
 
   const stats: { label: string; value: string; color?: string }[] = [
     { label: "expected", value: `${fmt(expectedToday)} ${unit}` },
@@ -667,49 +715,124 @@ function Trajectory() {
           ))}
         </div>
 
-        <div style={{ position: "relative", padding: "18px 20px 8px" }}>
-          <svg viewBox={`0 0 ${W} ${H + 6}`} preserveAspectRatio="none" style={{ display: "block", width: "100%", height: 270 }}>
-            {[0.25, 0.5, 0.75, 1].map((f) => (
-              <line key={f} x1="0" x2={W} y1={H - f * (H - 4)} y2={H - f * (H - 4)} stroke="var(--edge)" strokeWidth="0.1" strokeDasharray="0.6 1" />
-            ))}
-            {Array.from({ length: TOTAL_WEEKS }).map((_, i) => (
-              <line key={i} x1={xAt(i)} x2={xAt(i)} y1={H} y2={H + ((i + 1) % 4 === 0 ? 2 : 1)} stroke="var(--edge-bright)" strokeWidth="0.12" />
-            ))}
+        <div ref={measureRef} style={{ position: "relative", padding: "6px 4px 2px" }}>
+          {width > 0 && (
+            <svg
+              width={width} height={H} style={{ display: "block", cursor: "crosshair" }}
+              onMouseMove={onMove} onMouseLeave={() => setHoverWk(null)}
+            >
+              {/* horizontal grid */}
+              {[0.25, 0.5, 0.75, 1].map((f) => (
+                <line key={f} x1={PAD.left} x2={width - PAD.right} y1={yAt(maxY * f / 1.05)} y2={yAt(maxY * f / 1.05)}
+                  stroke="var(--edge)" strokeWidth="1" strokeDasharray="2 5" />
+              ))}
+              {/* week ticks */}
+              {Array.from({ length: TOTAL_WEEKS }).map((_, i) => (
+                <line key={i} x1={xAt(i)} x2={xAt(i)} y1={H - PAD.bottom} y2={H - PAD.bottom + ((i + 1) % 5 === 0 || i === 0 ? 6 : 3)}
+                  stroke="var(--edge-bright)" strokeWidth="1" />
+              ))}
+              {/* week axis labels */}
+              {[1, 5, 10, 15, 20].map((w) => (
+                <text key={w} x={xAt(w - 1)} y={H - 6} fontSize="9" fontFamily="Spline Sans Mono" letterSpacing="1"
+                  fill="var(--mist-mute)" textAnchor={w === 1 ? "start" : w === 20 ? "end" : "middle"}>
+                  WK {String(w).padStart(2, "0")}
+                </text>
+              ))}
 
-            {/* plan target */}
-            <motion.path
-              d={targetPath} fill="none" stroke="var(--mist-mute)" strokeWidth="0.28" strokeDasharray="0.7 1.1" opacity="0.8"
-              initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4, ease: "easeOut" }}
-            />
-            {/* actual */}
-            <motion.path
-              d={actualPath} fill="none" stroke={lineColor} strokeWidth="0.6" strokeLinecap="round"
-              initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
-              transition={{ duration: 1.4, ease: [0.2, 0.7, 0.2, 1], delay: 0.2 }}
-            />
-            {/* projection */}
-            <motion.line
-              x1={todayX} y1={yAt(actualToday)} x2={xAt(TOTAL_WEEKS - 1)} y2={yAt(projectedFinal)}
-              stroke={lineColor} strokeWidth="0.22" strokeDasharray="0.5 0.7"
-              initial={{ opacity: 0 }} animate={{ opacity: 0.7 }} transition={{ duration: 0.6, delay: 1.3 }}
-            />
-            {/* today */}
-            <motion.line
-              x1={todayX} x2={todayX} y1="1" y2={H} stroke="var(--lamp)" strokeWidth="0.18"
-              initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 0.6, delay: 1 }}
-            />
-            <text x={todayX + 1} y={3.4} fontSize="1.9" fontFamily="Spline Sans Mono" fill="var(--lamp)">wk {currentWeek} · today</text>
-            <circle cx={todayX} cy={yAt(expectedToday)} r="0.6" fill="var(--mist-mute)" />
-            <circle cx={todayX} cy={yAt(actualToday)} r="0.95" fill={lineColor} stroke="var(--night)" strokeWidth="0.2" />
-            {/* race marker */}
-            <circle cx={W} cy={yAt(totalTarget)} r="0.8" fill="var(--lamp)" />
-            <text x={W - 0.8} y={yAt(totalTarget) - 1.6} fontSize="1.8" fontFamily="Spline Sans Mono" fill="var(--lamp)" textAnchor="end">race</text>
-          </svg>
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, paddingBottom: 8 }}>
-            {[1, 5, 10, 15, 20].map((w) => (
-              <span key={w} className="eyebrow numerals" style={{ fontSize: 8.5 }}>wk {String(w).padStart(2, "0")}</span>
-            ))}
-          </div>
+              {/* plan target */}
+              <motion.path
+                d={targetPath} fill="none" stroke="var(--mist-mute)" strokeWidth="1.2" strokeDasharray="3 5" opacity="0.85"
+                initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4, ease: "easeOut" }}
+              />
+              {/* actual */}
+              <motion.path
+                d={actualPath} fill="none" stroke={lineColor} strokeWidth="2.2" strokeLinecap="round"
+                initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
+                transition={{ duration: 1.4, ease: [0.2, 0.7, 0.2, 1], delay: 0.2 }}
+              />
+              {/* projection */}
+              <motion.line
+                x1={todayX} y1={yAt(actualToday)} x2={xAt(TOTAL_WEEKS - 1)} y2={yAt(projectedFinal)}
+                stroke={lineColor} strokeWidth="1" strokeDasharray="2 4"
+                initial={{ opacity: 0 }} animate={{ opacity: 0.7 }} transition={{ duration: 0.6, delay: 1.3 }}
+              />
+              {/* today */}
+              <motion.line
+                x1={todayX} x2={todayX} y1={PAD.top - 12} y2={H - PAD.bottom} stroke="var(--lamp)" strokeWidth="1"
+                initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 0.6, delay: 1 }}
+              />
+              <text x={todayX + 6} y={PAD.top - 8} fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)">
+                WK {currentWeek} · TODAY
+              </text>
+              <circle cx={todayX} cy={yAt(expectedToday)} r="2.5" fill="var(--mist-mute)" />
+              <circle cx={todayX} cy={yAt(actualToday)} r="3.5" fill={lineColor} stroke="var(--night)" strokeWidth="1" />
+              {/* race marker */}
+              <circle cx={xAt(TOTAL_WEEKS - 1)} cy={yAt(totalTarget)} r="3" fill="var(--lamp)" />
+              <text x={xAt(TOTAL_WEEKS - 1) - 7} y={yAt(totalTarget) - 7} fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)" textAnchor="end">
+                RACE
+              </text>
+
+              {/* hover crosshair */}
+              {hover && (
+                <g>
+                  <line x1={hover.x} x2={hover.x} y1={PAD.top - 4} y2={H - PAD.bottom} stroke="var(--mist-dim)" strokeWidth="1" opacity="0.5" />
+                  <circle cx={hover.x} cy={yAt(hover.plan)} r="3" fill="var(--night)" stroke="var(--mist-dim)" strokeWidth="1.2" />
+                  {hover.actual != null && (
+                    <circle cx={hover.x} cy={yAt(hover.actual)} r="3.5" fill={lineColor} stroke="var(--night)" strokeWidth="1" />
+                  )}
+                </g>
+              )}
+            </svg>
+          )}
+
+          {/* hover tooltip — HTML so it never distorts */}
+          {hover && width > 0 && (
+            <div style={{
+              position: "absolute",
+              top: 30,
+              left: tipOnLeft ? undefined : Math.min(hover.x + 14, width - 230),
+              right: tipOnLeft ? width - hover.x + 14 : undefined,
+              width: 216,
+              background: "var(--night-deep)",
+              border: "1px solid var(--edge-bright)",
+              borderTop: "2px solid var(--lamp)",
+              padding: "10px 12px",
+              pointerEvents: "none",
+              zIndex: 5,
+              boxShadow: "0 8px 28px rgba(0,0,0,0.55)",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--lamp)" }}>
+                  week {String(hover.i + 1).padStart(2, "0")}{hover.i + 1 === currentWeek ? " · now" : hover.i + 1 === TOTAL_WEEKS ? " · race" : ""}
+                </span>
+                <span className="numerals" style={{ fontSize: 9, color: "var(--mist-mute)" }}>{weekDates(hover.i + 1)}</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px", marginTop: 8 }}>
+                <span className="eyebrow" style={{ fontSize: 8 }}>plan · cum</span>
+                <span className="numerals" style={{ fontSize: 12, textAlign: "right" }}>{fmt(hover.plan)} {unit}</span>
+                <span className="eyebrow" style={{ fontSize: 8 }}>actual · cum</span>
+                <span className="numerals" style={{ fontSize: 12, textAlign: "right", color: hover.actual != null ? lineColor : "var(--mist-mute)" }}>
+                  {hover.actual != null ? `${fmt(hover.actual)} ${unit}` : "—"}
+                </span>
+                {hoverDelta != null && (
+                  <>
+                    <span className="eyebrow" style={{ fontSize: 8 }}>delta</span>
+                    <span className="numerals" style={{ fontSize: 12, textAlign: "right", color: hoverDelta >= 0 ? "var(--pine)" : "var(--ember)" }}>
+                      {hoverDelta >= 0 ? "+" : ""}{hoverDelta.toFixed(1)}%
+                    </span>
+                  </>
+                )}
+              </div>
+              <div style={{ borderTop: "1px solid var(--edge)", marginTop: 8, paddingTop: 7, display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px" }}>
+                <span className="eyebrow" style={{ fontSize: 8 }}>wk target</span>
+                <span className="numerals" style={{ fontSize: 11, textAlign: "right", color: "var(--mist-dim)" }}>{fmt(hover.wkTarget)} {unit}</span>
+                <span className="eyebrow" style={{ fontSize: 8 }}>wk actual</span>
+                <span className="numerals" style={{ fontSize: 11, textAlign: "right", color: "var(--mist-dim)" }}>
+                  {hover.wkActual != null ? `${fmt(hover.wkActual)} ${unit}` : "—"}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </section>
