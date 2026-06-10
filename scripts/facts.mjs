@@ -254,9 +254,23 @@ export async function loadFactsFromRoot(projectRoot) {
       summary: cal.summary,
       // Upcoming events for the next 14 days, classified — agent uses these
       // for schedule constraints (travel, races, work blocks, appointments).
+      // All-day starts are date-only strings that Date() parses as UTC
+      // midnight ("past" for most of the local day), so compare those by
+      // local date instead of timestamp.
       upcoming_14d: (cal.events || [])
-        .filter((e) => e.start && new Date(e.start) >= new Date())
-        .filter((e) => new Date(e.start) <= new Date(Date.now() + 14 * 86400_000))
+        .filter((e) => {
+          if (!e.start) return false;
+          const now = new Date();
+          const horizon = new Date(now.getTime() + 14 * 86400_000);
+          if (e.all_day) {
+            const localIso = (d) =>
+              `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+            const day = e.start.slice(0, 10);
+            return day >= localIso(now) && day <= localIso(horizon);
+          }
+          const t = new Date(e.start);
+          return t >= now && t <= horizon;
+        })
         .slice(0, 40)
         .map((e) => ({
           start: e.start,

@@ -21,7 +21,10 @@ import http from "node:http";
 import { exec } from "node:child_process";
 import { readCredentials, loadTokens, saveTokens } from "./google-keys.mjs";
 
-const OUT_PATH = path.join(process.cwd(), "web", "public", "google-cal.json");
+// Resolve from the script location, not cwd — `npm run sync:google` executes
+// from web/, where a cwd-relative path would land in web/web/public/.
+const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const OUT_PATH = path.join(ROOT, "web", "public", "google-cal.json");
 const AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const API = "https://www.googleapis.com/calendar/v3";

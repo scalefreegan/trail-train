@@ -1871,8 +1871,14 @@ function SchedulePanel() {
     if (cal) {
       for (const e of cal.events) {
         if (!e.start) continue;
-        const startMs = new Date(e.start).getTime();
-        if (startMs < now.getTime() - 60 * 60_000) continue;
+        // All-day starts are date-only strings that Date() parses as UTC
+        // midnight — already "past" for most of the local day. Skip the
+        // recency check for them; the slot lookup (today..+13, local dates)
+        // already excludes past days.
+        if (!e.all_day) {
+          const startMs = new Date(e.start).getTime();
+          if (startMs < now.getTime() - 60 * 60_000) continue;
+        }
         const dayIso = e.start.slice(0, 10);
         const slot = out.find((d) => d.date === dayIso);
         if (slot) slot.events.push(e);
