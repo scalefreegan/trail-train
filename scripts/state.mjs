@@ -75,6 +75,14 @@ export const DEFAULT_STATE = {
     weekly_rest_day: "Mon",
     nutrition_target_kcal_per_hour: 300,
     heat_threshold_c: 24,
+    // Plain-English constraints the agent must respect when proposing
+    // sessions. Each entry can reference calendar keywords (event titles
+    // containing "X"), date patterns, time windows, anything. The coach
+    // is instructed to treat these as hard constraints.
+    // Example:
+    //   "Events with 'Family' on the calendar block long training during the day —
+    //    schedule long runs early morning before, or move to another day."
+    personal_constraints: [],
   },
 };
 

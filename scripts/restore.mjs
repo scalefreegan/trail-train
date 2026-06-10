@@ -73,12 +73,16 @@ async function main() {
     { from: "snapshots/strava.json",    to: path.join(ROOT, "web/public/strava.json") },
     { from: "snapshots/oura.json",      to: path.join(ROOT, "web/public/oura.json") },
     { from: "snapshots/coach.json",     to: path.join(ROOT, "web/public/coach.json") },
+    { from: "snapshots/state.json",     to: path.join(ROOT, "web/public/state.json") },
+    { from: "snapshots/google-cal.json", to: path.join(ROOT, "web/public/google-cal.json") },
     { from: "config/profile.json",      to: path.join(ROOT, "config/profile.json") },
   ];
   if (INCLUDE_OAUTH) {
     mapping.push(
       { from: "oauth/strava-mcp.config.json", to: path.join(os.homedir(), ".config/strava-mcp/config.json") },
       { from: "oauth/oura.config.json",       to: path.join(os.homedir(), ".config/oura/config.json") },
+      { from: "oauth/google.tokens.json",     to: path.join(os.homedir(), ".config/google/tokens.json") },
+      { from: "oauth/google.config.json",     to: path.join(os.homedir(), ".config/google/config.json") },
     );
   }
 

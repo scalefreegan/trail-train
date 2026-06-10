@@ -84,6 +84,37 @@ Personal Access Tokens are deprecated — Oura now requires OAuth2.
    npm run sync:oura
    ```
 
+### Google Calendar
+
+The agent uses your calendar for schedule realism — travel days, races,
+work blocks, appointments. Setup mirrors Oura's OAuth dance:
+
+1. Enable the Calendar API for your GCP project:
+   <https://console.cloud.google.com/apis/library/calendar-json.googleapis.com>
+2. Configure the OAuth consent screen (External, testing mode) and add
+   your email under "Test users".
+3. Create an OAuth 2.0 Client ID (Web application):
+   - Redirect URI: `http://localhost:5174/google-callback`
+   - Scope: `calendar.readonly`
+4. Save the client credentials to `~/.config/google/config.json`:
+   ```json
+   { "clientId": "...", "clientSecret": "...", "redirectUri": "http://localhost:5174/google-callback" }
+   ```
+   (or export `GOOGLE_CAL_API_CLIENT_ID` / `GOOGLE_CAL_API_CLIENT_SECRET` as
+   env vars, e.g. in `~/.keys` sourced by your shell — either works)
+5. Authorize once (writes tokens to `~/.config/google/tokens.json`):
+   ```bash
+   npm run auth:google
+   ```
+6. Pull events anytime:
+   ```bash
+   npm run sync:google
+   ```
+
+Events are classified locally (race / travel / appointment / training /
+work / other) and the upcoming 14 days are surfaced to the agent so it
+won't propose a key session on a day you're flying.
+
 ### Claude coach (headless agent)
 
 Uses your local Claude Code CLI (`claude -p`) via your existing subscription —

@@ -35,9 +35,13 @@ const SOURCES = [
   { from: path.join(ROOT, "web/public/strava.json"),                 to: "snapshots/strava.json",       optional: true },
   { from: path.join(ROOT, "web/public/oura.json"),                   to: "snapshots/oura.json",         optional: true },
   { from: path.join(ROOT, "web/public/coach.json"),                  to: "snapshots/coach.json",        optional: true },
+  { from: path.join(ROOT, "web/public/state.json"),                  to: "snapshots/state.json",        optional: true },
+  { from: path.join(ROOT, "web/public/google-cal.json"),             to: "snapshots/google-cal.json",   optional: true },
   { from: path.join(ROOT, "config/profile.json"),                    to: "config/profile.json",         optional: true },
   { from: path.join(os.homedir(), ".config/strava-mcp/config.json"), to: "oauth/strava-mcp.config.json", optional: true, sensitive: true },
   { from: path.join(os.homedir(), ".config/oura/config.json"),       to: "oauth/oura.config.json",       optional: true, sensitive: true },
+  { from: path.join(os.homedir(), ".config/google/tokens.json"),     to: "oauth/google.tokens.json",     optional: true, sensitive: true },
+  { from: path.join(os.homedir(), ".config/google/config.json"),     to: "oauth/google.config.json",     optional: true, sensitive: true },
 ];
 
 async function copyIfExists(from, dest) {
