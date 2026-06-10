@@ -2449,7 +2449,7 @@ function useGoogleCal() {
   useEffect(() => {
     fetch(`/google-cal.json?t=${Date.now()}`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then(setData)
+      .then((d) => { setData(d); setMissing(false); })
       .catch(() => setMissing(true));
   }, [refreshKey]);
   return { data, missing, connected: !!data };
@@ -3324,9 +3324,12 @@ function SetupAccordion() {
             </div>
           </li>
           <li>
-            Export client_id and client_secret as env vars (e.g. in <code style={codeChip}>~/.keys</code> sourced by your shell):
-            <pre style={codeBlock}>{`export GOOGLE_CAL_API_CLIENT_ID=...
-export GOOGLE_CAL_API_CLIENT_SECRET=...`}</pre>
+            Save the client credentials to <code style={codeChip}>~/.config/google/config.json</code>:
+            <pre style={codeBlock}>{`{ "clientId": "...", "clientSecret": "...",
+  "redirectUri": "http://localhost:5174/google-callback" }`}</pre>
+            <div style={{ marginTop: 6, color: "var(--ink-mute)", fontSize: 13 }}>
+              (or export <code style={codeChip}>GOOGLE_CAL_API_CLIENT_ID</code> / <code style={codeChip}>GOOGLE_CAL_API_CLIENT_SECRET</code> as env vars)
+            </div>
           </li>
           <li>
             Authorize once (opens browser, writes tokens to <code style={codeChip}>~/.config/google/tokens.json</code>):

@@ -2,9 +2,9 @@
 // Pulls Google Calendar events for the next 30 days (and last 7 for context)
 // and writes web/public/google-cal.json for the dashboard.
 //
-// Credentials come from env vars in ~/.keys (sourced by your shell):
-//   GOOGLE_CAL_API_CLIENT_ID
-//   GOOGLE_CAL_API_CLIENT_SECRET
+// Credentials come from ~/.config/google/config.json ({ clientId,
+// clientSecret, redirectUri }) or, as a fallback, env vars
+// GOOGLE_CAL_API_CLIENT_ID / GOOGLE_CAL_API_CLIENT_SECRET (see google-keys.mjs).
 //
 // Tokens are stored at ~/.config/google/tokens.json (kept separate from
 // the credential file so the @cocal/google-calendar-mcp server can co-
@@ -180,8 +180,8 @@ function durationMin(ev) {
 function classify(ev) {
   const t = `${ev.summary || ""} ${ev.description || ""} ${ev.location || ""}`.toLowerCase();
   if (/race|50k|50mi|100mi|ultra|marathon|trail run|fkt/.test(t)) return "race";
-  if (/flight|airport|trip|travel|hotel/.test(t)) return "travel";
-  if (/dr\.|doctor|appt|appointment|dentist|pt\b|physio/.test(t)) return "appointment";
+  if (/flight|airport|\btrip\b|travel|hotel/.test(t)) return "travel";
+  if (/dr\.|doctor|appt|appointment|dentist|\bpt\b|physio/.test(t)) return "appointment";
   if (/long run|workout|tempo|intervals?|hill|vert|coach/.test(t)) return "training";
   if (/meeting|standup|sync|call|interview|review/.test(t)) return "work";
   return "other";
