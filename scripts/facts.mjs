@@ -281,6 +281,33 @@ export async function loadFactsFromRoot(projectRoot) {
           location: e.location,
           classification: e.classification,
         })),
+      // Schedule-shaping events over the FULL fetched window (~30 days), not
+      // just 14 — the planner writes 6 weeks of plan_blocks, so a trip or a
+      // recurring family commitment 3 weeks out must be visible. Includes
+      // travel/race/family classifications plus any multi-day all-day block
+      // (a week-long trip often appears as a bare place-name event).
+      upcoming_notable: (() => {
+        const localIso = (d) =>
+          `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        const todayIso = localIso(new Date());
+        return (cal.events || [])
+          .filter((e) => {
+            if (!e.start) return false;
+            const startDay = e.start.slice(0, 10);
+            const endDay = (e.end || e.start).slice(0, 10);
+            if (endDay < todayIso && startDay < todayIso) return false;
+            const multiDay = e.all_day && endDay > startDay;
+            return ["travel", "race", "family"].includes(e.classification) || multiDay;
+          })
+          .slice(0, 30)
+          .map((e) => ({
+            start: e.start,
+            end: e.end,
+            all_day: e.all_day,
+            summary: e.summary,
+            classification: e.classification,
+          }));
+      })(),
     };
   }
   return base;

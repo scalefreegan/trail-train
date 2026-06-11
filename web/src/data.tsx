@@ -510,7 +510,7 @@ export type GCalEvent = {
   all_day: boolean;
   duration_min: number | null;
   location: string | null;
-  classification: "race" | "travel" | "appointment" | "training" | "work" | "other";
+  classification: "race" | "travel" | "appointment" | "training" | "family" | "work" | "other";
   html_link: string | null;
 };
 export type GCalRaw = {

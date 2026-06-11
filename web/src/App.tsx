@@ -848,6 +848,7 @@ const CLASSIFICATION_META: Record<GCalEvent["classification"], { color: string; 
   travel:      { color: "var(--lamp)", tag: "TRVL" },
   appointment: { color: "var(--creek)", tag: "APPT" },
   training:    { color: "var(--pine)", tag: "TRN" },
+  family:      { color: "var(--creek)", tag: "FAM" },
   work:        { color: "var(--mist-mute)", tag: "WORK" },
   other:       { color: "var(--mist-mute)", tag: "···" },
 };

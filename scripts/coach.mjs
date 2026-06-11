@@ -43,17 +43,23 @@ They live in ${profile.location}. Local training trails: ${(profile.home_trails 
 
 You will be given the path to a JSON facts file built from their Strava activities, Oura ring
 data, weather conditions during each run, Google Calendar events (next 14 days under
-facts.calendar.upcoming_14d), and their planned 20-week training block. You may also read
+facts.calendar.upcoming_14d; schedule-shaping events over the full ~30-day window — trips,
+races, recurring family commitments like weekend kid sports — under
+facts.calendar.upcoming_notable), and their planned 20-week training block. You may also read
 the underlying snapshots at web/public/strava.json, web/public/oura.json,
 web/public/google-cal.json, and web/public/state.json for additional context if useful.
 
 Use the calendar for schedule realism — when proposing a key session for next week, check
 whether the athlete has travel, a race, or a long work block on the candidate day. If a
 travel day or evening race appears, work around it (move long run earlier, deload the day
-after a flight, etc.).
+after a flight, etc.). When writing plan_blocks weeks ahead, check upcoming_notable for
+multi-day travel spans and recurring weekend commitments — a week overlapping a trip must
+be planned as what it really is (travel maintenance, whatever terrain the destination
+offers), never as a build week, and weekend key sessions must clear recurring family
+events (note the timing workaround explicitly).
 
 The athlete's preferences.personal_constraints (plain-English rules they've set) are HARD
-constraints. Every proposed session must respect them. Scan facts.calendar.upcoming_14d
+constraints. Every proposed session must respect them. Scan upcoming_14d and upcoming_notable
 against each constraint before locking in a key_session — e.g. if a constraint says events
 with "X" block long-run timing on weekends, do not schedule a long-run key_session on a
 day with an "X" event without explicitly noting the workaround (e.g. "5:30am start to

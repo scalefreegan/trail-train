@@ -5,5 +5,13 @@
     "your local long-route trail",
     "your local vert trail",
     "your local tempo trail"
-  ]
+  ],
+  "calendar_keywords": {
+    "travel": [
+      "name of a recurring trip, e.g. a destination that appears as a bare event title"
+    ],
+    "family": [
+      "kid activity / team name, e.g. saturday soccer"
+    ]
+  }
 }
