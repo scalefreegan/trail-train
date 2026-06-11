@@ -25,6 +25,7 @@ export const useRefresh = () => useContext(RefreshContext);
 export const REFRESH_STEPS: RefreshStep[] = ["strava", "oura", "gcal", "coach"];
 
 export function RefreshProvider({ children }: { children: React.ReactNode }) {
+  const { system } = useUnits();
   const [key, setKey] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(() => Date.now() - 12 * 60 * 1000);
@@ -40,7 +41,12 @@ export function RefreshProvider({ children }: { children: React.ReactNode }) {
     setLastLog("");
 
     try {
-      const res = await fetch("/api/refresh", { method: "POST" });
+      const res = await fetch("/api/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // the coach step generates its readout in the dashboard's units
+        body: JSON.stringify({ units: system }),
+      });
       if (!res.body) throw new Error("no body");
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -93,7 +99,7 @@ export function RefreshProvider({ children }: { children: React.ReactNode }) {
       setKey((k) => k + 1);
       setSyncing(false);
     }
-  }, [syncing]);
+  }, [syncing, system]);
 
   return (
     <RefreshContext.Provider value={{

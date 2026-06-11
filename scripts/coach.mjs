@@ -32,6 +32,10 @@ function arg(name, fallback) {
 }
 const MAX_TURNS = Number(arg("max-turns", 8));
 const TIMEOUT   = Number(arg("timeout",  240));
+// Narrative units for the readout — "imperial" (default) or "metric".
+// Passed by the dashboard's resync endpoint from the live UI toggle, or
+// set manually: `node scripts/coach.mjs --units metric`.
+const UNITS = String(arg("units", process.env.TRAIL_UNITS || "imperial")) === "metric" ? "metric" : "imperial";
 
 
 /* -------- Claude Code CLI subprocess (pattern from agent-trade) -------- */
@@ -95,7 +99,10 @@ When done, respond with ONLY a single JSON object — no prose outside, no markd
 Rules:
 - Every claim anchored in the data. Quote real numbers.
 - If a metric is null, say so — don't fabricate.
-- Imperial units (miles, feet) for run data; Fahrenheit for temperatures. Use 24h time.
+- ${UNITS === "metric"
+    ? "Metric units (kilometers, meters) in all prose; Celsius for temperatures"
+    : "Imperial units (miles, feet) in all prose; Fahrenheit for temperatures"} — this matches the unit system the athlete has selected in the dashboard. The source snapshots may use other units; convert when quoting. Use 24h time.
+- EXCEPTION: the structured JSON fields dist_mi and elev_ft are ALWAYS miles and feet regardless of the prose units — the dashboard converts them for display.
 - No emojis. No platitudes. Direct, specific, useful.
 - The course climbs the rim 6×, max elev 7,912 ft. Heat / altitude / technical descent are the real wildcards.
 

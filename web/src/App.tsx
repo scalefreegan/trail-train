@@ -1173,6 +1173,7 @@ const SUGGESTED_PROMPTS = [
 
 function AgentRail() {
   const { data: agent, missing: agentMissing } = useAgentReadout();
+  const { system } = useUnits();
   const facts = useFacts();
   const [readoutOpen, setReadoutOpen] = useState(true);
 
@@ -1213,7 +1214,11 @@ function AgentRail() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: ctrl.signal,
-        body: JSON.stringify({ messages: newHistory.map((m) => ({ role: m.role, content: m.content })) }),
+        body: JSON.stringify({
+          messages: newHistory.map((m) => ({ role: m.role, content: m.content })),
+          // the coach answers in the dashboard's selected unit system
+          units: system,
+        }),
       });
       if (!res.body) throw new Error("no body");
       const reader = res.body.getReader();
@@ -1259,7 +1264,7 @@ function AgentRail() {
       setStatusLine("");
       abortRef.current = null;
     }
-  }, [messages, pending]);
+  }, [messages, pending, system]);
 
   const cancel = () => {
     abortRef.current?.abort();
