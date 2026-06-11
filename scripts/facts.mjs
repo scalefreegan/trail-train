@@ -295,7 +295,10 @@ export async function loadFactsFromRoot(projectRoot) {
             if (!e.start) return false;
             const startDay = e.start.slice(0, 10);
             const endDay = (e.end || e.start).slice(0, 10);
-            if (endDay < todayIso && startDay < todayIso) return false;
+            // all-day `end` is exclusive per the Google API — an all-day
+            // event whose end equals today already finished yesterday
+            const ended = e.all_day ? endDay <= todayIso : endDay < todayIso;
+            if (ended && startDay < todayIso) return false;
             const multiDay = e.all_day && endDay > startDay;
             return ["travel", "race", "family"].includes(e.classification) || multiDay;
           })

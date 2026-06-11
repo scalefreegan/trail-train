@@ -9,7 +9,7 @@
 
   --mist: #e9efe6;           /* primary text */
   --mist-dim: #a7b5a5;       /* secondary text */
-  --mist-mute: #5f6f60;      /* tertiary / labels */
+  --mist-mute: #758573;      /* tertiary / labels — keep ≥4.5:1 on --night */
 
   --lamp: #ffb454;           /* headlamp amber — primary accent */
   --lamp-deep: #cc7a1f;
@@ -178,15 +178,6 @@ a { color: inherit; }
 }
 .vitals-band > * { background: var(--panel); }
 
-.briefing-grid {
-  display: grid;
-  grid-template-columns: 1.45fr 1fr;
-  gap: 1px;
-  background: var(--edge);
-  border: 1px solid var(--edge);
-}
-.briefing-grid > * { background: var(--panel); }
-
 .horizon-days {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
@@ -208,14 +199,13 @@ a { color: inherit; }
 /* ---- ≤ 1280px: rail drops below ---- */
 @media (max-width: 1280px) {
   .ops-grid { grid-template-columns: 1fr; }
-  .rail-sticky { position: static; height: auto; max-height: 720px; }
+  .rail-sticky { position: static; height: auto; max-height: 720px; overflow-y: auto; }
   .vitals-band { grid-template-columns: repeat(4, 1fr); }
 }
 
 /* ---- ≤ 900px ---- */
 @media (max-width: 900px) {
   .shell { padding: 0 14px 48px; }
-  .briefing-grid { grid-template-columns: 1fr; }
   .horizon-days { grid-template-columns: repeat(7, 1fr); }
   .commandbar-mid { display: none; }
   .log-grid {

@@ -1192,7 +1192,7 @@ function AgentRail() {
   // collapse the readout once a conversation starts, to give chat room
   useEffect(() => {
     if (messages.length > 0) setReadoutOpen(false);
-  }, [messages.length > 0]);
+  }, [messages.length]);
 
   const send = useCallback(async (text: string) => {
     const trimmed = text.trim();
@@ -1429,7 +1429,7 @@ function ReadoutBlock({ agent, missing, open, setOpen, facts }: {
                 <>
                   <div className="eyebrow" style={{ fontSize: 8.5, margin: "12px 0 5px", color: "var(--lamp)" }}>watch-outs</div>
                   <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, lineHeight: 1.55, color: "var(--mist-dim)" }}>
-                    {agent.watch_outs.map((w, i) => <li key={i}>{w}</li>)}
+                    {agent.watch_outs.map((w) => <li key={w}>{w}</li>)}
                   </ul>
                 </>
               )}
@@ -1437,14 +1437,14 @@ function ReadoutBlock({ agent, missing, open, setOpen, facts }: {
                 <>
                   <div className="eyebrow" style={{ fontSize: 8.5, margin: "12px 0 5px", color: "var(--pine)" }}>recommendations</div>
                   <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, lineHeight: 1.55, color: "var(--mist-dim)" }}>
-                    {agent.recommendations.map((r, i) => <li key={i}>{r}</li>)}
+                    {agent.recommendations.map((r) => <li key={r}>{r}</li>)}
                   </ul>
                 </>
               )}
               {facts.recent_tags.length > 0 && (
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 12 }}>
-                  {facts.recent_tags.map((t, i) => (
-                    <span key={i} className="eyebrow" style={{ fontSize: 8, border: "1px dashed var(--edge-bright)", padding: "2px 6px", color: "var(--mist-mute)" }}>
+                  {facts.recent_tags.map((t) => (
+                    <span key={`${t.day}-${t.label}`} className="eyebrow" style={{ fontSize: 8, border: "1px dashed var(--edge-bright)", padding: "2px 6px", color: "var(--mist-mute)" }}>
                       {t.label}
                     </span>
                   ))}
