@@ -1,4 +1,4 @@
-# Trail Almanac
+# Basecamp (née Trail Almanac)
 
 A personal, local-hosted React dashboard for ultra training. Pulls live data
 from Strava and Oura, plots it against a configurable training block, and
@@ -11,22 +11,28 @@ date, and aid stations are real.
 
 ## What's in it
 
-- **§ I · The Numbers** — week/month totals, distance/elevation/time toggle,
-  daily dual sparklines, and a full 20-week block-trajectory chart with
-  actual vs planned cumulative + projection.
-- **§ II · The Body** — Oura sleep score, readiness, HRV, RHR, last night's
-  sleep stages, and recent tags.
-- **§ III · The Log** — every run from Strava, clickable to the activity page,
-  paginated 20 at a time.
-- **§ IV · The Coach** — a deterministic facts panel (acute:chronic load,
-  HRV trend, RHR drift, sleep debt, block delta) **plus** a structured
-  readout from a headless `claude -p` session. Includes an interactive chat
-  pane the agent answers with full data context.
-- **§ V · The Plan** — 6 weeks ahead, each card driven by the agent's
-  `plan_blocks` output with named local-trail key sessions.
+A single integrated ops surface — pre-dawn "basecamp" dark theme, headlamp
+amber accent — instead of a sectioned scroll:
 
-Imperial / metric toggle (persisted), one-click resync that streams progress,
-and topographic backdrop / Fraunces italic display set the aesthetic.
+- **Command bar** — block week, race countdown, streaming resync status, and
+  the imperial/metric toggle, always pinned on top.
+- **Race ribbon** — countdown plus the course elevation profile with aid
+  stations, compressed into one band.
+- **Vitals** — load and recovery in one grammar: 7d distance/vert, ACR,
+  block-vs-plan, readiness, HRV, RHR, sleep — each with a 30-day sparkline
+  and trend delta, plus last night's sleep stages inline.
+- **Trajectory** — the 20-week cumulative actual-vs-plan chart with
+  projection, expected/actual/delta stats embedded in the panel.
+- **The road ahead** — next 14 calendar days (Google Calendar, classified)
+  fused with the agent's next-6-weeks `plan_blocks` and key sessions.
+- **The log** — every Strava run, clickable, paginated.
+- **The coach** — a persistent sticky rail: deterministic flags
+  (acute:chronic load, HRV trend, RHR drift, sleep debt, block delta), the
+  structured readout from a headless `claude -p` session, and the chat —
+  visible alongside everything as you scroll.
+
+Imperial / metric toggle (persisted), one-click resync that streams
+progress; set in Bricolage Grotesque, Archivo, and Spline Sans Mono.
 
 ## Setup
 

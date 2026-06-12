@@ -20,6 +20,16 @@ function refreshApi(): Plugin {
           res.end('POST required')
           return
         }
+        // Optional JSON body: { units: "imperial" | "metric" } — forwarded to
+        // the coach step so the readout speaks the dashboard's unit system.
+        const bodyChunks: Buffer[] = []
+        for await (const c of req) bodyChunks.push(c as Buffer)
+        let units = 'imperial'
+        try {
+          const parsed = JSON.parse(Buffer.concat(bodyChunks).toString('utf8') || '{}')
+          if (parsed.units === 'metric') units = 'metric'
+        } catch {}
+
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache, no-transform',
@@ -45,7 +55,7 @@ function refreshApi(): Plugin {
             send('step', { id: s.id, status: 'start', label: s.label })
             const proc = spawn('node', [path.join(projectRoot, s.script), ...s.args], {
               cwd: projectRoot,
-              env: { ...process.env },
+              env: { ...process.env, TRAIL_UNITS: units },
             })
             let stderrBuf = ''
             proc.stdout.on('data', (d) => {
@@ -95,6 +105,7 @@ const CHAT_SYSTEM = (
   factsPath: string,
   coachPath: string,
   profile: { athlete_name?: string; location?: string; home_trails?: string[] },
+  units: 'imperial' | 'metric' = 'imperial',
 ) => `You are the coach inside Trail Almanac for ${profile.athlete_name || "the athlete"} — an ultrarunner training for the Mogollon Monster 100 (102.3 mi, 15,900 ft, Sept 12, 2026, Pine, AZ). They live in ${profile.location || "their home mountains"}.${profile.home_trails?.length ? ` Local training trails: ${profile.home_trails.join(", ")}.` : ""}
 
 You have full read access to:
@@ -118,7 +129,9 @@ Use the Read tool to look up specifics. Ground every claim in the data — quote
 Response rules:
   - Be concise. 1-3 short paragraphs unless the user explicitly asks for more depth.
   - Plain text. No markdown headers, no bullet bloat. Inline bullets ok where natural.
-  - Imperial units (miles, feet); Fahrenheit for temperatures. 24h time.
+  - ${units === 'metric'
+      ? 'Metric units (kilometers, meters); Celsius for temperatures'
+      : 'Imperial units (miles, feet); Fahrenheit for temperatures'} — this is the unit system the athlete has selected in the dashboard. Source snapshots may store other units; convert when quoting numbers. 24h time.
   - No emojis. No filler. Direct, specific, useful.
   - When unsure or data missing, say so. Don't fabricate.
   - Address the athlete in second person.
@@ -140,6 +153,7 @@ function chatApi(): Plugin {
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
         catch { res.statusCode = 400; res.end('bad json'); return }
         const messages = body.messages || []
+        const chatUnits: 'imperial' | 'metric' = (body as any).units === 'metric' ? 'metric' : 'imperial'
         if (!messages.length) { res.statusCode = 400; res.end('no messages'); return }
 
         // Compute facts → write to temp file the agent can Read
@@ -178,7 +192,7 @@ function chatApi(): Plugin {
         const profile = await import(path.join(projectRoot, 'scripts/facts.mjs'))
           .then((m: any) => m.loadProfile(projectRoot))
           .catch(() => ({}))
-        const sysPrompt = CHAT_SYSTEM(factsPath, coachPath, profile)
+        const sysPrompt = CHAT_SYSTEM(factsPath, coachPath, profile, chatUnits)
         send('start', { facts_path: factsPath })
 
         const proc = spawn('claude', [

@@ -180,12 +180,40 @@ function durationMin(ev) {
   return Math.max(0, Math.round((e - s) / 60_000));
 }
 
-function classify(ev) {
+// Personal keyword → classification overrides from config/profile.json, e.g.
+//   "calendar_keywords": { "travel": ["alabama"], "family": ["hawthorn"] }
+// Checked before the built-in patterns so personal naming wins (a trip named
+// after a place, a kid's team name, …).
+async function loadKeywordRules() {
+  for (const p of [
+    path.join(ROOT, "config", "profile.json"),
+    path.join(ROOT, "config", "profile.example.json"),
+  ]) {
+    try {
+      const profile = JSON.parse(await fs.readFile(p, "utf8"));
+      const kw = profile.calendar_keywords;
+      if (!kw || typeof kw !== "object") return [];
+      return Object.entries(kw).flatMap(([classification, words]) =>
+        (Array.isArray(words) ? words : []).map((w) => ({
+          word: String(w).toLowerCase(),
+          classification,
+        }))
+      );
+    } catch {}
+  }
+  return [];
+}
+
+function classify(ev, rules = []) {
   const t = `${ev.summary || ""} ${ev.description || ""} ${ev.location || ""}`.toLowerCase();
+  for (const r of rules) {
+    if (t.includes(r.word)) return r.classification;
+  }
   if (/race|50k|50mi|100mi|ultra|marathon|trail run|fkt/.test(t)) return "race";
   if (/flight|airport|\btrip\b|travel|hotel/.test(t)) return "travel";
   if (/dr\.|doctor|appt|appointment|dentist|\bpt\b|physio/.test(t)) return "appointment";
   if (/long run|workout|tempo|intervals?|hill|vert|coach/.test(t)) return "training";
+  if (/soccer|practice|recital|playdate|birthday|school event/.test(t)) return "family";
   if (/meeting|standup|sync|call|interview|review/.test(t)) return "work";
   return "other";
 }
@@ -207,6 +235,7 @@ async function main() {
   console.log(`• fetching ${CAL_ID} events ${timeMin.slice(0,10)} → ${timeMax.slice(0,10)}…`);
 
   const raw = await fetchEvents(token, CAL_ID, timeMin, timeMax);
+  const keywordRules = await loadKeywordRules();
   const events = raw
     .filter((e) => e.status !== "cancelled")
     .map((e) => ({
@@ -219,7 +248,7 @@ async function main() {
       duration_min: durationMin(e),
       location: e.location || null,
       attendees_count: Array.isArray(e.attendees) ? e.attendees.length : 0,
-      classification: classify(e),
+      classification: classify(e, keywordRules),
       html_link: e.htmlLink || null,
     }));
 
@@ -239,14 +268,27 @@ async function main() {
     past_events: events.filter((e) => e.start && new Date(e.start) < now).length,
     upcoming_events: upcoming.length,
     races_upcoming: upcoming.filter((e) => e.classification === "race").length,
-    travel_days_upcoming: [
-      ...new Set(
-        upcoming
-          .filter((e) => e.classification === "travel")
-          .map((e) => (e.start || "").slice(0, 10))
-          .filter(Boolean)
-      ),
-    ],
+    travel_days_upcoming: (() => {
+      // Expand multi-day travel events (all-day spans like a week-long trip)
+      // into every covered day, not just the start date. All-day `end` is
+      // exclusive per the Google API. Include ongoing trips (end > now).
+      const days = new Set();
+      const todayIso = localIso(now);
+      for (const e of events) {
+        if (e.classification !== "travel" || !e.start) continue;
+        const startDay = e.start.slice(0, 10);
+        const endDay = (e.end || e.start).slice(0, 10);
+        if (e.all_day && endDay > startDay) {
+          for (let d = new Date(startDay + "T12:00:00"); localIso(d) < endDay; d = new Date(d.getTime() + 86400_000)) {
+            const iso = localIso(d);
+            if (iso >= todayIso) days.add(iso);
+          }
+        } else if (startDay >= todayIso) {
+          days.add(startDay);
+        }
+      }
+      return [...days].sort();
+    })(),
   };
 
   const payload = {
