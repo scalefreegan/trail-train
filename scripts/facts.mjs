@@ -299,7 +299,10 @@ export async function loadFactsFromRoot(projectRoot) {
             // event whose end equals today already finished yesterday
             const ended = e.all_day ? endDay <= todayIso : endDay < todayIso;
             if (ended && startDay < todayIso) return false;
-            const multiDay = e.all_day && endDay > startDay;
+            // exclusive ends also mean a single-day all-day event has
+            // end = start + 1; only 2+ covered days suggests a trip
+            const multiDay =
+              e.all_day && (Date.parse(endDay) - Date.parse(startDay)) / 86400_000 > 1;
             return ["travel", "race", "family"].includes(e.classification) || multiDay;
           })
           .slice(0, 30)
