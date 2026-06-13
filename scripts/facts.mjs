@@ -83,6 +83,89 @@ const weekIndexFor = (date, blockStart) => {
 const C_TO_F = (c) => c * 9 / 5 + 32;
 
 /**
+ * Fit a personal pacing model from the athlete's own runs so the coach can
+ * estimate how long a proposed session will actually take. Moving pace rises
+ * with vert-per-distance (climbing is slow) and with total distance (fatigue),
+ * which is exactly where a flat-road assumption breaks — an 18mi/4000ft day is
+ * not the same 3h as 18mi on the bike path.
+ *
+ * Model: moving_s_per_mi ≈ base + kVert·(vert_ft_per_mi) + kDist·(dist_mi),
+ * fit by ordinary least squares (3x3 normal equations, no deps) over every run
+ * ≥2mi with a moving time. Returns null if too few runs to fit.
+ *
+ * @param {{distance_mi:number, elevation_ft:number, moving_s:number}[]} acts
+ */
+function fitPacing(acts) {
+  const rows = acts
+    .filter((a) => a.distance_mi >= 2 && a.moving_s > 0 && a.elevation_ft != null)
+    .map((a) => ({
+      vfpm: a.elevation_ft / a.distance_mi,   // vert ft per mile
+      dmi: a.distance_mi,
+      y: a.moving_s / a.distance_mi,           // moving s per mile
+    }));
+  if (rows.length < 8) return null;
+
+  // 3x3 normal equations for features [1, vfpm, dmi]
+  const Sxx = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  const Sxy = [0, 0, 0];
+  for (const { vfpm, dmi, y } of rows) {
+    const f = [1, vfpm, dmi];
+    for (let i = 0; i < 3; i++) {
+      Sxy[i] += f[i] * y;
+      for (let j = 0; j < 3; j++) Sxx[i][j] += f[i] * f[j];
+    }
+  }
+  // Gaussian elimination with partial pivoting on the augmented matrix
+  const M = Sxx.map((row, i) => [...row, Sxy[i]]);
+  for (let c = 0; c < 3; c++) {
+    let p = c;
+    for (let r = c + 1; r < 3; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]];
+    if (Math.abs(M[c][c]) < 1e-9) return null; // singular — not enough spread
+    const piv = M[c][c];
+    M[c] = M[c].map((x) => x / piv);
+    for (let r = 0; r < 3; r++) {
+      if (r === c) continue;
+      const fac = M[r][c];
+      M[r] = M[r].map((x, k) => x - fac * M[c][k]);
+    }
+  }
+  const [base, kVert, kDist] = [M[0][3], M[1][3], M[2][3]];
+  const predict = (vfpm, dmi) => base + kVert * vfpm + kDist * dmi;
+
+  // residual spread, as a ± confidence band the coach can quote
+  const resid = rows.map((r) => r.y - predict(r.vfpm, r.dmi));
+  const residStd = Math.sqrt(sumNum(resid.map((e) => e * e)) / resid.length);
+
+  // Reference grid spanning the athlete's real terrain (flat → steep) and
+  // session lengths, so the agent can read off / interpolate a duration
+  // without doing the regression arithmetic itself.
+  const reference = [];
+  for (const dmi of [6, 10, 13, 18, 26]) {
+    for (const vfpm of [50, 150, 250, 350]) {
+      const s = predict(vfpm, dmi);
+      reference.push({
+        distance_mi: dmi,
+        vert_ft: Math.round(vfpm * dmi),
+        vert_ft_per_mi: vfpm,
+        pace_min_per_mi: +(s / 60).toFixed(1),
+        moving_h: +(s * dmi / 3600).toFixed(2),
+      });
+    }
+  }
+
+  return {
+    basis: `fit from ${rows.length} runs ≥2mi (Strava moving time)`,
+    model: "moving_s_per_mi = base + kVert·vert_ft_per_mi + kDist·dist_mi",
+    base_pace_min_per_mi: +(base / 60).toFixed(2),
+    add_min_per_mi_per_100ft_vert_per_mi: +(kVert * 100 / 60).toFixed(2),
+    add_min_per_mi_per_10mi_distance: +(kDist * 10 / 60).toFixed(2),
+    fit_error_min_per_mi: +(residStd / 60).toFixed(2),
+    reference,
+  };
+}
+
+/**
  * @param {object} strava   — parsed strava.json
  * @param {object|null} oura — parsed oura.json
  * @param {object} state    — loaded state.json (provides block targets, race meta)
@@ -203,6 +286,7 @@ export function computeFacts(strava, oura, state) {
         temp_max_f: +C_TO_F(a.weather.temp_max_c).toFixed(0),
       })),
     },
+    pacing: fitPacing(acts),
     recovery: oura ? {
       hrv_d7:  hrv_d7  != null ? +hrv_d7.toFixed(1)  : null,
       hrv_d28: hrv_d28 != null ? +hrv_d28.toFixed(1) : null,
