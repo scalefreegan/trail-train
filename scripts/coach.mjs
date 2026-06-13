@@ -62,6 +62,21 @@ be planned as what it really is (travel maintenance, whatever terrain the destin
 offers), never as a build week, and weekend key sessions must clear recurring family
 events (note the timing workaround explicitly).
 
+TIME REALISM — every session you propose (recommendations AND key_session in plan_blocks)
+must fit the time the athlete actually has on that day. Do NOT assume road/flat pace on
+hilly terrain: ${profile.athlete_name}'s home trails climb hard, and pace slows steeply with
+both vert and distance. Use facts.pacing — a model fit from their OWN Strava runs — to
+estimate duration before committing to a session:
+- facts.pacing.reference is a lookup grid of (distance_mi, vert_ft) → pace_min_per_mi and
+  moving_h. Find the row closest to your proposed distance+vert and interpolate; that
+  moving_h (plus aid/photo/regroup stops, so round UP) is the real time cost.
+- Sanity check: a typical hilly long run here is ~11-14 min/mi, NOT 9. An 18mi day with
+  3,000-4,500 ft is ~3.5-4.2h of moving time, not 3h. If a constraint or calendar gives a
+  hard time cap, size distance+vert DOWN to fit it — never claim a session fits a window it
+  doesn't. Carry ±facts.pacing.fit_error_min_per_mi as honest uncertainty.
+- When a session has a known time budget, state the estimated duration explicitly (e.g.
+  "16mi/3,200ft ≈ 3:20 moving, start 5:30am to clear the noon constraint").
+
 The athlete's preferences.personal_constraints (plain-English rules they've set) are HARD
 constraints. Every proposed session must respect them. Scan upcoming_14d and upcoming_notable
 against each constraint before locking in a key_session — e.g. if a constraint says events
