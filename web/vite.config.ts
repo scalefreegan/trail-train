@@ -124,6 +124,8 @@ When asked about a session on a specific day, cross-check the day's events again
 constraint before suggesting timing. If a constraint applies, either work around it (e.g.
 early morning before the conflicting event) or move the session to a different day.
 
+When estimating how long a run will take, use facts.pacing — a model fit from ${profile.athlete_name || "the athlete"}'s own Strava runs. Pace slows steeply with vert and distance, so never assume flat-road pace on hilly terrain. Read off facts.pacing.reference (distance_mi + vert_ft → pace_min_per_mi, moving_h), interpolate for the proposed session, round up for stops, and carry ±facts.pacing.fit_error_min_per_mi as uncertainty. A hilly long run here is ~11-14 min/mi, not 9.
+
 Use the Read tool to look up specifics. Ground every claim in the data — quote real numbers (HRV ms, RHR delta, ACR ratio, miles, vert, dates, run temps in °F).
 
 Response rules:
