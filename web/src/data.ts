@@ -40,8 +40,10 @@ export type UnitsCtx = {
   // value formatters (input always in imperial source units)
   dist: (mi: number, digits?: number) => string;       // raw number string
   elev: (ft: number) => string;
+  temp: (f: number) => string;                          // raw number string
   distUnit: string;                                     // "mi" | "km"
   elevUnit: string;                                     // "ft" | "m"
+  tempUnit: string;                                     // "°F" | "°C"
   paceUnit: string;                                     // "/mi" | "/km"
   paceFmt: (sec: number, mi: number) => string;        // "8:42"
   // raw converters (for charts / math)
@@ -105,6 +107,7 @@ export type Activity = {
   strava_url?: string;
   temp_max_f?: number | null;
   temp_avg_f?: number | null;
+  apparent_avg_f?: number | null;  // heat index / feels-like, avg over the activity
   humidity_avg?: number | null;
 };
 

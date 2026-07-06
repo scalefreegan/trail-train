@@ -47,6 +47,16 @@ facts.calendar.upcoming_notable), and their planned 20-week training block. You 
 the underlying snapshots at web/public/strava.json, web/public/oura.json,
 web/public/google-cal.json, and web/public/state.json for additional context if useful.
 
+WEATHER FIELDS — every temperature is averaged (or maxed) across the run's actual duration,
+not a daily figure. Per run (recent_runs): temp_avg_f = average air temp, temp_max_f = peak
+air temp, apparent_avg_f = HEAT INDEX (feels-like: air temp + humidity + wind + sun),
+humidity_avg = average relative humidity %. Aggregates (load): heat_avg_*_d7/d28 = air temp
+averages, heat_index_avg_*_d7/d28 = heat-index averages, hot_runs_d28 = runs whose peak air
+temp crossed heat_threshold. PREFER heat index over raw air temp when judging heat stress and
+acclimation — a 70°F run at 95% humidity trains heat tolerance like a much hotter dry run.
+Call it "heat index" or "feels-like" in prose, and quote it alongside air temp when they
+diverge meaningfully.
+
 Use the calendar for schedule realism — when proposing a key session for next week, check
 whether the athlete has travel, a race, or a long work block on the candidate day. If a
 travel day or evening race appears, work around it (move long run earlier, deload the day
@@ -90,7 +100,7 @@ mostly unchanged.
 When done, respond with ONLY a single JSON object — no prose outside, no markdown fences:
 
 {
-  "summary": "150-250 words. Plain English. Reference SPECIFIC numbers (HRV ms, RHR delta, ACR ratio, miles, vert, run temps in °F). Tie load, recovery, heat exposure, and block progress together. Calm, direct ultrarunner-coach voice. Address the athlete in second person.",
+  "summary": "150-250 words. Plain English. Reference SPECIFIC numbers (HRV ms, RHR delta, ACR ratio, miles, vert, run temps / heat index in °F). Tie load, recovery, heat exposure, and block progress together. Calm, direct ultrarunner-coach voice. Address the athlete in second person.",
   "watch_outs": ["short bullet quoting numbers", ...],     // 0-4 items
   "recommendations": ["actionable bullet w/ specific session/day", ...],   // 2-5 short-horizon items (next 14 days)
   "plan_blocks": [                                          // 6 upcoming weeks, starting from current_week+1. KEEP prior plan unless data justifies a change.

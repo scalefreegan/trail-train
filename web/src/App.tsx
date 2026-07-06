@@ -1108,11 +1108,19 @@ function LogTable() {
               )}
               <span className="numerals" style={{ fontSize: 9.5, color: "var(--mist-mute)", display: "flex", gap: 8, marginTop: 2 }}>
                 {a.start_time_local && <span>{a.start_time_local}</span>}
-                {a.temp_max_f != null && (
+                {a.temp_avg_f != null && (
                   <span
-                    title={`max ${a.temp_max_f}°F · avg ${a.temp_avg_f}°F${a.humidity_avg != null ? ` · ${a.humidity_avg}% rh` : ""}`}
-                    style={{ color: a.temp_max_f >= 75 ? "var(--ember)" : a.temp_max_f <= 40 ? "var(--creek)" : "var(--mist-mute)" }}
-                  >{a.temp_max_f}°F</span>
+                    title={[
+                      `avg ${u.temp(a.temp_avg_f)}${u.tempUnit}`,
+                      a.temp_max_f != null ? `max ${u.temp(a.temp_max_f)}${u.tempUnit}` : null,
+                      a.apparent_avg_f != null ? `feels ${u.temp(a.apparent_avg_f)}${u.tempUnit}` : null,
+                      a.humidity_avg != null ? `${a.humidity_avg}% rh` : null,
+                    ].filter(Boolean).join(" · ")}
+                    style={{ color: (a.apparent_avg_f ?? a.temp_avg_f) >= 75 ? "var(--ember)" : (a.apparent_avg_f ?? a.temp_avg_f) <= 40 ? "var(--creek)" : "var(--mist-mute)" }}
+                  >
+                    {u.temp(a.temp_avg_f)}{u.tempUnit}
+                    {a.apparent_avg_f != null && Math.abs(a.apparent_avg_f - a.temp_avg_f) >= 2 && ` · feels ${u.temp(a.apparent_avg_f)}${u.tempUnit}`}
+                  </span>
                 )}
               </span>
             </div>

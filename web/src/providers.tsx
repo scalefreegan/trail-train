@@ -139,6 +139,8 @@ export function UnitsProvider({ children }: { children: React.ReactNode }) {
       distUnit: metric ? "km" : "mi",
       elevUnit: metric ? "m" : "ft",
       paceUnit: metric ? "/km" : "/mi",
+      tempUnit: metric ? "°C" : "°F",
+      temp: (f) => String(Math.round(metric ? (f - 32) * 5 / 9 : f)),
       dist: (mi, digits = 1) => distVal(mi).toLocaleString("en-US", {
         minimumFractionDigits: digits, maximumFractionDigits: digits,
       }),
@@ -235,6 +237,7 @@ export function StravaProvider({ children }: { children: React.ReactNode }) {
       strava_url: a.strava_url,
       temp_max_f: a.weather?.temp_max_c != null ? cToF(a.weather.temp_max_c) : null,
       temp_avg_f: a.weather?.temp_avg_c != null ? cToF(a.weather.temp_avg_c) : null,
+      apparent_avg_f: a.weather?.apparent_avg_c != null ? cToF(a.weather.apparent_avg_c) : null,
       humidity_avg: a.weather?.humidity_avg ?? null,
     }));
 

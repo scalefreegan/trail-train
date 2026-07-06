@@ -196,6 +196,8 @@ export function computeFacts(strava, oura, state) {
   const tempsWithWeather28 = d28.map((a) => a.weather?.temp_avg_c).filter((v) => typeof v === "number");
   const heat_avg_c_d7  = avgNum(tempsWithWeather7);
   const heat_avg_c_d28 = avgNum(tempsWithWeather28);
+  const heat_index_avg_c_d7  = avgNum(d7.map((a) => a.weather?.apparent_avg_c).filter((v) => typeof v === "number"));
+  const heat_index_avg_c_d28 = avgNum(d28.map((a) => a.weather?.apparent_avg_c).filter((v) => typeof v === "number"));
   const hotRunsD28 = d28.filter((a) => (a.weather?.temp_max_c ?? -Infinity) >= heatThresholdC);
   const heat_max_c_d28 = d28
     .map((a) => a.weather?.temp_max_c)
@@ -278,12 +280,17 @@ export function computeFacts(strava, oura, state) {
       heat_avg_c_d28:   heat_avg_c_d28 != null ? +heat_avg_c_d28.toFixed(1) : null,
       heat_max_c_d28:   Number.isFinite(heat_max_c_d28) ? +heat_max_c_d28.toFixed(1) : null,
       heat_max_f_d28:   Number.isFinite(heat_max_c_d28) ? +C_TO_F(heat_max_c_d28).toFixed(0) : null,
+      heat_index_avg_c_d7:  heat_index_avg_c_d7  != null ? +heat_index_avg_c_d7.toFixed(1)  : null,
+      heat_index_avg_f_d7:  heat_index_avg_c_d7  != null ? +C_TO_F(heat_index_avg_c_d7).toFixed(0)  : null,
+      heat_index_avg_c_d28: heat_index_avg_c_d28 != null ? +heat_index_avg_c_d28.toFixed(1) : null,
+      heat_index_avg_f_d28: heat_index_avg_c_d28 != null ? +C_TO_F(heat_index_avg_c_d28).toFixed(0) : null,
       hot_runs_d28:     hotRunsD28.length,
       hot_runs_d28_details: hotRunsD28.slice(0, 5).map((a) => ({
         date: a.date.slice(0, 10),
         title: a.title,
         temp_max_c: a.weather.temp_max_c,
         temp_max_f: +C_TO_F(a.weather.temp_max_c).toFixed(0),
+        apparent_avg_f: a.weather.apparent_avg_c != null ? +C_TO_F(a.weather.apparent_avg_c).toFixed(0) : null,
       })),
     },
     pacing: fitPacing(acts),
