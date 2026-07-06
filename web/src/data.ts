@@ -1,4 +1,9 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
+
+/* ------------------------------------------------------------------ */
+/*  Contexts + hooks + helpers. The provider components live in        */
+/*  providers.tsx (react-refresh needs component-only files).          */
+/* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
 /*  Refresh context — drives a "resync everything" pulse               */
@@ -15,102 +20,14 @@ export type RefreshCtx = {
   lastLog: string;
   refresh: () => void;
 };
-const RefreshContext = createContext<RefreshCtx>({
-  key: 0, syncing: false, lastSync: Date.now(),
+export const RefreshContext = createContext<RefreshCtx>({
+  key: 0, syncing: false, lastSync: 0,
   status: {}, currentStep: null, lastLog: "",
   refresh: () => {},
 });
 export const useRefresh = () => useContext(RefreshContext);
 
 export const REFRESH_STEPS: RefreshStep[] = ["strava", "oura", "gcal", "coach"];
-
-export function RefreshProvider({ children }: { children: React.ReactNode }) {
-  const { system } = useUnits();
-  const [key, setKey] = useState(0);
-  const [syncing, setSyncing] = useState(false);
-  const [lastSync, setLastSync] = useState(() => Date.now() - 12 * 60 * 1000);
-  const [status, setStatus] = useState<Partial<Record<RefreshStep, StepStatus>>>({});
-  const [currentStep, setCurrentStep] = useState<RefreshStep | null>(null);
-  const [lastLog, setLastLog] = useState("");
-
-  const refresh = useCallback(async () => {
-    if (syncing) return;
-    setSyncing(true);
-    setStatus({ strava: "pending", oura: "pending", gcal: "pending", coach: "pending" });
-    setCurrentStep(null);
-    setLastLog("");
-
-    try {
-      const res = await fetch("/api/refresh", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // the coach step generates its readout in the dashboard's units
-        body: JSON.stringify({ units: system }),
-      });
-      if (!res.body) throw new Error("no body");
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-
-      const parseEvent = (block: string) => {
-        const lines = block.split("\n");
-        let evt = "message", data = "";
-        for (const l of lines) {
-          if (l.startsWith("event:")) evt = l.slice(6).trim();
-          else if (l.startsWith("data:")) data += l.slice(5).trim();
-        }
-        if (!data) return;
-        let payload: any;
-        try { payload = JSON.parse(data); } catch { return; }
-        if (evt === "step") {
-          const s = payload.id as RefreshStep;
-          if (payload.status === "start") {
-            setCurrentStep(s);
-            setStatus((prev) => ({ ...prev, [s]: "running" }));
-            setLastLog(payload.label || `running ${s}`);
-          } else if (payload.status === "done") {
-            setStatus((prev) => ({ ...prev, [s]: "done" }));
-          } else if (payload.status === "error") {
-            setStatus((prev) => ({ ...prev, [s]: "error" }));
-          }
-        } else if (evt === "log") {
-          setLastLog(payload.line);
-        } else if (evt === "done") {
-          if (payload.ok) setLastSync(Date.now());
-          setCurrentStep(null);
-        }
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf("\n\n")) >= 0) {
-          const block = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          parseEvent(block);
-        }
-      }
-    } catch (e) {
-      setLastLog(`error: ${(e as Error).message}`);
-    } finally {
-      // bump key so subscribers refetch /strava.json etc
-      setKey((k) => k + 1);
-      setSyncing(false);
-    }
-  }, [syncing, system]);
-
-  return (
-    <RefreshContext.Provider value={{
-      key, syncing, lastSync,
-      status, currentStep, lastLog,
-      refresh,
-    }}>
-      {children}
-    </RefreshContext.Provider>
-  );
-}
 
 /* ------------------------------------------------------------------ */
 /*  Units context — imperial / metric toggle                           */
@@ -132,71 +49,47 @@ export type UnitsCtx = {
   elevVal: (ft: number) => number;
 };
 
-const MI_TO_KM = 1.609344;
-const FT_TO_M = 0.3048;
-
-const UnitsContext = createContext<UnitsCtx | null>(null);
+export const UnitsContext = createContext<UnitsCtx | null>(null);
 export const useUnits = () => {
   const v = useContext(UnitsContext);
   if (!v) throw new Error("UnitsProvider missing");
   return v;
 };
 
-export function UnitsProvider({ children }: { children: React.ReactNode }) {
-  const [system, setSystem] = useState<System>(() =>
-    (typeof localStorage !== "undefined" && (localStorage.getItem("units") as System)) || "imperial"
-  );
-  const toggle = useCallback(() => {
-    setSystem((s) => {
-      const next = s === "imperial" ? "metric" : "imperial";
-      try { localStorage.setItem("units", next); } catch {}
-      return next;
-    });
-  }, []);
-
-  const value = useMemo<UnitsCtx>(() => {
-    const metric = system === "metric";
-    const distVal = (mi: number) => (metric ? mi * MI_TO_KM : mi);
-    const elevVal = (ft: number) => (metric ? ft * FT_TO_M : ft);
-    return {
-      system,
-      toggle,
-      distVal,
-      elevVal,
-      distUnit: metric ? "km" : "mi",
-      elevUnit: metric ? "m" : "ft",
-      paceUnit: metric ? "/km" : "/mi",
-      dist: (mi, digits = 1) => distVal(mi).toLocaleString("en-US", {
-        minimumFractionDigits: digits, maximumFractionDigits: digits,
-      }),
-      elev: (ft) => Math.round(elevVal(ft)).toLocaleString("en-US"),
-      paceFmt: (sec, mi) => {
-        if (!mi) return "—";
-        const distanceUnits = metric ? mi * MI_TO_KM : mi;
-        const perUnit = sec / distanceUnits;
-        const m = Math.floor(perUnit / 60);
-        const s = Math.round(perUnit % 60);
-        return `${m}:${s.toString().padStart(2, "0")}`;
-      },
-    };
-  }, [system, toggle]);
-
-  return <UnitsContext.Provider value={value}>{children}</UnitsContext.Provider>;
-}
-
 /* ------------------------------------------------------------------ */
-/*  Race + training block constants                                    */
+/*  Race + training block defaults                                     */
+/*                                                                     */
+/*  state.json (web/public/state.json, managed by scripts/state.mjs)   */
+/*  is the source of truth for race + block config. These defaults     */
+/*  only render while it loads or if it's missing. useBlockConfig()    */
+/*  below is the one place components should read this from.           */
 /* ------------------------------------------------------------------ */
 
-export const RACE = {
+const DEFAULT_RACE = {
   name: "Mogollon Monster 100",
   short: "MM100",
   distance_mi: 102.3,
   elevation_ft: 15900,
   max_elev_ft: 7912,
   cutoff_h: 38,
-  date: new Date("2026-09-12T06:00:00"),
+  date: "2026-09-12",
+  start_time: "06:00",
   location: "Mogollon Rim · Pine, AZ",
+  aid_stations: [
+    { mi: 11.1, name: "See Canyon" },
+    { mi: 21.5, name: "Horton" },
+    { mi: 26.8, name: "Fish Hatchery" },
+    { mi: 39.2, name: "Myrtle" },
+    { mi: 42.8, name: "Buck Springs" },
+    { mi: 52.4, name: "Pinchot Cabin" },
+    { mi: 58.7, name: "General Springs · Crew" },
+    { mi: 61.1, name: "Washington Park" },
+    { mi: 72.3, name: "Geronimo" },
+    { mi: 81.8, name: "Donahue" },
+    { mi: 85.6, name: "Dickerson Flat" },
+    { mi: 90.5, name: "Pine Canyon" },
+    { mi: 101.1, name: "Pine TH · Finish" },
+  ],
 };
 
 export type Activity = {
@@ -218,32 +111,53 @@ export type Activity = {
 /* ---- 20-week training block targets (race = week 20 = Sept 12) ---- */
 /*  Block start = Monday April 27, 2026 (race week begins Mon Sept 7)   */
 
-export const BLOCK_START = "2026-04-27";
+export type WeekTarget = { wk: number; target_dist: number; target_elev: number };
 
-export const BLOCK_TARGETS: { wk: number; target_dist: number; target_elev: number }[] = [
-  { wk: 1,  target_dist: 38, target_elev: 5800 },
-  { wk: 2,  target_dist: 46, target_elev: 7400 },
-  { wk: 3,  target_dist: 52, target_elev: 8900 },
-  { wk: 4,  target_dist: 36, target_elev: 5400 },
-  { wk: 5,  target_dist: 54, target_elev: 9500 },
-  { wk: 6,  target_dist: 60, target_elev: 10800 },
-  { wk: 7,  target_dist: 55, target_elev: 9800 },
-  { wk: 8,  target_dist: 62, target_elev: 11200 },
-  { wk: 9,  target_dist: 38, target_elev: 5800 },
-  { wk: 10, target_dist: 70, target_elev: 13400 },
-  { wk: 11, target_dist: 78, target_elev: 14600 },
-  { wk: 12, target_dist: 72, target_elev: 13200 },
-  { wk: 13, target_dist: 42, target_elev: 6100 },
-  { wk: 14, target_dist: 68, target_elev: 12400 },
-  { wk: 15, target_dist: 58, target_elev: 9400 },
-  { wk: 16, target_dist: 52, target_elev: 8200 },
-  { wk: 17, target_dist: 42, target_elev: 6200 },
-  { wk: 18, target_dist: 30, target_elev: 4200 },
-  { wk: 19, target_dist: 18, target_elev: 2400 },
-  { wk: 20, target_dist: 102.3, target_elev: 15900 },
-];
+const DEFAULT_BLOCK: { start_date: string; total_weeks: number; targets: WeekTarget[] } = {
+  start_date: "2026-04-27",
+  total_weeks: 20,
+  targets: [
+    { wk: 1,  target_dist: 38, target_elev: 5800 },
+    { wk: 2,  target_dist: 46, target_elev: 7400 },
+    { wk: 3,  target_dist: 52, target_elev: 8900 },
+    { wk: 4,  target_dist: 36, target_elev: 5400 },
+    { wk: 5,  target_dist: 54, target_elev: 9500 },
+    { wk: 6,  target_dist: 60, target_elev: 10800 },
+    { wk: 7,  target_dist: 55, target_elev: 9800 },
+    { wk: 8,  target_dist: 62, target_elev: 11200 },
+    { wk: 9,  target_dist: 38, target_elev: 5800 },
+    { wk: 10, target_dist: 70, target_elev: 13400 },
+    { wk: 11, target_dist: 78, target_elev: 14600 },
+    { wk: 12, target_dist: 72, target_elev: 13200 },
+    { wk: 13, target_dist: 42, target_elev: 6100 },
+    { wk: 14, target_dist: 68, target_elev: 12400 },
+    { wk: 15, target_dist: 58, target_elev: 9400 },
+    { wk: 16, target_dist: 52, target_elev: 8200 },
+    { wk: 17, target_dist: 42, target_elev: 6200 },
+    { wk: 18, target_dist: 30, target_elev: 4200 },
+    { wk: 19, target_dist: 18, target_elev: 2400 },
+    { wk: 20, target_dist: 102.3, target_elev: 15900 },
+  ],
+};
 
-export const TOTAL_WEEKS = 20;
+export type AidStation = { mi: number; name: string };
+export type RaceConfig = {
+  name: string;
+  short: string;
+  distance_mi: number;
+  elevation_ft: number;
+  max_elev_ft: number;
+  cutoff_h: number;
+  date: Date;           // local race start (date + start_time)
+  location: string;
+  aid_stations: AidStation[];
+};
+export type BlockConfig = {
+  race: RaceConfig;
+  blockStart: string;   // ISO date, Monday of week 1
+  totalWeeks: number;
+  targets: WeekTarget[];
+};
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -258,6 +172,10 @@ export const daysUntil = (d: Date) => {
   const now = Date.now();
   return Math.max(0, Math.ceil((d.getTime() - now) / 86400000));
 };
+
+export function isStale(iso: string, hours = 24) {
+  return Date.now() - new Date(iso).getTime() > hours * 3600_000;
+}
 
 export function relativeAgo(ts: number) {
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -279,124 +197,21 @@ export function fmtDuration(secs?: number | null) {
 /*  Strava data context — loads /strava.json snapshot                  */
 /* ------------------------------------------------------------------ */
 
-const M_PER_MI = 1609.344;
-const M_PER_FT = 0.3048;
-
-type StravaRaw = {
-  fetched_at: string;
-  window: { start: string; end: string };
-  totals: { distance_km: number; elevation_m: number; moving_s: number; count: number };
-  activities: Array<{
-    id: string;
-    date: string;
-    start_time_local?: string | null;
-    title: string;
-    sport: string;
-    type: Activity["type"];
-    distance_m: number;
-    elevation_m: number;
-    moving_s: number;
-    avg_hr: number | null;
-    rpe: number;
-    strava_url: string;
-    weather?: {
-      temp_min_c: number;
-      temp_max_c: number;
-      temp_avg_c: number;
-      apparent_avg_c: number | null;
-      humidity_avg: number | null;
-    } | null;
-  }>;
-};
-
 export type StravaCtx = {
   loading: boolean;
   error: string | null;
   fetchedAt: Date | null;
   activities: Activity[];
-  // weekly buckets by training block week (1..20)
+  // weekly buckets by training block week (1..totalWeeks)
   weekly: { wk: number; dist_mi: number; elev_ft: number; sessions: number }[];
-  currentWeek: number; // 1..20
-  reload: () => void;
+  currentWeek: number; // 1..totalWeeks
 };
-const StravaContext = createContext<StravaCtx | null>(null);
+export const StravaContext = createContext<StravaCtx | null>(null);
 export const useStrava = () => {
   const v = useContext(StravaContext);
   if (!v) throw new Error("StravaProvider missing");
   return v;
 };
-
-function weekIndex(date: string, blockStart: string) {
-  const d = new Date(date).getTime();
-  const s = new Date(blockStart + "T00:00:00").getTime();
-  const days = Math.floor((d - s) / 86400000);
-  return Math.floor(days / 7) + 1; // 1-indexed
-}
-
-export function StravaProvider({ children }: { children: React.ReactNode }) {
-  const { key: refreshKey } = useRefresh();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [data, setData] = useState<StravaRaw | null>(null);
-
-  const reload = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    fetch(`/strava.json?t=${Date.now()}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json() as Promise<StravaRaw>;
-      })
-      .then(setData)
-      .catch((e) => setError(String(e.message || e)))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => { reload(); }, [reload, refreshKey]);
-
-  const value = useMemo<StravaCtx>(() => {
-    const cToF = (c: number) => Math.round(c * 9 / 5 + 32);
-    const activities: Activity[] = (data?.activities ?? []).map((a) => ({
-      id: a.id,
-      date: a.date,
-      start_time_local: a.start_time_local ?? null,
-      title: a.title,
-      type: a.type,
-      distance_mi: a.distance_m / M_PER_MI,
-      elevation_ft: a.elevation_m / M_PER_FT,
-      moving_s: a.moving_s,
-      rpe: Math.max(1, Math.min(5, Math.round(a.rpe))) as Activity["rpe"],
-      strava_url: a.strava_url,
-      temp_max_f: a.weather?.temp_max_c != null ? cToF(a.weather.temp_max_c) : null,
-      temp_avg_f: a.weather?.temp_avg_c != null ? cToF(a.weather.temp_avg_c) : null,
-      humidity_avg: a.weather?.humidity_avg ?? null,
-    }));
-
-    const weekly: { wk: number; dist_mi: number; elev_ft: number; sessions: number }[] =
-      Array.from({ length: TOTAL_WEEKS }, (_, i) => ({
-        wk: i + 1, dist_mi: 0, elev_ft: 0, sessions: 0,
-      }));
-    for (const a of activities) {
-      const w = weekIndex(a.date, BLOCK_START);
-      if (w >= 1 && w <= TOTAL_WEEKS) {
-        weekly[w - 1].dist_mi += a.distance_mi;
-        weekly[w - 1].elev_ft += a.elevation_ft;
-        weekly[w - 1].sessions += 1;
-      }
-    }
-    const today = new Date();
-    const cw = Math.max(1, Math.min(TOTAL_WEEKS, weekIndex(today.toISOString(), BLOCK_START)));
-
-    return {
-      loading, error,
-      fetchedAt: data ? new Date(data.fetched_at) : null,
-      activities, weekly, currentWeek: cw,
-      reload,
-    };
-  }, [data, loading, error, reload]);
-
-  return <StravaContext.Provider value={value}>{children}</StravaContext.Provider>;
-}
 
 /* ------------------------------------------------------------------ */
 /*  Oura context — loads /oura.json snapshot                           */
@@ -417,7 +232,7 @@ export type OuraDay = {
   steps?: number | null;
   tags?: { tag_type_code: string | null; comment: string | null; tags: string[] }[];
 };
-type OuraRaw = {
+export type OuraRaw = {
   fetched_at: string;
   window: { start: string; end: string };
   summary: Record<string, number | null>;
@@ -432,44 +247,12 @@ export type OuraCtx = {
   latest: OuraDay | null;
   summary: OuraRaw["summary"];
 };
-const OuraContext = createContext<OuraCtx | null>(null);
+export const OuraContext = createContext<OuraCtx | null>(null);
 export const useOura = () => {
   const v = useContext(OuraContext);
   if (!v) throw new Error("OuraProvider missing");
   return v;
 };
-
-export function OuraProvider({ children }: { children: React.ReactNode }) {
-  const { key: refreshKey } = useRefresh();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [data, setData] = useState<OuraRaw | null>(null);
-
-  useEffect(() => {
-    setLoading(true);
-    setError(null);
-    fetch(`/oura.json?t=${Date.now()}`)
-      .then((r) => (r.ok ? (r.json() as Promise<OuraRaw>) : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then(setData)
-      .catch((e) => setError(String(e.message || e)))
-      .finally(() => setLoading(false));
-  }, [refreshKey]);
-
-  const value = useMemo<OuraCtx>(() => {
-    const days = (data?.days ?? []).slice().sort((a, b) => b.day.localeCompare(a.day));
-    return {
-      loading,
-      error,
-      connected: !!data && days.length > 0,
-      fetchedAt: data ? new Date(data.fetched_at) : null,
-      days,
-      latest: days[0] ?? null,
-      summary: data?.summary ?? {},
-    };
-  }, [data, loading, error]);
-
-  return <OuraContext.Provider value={value}>{children}</OuraContext.Provider>;
-}
 
 /* ------------------------------------------------------------------ */
 /*  Agent / persistent state / calendar loaders                        */
@@ -496,11 +279,22 @@ export type AgentReadout = {
 export type PersistentState = {
   version: number;
   last_updated: string | null;
-  race?: { name: string; date: string; distance_mi: number; elevation_ft: number };
+  race?: {
+    name: string;
+    short?: string;
+    date: string;
+    start_time?: string;
+    distance_mi: number;
+    elevation_ft: number;
+    max_elev_ft?: number;
+    cutoff_h?: number;
+    location?: string;
+    aid_stations?: AidStation[];
+  };
   block?: {
     start_date: string;
     total_weeks: number;
-    targets: { wk: number; target_dist: number; target_elev: number }[];
+    targets: WeekTarget[];
   };
   plan_blocks?: PlanBlock[];
   agent_notes?: { at: string; note: string }[];
@@ -545,17 +339,42 @@ export function useGoogleCal() {
   return { data, missing, connected: !!data };
 }
 
-export function usePersistentState() {
-  const { key: refreshKey } = useRefresh();
-  const [data, setData] = useState<PersistentState | null>(null);
-  const [missing, setMissing] = useState(false);
-  useEffect(() => {
-    fetch(`/state.json?t=${Date.now()}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then(setData)
-      .catch(() => setMissing(true));
-  }, [refreshKey]);
-  return { data, missing };
+/* state.json is fetched once (by StateProvider in providers.tsx) and shared
+   via this context — it feeds both the agent plan (RoadAhead) and the
+   race/block config (useBlockConfig). */
+export type StateCtx = { data: PersistentState | null; missing: boolean };
+export const PersistentStateContext = createContext<StateCtx>({ data: null, missing: false });
+
+export const usePersistentState = () => useContext(PersistentStateContext);
+
+/**
+ * The single source of truth for race + training-block config.
+ * Reads state.json (race meta, block start/targets) with the hardcoded
+ * defaults as fallback while it loads / if it's missing.
+ */
+export function useBlockConfig(): BlockConfig {
+  const { data: state } = usePersistentState();
+  return useMemo(() => {
+    const r = { ...DEFAULT_RACE, ...(state?.race ?? {}) };
+    const b = state?.block;
+    const targets = b?.targets?.length ? b.targets : DEFAULT_BLOCK.targets;
+    return {
+      race: {
+        name: r.name,
+        short: r.short ?? DEFAULT_RACE.short,
+        distance_mi: r.distance_mi,
+        elevation_ft: r.elevation_ft,
+        max_elev_ft: r.max_elev_ft ?? DEFAULT_RACE.max_elev_ft,
+        cutoff_h: r.cutoff_h ?? DEFAULT_RACE.cutoff_h,
+        date: new Date(`${r.date}T${r.start_time ?? DEFAULT_RACE.start_time}:00`),
+        location: r.location ?? DEFAULT_RACE.location,
+        aid_stations: r.aid_stations?.length ? r.aid_stations : DEFAULT_RACE.aid_stations,
+      },
+      blockStart: b?.start_date ?? DEFAULT_BLOCK.start_date,
+      totalWeeks: b?.total_weeks ?? targets.length,
+      targets,
+    };
+  }, [state]);
 }
 
 export function useAgentReadout() {
@@ -628,6 +447,7 @@ export function computeCoachFacts(
   ouraDays: OuraDay[],
   weekly: { wk: number; dist_mi: number; elev_ft: number }[],
   currentWeek: number,
+  targets: WeekTarget[],
 ): CoachFacts {
   const now = Date.now();
 
@@ -662,8 +482,8 @@ export function computeCoachFacts(
   // block
   const block_dist_actual = sum(weekly.slice(0, currentWeek).map((w) => w.dist_mi));
   const block_elev_actual = sum(weekly.slice(0, currentWeek).map((w) => w.elev_ft));
-  const block_dist_expected = sum(BLOCK_TARGETS.slice(0, currentWeek).map((w) => w.target_dist));
-  const block_elev_expected = sum(BLOCK_TARGETS.slice(0, currentWeek).map((w) => w.target_elev));
+  const block_dist_expected = sum(targets.slice(0, currentWeek).map((w) => w.target_dist));
+  const block_elev_expected = sum(targets.slice(0, currentWeek).map((w) => w.target_elev));
   const block_dist_delta_pct = ((block_dist_actual - block_dist_expected) / Math.max(1, block_dist_expected)) * 100;
   const block_elev_delta_pct = ((block_elev_actual - block_elev_expected) / Math.max(1, block_elev_expected)) * 100;
 

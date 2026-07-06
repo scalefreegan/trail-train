@@ -20,6 +20,7 @@ import path from "node:path";
 import http from "node:http";
 import { exec } from "node:child_process";
 import { readCredentials, loadTokens, saveTokens } from "./google-keys.mjs";
+import { arg, writeJsonAtomic } from "./lib.mjs";
 
 // Resolve from the script location, not cwd — `npm run sync:google` executes
 // from web/, where a cwd-relative path would land in web/web/public/.
@@ -29,14 +30,6 @@ const AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const API = "https://www.googleapis.com/calendar/v3";
 const SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"];
-
-function arg(name, fallback) {
-  const i = process.argv.indexOf(`--${name}`);
-  if (i < 0) return fallback;
-  const next = process.argv[i + 1];
-  if (!next || next.startsWith("--")) return true;
-  return next;
-}
 
 const PAST_DAYS   = Number(arg("past",   7));
 const FUTURE_DAYS = Number(arg("future", 30));
@@ -299,8 +292,7 @@ async function main() {
     events,
     upcoming_by_day,
   };
-  await fs.mkdir(path.dirname(OUT_PATH), { recursive: true });
-  await fs.writeFile(OUT_PATH, JSON.stringify(payload, null, 2));
+  await writeJsonAtomic(OUT_PATH, payload);
   console.log(`✓ wrote ${events.length} events → ${OUT_PATH}`);
   console.log(`  ${summary.past_events} past · ${summary.upcoming_events} upcoming · ${summary.races_upcoming} races · ${summary.travel_days_upcoming.length} travel days`);
 }

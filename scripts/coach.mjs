@@ -19,17 +19,11 @@ import path from "node:path";
 import os from "node:os";
 import { loadFactsFromRoot } from "./facts.mjs";
 import { saveState, mergeAgentUpdate } from "./state.mjs";
+import { arg, writeJsonAtomic } from "./lib.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const OUT_PATH = path.join(ROOT, "web", "public", "coach.json");
 
-function arg(name, fallback) {
-  const i = process.argv.indexOf(`--${name}`);
-  if (i < 0) return fallback;
-  const next = process.argv[i + 1];
-  if (!next || next.startsWith("--")) return true;
-  return next;
-}
 const MAX_TURNS = Number(arg("max-turns", 8));
 const TIMEOUT   = Number(arg("timeout",  240));
 // Narrative units for the readout — "imperial" (default) or "metric".
@@ -40,7 +34,7 @@ const UNITS = String(arg("units", process.env.TRAIL_UNITS || "imperial")) === "m
 
 /* -------- Claude Code CLI subprocess (pattern from agent-trade) -------- */
 
-const SYSTEM_PROMPT_TEMPLATE = (profile) => `You are the coach inside Trail Almanac, a personal ultra-training dashboard.
+const SYSTEM_PROMPT_TEMPLATE = (profile, hasPacing) => `You are the coach inside Trail Almanac, a personal ultra-training dashboard.
 
 The athlete is ${profile.athlete_name}, training for the Mogollon Monster 100 (102.3 mi, 15,900 ft, Sept 12, 2026).
 They live in ${profile.location}. Local training trails: ${(profile.home_trails || []).join(", ") || "their home mountains"}.
@@ -65,7 +59,7 @@ events (note the timing workaround explicitly).
 TIME REALISM — every session you propose (recommendations AND key_session in plan_blocks)
 must fit the time the athlete actually has on that day. Do NOT assume road/flat pace on
 hilly terrain: ${profile.athlete_name}'s home trails climb hard, and pace slows steeply with
-both vert and distance. Use facts.pacing — a model fit from their OWN Strava runs — to
+both vert and distance.${hasPacing ? ` Use facts.pacing — a model fit from their OWN Strava runs — to
 estimate duration before committing to a session:
 - facts.pacing.reference is a lookup grid of (distance_mi, vert_ft) → pace_min_per_mi and
   moving_h. Find the row closest to your proposed distance+vert and interpolate; that
@@ -75,7 +69,10 @@ estimate duration before committing to a session:
   hard time cap, size distance+vert DOWN to fit it — never claim a session fits a window it
   doesn't. Carry ±facts.pacing.fit_error_min_per_mi as honest uncertainty.
 - When a session has a known time budget, state the estimated duration explicitly (e.g.
-  "16mi/3,200ft ≈ 3:20 moving, start 5:30am to clear the noon constraint").
+  "16mi/3,200ft ≈ 3:20 moving, start 5:30am to clear the noon constraint").` : ` facts.pacing is null — there is no personal
+pacing model yet (it needs at least 8 runs with distance + time data). Estimate durations
+conservatively from the paces of the recent runs visible in the data, flag every duration
+estimate as rough, and never claim a session fits a tight time window on estimate alone.`}
 
 The athlete's preferences.personal_constraints (plain-English rules they've set) are HARD
 constraints. Every proposed session must respect them. Scan upcoming_14d and upcoming_notable
@@ -163,6 +160,10 @@ function runClaude({ prompt, systemPrompt, maxTurns, timeoutSec, cwd, allowedToo
 
     proc.on("error", (err) => {
       clearTimeout(timer);
+      if (err.code === "ENOENT") {
+        reject(new Error("`claude` CLI not found in PATH — install Claude Code (https://claude.com/claude-code) or add it to PATH, then re-run"));
+        return;
+      }
       reject(err);
     });
     proc.on("close", (code) => {
@@ -217,9 +218,10 @@ in real numbers from the data.`;
 
   console.log(`• spawning claude -p (max-turns ${MAX_TURNS}, timeout ${TIMEOUT}s)…`);
   const t0 = Date.now();
+  if (!facts.pacing) console.warn("• facts.pacing null (< 8 usable runs) — agent will estimate durations without a pacing model");
   const { stdout } = await runClaude({
     prompt,
-    systemPrompt: SYSTEM_PROMPT_TEMPLATE(facts.profile || {}),
+    systemPrompt: SYSTEM_PROMPT_TEMPLATE(facts.profile || {}, Boolean(facts.pacing)),
     maxTurns: MAX_TURNS,
     timeoutSec: TIMEOUT,
     cwd: ROOT,
@@ -256,8 +258,7 @@ in real numbers from the data.`;
     ...readout,
   };
 
-  await fs.mkdir(path.dirname(OUT_PATH), { recursive: true });
-  await fs.writeFile(OUT_PATH, JSON.stringify(payload, null, 2));
+  await writeJsonAtomic(OUT_PATH, payload);
   await fs.unlink(factsPath).catch(() => {});
 
   // Merge agent updates into persistent state.json (plan_blocks + new_notes).

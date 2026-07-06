@@ -16,6 +16,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { writeJsonAtomic } from "./lib.mjs";
 
 export const STATE_VERSION = 1;
 
@@ -28,12 +29,28 @@ export const DEFAULT_STATE = {
     name: "Mogollon Monster 100",
     short: "MM100",
     date: "2026-09-12",
+    start_time: "06:00",
     distance_mi: 102.3,
     elevation_ft: 15900,
     max_elev_ft: 7912,
     cutoff_h: 38,
     location: "Mogollon Rim · Pine, AZ (90 min NE of Phoenix)",
     notes: "Climbs the rim 6×. Technical sections on Highline / Donahue / Myrtle / Promontory. September can run 80°F+ in the canyons.",
+    aid_stations: [
+      { mi: 11.1, name: "See Canyon" },
+      { mi: 21.5, name: "Horton" },
+      { mi: 26.8, name: "Fish Hatchery" },
+      { mi: 39.2, name: "Myrtle" },
+      { mi: 42.8, name: "Buck Springs" },
+      { mi: 52.4, name: "Pinchot Cabin" },
+      { mi: 58.7, name: "General Springs · Crew" },
+      { mi: 61.1, name: "Washington Park" },
+      { mi: 72.3, name: "Geronimo" },
+      { mi: 81.8, name: "Donahue" },
+      { mi: 85.6, name: "Dickerson Flat" },
+      { mi: 90.5, name: "Pine Canyon" },
+      { mi: 101.1, name: "Pine TH · Finish" },
+    ],
   },
   block: {
     start_date: "2026-04-27",
@@ -108,8 +125,7 @@ export async function loadState(projectRoot) {
   }
   // bootstrap
   const fresh = { ...DEFAULT_STATE, last_updated: new Date().toISOString() };
-  await fs.mkdir(path.dirname(p), { recursive: true });
-  await fs.writeFile(p, JSON.stringify(fresh, null, 2));
+  await writeJsonAtomic(p, fresh);
   console.log(`• bootstrapped ${p} from defaults`);
   return fresh;
 }
@@ -124,9 +140,7 @@ export async function saveState(projectRoot, state) {
   if (Array.isArray(next.agent_notes) && next.agent_notes.length > 30) {
     next.agent_notes = next.agent_notes.slice(-30);
   }
-  const tmp = p + `.tmp.${process.pid}`;
-  await fs.writeFile(tmp, JSON.stringify(next, null, 2));
-  await fs.rename(tmp, p);
+  await writeJsonAtomic(p, next);
   return next;
 }
 

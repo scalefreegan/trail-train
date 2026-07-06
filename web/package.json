@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && eslint . && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "sync:strava": "node ../scripts/sync-strava.mjs",
@@ -20,11 +20,9 @@
     "restore:list": "node ../scripts/restore.mjs --list"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.100.14",
     "motion": "^12.40.0",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "react-router-dom": "^7.15.1"
+    "react-dom": "^19.2.6"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
