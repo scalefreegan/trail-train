@@ -11,14 +11,10 @@ import path from "node:path";
 import os from "node:os";
 import { fetchWeather, flushWeatherCache } from "./weather.mjs";
 import { loadState } from "./state.mjs";
+import { arg, writeJsonAtomic } from "./lib.mjs";
 
 const CONFIG_PATH = path.join(os.homedir(), ".config", "strava-mcp", "config.json");
 const OUT_PATH = path.join(process.cwd(), "web", "public", "strava.json");
-
-function arg(name, fallback) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : fallback;
-}
 
 const START = arg("start", "2026-01-06");
 const END   = arg("end",   new Date().toISOString().slice(0, 10));
@@ -173,8 +169,7 @@ async function main() {
     totals,
     activities,
   };
-  await fs.mkdir(path.dirname(OUT_PATH), { recursive: true });
-  await fs.writeFile(OUT_PATH, JSON.stringify(payload, null, 2));
+  await writeJsonAtomic(OUT_PATH, payload);
   console.log(`✓ wrote ${activities.length} activities → ${OUT_PATH}`);
   console.log(`  total: ${totals.distance_km.toFixed(1)} km · ${Math.round(totals.elevation_m).toLocaleString()} m vert · ${(totals.moving_s / 3600).toFixed(1)} h`);
 }

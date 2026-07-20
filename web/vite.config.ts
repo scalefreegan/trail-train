@@ -28,7 +28,9 @@ function refreshApi(): Plugin {
         try {
           const parsed = JSON.parse(Buffer.concat(bodyChunks).toString('utf8') || '{}')
           if (parsed.units === 'metric') units = 'metric'
-        } catch {}
+        } catch {
+          console.warn('[refresh] unparseable request body — defaulting to imperial units')
+        }
 
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
@@ -106,6 +108,7 @@ const CHAT_SYSTEM = (
   coachPath: string,
   profile: { athlete_name?: string; location?: string; home_trails?: string[] },
   units: 'imperial' | 'metric' = 'imperial',
+  hasPacing = true,
 ) => `You are the coach inside Trail Almanac for ${profile.athlete_name || "the athlete"} — an ultrarunner training for the Mogollon Monster 100 (102.3 mi, 15,900 ft, Sept 12, 2026, Pine, AZ). They live in ${profile.location || "their home mountains"}.${profile.home_trails?.length ? ` Local training trails: ${profile.home_trails.join(", ")}.` : ""}
 
 You have full read access to:
@@ -134,7 +137,9 @@ time-on-feet days and race-effort simulation (hiked climbs, relaxed low-cadence 
 fueling practice at race rhythm) over simply cutting volume. Taper weeks are the
 exception and stay protective.
 
-When estimating how long a run will take, use facts.pacing — a model fit from ${profile.athlete_name || "the athlete"}'s own Strava runs. Pace slows steeply with vert and distance, so never assume flat-road pace on hilly terrain. Read off facts.pacing.reference (distance_mi + vert_ft → pace_min_per_mi, moving_h), interpolate for the proposed session, round up for stops, and carry ±facts.pacing.fit_error_min_per_mi as uncertainty. A hilly long run here is ~11-14 min/mi, not 9.
+${hasPacing
+  ? `When estimating how long a run will take, use facts.pacing — a model fit from ${profile.athlete_name || "the athlete"}'s own Strava runs. Pace slows steeply with vert and distance, so never assume flat-road pace on hilly terrain. Read off facts.pacing.reference (distance_mi + vert_ft → pace_min_per_mi, moving_h), interpolate for the proposed session, round up for stops, and carry ±facts.pacing.fit_error_min_per_mi as uncertainty. A hilly long run here is ~11-14 min/mi, not 9.`
+  : `facts.pacing is null — no personal pacing model yet (needs at least 8 runs with distance + time data). Estimate durations conservatively from recent runs in the data, flag estimates as rough, and never assume flat-road pace on hilly terrain.`}
 
 Use the Read tool to look up specifics. Ground every claim in the data — quote real numbers (HRV ms, RHR delta, ACR ratio, miles, vert, dates, run temps in °F).
 
@@ -161,18 +166,20 @@ function chatApi(): Plugin {
         // Read JSON body
         const chunks: Buffer[] = []
         for await (const c of req) chunks.push(c as Buffer)
-        let body: { messages?: Array<{ role: string; content: string }> }
+        let body: { messages?: Array<{ role: string; content: string }>; units?: string }
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
         catch { res.statusCode = 400; res.end('bad json'); return }
         const messages = body.messages || []
-        const chatUnits: 'imperial' | 'metric' = (body as any).units === 'metric' ? 'metric' : 'imperial'
+        const chatUnits: 'imperial' | 'metric' = body.units === 'metric' ? 'metric' : 'imperial'
         if (!messages.length) { res.statusCode = 400; res.end('no messages'); return }
 
         // Compute facts → write to temp file the agent can Read
         let factsPath = ''
+        let hasPacing: boolean
         try {
           const facts = await import(path.join(projectRoot, 'scripts/facts.mjs'))
-            .then((m: any) => m.loadFactsFromRoot(projectRoot))
+            .then((m: { loadFactsFromRoot: (root: string) => Promise<{ pacing: unknown }> }) => m.loadFactsFromRoot(projectRoot))
+          hasPacing = Boolean(facts.pacing)
           factsPath = path.join(os.tmpdir(), `trail-chat-${Date.now()}.json`)
           fs.writeFileSync(factsPath, JSON.stringify(facts, null, 2))
         } catch (e) {
@@ -189,8 +196,10 @@ function chatApi(): Plugin {
           'Connection': 'keep-alive',
           'X-Accel-Buffering': 'no',
         })
-        const send = (event: string, data: unknown) =>
+        const send = (event: string, data: unknown) => {
+          if (res.writableEnded) return
           res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        }
 
         // Build prompt from history. Last message is the latest user turn;
         // prior messages become a transcript so the agent sees the thread.
@@ -202,9 +211,12 @@ function chatApi(): Plugin {
         const prompt = `${transcript}[USER]\n${last.content}\n\n[ASSISTANT]\nRespond to the latest user message. Today is ${new Date().toISOString().slice(0, 10)}.`
 
         const profile = await import(path.join(projectRoot, 'scripts/facts.mjs'))
-          .then((m: any) => m.loadProfile(projectRoot))
-          .catch(() => ({}))
-        const sysPrompt = CHAT_SYSTEM(factsPath, coachPath, profile, chatUnits)
+          .then((m: { loadProfile: (root: string) => Promise<Record<string, unknown>> }) => m.loadProfile(projectRoot))
+          .catch((e) => {
+            console.warn(`[chat] profile load failed, using empty profile: ${(e as Error).message}`)
+            return {}
+          })
+        const sysPrompt = CHAT_SYSTEM(factsPath, coachPath, profile, chatUnits, hasPacing)
         send('start', { facts_path: factsPath })
 
         const proc = spawn('claude', [
@@ -230,15 +242,48 @@ function chatApi(): Plugin {
           if (cleanedUp) return
           cleanedUp = true
           clearInterval(hb)
-          try { fs.unlinkSync(factsPath) } catch {}
+          clearTimeout(watchdog)
+          try { fs.unlinkSync(factsPath) } catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== 'ENOENT')
+              console.warn(`[chat] failed to remove ${factsPath}: ${(e as Error).message}`)
+          }
+        }
+        // Kill the whole process group (claude spawns children); it may
+        // already be dead, in which case the kill throws and that's fine.
+        const killProc = () => {
+          try { process.kill(-proc.pid!, 'SIGKILL') } catch { /* already exited */ }
         }
 
+        // Watchdog: a hung claude process would otherwise hold the SSE
+        // stream (and the temp facts file) open forever.
+        const CHAT_TIMEOUT_MS = 180_000
+        const watchdog = setTimeout(() => {
+          console.warn(`[chat] claude timed out after ${CHAT_TIMEOUT_MS / 1000}s — killing`)
+          send('error', { message: `coach timed out after ${CHAT_TIMEOUT_MS / 1000}s — try again` })
+          send('done', { ok: false })
+          killProc()
+          cleanup()
+          res.end()
+        }, CHAT_TIMEOUT_MS)
+
         req.on('close', () => {
-          try { process.kill(-proc.pid!, 'SIGKILL') } catch {}
+          killProc()
           cleanup()
         })
 
+        proc.on('error', (err) => {
+          const msg = (err as NodeJS.ErrnoException).code === 'ENOENT'
+            ? '`claude` CLI not found in PATH — install Claude Code (https://claude.com/claude-code) and restart the dev server'
+            : `failed to start claude: ${err.message}`
+          console.error(`[chat] ${msg}`)
+          send('error', { message: msg })
+          send('done', { ok: false })
+          cleanup()
+          res.end()
+        })
+
         proc.on('close', (code) => {
+          if (res.writableEnded) { cleanup(); return }
           cleanup()
           if (code !== 0) {
             send('error', { message: `claude exited ${code}: ${stderrLast.slice(0, 240)}` })

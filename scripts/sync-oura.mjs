@@ -21,6 +21,7 @@ import path from "node:path";
 import os from "node:os";
 import http from "node:http";
 import { exec } from "node:child_process";
+import { arg, writeJsonAtomic } from "./lib.mjs";
 
 const CONFIG_PATH = path.join(os.homedir(), ".config", "oura", "config.json");
 const OUT_PATH = path.join(process.cwd(), "web", "public", "oura.json");
@@ -28,14 +29,6 @@ const API = "https://api.ouraring.com/v2/usercollection";
 const AUTHORIZE_URL = "https://cloud.ouraring.com/oauth/authorize";
 const TOKEN_URL = "https://api.ouraring.com/oauth/token";
 const SCOPES = ["daily", "heartrate", "tag", "personal"];
-
-function arg(name, fallback) {
-  const i = process.argv.indexOf(`--${name}`);
-  if (i < 0) return fallback;
-  const next = process.argv[i + 1];
-  if (!next || next.startsWith("--")) return true;
-  return next;
-}
 
 const START = arg("start", "2026-04-27");
 const END   = arg("end",   new Date().toISOString().slice(0, 10));
@@ -307,8 +300,7 @@ async function main() {
   };
 
   const payload = { fetched_at: new Date().toISOString(), window: { start: START, end: END }, summary, days };
-  await fs.mkdir(path.dirname(OUT_PATH), { recursive: true });
-  await fs.writeFile(OUT_PATH, JSON.stringify(payload, null, 2));
+  await writeJsonAtomic(OUT_PATH, payload);
   console.log(`✓ wrote ${days.length} days → ${OUT_PATH}`);
   if (summary.avg7_readiness)
     console.log(`  7-day avg: readiness ${summary.avg7_readiness.toFixed(0)} · sleep ${summary.avg7_sleep_score?.toFixed(0)} · hrv ${summary.avg7_hrv?.toFixed(0)} ms · rhr ${summary.avg7_lowest_hr?.toFixed(0)} bpm`);

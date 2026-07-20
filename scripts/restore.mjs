@@ -16,13 +16,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
-function arg(name, fallback) {
-  const i = process.argv.indexOf(`--${name}`);
-  if (i < 0) return fallback;
-  const next = process.argv[i + 1];
-  if (!next || next.startsWith("--")) return true;
-  return next;
-}
+import { arg } from "./lib.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const DEST_ROOT = arg("dest", path.join(os.homedir(), "Documents", "trail-train-backups"));

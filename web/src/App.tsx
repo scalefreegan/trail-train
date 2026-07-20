@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  RefreshProvider, useRefresh, REFRESH_STEPS,
-  UnitsProvider, useUnits,
-  StravaProvider, useStrava,
-  OuraProvider, useOura, type OuraDay,
+  useRefresh, REFRESH_STEPS,
+  useUnits,
+  useStrava,
+  useOura, type OuraDay,
   useGoogleCal, usePersistentState, useAgentReadout,
+  useBlockConfig,
   computeCoachFacts, type CoachFacts, type Flag,
   type Activity, type AgentReadout, type PlanBlock, type GCalEvent,
-  RACE, BLOCK_TARGETS, TOTAL_WEEKS,
-  daysUntil, relativeAgo, fmtDuration,
+  daysUntil, relativeAgo, fmtDuration, isStale,
 } from "./data";
+import { RefreshProvider, UnitsProvider, StravaProvider, OuraProvider, StateProvider } from "./providers";
 
 /* ================================================================== */
 /*  BASECAMP — pre-dawn ops surface for ultra training                 */
@@ -150,8 +151,9 @@ function BarStat({ label, value, accent }: { label: string; value: string; accen
 function CommandBar() {
   const { syncing, lastSync, refresh, currentStep, lastLog, status } = useRefresh();
   const { fetchedAt, currentWeek } = useStrava();
+  const { race, totalWeeks } = useBlockConfig();
   const stamp = fetchedAt ? fetchedAt.getTime() : lastSync;
-  const dleft = daysUntil(RACE.date);
+  const dleft = daysUntil(race.date);
   const [, force] = useState(0);
   useEffect(() => {
     const id = setInterval(() => force((n) => n + 1), 20_000);
@@ -174,14 +176,14 @@ function CommandBar() {
           <span className="display" style={{ fontSize: 17, letterSpacing: "-0.02em" }}>
             Basecamp
           </span>
-          <span className="eyebrow" style={{ fontSize: 8, marginTop: 3 }}>{RACE.short} ops</span>
+          <span className="eyebrow" style={{ fontSize: 8, marginTop: 3 }}>{race.short} ops</span>
         </div>
 
         {/* mid stats */}
         <div className="commandbar-mid" style={{ flex: 1 }}>
-          <BarStat label="block week" value={`${String(currentWeek).padStart(2, "0")} / ${TOTAL_WEEKS}`} />
+          <BarStat label="block week" value={`${String(currentWeek).padStart(2, "0")} / ${totalWeeks}`} />
           <BarStat label="race in" value={`${dleft} days`} accent />
-          <BarStat label="race day" value={RACE.date.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase()} />
+          <BarStat label="race day" value={race.date.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase()} />
         </div>
 
         {/* sync cluster */}
@@ -252,24 +254,9 @@ function CommandBar() {
 /*  Race ribbon — name, countdown, elevation profile in one band       */
 /* ------------------------------------------------------------------ */
 
-const AID_STATIONS = [
-  { mi: 11.1, name: "See Canyon" },
-  { mi: 21.5, name: "Horton" },
-  { mi: 26.8, name: "Fish Hatchery" },
-  { mi: 39.2, name: "Myrtle" },
-  { mi: 42.8, name: "Buck Springs" },
-  { mi: 52.4, name: "Pinchot Cabin" },
-  { mi: 58.7, name: "General Springs · Crew" },
-  { mi: 61.1, name: "Washington Park" },
-  { mi: 72.3, name: "Geronimo" },
-  { mi: 81.8, name: "Donahue" },
-  { mi: 85.6, name: "Dickerson Flat" },
-  { mi: 90.5, name: "Pine Canyon" },
-  { mi: 101.1, name: "Pine TH · Finish" },
-];
-
 function ElevationRibbon() {
   const u = useUnits();
+  const { race } = useBlockConfig();
   const pts = useMemo(() => {
     const n = 220;
     const arr: { x: number; y: number }[] = [];
@@ -306,8 +293,8 @@ function ElevationRibbon() {
         initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
         transition={{ duration: 2, ease: [0.2, 0.8, 0.2, 1] }}
       />
-      {AID_STATIONS.map((a, i) => {
-        const idx = Math.min(pts.length - 1, Math.max(0, Math.round((a.mi / RACE.distance_mi) * (pts.length - 1))));
+      {race.aid_stations.map((a, i) => {
+        const idx = Math.min(pts.length - 1, Math.max(0, Math.round((a.mi / race.distance_mi) * (pts.length - 1))));
         const p = pts[idx];
         return (
           <g key={a.name}>
@@ -326,7 +313,11 @@ function ElevationRibbon() {
 
 function RaceRibbon() {
   const u = useUnits();
-  const dleft = daysUntil(RACE.date);
+  const { race } = useBlockConfig();
+  const dleft = daysUntil(race.date);
+  const nameWords = race.name.split(" ");
+  const raceDay = race.date.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase();
+  const raceStart = `${String(race.date.getHours()).padStart(2, "0")}:${String(race.date.getMinutes()).padStart(2, "0")}`;
 
   return (
     <motion.section
@@ -337,12 +328,16 @@ function RaceRibbon() {
       <Contours seed={4} opacity={0.12} />
       <div style={{ position: "relative", padding: "22px 26px 0", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 24, flexWrap: "wrap" }}>
         <div>
-          <div className="eyebrow" style={{ marginBottom: 8 }}>objective — {RACE.location.toLowerCase()}</div>
+          <div className="eyebrow" style={{ marginBottom: 8 }}>objective — {race.location.toLowerCase()}</div>
           <h1 className="display" style={{ fontSize: "clamp(30px, 4.4vw, 54px)", margin: 0 }}>
-            Mogollon <span style={{ color: "var(--lamp)" }}>Monster</span> 100
+            {nameWords.map((w, i) => (
+              <span key={i} style={i === 1 ? { color: "var(--lamp)" } : undefined}>
+                {w}{i < nameWords.length - 1 ? " " : ""}
+              </span>
+            ))}
           </h1>
           <div className="eyebrow" style={{ marginTop: 10, color: "var(--mist-dim)" }}>
-            {u.dist(RACE.distance_mi)} {u.distUnit} · {u.elev(RACE.elevation_ft)} {u.elevUnit}↑ · max {u.elev(RACE.max_elev_ft)} {u.elevUnit} · cutoff {RACE.cutoff_h}h · sept 12 · 06:00
+            {u.dist(race.distance_mi)} {u.distUnit} · {u.elev(race.elevation_ft)} {u.elevUnit}↑ · max {u.elev(race.max_elev_ft)} {u.elevUnit} · cutoff {race.cutoff_h}h · {raceDay} · {raceStart}
           </div>
         </div>
         <div style={{ textAlign: "right" }}>
@@ -359,7 +354,7 @@ function RaceRibbon() {
       <div style={{ position: "relative", display: "flex", justifyContent: "space-between", padding: "6px 26px 12px", borderTop: "1px solid var(--edge)" }}>
         {[0, 0.25, 0.5, 0.75, 1].map((f) => (
           <span key={f} className="eyebrow numerals" style={{ fontSize: 9 }}>
-            {String(Math.round(u.distVal(RACE.distance_mi * f))).padStart(3, "0")} {u.distUnit}
+            {String(Math.round(u.distVal(race.distance_mi * f))).padStart(3, "0")} {u.distUnit}
           </span>
         ))}
       </div>
@@ -388,12 +383,16 @@ function VitalsBand() {
   const oura = useOura();
   const facts = useFacts();
 
+  // anchor "now" once per mount — the section remounts on every resync
+  // (AppBody keys it on the refresh counter), so this stays fresh without
+  // an impure Date.now() during render
+  const [now] = useState(() => Date.now());
+
   // daily distance + vert series, last 30 days (oldest → newest)
   const daily = useMemo(() => {
     const n = 30;
     const dist = Array(n).fill(0) as number[];
     const elev = Array(n).fill(0) as number[];
-    const now = Date.now();
     for (const a of activities) {
       const d = Math.floor((now - new Date(a.date).getTime()) / 86400000);
       if (d >= 0 && d < n) {
@@ -402,7 +401,7 @@ function VitalsBand() {
       }
     }
     return { dist, elev };
-  }, [activities]);
+  }, [activities, now]);
 
   const ouraTail = oura.days.slice(0, 30).slice().reverse();
   const seriesOf = (f: (d: OuraDay) => number | null | undefined) => ouraTail.map((d) => f(d) ?? 0);
@@ -600,8 +599,8 @@ function useMeasuredWidth() {
   return { ref, width };
 }
 
-function weekDates(wk: number): string {
-  const start = new Date(new Date("2026-04-27T00:00:00").getTime() + (wk - 1) * 7 * 86400_000);
+function weekDates(wk: number, blockStart: string): string {
+  const start = new Date(new Date(blockStart + "T00:00:00").getTime() + (wk - 1) * 7 * 86400_000);
   const end = new Date(start.getTime() + 6 * 86400_000);
   const f = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase();
   return `${f(start)} – ${f(end)}`;
@@ -610,6 +609,7 @@ function weekDates(wk: number): string {
 function Trajectory() {
   const u = useUnits();
   const { weekly, currentWeek } = useStrava();
+  const { targets, totalWeeks, blockStart } = useBlockConfig();
   const [view, setView] = useState<"dist" | "elev">("dist");
   const [hoverWk, setHoverWk] = useState<number | null>(null); // 0-indexed
   const { ref: measureRef, width } = useMeasuredWidth();
@@ -618,11 +618,11 @@ function Trajectory() {
     const cumTarget: number[] = [];
     const cumActual: (number | null)[] = [];
     let t = 0, a = 0;
-    for (let i = 0; i < BLOCK_TARGETS.length; i++) {
-      const wk = BLOCK_TARGETS[i];
+    for (let i = 0; i < targets.length; i++) {
+      const wk = targets[i];
       t += view === "dist" ? wk.target_dist : wk.target_elev;
       cumTarget.push(t);
-      if (i < currentWeek) {
+      if (i < currentWeek && weekly[i]) {
         const actWk = weekly[i];
         a += view === "dist" ? actWk.dist_mi : actWk.elev_ft;
         cumActual.push(a);
@@ -631,7 +631,7 @@ function Trajectory() {
       }
     }
     return { cumTarget, cumActual };
-  }, [view, weekly, currentWeek]);
+  }, [view, weekly, currentWeek, targets]);
 
   const totalTarget = data.cumTarget[data.cumTarget.length - 1];
   const expectedToday = data.cumTarget[currentWeek - 1] || 1;
@@ -650,7 +650,7 @@ function Trajectory() {
   const plotW = Math.max(0, width - PAD.left - PAD.right);
   const plotH = H - PAD.top - PAD.bottom;
   const maxY = Math.max(totalTarget, projectedFinal) * 1.05;
-  const xAt = (i: number) => PAD.left + (i / (TOTAL_WEEKS - 1)) * plotW;
+  const xAt = (i: number) => PAD.left + (i / (totalWeeks - 1)) * plotW;
   const yAt = (v: number) => PAD.top + (1 - v / maxY) * plotH;
 
   const targetPath = data.cumTarget.map((v, i) => `${i === 0 ? "M" : "L"} ${xAt(i).toFixed(1)} ${yAt(v).toFixed(1)}`).join(" ");
@@ -664,8 +664,8 @@ function Trajectory() {
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const i = Math.round(((x - PAD.left) / Math.max(1, plotW)) * (TOTAL_WEEKS - 1));
-    setHoverWk(Math.max(0, Math.min(TOTAL_WEEKS - 1, i)));
+    const i = Math.round(((x - PAD.left) / Math.max(1, plotW)) * (totalWeeks - 1));
+    setHoverWk(Math.max(0, Math.min(totalWeeks - 1, i)));
   };
 
   const hover = hoverWk != null ? {
@@ -673,8 +673,8 @@ function Trajectory() {
     x: xAt(hoverWk),
     plan: data.cumTarget[hoverWk],
     actual: data.cumActual[hoverWk],
-    wkTarget: view === "dist" ? BLOCK_TARGETS[hoverWk].target_dist : BLOCK_TARGETS[hoverWk].target_elev,
-    wkActual: hoverWk < currentWeek ? (view === "dist" ? weekly[hoverWk].dist_mi : weekly[hoverWk].elev_ft) : null,
+    wkTarget: view === "dist" ? targets[hoverWk]?.target_dist ?? 0 : targets[hoverWk]?.target_elev ?? 0,
+    wkActual: hoverWk < currentWeek && weekly[hoverWk] ? (view === "dist" ? weekly[hoverWk].dist_mi : weekly[hoverWk].elev_ft) : null,
   } : null;
   const hoverDelta = hover && hover.actual != null && hover.plan > 0
     ? ((hover.actual - hover.plan) / hover.plan) * 100 : null;
@@ -698,7 +698,7 @@ function Trajectory() {
           </div>
         }
       >
-        trajectory — wk {currentWeek} of {TOTAL_WEEKS}
+        trajectory — wk {currentWeek} of {totalWeeks}
       </SectionTag>
 
       <div className="panel notch" style={{ overflow: "hidden" }}>
@@ -727,14 +727,16 @@ function Trajectory() {
                   stroke="var(--edge)" strokeWidth="1" strokeDasharray="2 5" />
               ))}
               {/* week ticks */}
-              {Array.from({ length: TOTAL_WEEKS }).map((_, i) => (
+              {Array.from({ length: totalWeeks }).map((_, i) => (
                 <line key={i} x1={xAt(i)} x2={xAt(i)} y1={H - PAD.bottom} y2={H - PAD.bottom + ((i + 1) % 5 === 0 || i === 0 ? 6 : 3)}
                   stroke="var(--edge-bright)" strokeWidth="1" />
               ))}
               {/* week axis labels */}
-              {[1, 5, 10, 15, 20].map((w) => (
+              {[1, ...Array.from({ length: Math.floor((totalWeeks - 1) / 5) }, (_, i) => (i + 1) * 5), totalWeeks]
+                .filter((w, i, arr) => arr.indexOf(w) === i)
+                .map((w) => (
                 <text key={w} x={xAt(w - 1)} y={H - 6} fontSize="9" fontFamily="Spline Sans Mono" letterSpacing="1"
-                  fill="var(--mist-mute)" textAnchor={w === 1 ? "start" : w === 20 ? "end" : "middle"}>
+                  fill="var(--mist-mute)" textAnchor={w === 1 ? "start" : w === totalWeeks ? "end" : "middle"}>
                   WK {String(w).padStart(2, "0")}
                 </text>
               ))}
@@ -752,7 +754,7 @@ function Trajectory() {
               />
               {/* projection */}
               <motion.line
-                x1={todayX} y1={yAt(actualToday)} x2={xAt(TOTAL_WEEKS - 1)} y2={yAt(projectedFinal)}
+                x1={todayX} y1={yAt(actualToday)} x2={xAt(totalWeeks - 1)} y2={yAt(projectedFinal)}
                 stroke={lineColor} strokeWidth="1" strokeDasharray="2 4"
                 initial={{ opacity: 0 }} animate={{ opacity: 0.7 }} transition={{ duration: 0.6, delay: 1.3 }}
               />
@@ -767,8 +769,8 @@ function Trajectory() {
               <circle cx={todayX} cy={yAt(expectedToday)} r="2.5" fill="var(--mist-mute)" />
               <circle cx={todayX} cy={yAt(actualToday)} r="3.5" fill={lineColor} stroke="var(--night)" strokeWidth="1" />
               {/* race marker */}
-              <circle cx={xAt(TOTAL_WEEKS - 1)} cy={yAt(totalTarget)} r="3" fill="var(--lamp)" />
-              <text x={xAt(TOTAL_WEEKS - 1) - 7} y={yAt(totalTarget) - 7} fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)" textAnchor="end">
+              <circle cx={xAt(totalWeeks - 1)} cy={yAt(totalTarget)} r="3" fill="var(--lamp)" />
+              <text x={xAt(totalWeeks - 1) - 7} y={yAt(totalTarget) - 7} fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)" textAnchor="end">
                 RACE
               </text>
 
@@ -803,9 +805,9 @@ function Trajectory() {
             }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                 <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--lamp)" }}>
-                  week {String(hover.i + 1).padStart(2, "0")}{hover.i + 1 === currentWeek ? " · now" : hover.i + 1 === TOTAL_WEEKS ? " · race" : ""}
+                  week {String(hover.i + 1).padStart(2, "0")}{hover.i + 1 === currentWeek ? " · now" : hover.i + 1 === totalWeeks ? " · race" : ""}
                 </span>
-                <span className="numerals" style={{ fontSize: 9, color: "var(--mist-mute)" }}>{weekDates(hover.i + 1)}</span>
+                <span className="numerals" style={{ fontSize: 9, color: "var(--mist-mute)" }}>{weekDates(hover.i + 1, blockStart)}</span>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px", marginTop: 8 }}>
                 <span className="eyebrow" style={{ fontSize: 8 }}>plan · cum</span>
@@ -889,8 +891,7 @@ function RoadAhead() {
   }, [cal]);
 
   /* ---- plan blocks (persisted agent plan, else block targets) ---- */
-  const targets = state?.block?.targets ?? BLOCK_TARGETS;
-  const totalWeeks = state?.block?.total_weeks ?? TOTAL_WEEKS;
+  const { targets, totalWeeks } = useBlockConfig();
   const fallback: PlanBlock[] = useMemo(() => {
     const start = Math.min(totalWeeks, currentWeek + 1);
     const end = Math.min(totalWeeks, currentWeek + 6);
@@ -1107,11 +1108,19 @@ function LogTable() {
               )}
               <span className="numerals" style={{ fontSize: 9.5, color: "var(--mist-mute)", display: "flex", gap: 8, marginTop: 2 }}>
                 {a.start_time_local && <span>{a.start_time_local}</span>}
-                {a.temp_max_f != null && (
+                {a.temp_avg_f != null && (
                   <span
-                    title={`max ${a.temp_max_f}°F · avg ${a.temp_avg_f}°F${a.humidity_avg != null ? ` · ${a.humidity_avg}% rh` : ""}`}
-                    style={{ color: a.temp_max_f >= 75 ? "var(--ember)" : a.temp_max_f <= 40 ? "var(--creek)" : "var(--mist-mute)" }}
-                  >{a.temp_max_f}°F</span>
+                    title={[
+                      `avg ${u.temp(a.temp_avg_f)}${u.tempUnit}`,
+                      a.temp_max_f != null ? `max ${u.temp(a.temp_max_f)}${u.tempUnit}` : null,
+                      a.apparent_avg_f != null ? `feels ${u.temp(a.apparent_avg_f)}${u.tempUnit}` : null,
+                      a.humidity_avg != null ? `${a.humidity_avg}% rh` : null,
+                    ].filter(Boolean).join(" · ")}
+                    style={{ color: (a.apparent_avg_f ?? a.temp_avg_f) >= 75 ? "var(--ember)" : (a.apparent_avg_f ?? a.temp_avg_f) <= 40 ? "var(--creek)" : "var(--mist-mute)" }}
+                  >
+                    {u.temp(a.temp_avg_f)}{u.tempUnit}
+                    {a.apparent_avg_f != null && Math.abs(a.apparent_avg_f - a.temp_avg_f) >= 2 && ` · feels ${u.temp(a.apparent_avg_f)}${u.tempUnit}`}
+                  </span>
                 )}
               </span>
             </div>
@@ -1150,9 +1159,10 @@ function LogTable() {
 function useFacts(): CoachFacts {
   const { activities, weekly, currentWeek } = useStrava();
   const { days: ouraDays } = useOura();
+  const { targets } = useBlockConfig();
   return useMemo(
-    () => computeCoachFacts(activities, ouraDays, weekly, currentWeek),
-    [activities, ouraDays, weekly, currentWeek],
+    () => computeCoachFacts(activities, ouraDays, weekly, currentWeek, targets),
+    [activities, ouraDays, weekly, currentWeek, targets],
   );
 }
 
@@ -1171,6 +1181,20 @@ const SUGGESTED_PROMPTS = [
   "race-day fueling strategy",
 ];
 
+/* chat survives page refreshes — capped so localStorage stays small */
+const CHAT_STORAGE_KEY = "coach-chat";
+const CHAT_STORAGE_CAP = 50;
+
+function loadStoredChat(): ChatMessage[] {
+  try {
+    const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function AgentRail() {
   const { data: agent, missing: agentMissing } = useAgentReadout();
   const { system } = useUnits();
@@ -1178,7 +1202,7 @@ function AgentRail() {
   const [readoutOpen, setReadoutOpen] = useState(true);
 
   /* chat state */
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(loadStoredChat);
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
   const [statusLine, setStatusLine] = useState("");
@@ -1188,6 +1212,13 @@ function AgentRail() {
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, pending]);
+
+  // persist the thread (drop the transient pending bubble, cap the length)
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages.slice(-CHAT_STORAGE_CAP)));
+    } catch { /* private mode — chat just won't persist */ }
+  }, [messages]);
 
   // collapse the readout once a conversation starts, to give chat room
   useEffect(() => {
@@ -1225,14 +1256,14 @@ function AgentRail() {
       const decoder = new TextDecoder();
       let buf = "";
 
-      const handleEvent = (event: string, payload: any) => {
+      const handleEvent = (event: string, payload: { content?: string; meta?: ChatMessage["meta"]; message?: string }) => {
         if (event === "heartbeat") {
           const sec = Math.floor((Date.now() - t0) / 1000);
           setStatusLine(`thinking… ${sec}s`);
         } else if (event === "message") {
-          setMessages((prev) => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: payload.content, meta: payload.meta }]);
+          setMessages((prev) => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: payload.content ?? "", meta: payload.meta }]);
         } else if (event === "error") {
-          setMessages((prev) => [...prev, { id: `e-${Date.now()}`, role: "assistant", content: payload.message, meta: { error: true } }]);
+          setMessages((prev) => [...prev, { id: `e-${Date.now()}`, role: "assistant", content: payload.message ?? "unknown error", meta: { error: true } }]);
         } else if (event === "done") {
           setStatusLine("");
         }
@@ -1252,11 +1283,11 @@ function AgentRail() {
             else if (line.startsWith("data:")) dataStr += line.slice(5).trim();
           }
           if (!dataStr) continue;
-          try { handleEvent(event, JSON.parse(dataStr)); } catch {}
+          try { handleEvent(event, JSON.parse(dataStr)); } catch { /* skip malformed SSE block */ }
         }
       }
     } catch (e) {
-      if ((e as any).name !== "AbortError") {
+      if ((e as Error).name !== "AbortError") {
         setMessages((prev) => [...prev, { id: `e-${Date.now()}`, role: "assistant", content: `network error: ${(e as Error).message}`, meta: { error: true } }]);
       }
     } finally {
@@ -1272,21 +1303,36 @@ function AgentRail() {
     setStatusLine("");
   };
 
+  const clearChat = () => {
+    setMessages([]);
+    try { localStorage.removeItem(CHAT_STORAGE_KEY); } catch { /* nothing stored */ }
+  };
+
+  // a readout older than a day means the coach step failed (or was skipped)
+  // on recent resyncs — surface it instead of silently showing old advice
+  const readoutStale = !!agent && isStale(agent.generated_at);
+
   return (
     <aside className="rail-sticky">
       <div className="panel notch" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden" }}>
         {/* status header */}
         <div style={{ padding: "13px 18px", borderBottom: "1px solid var(--edge)", display: "flex", alignItems: "center", gap: 10 }}>
-          <span className={agent ? undefined : "pulse"} style={{ width: 7, height: 7, borderRadius: "50%", background: agent ? "var(--pine)" : "var(--lamp)", flexShrink: 0 }} />
+          <span className={agent ? undefined : "pulse"} style={{ width: 7, height: 7, borderRadius: "50%", background: agent ? (readoutStale ? "var(--ember)" : "var(--pine)") : "var(--lamp)", flexShrink: 0 }} />
           <div style={{ minWidth: 0, flex: 1 }}>
             <div className="eyebrow" style={{ color: "var(--mist-dim)" }}>the coach</div>
-            <div className="numerals" style={{ fontSize: 10, color: "var(--mist-mute)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <div className="numerals" style={{ fontSize: 10, color: readoutStale ? "var(--ember)" : "var(--mist-mute)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {agent
-                ? `${agent.model} · ${relativeAgo(new Date(agent.generated_at).getTime())}`
+                ? `${agent.model} · ${relativeAgo(new Date(agent.generated_at).getTime())}${readoutStale ? " · stale — resync" : ""}`
                 : agentMissing ? "no readout — resync to generate" : "loading…"}
             </div>
           </div>
-          {pending && <span className="eyebrow numerals" style={{ color: "var(--lamp)" }}>{statusLine}</span>}
+          {pending
+            ? <span className="eyebrow numerals" style={{ color: "var(--lamp)" }}>{statusLine}</span>
+            : messages.length > 0 && (
+                <button className="chip" onClick={clearChat} title="clear chat history" style={{ fontSize: 9 }}>
+                  clear
+                </button>
+              )}
         </div>
 
         {/* scrollable body: flags + readout + chat thread */}
@@ -1778,11 +1824,13 @@ export default function App() {
   return (
     <UnitsProvider>
       <RefreshProvider>
-        <StravaProvider>
-          <OuraProvider>
-            <AppBody />
-          </OuraProvider>
-        </StravaProvider>
+        <StateProvider>
+          <StravaProvider>
+            <OuraProvider>
+              <AppBody />
+            </OuraProvider>
+          </StravaProvider>
+        </StateProvider>
       </RefreshProvider>
     </UnitsProvider>
   );
