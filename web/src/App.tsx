@@ -851,6 +851,7 @@ const CLASSIFICATION_META: Record<GCalEvent["classification"], { color: string; 
   appointment: { color: "var(--creek)", tag: "APPT" },
   training:    { color: "var(--pine)", tag: "TRN" },
   family:      { color: "var(--creek)", tag: "FAM" },
+  childcare:   { color: "var(--ember)", tag: "KIDS" },
   work:        { color: "var(--mist-mute)", tag: "WORK" },
   other:       { color: "var(--mist-mute)", tag: "···" },
 };
@@ -914,7 +915,7 @@ function RoadAhead() {
         right={
           <span className="eyebrow">
             {calOk
-              ? `${cal!.summary.upcoming_events} events · ${cal!.summary.races_upcoming} races · ${cal!.summary.travel_days_upcoming.length} travel days`
+              ? `${cal!.summary.upcoming_events} events · ${cal!.summary.races_upcoming} races · ${cal!.summary.travel_days_upcoming.length} travel days · ${cal!.summary.childcare_days_upcoming?.length ?? 0} kid days`
               : calMissing ? "calendar not connected" : "loading calendar…"}
             {" — plan "}
             <span style={{ color: live ? "var(--pine)" : "var(--mist-mute)" }}>

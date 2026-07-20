@@ -313,18 +313,21 @@ export type GCalEvent = {
   all_day: boolean;
   duration_min: number | null;
   location: string | null;
-  classification: "race" | "travel" | "appointment" | "training" | "family" | "work" | "other";
+  classification: "race" | "travel" | "appointment" | "training" | "family" | "childcare" | "work" | "other";
+  calendar?: string;
   html_link: string | null;
 };
 export type GCalRaw = {
   fetched_at: string;
   window: { time_min: string; time_max: string };
   calendar_id: string;
+  calendar_ids?: string[];
   summary: {
     total_events: number;
     upcoming_events: number;
     races_upcoming: number;
     travel_days_upcoming: string[];
+    childcare_days_upcoming?: string[];
   };
   events: GCalEvent[];
 };

@@ -6,6 +6,10 @@
     "your local vert trail",
     "your local tempo trail"
   ],
+  "calendar_ids": [
+    "primary",
+    "shared-family-calendar-id@group.calendar.google.com"
+  ],
   "calendar_keywords": {
     "travel": [
       "name of a recurring trip, e.g. a destination that appears as a bare event title"
@@ -13,5 +17,8 @@
     "family": [
       "kid activity / team name, e.g. saturday soccer"
     ]
-  }
+  },
+  "childcare_markers": [
+    "whole-word all-day markers meaning solo kid duty, e.g. a partner's or kid's initial"
+  ]
 }

@@ -47,3 +47,8 @@ lerna-debug.log*
 .beads/*
 !.beads/config.yaml
 !.beads/metadata.json
+
+# Local Claude tooling + screenshots — never commit (swept in by `git add -A` otherwise)
+.claude/
+web/.claude/
+web/.shots/

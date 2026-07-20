@@ -33,7 +33,11 @@ const SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"];
 
 const PAST_DAYS   = Number(arg("past",   7));
 const FUTURE_DAYS = Number(arg("future", 30));
-const CAL_ID      = arg("cal", "primary");
+// --cal takes a comma-separated list of calendar ids; when absent, profile.json
+// calendar_ids decides, falling back to "primary". Family logistics (childcare
+// markers, kid sports) usually live on shared calendars the athlete can read
+// but that never appear on the authorized account's primary calendar.
+const CAL_ARG     = arg("cal", null);
 const AUTH        = !!arg("auth", false);
 
 function openBrowser(url) {
@@ -173,11 +177,13 @@ function durationMin(ev) {
   return Math.max(0, Math.round((e - s) / 60_000));
 }
 
-// Personal keyword → classification overrides from config/profile.json, e.g.
-//   "calendar_keywords": { "travel": ["alabama"], "family": ["hawthorn"] }
-// Checked before the built-in patterns so personal naming wins (a trip named
-// after a place, a kid's team name, …).
-async function loadKeywordRules() {
+// Personal calendar config from config/profile.json:
+//   "calendar_ids":      ["primary", "partner@gmail.com", …] — calendars to merge
+//   "calendar_keywords": { "travel": ["alabama"], "family": ["hawthorn"] } — substring rules
+//   "childcare_markers": ["em", "m", "emerson", "h", "hawthorne"] — whole-word day markers
+// Keyword rules are checked before the built-in patterns so personal naming
+// wins (a trip named after a place, a kid's team name, …).
+async function loadProfileConfig() {
   for (const p of [
     path.join(ROOT, "config", "profile.json"),
     path.join(ROOT, "config", "profile.example.json"),
@@ -185,20 +191,38 @@ async function loadKeywordRules() {
     try {
       const profile = JSON.parse(await fs.readFile(p, "utf8"));
       const kw = profile.calendar_keywords;
-      if (!kw || typeof kw !== "object") return [];
-      return Object.entries(kw).flatMap(([classification, words]) =>
-        (Array.isArray(words) ? words : []).map((w) => ({
-          word: String(w).toLowerCase(),
-          classification,
-        }))
-      );
+      const rules = (!kw || typeof kw !== "object") ? [] :
+        Object.entries(kw).flatMap(([classification, words]) =>
+          (Array.isArray(words) ? words : []).map((w) => ({
+            word: String(w).toLowerCase(),
+            classification,
+          }))
+        );
+      return {
+        rules,
+        calendarIds: Array.isArray(profile.calendar_ids) && profile.calendar_ids.length
+          ? profile.calendar_ids.map(String)
+          : ["primary"],
+        childcareMarkers: Array.isArray(profile.childcare_markers)
+          ? profile.childcare_markers.map((m) => String(m).toLowerCase())
+          : [],
+      };
     } catch {}
   }
-  return [];
+  return { rules: [], calendarIds: ["primary"], childcareMarkers: [] };
 }
 
-function classify(ev, rules = []) {
+function classify(ev, rules = [], childcareMarkers = []) {
   const t = `${ev.summary || ""} ${ev.description || ""} ${ev.location || ""}`.toLowerCase();
+  // Childcare day markers first — they're terse all-day flags ("Em",
+  // "H no school"), so match whole words of the TITLE only; a substring
+  // rule for "m" or "h" would swallow nearly every event. Timed events
+  // that happen to contain a marker word ("Em PT" at 14:30) fall through
+  // to the normal rules.
+  if (childcareMarkers.length && isAllDay(ev)) {
+    const words = String(ev.summary || "").toLowerCase().split(/[^a-z0-9']+/).filter(Boolean);
+    if (words.some((w) => childcareMarkers.includes(w))) return "childcare";
+  }
   for (const r of rules) {
     if (t.includes(r.word)) return r.classification;
   }
@@ -225,11 +249,26 @@ async function main() {
   const now = new Date();
   const timeMin = new Date(now.getTime() - PAST_DAYS   * 86400_000).toISOString();
   const timeMax = new Date(now.getTime() + FUTURE_DAYS * 86400_000).toISOString();
-  console.log(`• fetching ${CAL_ID} events ${timeMin.slice(0,10)} → ${timeMax.slice(0,10)}…`);
+  const { rules: keywordRules, calendarIds, childcareMarkers } = await loadProfileConfig();
+  const calIds = CAL_ARG
+    ? String(CAL_ARG).split(",").map((s) => s.trim()).filter(Boolean)
+    : calendarIds;
+  console.log(`• fetching ${calIds.length} calendar(s) ${timeMin.slice(0,10)} → ${timeMax.slice(0,10)}…`);
 
-  const raw = await fetchEvents(token, CAL_ID, timeMin, timeMax);
-  const keywordRules = await loadKeywordRules();
-  const events = raw
+  const raw = [];
+  for (const calId of calIds) {
+    try {
+      const items = await fetchEvents(token, calId, timeMin, timeMax);
+      console.log(`  ✓ ${calId}: ${items.length} events`);
+      for (const it of items) raw.push({ ...it, _calendar: calId });
+    } catch (e) {
+      // One unreadable calendar (revoked share, typo'd id) must not kill
+      // the whole sync — the others still carry schedule constraints.
+      console.warn(`  ✗ ${calId}: ${e.message}`);
+    }
+  }
+
+  const mapped = raw
     .filter((e) => e.status !== "cancelled")
     .map((e) => ({
       id: e.id,
@@ -241,9 +280,22 @@ async function main() {
       duration_min: durationMin(e),
       location: e.location || null,
       attendees_count: Array.isArray(e.attendees) ? e.attendees.length : 0,
-      classification: classify(e, keywordRules),
+      classification: classify(e, keywordRules, childcareMarkers),
+      calendar: e._calendar,
       html_link: e.htmlLink || null,
     }));
+  // The same event often lands on two calendars (kid sports synced to both a
+  // personal and a shared calendar) — keep one copy per (title, start). Merging
+  // calendars also breaks the API's per-calendar startTime order, so re-sort.
+  const seenKey = new Set();
+  const events = mapped
+    .filter((e) => {
+      const k = `${e.summary.trim().toLowerCase()}|${e.start}`;
+      if (seenKey.has(k)) return false;
+      seenKey.add(k);
+      return true;
+    })
+    .sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
 
   const upcoming = events.filter((e) => e.start && new Date(e.start) > now);
   const upcoming_by_day = {};
@@ -256,45 +308,50 @@ async function main() {
     const d = localIso(new Date(now.getTime() + i * 86400_000));
     upcoming_by_day[d] = upcoming.filter((e) => (e.start || "").startsWith(d));
   }
+  // Expand multi-day all-day events (a week-long trip, a 3-day "Em" childcare
+  // block) into every covered day, not just the start date. All-day `end` is
+  // exclusive per the Google API. Include ongoing spans (end > now).
+  const coveredDaysUpcoming = (classification) => {
+    const days = new Set();
+    const todayIso = localIso(now);
+    for (const e of events) {
+      if (e.classification !== classification || !e.start) continue;
+      const startDay = e.start.slice(0, 10);
+      const endDay = (e.end || e.start).slice(0, 10);
+      if (e.all_day && endDay > startDay) {
+        for (let d = new Date(startDay + "T12:00:00"); localIso(d) < endDay; d = new Date(d.getTime() + 86400_000)) {
+          const iso = localIso(d);
+          if (iso >= todayIso) days.add(iso);
+        }
+      } else if (startDay >= todayIso) {
+        days.add(startDay);
+      }
+    }
+    return [...days].sort();
+  };
   const summary = {
     total_events: events.length,
     past_events: events.filter((e) => e.start && new Date(e.start) < now).length,
     upcoming_events: upcoming.length,
     races_upcoming: upcoming.filter((e) => e.classification === "race").length,
-    travel_days_upcoming: (() => {
-      // Expand multi-day travel events (all-day spans like a week-long trip)
-      // into every covered day, not just the start date. All-day `end` is
-      // exclusive per the Google API. Include ongoing trips (end > now).
-      const days = new Set();
-      const todayIso = localIso(now);
-      for (const e of events) {
-        if (e.classification !== "travel" || !e.start) continue;
-        const startDay = e.start.slice(0, 10);
-        const endDay = (e.end || e.start).slice(0, 10);
-        if (e.all_day && endDay > startDay) {
-          for (let d = new Date(startDay + "T12:00:00"); localIso(d) < endDay; d = new Date(d.getTime() + 86400_000)) {
-            const iso = localIso(d);
-            if (iso >= todayIso) days.add(iso);
-          }
-        } else if (startDay >= todayIso) {
-          days.add(startDay);
-        }
-      }
-      return [...days].sort();
-    })(),
+    travel_days_upcoming: coveredDaysUpcoming("travel"),
+    // Solo-kid-duty day markers ("Em", "H no school") — the coach treats these
+    // as blocked for long daytime sessions.
+    childcare_days_upcoming: coveredDaysUpcoming("childcare"),
   };
 
   const payload = {
     fetched_at: new Date().toISOString(),
     window: { time_min: timeMin, time_max: timeMax, past_days: PAST_DAYS, future_days: FUTURE_DAYS },
-    calendar_id: CAL_ID,
+    calendar_id: calIds.join(","),
+    calendar_ids: calIds,
     summary,
     events,
     upcoming_by_day,
   };
   await writeJsonAtomic(OUT_PATH, payload);
   console.log(`✓ wrote ${events.length} events → ${OUT_PATH}`);
-  console.log(`  ${summary.past_events} past · ${summary.upcoming_events} upcoming · ${summary.races_upcoming} races · ${summary.travel_days_upcoming.length} travel days`);
+  console.log(`  ${summary.past_events} past · ${summary.upcoming_events} upcoming · ${summary.races_upcoming} races · ${summary.travel_days_upcoming.length} travel days · ${summary.childcare_days_upcoming.length} childcare days`);
 }
 
 main().catch((e) => { console.error(e.message || e); process.exit(1); });
