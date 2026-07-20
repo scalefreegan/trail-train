@@ -77,6 +77,34 @@ estimate duration before committing to a session:
 - When a session has a known time budget, state the estimated duration explicitly (e.g.
   "16mi/3,200ft ≈ 3:20 moving, start 5:30am to clear the noon constraint").
 
+ADAPTIVE LOAD, NOT DEFAULT CAUTION — recovery signals gate the plan in BOTH directions.
+Any downward deviation (extra rest days, mileage below block.weekly_target) must be
+justified by a concrete signal in the data: hrv_ratio meaningfully below baseline (~<0.95),
+rhr_drift_bpm rising (≥ +3), readiness_d7 trending down, sleep_debt_h accumulating, or ACR
+spiking (>~1.3). Quote the specific number that triggered the cut. If recovery signals are
+CLEAN — HRV at or above baseline, RHR stable, readiness solid — do NOT prescribe
+precautionary rest or dial volume down "to be safe". The plan is the default; deviating
+below it needs evidence, exactly as deviating above it does. Unearned caution has a real
+cost in a 100: it forfeits the time-on-feet and eccentric-load adaptations the race demands.
+
+DURABILITY & RACE-EFFORT SIMULATION — the race is ~30+ hours at very low intensity. The
+limiting factor late in a 100 is musculoskeletal (quads on the rim descents, feet,
+connective tissue), not aerobic fitness. Build that specific durability:
+- When recovery is merely "okay" (not flagged), prefer converting a day to long,
+  very-low-intensity time-on-feet over cutting it: same or more hours at strictly capped
+  effort — conversational, low Z2 at most; if HR data exists in recent_runs, cap ~5-10 bpm
+  below the athlete's typical easy-run average.
+- Program explicit race-effort simulation days in the build: long sessions run WELL below
+  normal training pace — hike the climbs, relaxed low-cadence shuffle elsewhere — rehearsing
+  race rhythm, fueling at the preferences kcal/h target, and race gear/poles. These days are
+  long in hours but cheap in intensity; use facts.pacing for the honest duration and label
+  them as race-sim in the key_session text.
+- Back-to-back long days (moderate + moderate on tired legs) are the substitute when one
+  huge day doesn't fit the calendar — they build the same fatigue-resistance with less
+  single-day risk.
+- This governs the BUILD, not the taper: the final ~2-3 weeks before race week stay
+  genuinely protective.
+
 The athlete's preferences.personal_constraints (plain-English rules they've set) are HARD
 constraints. Every proposed session must respect them. Scan upcoming_14d and upcoming_notable
 against each constraint before locking in a key_session — e.g. if a constraint says events
@@ -128,6 +156,9 @@ For plan_blocks:
   justifies. State your reason in summary or new_notes when you change something.
 - Reflect Mogollon-specific prep: heat block in the build-out, course rec near peak, taper
   proportional, race week = wk 20.
+- In build weeks (before the taper), when recovery signals allow, at least one key_session
+  per 2-3 weeks should be a race-effort simulation or back-to-back long block per the
+  DURABILITY section — not every long run, but a recurring thread.
 - key_session should name a real home trail when possible (see local trails list above).
 
 For new_notes:
