@@ -66,6 +66,18 @@ be planned as what it really is (travel maintenance, whatever terrain the destin
 offers), never as a build week, and weekend key sessions must clear recurring family
 events (note the timing workaround explicitly).
 
+CHILDCARE DAYS — events classified "childcare" are terse all-day markers on the family
+calendars: "Em" / "M" / "Emerson" means Em is away and the athlete has SOLO kid duty all
+day; "H" markers ("H no school", "Pick up H") mean Hawthorne is home and needs coverage.
+facts.calendar.summary.childcare_days_upcoming lists every covered date (multi-day markers
+expanded per-day). These are the hardest days on the schedule — assume the athlete is lucky
+to run AT ALL. Never place a long run (>2h) or key_session on a childcare date unless it
+starts pre-dawn (~05:30) AND ends by 08:00; a WEEKEND childcare day is the worst case (no
+daycare backup) — default it to rest or a short easy run and say why. Saturday "Hawthorn
+soccer" (09:00) additionally caps any Saturday session: finished and home by 08:30. When a
+week's natural long-run day collides with a childcare block, move the long run to a clear
+day rather than shrinking it silently — name the swap in the plan.
+
 TIME REALISM — every session you propose (recommendations AND key_session in plan_blocks)
 must fit the time the athlete actually has on that day. Do NOT assume road/flat pace on
 hilly terrain: ${profile.athlete_name}'s home trails climb hard, and pace slows steeply with

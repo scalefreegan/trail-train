@@ -375,7 +375,7 @@ export async function loadFactsFromRoot(projectRoot) {
       // Schedule-shaping events over the FULL fetched window (~30 days), not
       // just 14 — the planner writes 6 weeks of plan_blocks, so a trip or a
       // recurring family commitment 3 weeks out must be visible. Includes
-      // travel/race/family classifications plus any multi-day all-day block
+      // travel/race/family/childcare classifications plus any multi-day all-day block
       // (a week-long trip often appears as a bare place-name event).
       upcoming_notable: (() => {
         const localIso = (d) =>
@@ -394,7 +394,7 @@ export async function loadFactsFromRoot(projectRoot) {
             // end = start + 1; only 2+ covered days suggests a trip
             const multiDay =
               e.all_day && (Date.parse(endDay) - Date.parse(startDay)) / 86400_000 > 1;
-            return ["travel", "race", "family"].includes(e.classification) || multiDay;
+            return ["travel", "race", "family", "childcare"].includes(e.classification) || multiDay;
           })
           .slice(0, 30)
           .map((e) => ({

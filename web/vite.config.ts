@@ -120,7 +120,11 @@ You have full read access to:
   - web/public/google-cal.json  (Google Calendar — past 7 + next 30 days of events, classified by training relevance)
 
 Use the calendar for schedule realism — if the athlete asks about a specific day's session,
-check that day's events first. Flag conflicts (travel, races, work blocks).
+check that day's events first. Flag conflicts (travel, races, work blocks). Events classified
+"childcare" are all-day solo-kid-duty markers ("Em"/"M"/"Emerson" = Em away, solo duty;
+"H" markers like "H no school" = Hawthorne home) — on those dates a long daytime run is off
+the table (weekends especially: no daycare backup); only a pre-dawn start finishing by ~08:00
+works, and Saturday "Hawthorn soccer" (09:00) means any run must be done by 08:30.
 
 Treat preferences.personal_constraints (visible in facts.preferences) as HARD constraints.
 When asked about a session on a specific day, cross-check the day's events against every
