@@ -883,9 +883,18 @@ function RoadAhead() {
         if (!e.all_day) {
           const startMs = new Date(e.start).getTime();
           if (startMs < now.getTime() - 60 * 60_000) continue;
+          const slot = out.find((d) => d.date === e.start!.slice(0, 10));
+          if (slot) slot.events.push(e);
+          continue;
         }
-        const slot = out.find((d) => d.date === e.start!.slice(0, 10));
-        if (slot) slot.events.push(e);
+        // All-day `end` is exclusive per the Google API (a Jul 31 – Aug 2 span
+        // ends "Aug 3"), and the span may already be underway — show it on
+        // every covered day in the strip, not just its start date.
+        const startDay = e.start.slice(0, 10);
+        const endDay = (e.end || e.start).slice(0, 10);
+        for (const slot of out) {
+          if (slot.date === startDay || (slot.date > startDay && slot.date < endDay)) slot.events.push(e);
+        }
       }
     }
     return out;

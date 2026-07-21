@@ -347,7 +347,8 @@ export async function loadFactsFromRoot(projectRoot) {
       // for schedule constraints (travel, races, work blocks, appointments).
       // All-day starts are date-only strings that Date() parses as UTC
       // midnight ("past" for most of the local day), so compare those by
-      // local date instead of timestamp.
+      // local date instead of timestamp. Events already underway (a multi-day
+      // span whose start is behind us but whose end isn't) stay included.
       upcoming_14d: (cal.events || [])
         .filter((e) => {
           if (!e.start) return false;
@@ -356,11 +357,12 @@ export async function loadFactsFromRoot(projectRoot) {
           if (e.all_day) {
             const localIso = (d) =>
               `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-            const day = e.start.slice(0, 10);
-            return day >= localIso(now) && day <= localIso(horizon);
+            const startDay = e.start.slice(0, 10);
+            const endDay = (e.end || e.start).slice(0, 10); // exclusive end
+            return endDay > localIso(now) && startDay <= localIso(horizon);
           }
-          const t = new Date(e.start);
-          return t >= now && t <= horizon;
+          const t = new Date(e.end || e.start);
+          return t >= now && new Date(e.start) <= horizon;
         })
         .slice(0, 40)
         .map((e) => ({

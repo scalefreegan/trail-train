@@ -297,16 +297,29 @@ async function main() {
     })
     .sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
 
-  const upcoming = events.filter((e) => e.start && new Date(e.start) > now);
-  const upcoming_by_day = {};
   // Local-zone YYYY-MM-DD so keys match Google's event.start (which is in
   // the calendar's local zone). toISOString() would shift by a day in
   // the user's evening hours.
   const localIso = (d) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  // "Upcoming" includes events already underway — a multi-day trip or
+  // childcare block mid-span must not vanish from the horizon.
+  const upcoming = events.filter((e) => {
+    if (!e.start) return false;
+    if (new Date(e.start) > now) return true;
+    if (e.all_day) return (e.end || "").slice(0, 10) > localIso(now); // exclusive end
+    return e.end ? new Date(e.end) > now : false;
+  });
+  const upcoming_by_day = {};
   for (let i = 0; i < 14; i++) {
     const d = localIso(new Date(now.getTime() + i * 86400_000));
-    upcoming_by_day[d] = upcoming.filter((e) => (e.start || "").startsWith(d));
+    upcoming_by_day[d] = upcoming.filter((e) => {
+      const startDay = (e.start || "").slice(0, 10);
+      if (startDay === d) return true;
+      if (!e.all_day) return false;
+      const endDay = (e.end || "").slice(0, 10);
+      return startDay < d && d < endDay; // exclusive end covers start..end-1
+    });
   }
   // Expand multi-day all-day events (a week-long trip, a 3-day "Em" childcare
   // block) into every covered day, not just the start date. All-day `end` is
@@ -329,15 +342,19 @@ async function main() {
     }
     return [...days].sort();
   };
+  const childcareDays = coveredDaysUpcoming("childcare");
+  const isWeekendIso = (iso) => [0, 6].includes(new Date(iso + "T12:00:00").getDay());
   const summary = {
     total_events: events.length,
     past_events: events.filter((e) => e.start && new Date(e.start) < now).length,
     upcoming_events: upcoming.length,
     races_upcoming: upcoming.filter((e) => e.classification === "race").length,
     travel_days_upcoming: coveredDaysUpcoming("travel"),
-    // Solo-kid-duty day markers ("Em", "H no school") — the coach treats these
-    // as blocked for long daytime sessions.
-    childcare_days_upcoming: coveredDaysUpcoming("childcare"),
+    // Childcare day markers ("Em", "H no school"). Weekday markers still leave
+    // the ~08:00-16:00 work-hours window trainable; WEEKEND markers (worst:
+    // Em solo-duty) are the ones the coach routes long runs around.
+    childcare_days_upcoming: childcareDays,
+    childcare_weekend_days_upcoming: childcareDays.filter(isWeekendIso),
   };
 
   const payload = {

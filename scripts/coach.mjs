@@ -26,10 +26,10 @@ const OUT_PATH = path.join(ROOT, "web", "public", "coach.json");
 
 const MAX_TURNS = Number(arg("max-turns", 8));
 const TIMEOUT   = Number(arg("timeout",  240));
-// Narrative units for the readout — "imperial" (default) or "metric".
+// Narrative units for the readout — "metric" (default) or "imperial".
 // Passed by the dashboard's resync endpoint from the live UI toggle, or
-// set manually: `node scripts/coach.mjs --units metric`.
-const UNITS = String(arg("units", process.env.TRAIL_UNITS || "imperial")) === "metric" ? "metric" : "imperial";
+// set manually: `node scripts/coach.mjs --units imperial`.
+const UNITS = String(arg("units", process.env.TRAIL_UNITS || "metric")) === "imperial" ? "imperial" : "metric";
 
 
 /* -------- Claude Code CLI subprocess (pattern from agent-trade) -------- */
@@ -67,16 +67,23 @@ offers), never as a build week, and weekend key sessions must clear recurring fa
 events (note the timing workaround explicitly).
 
 CHILDCARE DAYS — events classified "childcare" are terse all-day markers on the family
-calendars: "Em" / "M" / "Emerson" means Em is away and the athlete has SOLO kid duty all
-day; "H" markers ("H no school", "Pick up H") mean Hawthorne is home and needs coverage.
+calendars: "Em" / "M" / "Emerson" means Em is away and the athlete has SOLO kid duty;
+"H" markers ("H no school", "Pick up H") mean Hawthorne is home and needs coverage.
 facts.calendar.summary.childcare_days_upcoming lists every covered date (multi-day markers
-expanded per-day). These are the hardest days on the schedule — assume the athlete is lucky
-to run AT ALL. Never place a long run (>2h) or key_session on a childcare date unless it
-starts pre-dawn (~05:30) AND ends by 08:00; a WEEKEND childcare day is the worst case (no
-daycare backup) — default it to rest or a short easy run and say why. Saturday "Hawthorn
-soccer" (09:00) additionally caps any Saturday session: finished and home by 08:30. When a
-week's natural long-run day collides with a childcare block, move the long run to a clear
-day rather than shrinking it silently — name the swap in the plan.
+expanded per-day); childcare_weekend_days_upcoming is the weekend subset. Severity depends
+on the DAY OF WEEK, not just the marker:
+- WEEKDAY (Mon-Fri) childcare days: the athlete can still train during work hours, roughly
+  08:00-16:00. Long sessions that fit that window are fine — plan weekday childcare days as
+  near-normal training days (note the window in the session text). Do NOT zero them out or
+  restrict them to pre-dawn shorts.
+- WEEKEND childcare days are the genuinely hard ones, worst when an "Em" marker covers a
+  weekend (solo duty, no daycare backup). Default a weekend childcare day to rest or a
+  short pre-dawn run (start ~05:30, done by 08:00), and plan the week's LONG runs to AVOID
+  Em weekends entirely: use a clear weekend day, or move the long run into a weekday
+  daytime window (a midday finish doubles as heat exposure). Name the swap in the plan —
+  never shrink the long run silently.
+Saturday "Hawthorn soccer" (09:00) additionally caps any Saturday session: finished and
+home by 08:30.
 
 TIME REALISM — every session you propose (recommendations AND key_session in plan_blocks)
 must fit the time the athlete actually has on that day. Do NOT assume road/flat pace on
@@ -121,8 +128,29 @@ connective tissue), not aerobic fitness. Build that specific durability:
 - Back-to-back long days (moderate + moderate on tired legs) are the substitute when one
   huge day doesn't fit the calendar — they build the same fatigue-resistance with less
   single-day risk.
+- WEEKDAY VOLUME IS THE ENGINE: the athlete explicitly wants substantially more weekday
+  mileage, run at race rhythm — slower than normal training pace, HR capped (low Z2 at
+  most; if HR data exists, ~5-10 bpm below the easy-run average) — to mimic course timing.
+  Weekday daytime windows (08:00-16:00, including weekday childcare days) can absorb long
+  low-intensity time-on-feet without the recovery cost intensity carries. When weekly
+  volume needs to rise, add it here first rather than loading the weekends.
 - This governs the BUILD, not the taper: the final ~2-3 weeks before race week stay
   genuinely protective.
+
+LOST WEEKS & PATH TO RACE READINESS — when a planned build week is lost or heavily cut
+(constraint collision, travel, illness), do not just absorb it: re-place the lost key
+stimulus on the nearest week with capacity (shift the build later, convert weekday daytime
+windows into long race-rhythm sessions, back-to-backs) and name the move in the plan. The
+original block.weekly_target is a REFERENCE, not the goal — the goal is arriving at the
+start line ready for 102 mi / 15,900 ft. Every run, audit the remaining plan against race
+demands: longest run still planned, biggest remaining week, cumulative vert trajectory,
+night/heat/course-specific rehearsals still on the calendar. If the block is far behind the
+original targets (cumulative delta beyond ~15%), design and present the best ACHIEVABLE
+revised trajectory to race readiness given the real constraints — say explicitly in the
+summary what the revised peak is and what has been given up — rather than measuring
+shortfall against a dead plan or quietly accepting a light one. If the remaining plan would
+send the athlete to the start line under-prepared (no remaining week near the achievable
+peak, longest pre-taper run well under ~6h), flag it in watch_outs with the recovery move.
 
 The athlete's preferences.personal_constraints (plain-English rules they've set) are HARD
 constraints. Every proposed session must respect them. Scan upcoming_14d and upcoming_notable
@@ -135,7 +163,10 @@ Persistent state lives in web/public/state.json — you already see its key cont
 file (plan_blocks, agent_notes, preferences). Treat the EXISTING plan_blocks as the prior plan.
 Do not regenerate from scratch every run — keep what still makes sense, only revise blocks
 where new data justifies a change. If the current plan still fits the picture, return it
-mostly unchanged.
+mostly unchanged. BUT continuity is not a ratchet: a carried-forward block planned BELOW
+block.weekly_target must re-earn its cut on every run — re-check its original justification
+against the CURRENT calendar, constraint semantics, and recovery data, and restore the week
+toward target (or the achievable revised trajectory) when the reason no longer holds.
 
 When done, respond with ONLY a single JSON object — no prose outside, no markdown fences:
 
@@ -165,6 +196,9 @@ Rules:
     ? "Metric units (kilometers, meters) in all prose; Celsius for temperatures"
     : "Imperial units (miles, feet) in all prose; Fahrenheit for temperatures"} — this matches the unit system the athlete has selected in the dashboard. The source snapshots may use other units; convert when quoting. Use 24h time.
 - EXCEPTION: the structured JSON fields dist_mi and elev_ft are ALWAYS miles and feet regardless of the prose units — the dashboard converts them for display.
+- Prose INSIDE plan_blocks (focus, key_session) follows the selected unit system like all
+  other prose. When carrying forward prior blocks whose text is in the other unit system,
+  convert the text — a pure unit conversion does not count as a plan change.
 - No emojis. No platitudes. Direct, specific, useful.
 - The course climbs the rim 6×, max elev 7,912 ft. Heat / altitude / technical descent are the real wildcards.
 
