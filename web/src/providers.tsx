@@ -117,7 +117,7 @@ const FT_TO_M = 0.3048;
 
 export function UnitsProvider({ children }: { children: React.ReactNode }) {
   const [system, setSystem] = useState<System>(() =>
-    (typeof localStorage !== "undefined" && (localStorage.getItem("units") as System)) || "imperial"
+    (typeof localStorage !== "undefined" && (localStorage.getItem("units") as System)) || "metric"
   );
   const toggle = useCallback(() => {
     setSystem((s) => {

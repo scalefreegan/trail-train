@@ -24,12 +24,12 @@ function refreshApi(): Plugin {
         // the coach step so the readout speaks the dashboard's unit system.
         const bodyChunks: Buffer[] = []
         for await (const c of req) bodyChunks.push(c as Buffer)
-        let units = 'imperial'
+        let units = 'metric'
         try {
           const parsed = JSON.parse(Buffer.concat(bodyChunks).toString('utf8') || '{}')
-          if (parsed.units === 'metric') units = 'metric'
+          if (parsed.units === 'imperial') units = 'imperial'
         } catch {
-          console.warn('[refresh] unparseable request body — defaulting to imperial units')
+          console.warn('[refresh] unparseable request body — defaulting to metric units')
         }
 
         res.writeHead(200, {
@@ -107,7 +107,7 @@ const CHAT_SYSTEM = (
   factsPath: string,
   coachPath: string,
   profile: { athlete_name?: string; location?: string; home_trails?: string[] },
-  units: 'imperial' | 'metric' = 'imperial',
+  units: 'imperial' | 'metric' = 'metric',
   hasPacing = true,
 ) => `You are the coach inside Trail Almanac for ${profile.athlete_name || "the athlete"} — an ultrarunner training for the Mogollon Monster 100 (102.3 mi, 15,900 ft, Sept 12, 2026, Pine, AZ). They live in ${profile.location || "their home mountains"}.${profile.home_trails?.length ? ` Local training trails: ${profile.home_trails.join(", ")}.` : ""}
 
@@ -121,10 +121,12 @@ You have full read access to:
 
 Use the calendar for schedule realism — if the athlete asks about a specific day's session,
 check that day's events first. Flag conflicts (travel, races, work blocks). Events classified
-"childcare" are all-day solo-kid-duty markers ("Em"/"M"/"Emerson" = Em away, solo duty;
-"H" markers like "H no school" = Hawthorne home) — on those dates a long daytime run is off
-the table (weekends especially: no daycare backup); only a pre-dawn start finishing by ~08:00
-works, and Saturday "Hawthorn soccer" (09:00) means any run must be done by 08:30.
+"childcare" are all-day markers ("Em"/"M"/"Emerson" = Em away, solo duty; "H" markers like
+"H no school" = Hawthorne home). Severity depends on day of week: on a WEEKDAY childcare
+day the athlete can still train during work hours (~08:00-16:00) — plan it near-normally;
+a WEEKEND childcare day (worst: an Em marker — solo duty, no daycare backup) defaults to
+rest or a short pre-dawn run done by ~08:00, and long runs should avoid Em weekends
+entirely. Saturday "Hawthorn soccer" (09:00) means any Saturday run must be done by 08:30.
 
 Treat preferences.personal_constraints (visible in facts.preferences) as HARD constraints.
 When asked about a session on a specific day, cross-check the day's events against every
@@ -145,7 +147,7 @@ ${hasPacing
   ? `When estimating how long a run will take, use facts.pacing — a model fit from ${profile.athlete_name || "the athlete"}'s own Strava runs. Pace slows steeply with vert and distance, so never assume flat-road pace on hilly terrain. Read off facts.pacing.reference (distance_mi + vert_ft → pace_min_per_mi, moving_h), interpolate for the proposed session, round up for stops, and carry ±facts.pacing.fit_error_min_per_mi as uncertainty. A hilly long run here is ~11-14 min/mi, not 9.`
   : `facts.pacing is null — no personal pacing model yet (needs at least 8 runs with distance + time data). Estimate durations conservatively from recent runs in the data, flag estimates as rough, and never assume flat-road pace on hilly terrain.`}
 
-Use the Read tool to look up specifics. Ground every claim in the data — quote real numbers (HRV ms, RHR delta, ACR ratio, miles, vert, dates, run temps in °F).
+Use the Read tool to look up specifics. Ground every claim in the data — quote real numbers (HRV ms, RHR delta, ACR ratio, distance, vert, dates, run temps).
 
 Response rules:
   - Be concise. 1-3 short paragraphs unless the user explicitly asks for more depth.
@@ -174,7 +176,7 @@ function chatApi(): Plugin {
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
         catch { res.statusCode = 400; res.end('bad json'); return }
         const messages = body.messages || []
-        const chatUnits: 'imperial' | 'metric' = body.units === 'metric' ? 'metric' : 'imperial'
+        const chatUnits: 'imperial' | 'metric' = body.units === 'imperial' ? 'imperial' : 'metric'
         if (!messages.length) { res.statusCode = 400; res.end('no messages'); return }
 
         // Compute facts → write to temp file the agent can Read
