@@ -16,6 +16,27 @@ import type { Course } from "./types";
 /*  projected from the athlete's own pacing fit.                       */
 /* ------------------------------------------------------------------ */
 
+function usePersistedStops(key: string) {
+  const [v, setV] = useState<Record<string, number>>(() => {
+    if (typeof localStorage === "undefined") return {};
+    try { return JSON.parse(localStorage.getItem(key) || "{}"); } catch { return {}; }
+  });
+  const set = (name: string, min: number | null) => {
+    setV((prev) => {
+      const next = { ...prev };
+      if (min == null || !Number.isFinite(min)) delete next[name];
+      else next[name] = Math.max(0, min);
+      try { localStorage.setItem(key, JSON.stringify(next)); } catch { /* private mode */ }
+      return next;
+    });
+  };
+  const clear = () => {
+    setV({});
+    try { localStorage.removeItem(key); } catch { /* private mode */ }
+  };
+  return [v, set, clear] as const;
+}
+
 function usePersistedNumber(key: string, initial: number) {
   const [v, setV] = useState<number>(() => {
     if (typeof localStorage === "undefined") return initial;
@@ -304,11 +325,14 @@ export function RacePlanner() {
   const [goalH, setGoalH] = usePersistedNumber("race.goal_h", 32);
   const [aidStopMin, setAidStopMin] = usePersistedNumber("race.aid_stop_min", 5);
   const [crewStopMin, setCrewStopMin] = usePersistedNumber("race.crew_stop_min", 10);
+  const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops("race.stop_overrides");
 
   const fit = useMemo(() => fitPacing(activities), [activities]);
   const proj = useMemo(
-    () => (course && fit ? projectRace(course, fit, { fatiguePctPer10mi: fatigue, goalH, aidStopMin, crewStopMin }) : null),
-    [course, fit, fatigue, goalH, aidStopMin, crewStopMin],
+    () => (course && fit ? projectRace(course, fit, {
+      fatiguePctPer10mi: fatigue, goalH, aidStopMin, crewStopMin, stopOverridesMin: stopOverrides,
+    }) : null),
+    [course, fit, fatigue, goalH, aidStopMin, crewStopMin, stopOverrides],
   );
 
   if (missing || !course) {
@@ -415,6 +439,7 @@ export function RacePlanner() {
             <span className="eyebrow" style={{ fontSize: 8.5 }}>station</span>
             <span className="eyebrow" style={{ fontSize: 8.5, textAlign: "right" }}>{u.distUnit}</span>
             <span className="eyebrow col-seg" style={{ fontSize: 8.5, textAlign: "right" }}>{u.elevUnit}↑ seg</span>
+            <span className="eyebrow col-stop" style={{ fontSize: 8.5, textAlign: "right" }}>stop min</span>
             <span className="eyebrow" style={{ fontSize: 8.5 }}>eta best · avg · worst</span>
             <span className="eyebrow col-goal" style={{ fontSize: 8.5 }}>goal</span>
             <span className="eyebrow" style={{ fontSize: 8.5 }}>cutoff · margin</span>
@@ -437,14 +462,32 @@ export function RacePlanner() {
               >
                 <div style={{ minWidth: 0 }}>
                   <span style={{ fontSize: 13, fontWeight: 500, display: "block" }}>{s.name}</span>
-                  <span className="numerals" style={{ fontSize: 9, color: "var(--mist-mute)" }}>
-                    {s.notes}
-                    {sp.stop_min > 0 ? `${s.notes ? " · " : ""}~${sp.stop_min}m stop` : ""}
-                  </span>
+                  {s.notes && <span className="numerals" style={{ fontSize: 9, color: "var(--mist-mute)" }}>{s.notes}</span>}
                 </div>
                 <span className="numerals" style={{ fontSize: 12.5, fontWeight: 600, textAlign: "right" }}>{u.dist(s.total_mi)}</span>
                 <span className="numerals col-seg" style={{ fontSize: 11.5, color: "var(--mist-dim)", textAlign: "right" }}>
                   {sp.seg_gain_ft > 0 ? `+${u.elev(sp.seg_gain_ft)}` : "—"}
+                </span>
+                <span className="col-stop" style={{ textAlign: "right" }}>
+                  {i < proj.stations.length - 1 ? (
+                    <input
+                      type="number" min={0} max={120} step={1}
+                      value={sp.stop_min}
+                      title={stopOverrides[s.name] != null
+                        ? "custom stop — clear the field to restore the default"
+                        : "default stop (scales with fatigue) — edit to set your own"}
+                      onChange={(e) => setStopOverride(s.name, e.target.value === "" ? null : Number(e.target.value))}
+                      className="numerals"
+                      style={{
+                        width: 42, textAlign: "right", fontSize: 11, padding: "3px 5px",
+                        background: "var(--night-deep)",
+                        border: `1px solid ${stopOverrides[s.name] != null ? "var(--lamp)" : "var(--edge-bright)"}`,
+                        color: stopOverrides[s.name] != null ? "var(--lamp)" : "var(--mist)",
+                      }}
+                    />
+                  ) : (
+                    <span className="numerals" style={{ fontSize: 11.5, color: "var(--mist-mute)" }}>—</span>
+                  )}
                 </span>
                 <span className="numerals" style={{ fontSize: 11.5, whiteSpace: "nowrap" }}>
                   <span style={{ color: "var(--pine)" }}>{fmtRaceClock(race.date, sp.eta_h.best)}</span>
@@ -479,7 +522,12 @@ export function RacePlanner() {
             <span className="eyebrow" style={{ fontSize: 8.5 }}>
               {fit ? `pacing fit: ${fit.basis} (eff. n=${fit.effN}) · ±${u.paceFmt(fit.residStd, 1)}${u.paceUnit} band · fatigue ×${(1 + fatigue / 100).toFixed(2)} per 10${u.distUnit}, compounding · stops ${aidStopMin}/${crewStopMin}m fresh, stretch late-race` : ""}
             </span>
-            <span className="eyebrow" style={{ fontSize: 8.5 }}>
+            <span className="eyebrow" style={{ fontSize: 8.5, display: "inline-flex", alignItems: "center", gap: 10 }}>
+              {Object.keys(stopOverrides).length > 0 && (
+                <button className="chip" style={{ fontSize: 8 }} onClick={clearStopOverrides}>
+                  reset {Object.keys(stopOverrides).length} custom stop{Object.keys(stopOverrides).length > 1 ? "s" : ""}
+                </button>
+              )}
               cutoffs from 2025 manual · start {fmtRaceClock(race.date, 0)} · sunset {course.sun.sunset} · sunrise {course.sun.sunrise}
             </span>
           </div>

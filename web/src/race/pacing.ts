@@ -146,6 +146,9 @@ export type ProjectOptions = {
   aidStopMin?: number;
   /** fresh stop minutes where crew / drop bags are (scales up late-race) */
   crewStopMin?: number;
+  /** per-station stop overrides by station name, minutes — taken literally
+      (no fatigue scaling) and winning over the defaults */
+  stopOverridesMin?: Record<string, number>;
 };
 
 export type RaceProjection = {
@@ -222,7 +225,10 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   // Stop time applies at every intermediate station once you've arrived —
   // a station's own arrival excludes its stop, later stations include it.
   // Crew zones count too (meeting your crew takes real minutes).
+  const overrides = opts.stopOverridesMin ?? {};
   const stopAt = (st: CourseAidStation, isLast: boolean) => {
+    const o = overrides[st.name];
+    if (o != null && Number.isFinite(o)) return Math.max(0, o) * 60;
     if (isLast) return 0;
     const fresh = st.crew || st.drop_bag ? crewStopS : aidStopS;
     return fresh * Math.min(2, mult(st.total_mi));
