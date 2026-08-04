@@ -103,6 +103,7 @@ export type Activity = {
   distance_mi: number;
   elevation_ft: number;
   moving_s: number;
+  avg_hr?: number | null;
   rpe: 1 | 2 | 3 | 4 | 5;
   strava_url?: string;
   temp_max_f?: number | null;

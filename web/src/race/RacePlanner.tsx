@@ -300,13 +300,15 @@ export function RacePlanner() {
   const { race } = useBlockConfig();
   const { activities } = useStrava();
   const { course, missing } = useCourse();
-  const [fatigue, setFatigue] = usePersistedNumber("race.fatigue_pct", 4);
+  const [fatigue, setFatigue] = usePersistedNumber("race.fatigue_pct_v2", 5);
   const [goalH, setGoalH] = usePersistedNumber("race.goal_h", 32);
+  const [aidStopMin, setAidStopMin] = usePersistedNumber("race.aid_stop_min", 5);
+  const [crewStopMin, setCrewStopMin] = usePersistedNumber("race.crew_stop_min", 10);
 
   const fit = useMemo(() => fitPacing(activities), [activities]);
   const proj = useMemo(
-    () => (course && fit ? projectRace(course, fit, { fatiguePctPer10mi: fatigue, goalH }) : null),
-    [course, fit, fatigue, goalH],
+    () => (course && fit ? projectRace(course, fit, { fatiguePctPer10mi: fatigue, goalH, aidStopMin, crewStopMin }) : null),
+    [course, fit, fatigue, goalH, aidStopMin, crewStopMin],
   );
 
   if (missing || !course) {
@@ -327,8 +329,21 @@ export function RacePlanner() {
     { label: "expected", value: fmtRaceClock(race.date, proj.finish_h.avg), color: "var(--lamp)" },
     { label: "worst case", value: fmtRaceClock(race.date, proj.finish_h.worst), color: "var(--ember)" },
     { label: "expected elapsed", value: fmtElapsed(proj.finish_h.avg) },
+    { label: "time stopped", value: fmtElapsed(proj.stopped_h) },
     { label: "goal", value: goalH ? `${fmtElapsed(goalH)} → ${fmtRaceClock(race.date, goalH)}` : "—", color: "var(--creek)" },
   ] : [];
+
+  const numInput = (value: number, set: (n: number) => void, min: number, max: number, w = 44) => (
+    <input
+      type="number" min={min} max={max} step={1} value={value}
+      onChange={(e) => set(Number(e.target.value))}
+      className="numerals"
+      style={{
+        width: w, background: "var(--night-deep)", border: "1px solid var(--edge-bright)",
+        color: "var(--mist)", fontSize: 11, padding: "3px 6px",
+      }}
+    />
+  );
 
   return (
     <section>
@@ -342,6 +357,10 @@ export function RacePlanner() {
                 onChange={(e) => setFatigue(Number(e.target.value))}
                 style={{ width: 90, accentColor: "var(--lamp)" }}
               />
+            </label>
+            <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+              title="fresh stop minutes at a regular aid station / at crew+drop-bag stations — stops stretch late-race with fatigue">
+              stops {numInput(aidStopMin, setAidStopMin, 0, 30)}/{numInput(crewStopMin, setCrewStopMin, 0, 45)}m
             </label>
             <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               goal
@@ -418,7 +437,10 @@ export function RacePlanner() {
               >
                 <div style={{ minWidth: 0 }}>
                   <span style={{ fontSize: 13, fontWeight: 500, display: "block" }}>{s.name}</span>
-                  {s.notes && <span className="numerals" style={{ fontSize: 9, color: "var(--mist-mute)" }}>{s.notes}</span>}
+                  <span className="numerals" style={{ fontSize: 9, color: "var(--mist-mute)" }}>
+                    {s.notes}
+                    {sp.stop_min > 0 ? `${s.notes ? " · " : ""}~${sp.stop_min}m stop` : ""}
+                  </span>
                 </div>
                 <span className="numerals" style={{ fontSize: 12.5, fontWeight: 600, textAlign: "right" }}>{u.dist(s.total_mi)}</span>
                 <span className="numerals col-seg" style={{ fontSize: 11.5, color: "var(--mist-dim)", textAlign: "right" }}>
@@ -455,7 +477,7 @@ export function RacePlanner() {
           })}
           <div style={{ padding: "10px 18px", borderTop: "1px solid var(--edge)", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
             <span className="eyebrow" style={{ fontSize: 8.5 }}>
-              {fit ? `pacing fit from ${fit.n} runs · ±${u.paceFmt(fit.residStd, 1)}${u.paceUnit} band · fatigue +${fatigue}%/10${u.distUnit} · dwell 3–8 min/aid` : ""}
+              {fit ? `pacing fit: ${fit.basis} (eff. n=${fit.effN}) · ±${u.paceFmt(fit.residStd, 1)}${u.paceUnit} band · fatigue ×${(1 + fatigue / 100).toFixed(2)} per 10${u.distUnit}, compounding · stops ${aidStopMin}/${crewStopMin}m fresh, stretch late-race` : ""}
             </span>
             <span className="eyebrow" style={{ fontSize: 8.5 }}>
               cutoffs from 2025 manual · start {fmtRaceClock(race.date, 0)} · sunset {course.sun.sunset} · sunrise {course.sun.sunrise}

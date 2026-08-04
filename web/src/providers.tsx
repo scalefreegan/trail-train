@@ -233,6 +233,7 @@ export function StravaProvider({ children }: { children: React.ReactNode }) {
       distance_mi: a.distance_m / M_PER_MI,
       elevation_ft: a.elevation_m / M_PER_FT,
       moving_s: a.moving_s,
+      avg_hr: a.avg_hr ?? null,
       rpe: Math.max(1, Math.min(5, Math.round(a.rpe))) as Activity["rpe"],
       strava_url: a.strava_url,
       temp_max_f: a.weather?.temp_max_c != null ? cToF(a.weather.temp_max_c) : null,
