@@ -120,7 +120,13 @@ function ClimbScatter({ training, raceClimbs }: { training: TrainingClimb[]; rac
   const tipOnLeft = hover != null && width > 0 && xAt(hover.length_mi) > width * 0.6;
 
   return (
-    <div ref={measureRef} style={{ position: "relative" }} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+    <div
+      ref={measureRef}
+      style={{ position: "relative", cursor: hover?.strava_url ? "pointer" : undefined }}
+      onMouseMove={onMove}
+      onMouseLeave={() => setHover(null)}
+      onClick={() => { if (hover?.strava_url) window.open(hover.strava_url, "_blank", "noopener"); }}
+    >
       {width > 0 && (
         <svg width={width} height={H} style={{ display: "block" }}>
           {scene}
@@ -153,6 +159,11 @@ function ClimbScatter({ training, raceClimbs }: { training: TrainingClimb[]; rac
           <div className="numerals" style={{ fontSize: 10, color: "var(--mist-dim)", marginTop: 2 }}>
             avg {hover.avg_grade_pct.toFixed(1)}% · max {hover.max_grade_pct.toFixed(0)}%
           </div>
+          {hover.strava_url && (
+            <div className="numerals" style={{ fontSize: 9, color: "var(--lamp)", marginTop: 4 }}>
+              click to open in strava ↗
+            </div>
+          )}
         </div>
       )}
     </div>
