@@ -103,6 +103,15 @@ function refreshApi(): Plugin {
   }
 }
 
+// Recognize headless-CLI auth failures so the UI can say "sign in again"
+// instead of surfacing a cryptic exit code. Matches the CLI's known phrasings
+// (API-key auth and OAuth/subscription auth).
+const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in again|oauth token.{0,40}(expired|revoked|invalid)|authentication[_ ]?error|credentials?.{0,20}(expired|invalid|missing)|unauthorized/i
+const authHint = (text: string): string | null =>
+  AUTH_ERROR_RE.test(text)
+    ? 'Claude Code sign-in has expired — open a terminal, run `claude`, type `/login` and finish the browser sign-in, then retry here.'
+    : null
+
 const CHAT_SYSTEM = (
   factsPath: string,
   coachPath: string,
@@ -231,7 +240,10 @@ function chatApi(): Plugin {
           '--max-turns', '6',
           '--allowedTools', 'Read',
           '--append-system-prompt', sysPrompt,
-        ], { cwd: projectRoot, detached: true })
+        // stdin must be ignored (as in scripts/coach.mjs) — the default pipe
+        // stays open forever, and the CLI stalls 3s in -p mode waiting on it,
+        // then emits a "no stdin data received" warning that pollutes stderr.
+        ], { cwd: projectRoot, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
 
         let stdout = ''
         let stderrLast = ''
@@ -239,8 +251,11 @@ function chatApi(): Plugin {
 
         proc.stdout.on('data', (d) => { stdout += d })
         proc.stderr.on('data', (d) => {
-          const s = d.toString()
-          stderrLast = s.split('\n').filter(Boolean).slice(-1)[0] || stderrLast
+          // Keep the last line that isn't a warning, so a fatal error (auth
+          // expiry, bad flag) isn't masked by a later/earlier warning line.
+          const lines = d.toString().split('\n').filter((l: string) => l.trim())
+          const meaningful = lines.filter((l: string) => !/^\s*Warning:/i.test(l))
+          stderrLast = meaningful.slice(-1)[0] || stderrLast || lines.slice(-1)[0] || ''
         })
 
         let cleanedUp = false
@@ -292,7 +307,8 @@ function chatApi(): Plugin {
           if (res.writableEnded) { cleanup(); return }
           cleanup()
           if (code !== 0) {
-            send('error', { message: `claude exited ${code}: ${stderrLast.slice(0, 240)}` })
+            const hint = authHint(`${stderrLast}\n${stdout}`)
+            send('error', { message: hint ?? `claude exited ${code}: ${stderrLast.slice(0, 240)}` })
             send('done', { ok: false })
             res.end()
             return
@@ -301,6 +317,14 @@ function chatApi(): Plugin {
             const wrapper = JSON.parse(stdout)
             const text = (wrapper && typeof wrapper === 'object' && wrapper.result)
               ? wrapper.result : stdout
+            // Some CLI versions exit 0 with is_error + the auth message in result
+            const hint = wrapper?.is_error ? authHint(String(text)) : null
+            if (hint) {
+              send('error', { message: hint })
+              send('done', { ok: false })
+              res.end()
+              return
+            }
             send('message', {
               role: 'assistant',
               content: text.trim(),

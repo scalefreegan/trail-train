@@ -34,6 +34,12 @@ const UNITS = String(arg("units", process.env.TRAIL_UNITS || "metric")) === "imp
 
 /* -------- Claude Code CLI subprocess (pattern from agent-trade) -------- */
 
+// Recognize headless-CLI auth failures (API-key and OAuth/subscription
+// phrasings) so the resync panel tells the athlete to sign in again instead
+// of dumping a raw exit code.
+const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in again|oauth token.{0,40}(expired|revoked|invalid)|authentication[_ ]?error|credentials?.{0,20}(expired|invalid|missing)|unauthorized/i;
+const AUTH_HINT = "Claude Code sign-in has expired — open a terminal, run `claude`, type `/login` and finish the browser sign-in, then resync.";
+
 const SYSTEM_PROMPT_TEMPLATE = (profile, hasPacing) => `You are the coach inside Trail Almanac, a personal ultra-training dashboard.
 
 The athlete is ${profile.athlete_name}, training for the Mogollon Monster 100 (102.3 mi, 15,900 ft, Sept 12, 2026).
@@ -256,6 +262,9 @@ function runClaude({ prompt, systemPrompt, maxTurns, timeoutSec, cwd, allowedToo
     proc.on("close", (code) => {
       clearTimeout(timer);
       if (code !== 0) {
+        if (AUTH_ERROR_RE.test(`${stderr}\n${stdout}`)) {
+          return reject(new Error(AUTH_HINT));
+        }
         return reject(new Error(`claude exited ${code}\nstderr: ${stderr.slice(0, 800)}`));
       }
       resolve({ stdout, stderr });
@@ -323,6 +332,10 @@ in real numbers from the data.`;
     throw new Error(`malformed wrapper from claude: ${stdout.slice(0, 240)}`);
   }
   const agentText = (wrapper && wrapper.result) ? wrapper.result : stdout;
+  // Some CLI versions exit 0 with is_error + the auth message in result
+  if (wrapper?.is_error && AUTH_ERROR_RE.test(String(agentText))) {
+    throw new Error(AUTH_HINT);
+  }
   const numTurns = wrapper?.num_turns ?? null;
   const cost = wrapper?.total_cost_usd ?? null;
 
