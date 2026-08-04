@@ -16,9 +16,11 @@ const MUTED = "#6b6b6b";
 const ACCENT = "#b05c10";
 const RULE = "#d8d4cc";
 
+const NO_TRACK: [number, number][] = [];
+
 function CourseMap({ course }: { course: Course }) {
   const u = useUnits();
-  const pts = course.map_track ?? [];
+  const pts = course.map_track ?? NO_TRACK;
   const geom = useMemo(() => {
     if (pts.length < 2) return null;
     const lats = pts.map((p) => p[0]);
