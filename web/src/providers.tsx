@@ -36,7 +36,7 @@ export function RefreshProvider({ children }: { children: React.ReactNode }) {
   const refresh = useCallback(async () => {
     if (syncing) return;
     setSyncing(true);
-    setStatus({ strava: "pending", oura: "pending", gcal: "pending", coach: "pending" });
+    setStatus({ strava: "pending", streams: "pending", oura: "pending", gcal: "pending", coach: "pending" });
     setCurrentStep(null);
     setLastLog("");
 

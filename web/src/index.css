@@ -194,6 +194,22 @@ a { color: inherit; }
   align-items: center;
 }
 
+.race-grid {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.3fr) 44px 64px minmax(170px, 1.4fr) 62px minmax(120px, 1fr) minmax(90px, 0.9fr);
+  gap: 14px;
+  align-items: center;
+}
+
+.climb-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: var(--edge);
+  border-top: 1px solid var(--edge);
+}
+.climb-grid > * { background: var(--panel); }
+
 .commandbar-mid { display: flex; align-items: center; gap: 0; }
 
 /* ---- ≤ 1280px: rail drops below ---- */
@@ -213,6 +229,12 @@ a { color: inherit; }
     gap: 10px;
   }
   .log-grid > .col-type, .log-grid > .col-pace { display: none; }
+  .race-grid {
+    grid-template-columns: minmax(100px, 1.2fr) 40px minmax(150px, 1.3fr) minmax(110px, 1fr);
+    gap: 10px;
+  }
+  .race-grid > .col-seg, .race-grid > .col-goal, .race-grid > .col-flags { display: none; }
+  .climb-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 /* ---- ≤ 600px ---- */

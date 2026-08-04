@@ -10,8 +10,12 @@ import {
   computeCoachFacts, type CoachFacts, type Flag,
   type Activity, type AgentReadout, type PlanBlock, type GCalEvent,
   daysUntil, relativeAgo, fmtDuration, isStale,
+  useMeasuredWidth,
 } from "./data";
 import { RefreshProvider, UnitsProvider, StravaProvider, OuraProvider, StateProvider } from "./providers";
+import { SectionTag, Contours } from "./atoms";
+import { RacePlanner } from "./race/RacePlanner";
+import { ClimbComparison } from "./race/ClimbComparison";
 
 /* ================================================================== */
 /*  BASECAMP — pre-dawn ops surface for ultra training                 */
@@ -29,18 +33,6 @@ const SEVERITY_COLOR: Record<Flag["severity"], string> = {
 /* ------------------------------------------------------------------ */
 /*  Shared atoms                                                       */
 /* ------------------------------------------------------------------ */
-
-function SectionTag({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
-  return (
-    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, margin: "26px 0 10px" }}>
-      <span className="eyebrow" style={{ color: "var(--lamp)", display: "inline-flex", alignItems: "center", gap: 8 }}>
-        <span style={{ width: 5, height: 5, background: "var(--lamp)", transform: "rotate(45deg)", display: "inline-block" }} />
-        {children}
-      </span>
-      {right}
-    </div>
-  );
-}
 
 function Spark({ values, color = "var(--mist-dim)", height = 34, fill = true }: {
   values: number[]; color?: string; height?: number; fill?: boolean;
@@ -73,41 +65,6 @@ function Delta({ value, suffix = "", good }: { value: number | null; suffix?: st
     <span className="numerals" style={{ fontSize: 10, letterSpacing: "0.08em", color }}>
       {value > 0 ? "▲" : value < 0 ? "▼" : "•"} {Math.abs(value).toFixed(Math.abs(value) < 10 ? 1 : 0)}{suffix}
     </span>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Contour backdrop — faint ridge lines behind key panels             */
-/* ------------------------------------------------------------------ */
-
-function Contours({ seed = 1, opacity = 0.1 }: { seed?: number; opacity?: number }) {
-  const paths = useMemo(() => {
-    const out: string[] = [];
-    const cx = 50 + seed * 7;
-    const cy = 50 + seed * 3;
-    for (let r = 0; r < 12; r++) {
-      const radius = 8 + r * 7;
-      let d = "";
-      for (let i = 0; i <= 60; i++) {
-        const t = (i / 60) * Math.PI * 2;
-        const k = Math.sin(t * (3 + (r % 3)) + seed * 1.3 + r * 0.4);
-        const k2 = Math.cos(t * (2 + (seed % 4)) + r * 0.7);
-        const rad = radius + k * 1.8 + k2 * 1.3;
-        const x = cx + Math.cos(t) * rad;
-        const y = cy + Math.sin(t) * rad * 0.7;
-        d += (i === 0 ? "M" : "L") + x.toFixed(2) + " " + y.toFixed(2) + " ";
-      }
-      out.push(d + "Z");
-    }
-    return out;
-  }, [seed]);
-
-  return (
-    <svg className="topo-bg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice" style={{ opacity }} aria-hidden>
-      {paths.map((d, i) => (
-        <path key={i} d={d} fill="none" stroke="var(--edge-bright)" strokeWidth={i % 4 === 0 ? 0.4 : 0.2} />
-      ))}
-    </svg>
   );
 }
 
@@ -148,7 +105,9 @@ function BarStat({ label, value, accent }: { label: string; value: string; accen
   );
 }
 
-function CommandBar() {
+type AppView = "training" | "race";
+
+function CommandBar({ view, setView }: { view: AppView; setView: (v: AppView) => void }) {
   const { syncing, lastSync, refresh, currentStep, lastLog, status } = useRefresh();
   const { fetchedAt, currentWeek } = useStrava();
   const { race, totalWeeks } = useBlockConfig();
@@ -177,6 +136,12 @@ function CommandBar() {
             Basecamp
           </span>
           <span className="eyebrow" style={{ fontSize: 8, marginTop: 3 }}>{race.short} ops</span>
+        </div>
+
+        {/* view switcher */}
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className={"chip" + (view === "training" ? " active" : "")} onClick={() => setView("training")}>training</button>
+          <button className={"chip" + (view === "race" ? " active" : "")} onClick={() => setView("race")}>race</button>
         </div>
 
         {/* mid stats */}
@@ -583,21 +548,6 @@ function SleepStagesInline() {
 /* ------------------------------------------------------------------ */
 /*  Trajectory — cumulative actual vs plan, the centerpiece chart      */
 /* ------------------------------------------------------------------ */
-
-function useMeasuredWidth() {
-  const ref = useRef<HTMLDivElement | null>(null);
-  const [width, setWidth] = useState(0);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      setWidth(entries[0].contentRect.width);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  return { ref, width };
-}
 
 function weekDates(wk: number, blockStart: string): string {
   const start = new Date(new Date(blockStart + "T00:00:00").getTime() + (wk - 1) * 7 * 86400_000);
@@ -1807,19 +1757,35 @@ function SetupDrawer() {
 
 function AppBody() {
   const { key } = useRefresh();
+  const [view, setViewState] = useState<AppView>(() =>
+    (typeof localStorage !== "undefined" && (localStorage.getItem("view") as AppView)) || "training"
+  );
+  const setView = (v: AppView) => {
+    setViewState(v);
+    try { localStorage.setItem("view", v); } catch { /* private mode — preference just won't persist */ }
+  };
   return (
     <>
-      <CommandBar />
+      <CommandBar view={view} setView={setView} />
       <div className="shell">
         <div className="ops-grid">
           {/* main column */}
           <main style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
-            <RaceRibbon />
-            <div key={`vitals-${key}`}><VitalsBand /></div>
-            <div key={`traj-${key}`}><Trajectory /></div>
-            <div key={`road-${key}`}><RoadAhead /></div>
-            <div key={`log-${key}`}><LogTable /></div>
-            <SetupDrawer />
+            {view === "training" ? (
+              <>
+                <RaceRibbon />
+                <div key={`vitals-${key}`}><VitalsBand /></div>
+                <div key={`traj-${key}`}><Trajectory /></div>
+                <div key={`road-${key}`}><RoadAhead /></div>
+                <div key={`log-${key}`}><LogTable /></div>
+                <SetupDrawer />
+              </>
+            ) : (
+              <div key={`race-${key}`}>
+                <ClimbComparison />
+                <RacePlanner />
+              </div>
+            )}
           </main>
 
           {/* the coach — persistent rail */}
