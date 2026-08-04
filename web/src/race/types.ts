@@ -20,6 +20,9 @@ export type CourseAidStation = {
   seg_gain_ft: number | null;
   /** Cutoff as elapsed hours from the start, null if none posted. */
   cutoff_h: number | null;
+  /** Station coordinates (GPX waypoint; track end for the finish). */
+  lat?: number;
+  lon?: number;
   crew: boolean;
   crew_only: boolean;
   drop_bag: boolean;
@@ -51,6 +54,8 @@ export type Course = {
   profile: CourseProfilePoint[];
   aid_stations: CourseAidStation[];
   race_climbs: RaceClimb[];
+  /** [lat, lon] polyline for the crew-sheet overview map */
+  map_track?: [number, number][];
 };
 
 export type TrainingClimb = {

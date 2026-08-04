@@ -183,12 +183,17 @@ async function main() {
     };
     if (!a.gpx_wpt) {
       // Finish: no waypoint — track end is the finish line.
+      const end = track[track.length - 1];
       base.gpx_mi = +measuredDist.toFixed(3);
+      base.lat = +end.lat.toFixed(5);
+      base.lon = +end.lon.toFixed(5);
       console.log(`  ${a.name.padEnd(16)} official ${a.total_mi.toFixed(1)} → track end ${measuredDist.toFixed(2)} mi (finish)`);
       return base;
     }
     const wpt = wptByName.get(a.gpx_wpt);
     if (!wpt) throw new Error(`GPX waypoint not found: "${a.gpx_wpt}" for ${a.name}`);
+    base.lat = +wpt.lat.toFixed(5);
+    base.lon = +wpt.lon.toFixed(5);
     const expectedMi = a.total_mi * scale;
     const snap = snapWaypoint(track, wpt, expectedMi, 5);
     base.gpx_mi = +snap.mi.toFixed(3);
@@ -286,6 +291,15 @@ async function main() {
     });
   }
 
+  // ── Overview-map polyline: track lat/lon downsampled to ~400 points ─────
+  const trackStep = Math.max(1, Math.ceil(track.length / 400));
+  const map_track = [];
+  for (let i = 0; i < track.length; i += trackStep) {
+    map_track.push([+track[i].lat.toFixed(5), +track[i].lon.toFixed(5)]);
+  }
+  const endPt = track[track.length - 1];
+  map_track.push([+endPt.lat.toFixed(5), +endPt.lon.toFixed(5)]);
+
   const payload = {
     generated_at: new Date().toISOString(),
     source: "config/mogollon-monster-100.gpx + config/race-course.json",
@@ -297,6 +311,8 @@ async function main() {
     profile,
     aid_stations,
     race_climbs,
+    /** [lat, lon] polyline for the crew-sheet overview map */
+    map_track,
   };
   await writeJsonAtomic(OUT_PATH, payload);
   console.log(

@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import { useUnits, useStrava, useBlockConfig, useMeasuredWidth } from "../data";
 import { SectionTag, Contours } from "../atoms";
 import { useCourse } from "./useRaceData";
+import { CrewSheet } from "./CrewSheet";
 import {
   fitPacing, projectRace, nightIntervals,
   fmtRaceClock, fmtElapsed,
@@ -326,6 +327,7 @@ export function RacePlanner() {
   const [aidStopMin, setAidStopMin] = usePersistedNumber("race.aid_stop_min", 5);
   const [crewStopMin, setCrewStopMin] = usePersistedNumber("race.crew_stop_min", 10);
   const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops("race.stop_overrides");
+  const [sheetOpen, setSheetOpen] = useState(false);
 
   const fit = useMemo(() => fitPacing(activities), [activities]);
   const proj = useMemo(
@@ -399,6 +401,9 @@ export function RacePlanner() {
               />
               h
             </label>
+            {proj && (
+              <button className="chip" onClick={() => setSheetOpen(true)}>⎙ crew sheet</button>
+            )}
           </span>
         }
       >
@@ -518,6 +523,21 @@ export function RacePlanner() {
               </div>
             );
           })}
+          {/* totals row */}
+          <div className="race-grid" style={{ padding: "10px 18px", borderTop: "1px solid var(--edge-bright)" }}>
+            <span className="eyebrow" style={{ fontSize: 8.5 }}>total planned aid-station time</span>
+            <span />
+            <span className="col-seg" />
+            <span className="col-stop numerals" style={{ fontSize: 12, fontWeight: 700, textAlign: "right", color: "var(--lamp)" }}>
+              {fmtElapsed(proj.stopped_h)}
+            </span>
+            <span className="numerals" style={{ fontSize: 10, color: "var(--mist-mute)" }}>
+              ≈ {Math.round((proj.stopped_h / proj.finish_h.avg) * 100)}% of expected race time
+            </span>
+            <span className="col-goal" />
+            <span />
+            <span className="col-flags" />
+          </div>
           <div style={{ padding: "10px 18px", borderTop: "1px solid var(--edge)", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
             <span className="eyebrow" style={{ fontSize: 8.5 }}>
               {fit ? `pacing fit: ${fit.basis} (eff. n=${fit.effN}) · ±${u.paceFmt(fit.residStd, 1)}${u.paceUnit} band · fatigue ×${(1 + fatigue / 100).toFixed(2)} per 10${u.distUnit}, compounding · stops ${aidStopMin}/${crewStopMin}m fresh, stretch late-race` : ""}
@@ -532,6 +552,10 @@ export function RacePlanner() {
             </span>
           </div>
         </div>
+      )}
+
+      {sheetOpen && proj && (
+        <CrewSheet course={course} proj={proj} onClose={() => setSheetOpen(false)} />
       )}
     </section>
   );
