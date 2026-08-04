@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { useUnits, useStrava, useBlockConfig, useMeasuredWidth } from "../data";
 import { SectionTag, Contours } from "../atoms";
@@ -57,6 +57,9 @@ function stationFlags(s: StationProjection["station"]) {
 
 /* ---- profile chart ---- */
 
+const H = 320;
+const PAD = { top: 56, right: 16, bottom: 26, left: 46 };
+
 function ProfileChart({ course, proj }: {
   course: Course;
   proj: ReturnType<typeof projectRace> | null;
@@ -66,8 +69,6 @@ function ProfileChart({ course, proj }: {
   const { ref: measureRef, width } = useMeasuredWidth();
   const [hoverMi, setHoverMi] = useState<number | null>(null);
 
-  const H = 320;
-  const PAD = { top: 56, right: 16, bottom: 26, left: 46 };
   const plotW = Math.max(0, width - PAD.left - PAD.right);
   const plotH = H - PAD.top - PAD.bottom;
 
@@ -85,17 +86,28 @@ function ProfileChart({ course, proj }: {
   }, [profile]);
 
   const maxMi = course.distance_mi;
-  const xAt = (mi: number) => PAD.left + (mi / maxMi) * plotW;
-  const yAt = (ele: number) => PAD.top + (1 - (ele - minEle) / (maxEle - minEle)) * plotH;
+  const xAt = useMemo(
+    () => (mi: number) => PAD.left + (mi / maxMi) * plotW,
+    [maxMi, plotW],
+  );
+  const yAt = useMemo(
+    () => (ele: number) => PAD.top + (1 - (ele - minEle) / (maxEle - minEle)) * plotH,
+    [minEle, maxEle, plotH],
+  );
 
-  const linePath = profile.map((p, i) => `${i === 0 ? "M" : "L"} ${xAt(p.mi).toFixed(1)} ${yAt(p.ele_ft).toFixed(1)}`).join(" ");
-  const areaPath = `${linePath} L ${xAt(maxMi).toFixed(1)} ${(PAD.top + plotH).toFixed(1)} L ${PAD.left} ${(PAD.top + plotH).toFixed(1)} Z`;
-
-  const eleAt = (mi: number) => {
-    let best = profile[0];
-    for (const p of profile) if (Math.abs(p.mi - mi) < Math.abs(best.mi - mi)) best = p;
-    return best;
-  };
+  // O(1) nearest-point lookup — the profile is a uniform distance grid, so
+  // index math replaces the old linear scan (which ran 15× per render).
+  const eleAt = useMemo(() => {
+    const first = profile[0]?.mi ?? 0;
+    const step = profile.length > 1 ? (profile[profile.length - 1].mi - first) / (profile.length - 1) : 1;
+    return (mi: number) => {
+      let i = Math.round((mi - first) / step);
+      i = Math.max(0, Math.min(profile.length - 1, i));
+      while (i > 0 && Math.abs(profile[i - 1].mi - mi) < Math.abs(profile[i].mi - mi)) i--;
+      while (i < profile.length - 1 && Math.abs(profile[i + 1].mi - mi) < Math.abs(profile[i].mi - mi)) i++;
+      return profile[i];
+    };
+  }, [profile]);
 
   // night bands, mapped from elapsed hours onto the mile axis via the projection
   const nights = useMemo(() => {
@@ -107,15 +119,109 @@ function ProfileChart({ course, proj }: {
       .filter(([a, b]) => b - a > 0.2);
   }, [proj, course.sun, race.date]);
 
-  const aidWithMi = course.aid_stations
-    .map((s, i) => ({ s, i, mi: s.gpx_mi ?? s.total_mi }))
-    .filter(({ mi }) => mi != null && mi <= maxMi + 0.5);
+  const aidWithMi = useMemo(
+    () => course.aid_stations
+      .map((s, i) => ({ s, i, mi: s.gpx_mi ?? s.total_mi }))
+      .filter(({ mi }) => mi != null && mi <= maxMi + 0.5),
+    [course.aid_stations, maxMi],
+  );
 
-  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+  /* The whole static scene is memoized: mousemove only re-renders the
+     crosshair layer + tooltip, never the 800-point paths or aid markers. */
+  const scene = useMemo(() => {
+    if (width <= 0) return null;
+    const linePath = profile.map((p, i) => `${i === 0 ? "M" : "L"} ${xAt(p.mi).toFixed(1)} ${yAt(p.ele_ft).toFixed(1)}`).join(" ");
+    const areaPath = `${linePath} L ${xAt(maxMi).toFixed(1)} ${(PAD.top + plotH).toFixed(1)} L ${PAD.left} ${(PAD.top + plotH).toFixed(1)} Z`;
+    return (
+      <>
+        {/* night bands */}
+        {nights.map(([a, b], i) => (
+          <g key={i}>
+            <rect x={xAt(a)} y={PAD.top - 18} width={Math.max(0, xAt(b) - xAt(a))} height={plotH + 18} fill="var(--creek)" opacity={0.07} />
+            <text x={(xAt(a) + xAt(b)) / 2} y={PAD.top - 6} textAnchor="middle" fill="var(--creek)" opacity={0.75}
+              style={{ font: "8.5px var(--font-mono)", letterSpacing: "0.18em" }}>
+              ☾ NIGHT
+            </text>
+          </g>
+        ))}
+
+        {/* elevation gridlines */}
+        {[6000, 7000, 8000].filter((e) => e > minEle && e < maxEle).map((e) => (
+          <g key={e}>
+            <line x1={PAD.left} x2={width - PAD.right} y1={yAt(e)} y2={yAt(e)} stroke="var(--edge)" strokeWidth="1" strokeDasharray="2 5" />
+            <text x={4} y={yAt(e) + 3} fill="var(--mist-mute)" style={{ font: "9px var(--font-mono)" }}>
+              {u.elev(e)}
+            </text>
+          </g>
+        ))}
+
+        {/* profile */}
+        <path d={areaPath} fill="url(#courseFill)" />
+        <motion.path
+          d={linePath} fill="none" stroke="var(--lamp)" strokeWidth="1.4" strokeLinejoin="round"
+          initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.8, ease: [0.2, 0.8, 0.2, 1] }}
+        />
+
+        {/* aid stations */}
+        {aidWithMi.map(({ s, i, mi }, idx) => {
+          const p = eleAt(mi!);
+          const proj_i = proj?.stations[i] ?? null;
+          const labelY = PAD.top + 6 + (idx % 3) * 11;
+          return (
+            <g key={s.name}>
+              <line x1={xAt(p.mi)} x2={xAt(p.mi)} y1={labelY + 3} y2={yAt(p.ele_ft)} stroke="var(--edge-bright)" strokeWidth="1" strokeDasharray="1 3" />
+              <circle cx={xAt(p.mi)} cy={yAt(p.ele_ft)} r="2.6"
+                fill="var(--night)" strokeWidth="1.4"
+                stroke={s.crew || s.crew_only ? "var(--pine)" : s.water_only ? "var(--creek)" : "var(--mist-dim)"} />
+              <text x={xAt(p.mi) + 4} y={labelY} fill="var(--mist-dim)" style={{ font: "8.5px var(--font-mono)", letterSpacing: "0.06em" }}>
+                {s.name.toLowerCase()}
+              </text>
+              {/* cutoff tick on the baseline */}
+              {s.cutoff_h != null && (
+                <rect
+                  x={xAt(p.mi) - 3} y={PAD.top + plotH + 6} width={6} height={6}
+                  transform={`rotate(45 ${xAt(p.mi)} ${PAD.top + plotH + 9})`}
+                  fill={marginColor(proj_i?.cutoff_margin_h ?? null)}
+                >
+                  <title>
+                    {s.name} cutoff {fmtRaceClock(race.date, s.cutoff_h)} ({fmtElapsed(s.cutoff_h)})
+                    {proj_i?.cutoff_margin_h != null ? ` · margin ${fmtElapsed(Math.abs(proj_i.cutoff_margin_h))} ${proj_i.cutoff_margin_h >= 0 ? "ahead" : "SHORT"}` : ""}
+                  </title>
+                </rect>
+              )}
+            </g>
+          );
+        })}
+
+        {/* mile axis */}
+        {Array.from({ length: Math.floor(maxMi / 10) + 1 }, (_, i) => i * 10).map((mi) => (
+          <text key={mi} x={xAt(mi)} y={H - 6} textAnchor="middle" fill="var(--mist-mute)" style={{ font: "9px var(--font-mono)" }}>
+            {u.dist(mi, 0)}
+          </text>
+        ))}
+      </>
+    );
+  }, [width, profile, xAt, yAt, maxMi, plotH, minEle, maxEle, nights, aidWithMi, eleAt, proj, u, race.date]);
+
+  // rAF-coalesced hover: at most one state update per frame, snapped to the
+  // profile grid so identical points bail out entirely
+  const rafRef = useRef(0);
+  const pendingMi = useRef<number | null>(null);
+  const onMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const mi = ((x - PAD.left) / Math.max(1, plotW)) * maxMi;
-    setHoverMi(Math.max(0, Math.min(maxMi, mi)));
+    pendingMi.current = eleAt(Math.max(0, Math.min(maxMi, mi))).mi;
+    if (!rafRef.current) {
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = 0;
+        setHoverMi((prev) => (prev === pendingMi.current ? prev : pendingMi.current));
+      });
+    }
+  };
+  const onLeave = () => {
+    pendingMi.current = null;
+    setHoverMi(null);
   };
 
   const hover = hoverMi != null ? (() => {
@@ -126,100 +232,48 @@ function ProfileChart({ course, proj }: {
   const tipOnLeft = hover != null && width > 0 && xAt(hover.p.mi) > width * 0.6;
 
   return (
-    <div ref={measureRef} style={{ position: "relative" }}>
+    <div ref={measureRef} style={{ position: "relative" }} onMouseMove={onMove} onMouseLeave={onLeave}>
       {width > 0 && (
-        <svg width={width} height={H} onMouseMove={onMove} onMouseLeave={() => setHoverMi(null)} style={{ display: "block" }}>
+        // translateZ isolates the path scene in its own paint layer, so the
+        // moving tooltip never forces it to re-rasterize
+        <svg width={width} height={H} style={{ display: "block", transform: "translateZ(0)" }}>
           <defs>
             <linearGradient id="courseFill" x1="0" x2="0" y1="0" y2="1">
               <stop offset="0%" stopColor="var(--lamp)" stopOpacity="0.2" />
               <stop offset="100%" stopColor="var(--lamp)" stopOpacity="0.01" />
             </linearGradient>
           </defs>
-
-          {/* night bands */}
-          {nights.map(([a, b], i) => (
-            <g key={i}>
-              <rect x={xAt(a)} y={PAD.top - 18} width={Math.max(0, xAt(b) - xAt(a))} height={plotH + 18} fill="var(--creek)" opacity={0.07} />
-              <text x={(xAt(a) + xAt(b)) / 2} y={PAD.top - 6} textAnchor="middle" fill="var(--creek)" opacity={0.75}
-                style={{ font: "8.5px var(--font-mono)", letterSpacing: "0.18em" }}>
-                ☾ NIGHT
-              </text>
-            </g>
-          ))}
-
-          {/* elevation gridlines */}
-          {[6000, 7000, 8000].filter((e) => e > minEle && e < maxEle).map((e) => (
-            <g key={e}>
-              <line x1={PAD.left} x2={width - PAD.right} y1={yAt(e)} y2={yAt(e)} stroke="var(--edge)" strokeWidth="1" strokeDasharray="2 5" />
-              <text x={4} y={yAt(e) + 3} fill="var(--mist-mute)" style={{ font: "9px var(--font-mono)" }}>
-                {u.elev(e)}
-              </text>
-            </g>
-          ))}
-
-          {/* profile */}
-          <motion.path d={areaPath} fill="url(#courseFill)" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 1 }} />
-          <motion.path
-            d={linePath} fill="none" stroke="var(--lamp)" strokeWidth="1.4" strokeLinejoin="round"
-            initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.8, ease: [0.2, 0.8, 0.2, 1] }}
-          />
-
-          {/* aid stations */}
-          {aidWithMi.map(({ s, i, mi }, idx) => {
-            const p = eleAt(mi!);
-            const proj_i = proj?.stations[i] ?? null;
-            const labelY = PAD.top + 6 + (idx % 3) * 11;
-            return (
-              <g key={s.name}>
-                <line x1={xAt(p.mi)} x2={xAt(p.mi)} y1={labelY + 3} y2={yAt(p.ele_ft)} stroke="var(--edge-bright)" strokeWidth="1" strokeDasharray="1 3" />
-                <circle cx={xAt(p.mi)} cy={yAt(p.ele_ft)} r="2.6"
-                  fill="var(--night)" strokeWidth="1.4"
-                  stroke={s.crew || s.crew_only ? "var(--pine)" : s.water_only ? "var(--creek)" : "var(--mist-dim)"} />
-                <text x={xAt(p.mi) + 4} y={labelY} fill="var(--mist-dim)" style={{ font: "8.5px var(--font-mono)", letterSpacing: "0.06em" }}>
-                  {s.name.toLowerCase()}
-                </text>
-                {/* cutoff tick on the baseline */}
-                {s.cutoff_h != null && (
-                  <rect
-                    x={xAt(p.mi) - 3} y={PAD.top + plotH + 6} width={6} height={6}
-                    transform={`rotate(45 ${xAt(p.mi)} ${PAD.top + plotH + 9})`}
-                    fill={marginColor(proj_i?.cutoff_margin_h ?? null)}
-                  >
-                    <title>
-                      {s.name} cutoff {fmtRaceClock(race.date, s.cutoff_h)} ({fmtElapsed(s.cutoff_h)})
-                      {proj_i?.cutoff_margin_h != null ? ` · margin ${fmtElapsed(Math.abs(proj_i.cutoff_margin_h))} ${proj_i.cutoff_margin_h >= 0 ? "ahead" : "SHORT"}` : ""}
-                    </title>
-                  </rect>
-                )}
-              </g>
-            );
-          })}
-
-          {/* mile axis */}
-          {Array.from({ length: Math.floor(maxMi / 10) + 1 }, (_, i) => i * 10).map((mi) => (
-            <text key={mi} x={xAt(mi)} y={H - 6} textAnchor="middle" fill="var(--mist-mute)" style={{ font: "9px var(--font-mono)" }}>
-              {u.dist(mi, 0)}
-            </text>
-          ))}
-
-          {/* hover crosshair */}
-          {hover && (
-            <g>
-              <line x1={xAt(hover.p.mi)} x2={xAt(hover.p.mi)} y1={PAD.top - 18} y2={PAD.top + plotH} stroke="var(--mist-mute)" strokeWidth="1" opacity={0.5} />
-              <circle cx={xAt(hover.p.mi)} cy={yAt(hover.p.ele_ft)} r="3" fill="var(--lamp)" />
-            </g>
-          )}
+          {scene}
         </svg>
       )}
 
-      {/* hover tooltip */}
+      {/* hover crosshair — composited divs OUTSIDE the svg, so mousemove
+          never forces a repaint of the 800-point path scene */}
+      {hover && (
+        <>
+          <div style={{
+            position: "absolute", left: 0, top: PAD.top - 18, width: 1, height: plotH + 18,
+            background: "var(--mist-mute)", opacity: 0.5, pointerEvents: "none",
+            transform: `translateX(${xAt(hover.p.mi)}px)`, willChange: "transform",
+          }} />
+          <div style={{
+            position: "absolute", left: -3, top: -3, width: 6, height: 6, borderRadius: "50%",
+            background: "var(--lamp)", pointerEvents: "none",
+            transform: `translate(${xAt(hover.p.mi)}px, ${yAt(hover.p.ele_ft)}px)`, willChange: "transform",
+          }} />
+        </>
+      )}
+
+      {/* hover tooltip — fixed width, transform-positioned: composite-only moves */}
       {hover && proj && (
         <div style={{
-          position: "absolute", top: 46,
-          left: tipOnLeft ? undefined : Math.min(Math.max(0, xAt(hover.p.mi) + 12), Math.max(0, width - 190)),
-          right: tipOnLeft ? width - xAt(hover.p.mi) + 12 : undefined,
+          position: "absolute", top: 46, left: 0, width: 210,
+          transform: `translateX(${tipOnLeft
+            ? Math.max(0, xAt(hover.p.mi) - 210 - 12)
+            : Math.min(Math.max(0, xAt(hover.p.mi) + 12), Math.max(0, width - 210))}px)`,
+          willChange: "transform",
           background: "var(--night-deep)", border: "1px solid var(--edge-bright)", padding: "10px 12px",
-          pointerEvents: "none", zIndex: 5, minWidth: 168,
+          pointerEvents: "none", zIndex: 5,
         }}>
           <div className="numerals" style={{ fontSize: 12, fontWeight: 600 }}>
             {u.dist(hover.p.mi)} {u.distUnit} · {u.elev(hover.p.ele_ft)} {u.elevUnit}

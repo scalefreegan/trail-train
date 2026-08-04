@@ -18,23 +18,94 @@ function gradeColor(pct: number): string {
 
 /* ---- scatter ---- */
 
+const H = 280;
+const PAD = { top: 20, right: 20, bottom: 34, left: 40 };
+
 function ClimbScatter({ training, raceClimbs }: { training: TrainingClimb[]; raceClimbs: RaceClimb[] }) {
   const u = useUnits();
   const { ref: measureRef, width } = useMeasuredWidth();
   const [hover, setHover] = useState<TrainingClimb | null>(null);
 
-  const H = 280;
-  const PAD = { top: 20, right: 20, bottom: 34, left: 40 };
   const plotW = Math.max(0, width - PAD.left - PAD.right);
   const plotH = H - PAD.top - PAD.bottom;
 
-  const maxLen = Math.max(4, ...training.map((c) => c.length_mi), ...raceClimbs.map((c) => c.length_mi)) * 1.08;
-  const maxGrade = Math.max(18, ...training.map((c) => c.avg_grade_pct), ...raceClimbs.map((c) => c.avg_grade_pct)) * 1.12;
+  const [maxLen, maxGrade] = useMemo(() => [
+    Math.max(4, ...training.map((c) => c.length_mi), ...raceClimbs.map((c) => c.length_mi)) * 1.08,
+    Math.max(18, ...training.map((c) => c.avg_grade_pct), ...raceClimbs.map((c) => c.avg_grade_pct)) * 1.12,
+  ], [training, raceClimbs]);
 
-  const xAt = (len: number) => PAD.left + (len / maxLen) * plotW;
-  const yAt = (g: number) => PAD.top + (1 - g / maxGrade) * plotH;
+  const xAt = useMemo(() => (len: number) => PAD.left + (len / maxLen) * plotW, [maxLen, plotW]);
+  const yAt = useMemo(() => (g: number) => PAD.top + (1 - g / maxGrade) * plotH, [maxGrade, plotH]);
 
-  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+  /* Static scene memoized — hover only re-renders the highlight ring +
+     tooltip. Dots are plain circles: one animated group fade instead of a
+     Framer Motion timeline per dot. */
+  const scene = useMemo(() => {
+    if (width <= 0) return null;
+    const perMi = u.distVal(1);
+    const maxDisp = maxLen * perMi;
+    const step = maxDisp > 12 ? 2 : 1;
+    const ticks = Array.from({ length: Math.floor(maxDisp / step) }, (_, i) => (i + 1) * step)
+      .filter((d) => d / perMi < maxLen * 0.93);
+    return (
+      <>
+        {/* grid + axes */}
+        {[5, 10, 15, 20].filter((g) => g < maxGrade).map((g) => (
+          <g key={g}>
+            <line x1={PAD.left} x2={width - PAD.right} y1={yAt(g)} y2={yAt(g)} stroke="var(--edge)" strokeWidth="1" strokeDasharray="2 5" />
+            <text x={6} y={yAt(g) + 3} fill="var(--mist-mute)" style={{ font: "9px var(--font-mono)" }}>{g}%</text>
+          </g>
+        ))}
+        {/* ticks at whole display-units (mi or km) so the labels read 1,2,3… in either system */}
+        {ticks.map((d) => (
+          <text key={d} x={xAt(d / perMi)} y={H - 8} textAnchor="middle" fill="var(--mist-mute)" style={{ font: "9px var(--font-mono)" }}>
+            {d}
+          </text>
+        ))}
+        <text x={width - PAD.right} y={H - 8} textAnchor="end" fill="var(--mist-mute)" style={{ font: "8px var(--font-mono)", letterSpacing: "0.16em" }}>
+          CLIMB LENGTH · {u.distUnit.toUpperCase()}
+        </text>
+
+        {/* training dots */}
+        <motion.g initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.6 }}>
+          {training.map((c) => (
+            <circle
+              key={`${c.activity_id}-${c.start_mi.toFixed(2)}`}
+              cx={xAt(c.length_mi)} cy={yAt(c.avg_grade_pct)} r={3}
+              fill="var(--mist-dim)" opacity={0.55}
+            />
+          ))}
+        </motion.g>
+
+        {/* race climb markers */}
+        {raceClimbs.map((c, i) => {
+          const x = xAt(c.length_mi), y = yAt(c.avg_grade_pct);
+          return (
+            <g key={c.id}>
+              <motion.rect
+                x={x - 4.5} y={y - 4.5} width={9} height={9}
+                transform={`rotate(45 ${x} ${y})`}
+                fill="var(--lamp)" stroke="var(--night)" strokeWidth="1"
+                initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.3, delay: 0.3 + i * 0.08 }}
+              >
+                <title>
+                  {c.label} · {u.dist(c.length_mi)} {u.distUnit} · +{u.elev(c.gain_ft)} {u.elevUnit} · avg {c.avg_grade_pct.toFixed(1)}% · max {c.max_grade_pct.toFixed(0)}%
+                </title>
+              </motion.rect>
+              <text
+                x={x + 8} y={y + 3} fill="var(--lamp)"
+                style={{ font: "9px var(--font-mono)", letterSpacing: "0.05em" }}
+              >
+                {c.label.toLowerCase()}
+              </text>
+            </g>
+          );
+        })}
+      </>
+    );
+  }, [width, training, raceClimbs, xAt, yAt, maxLen, maxGrade, u]);
+
+  const onMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
     let best: TrainingClimb | null = null, bestD = 14 * 14;
@@ -43,74 +114,27 @@ function ClimbScatter({ training, raceClimbs }: { training: TrainingClimb[]; rac
       const d = dx * dx + dy * dy;
       if (d < bestD) { bestD = d; best = c; }
     }
-    setHover(best);
+    setHover((prev) => (prev === best ? prev : best));
   };
 
   const tipOnLeft = hover != null && width > 0 && xAt(hover.length_mi) > width * 0.6;
 
   return (
-    <div ref={measureRef} style={{ position: "relative" }}>
+    <div ref={measureRef} style={{ position: "relative" }} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
       {width > 0 && (
-        <svg width={width} height={H} onMouseMove={onMove} onMouseLeave={() => setHover(null)} style={{ display: "block" }}>
-          {/* grid + axes */}
-          {[5, 10, 15, 20].filter((g) => g < maxGrade).map((g) => (
-            <g key={g}>
-              <line x1={PAD.left} x2={width - PAD.right} y1={yAt(g)} y2={yAt(g)} stroke="var(--edge)" strokeWidth="1" strokeDasharray="2 5" />
-              <text x={6} y={yAt(g) + 3} fill="var(--mist-mute)" style={{ font: "9px var(--font-mono)" }}>{g}%</text>
-            </g>
-          ))}
-          {/* ticks at whole display-units (mi or km) so the labels read 1,2,3… in either system */}
-          {(() => {
-            const perMi = u.distVal(1);
-            const maxDisp = maxLen * perMi;
-            const step = maxDisp > 12 ? 2 : 1;
-            return Array.from({ length: Math.floor(maxDisp / step) }, (_, i) => (i + 1) * step)
-              .filter((d) => d / perMi < maxLen * 0.93)
-              .map((d) => (
-                <text key={d} x={xAt(d / perMi)} y={H - 8} textAnchor="middle" fill="var(--mist-mute)" style={{ font: "9px var(--font-mono)" }}>
-                  {d}
-                </text>
-              ));
-          })()}
-          <text x={width - PAD.right} y={H - 8} textAnchor="end" fill="var(--mist-mute)" style={{ font: "8px var(--font-mono)", letterSpacing: "0.16em" }}>
-            CLIMB LENGTH · {u.distUnit.toUpperCase()}
-          </text>
-
-          {/* training dots */}
-          {training.map((c, i) => (
-            <motion.circle
-              key={`${c.activity_id}-${c.start_mi.toFixed(2)}`}
-              cx={xAt(c.length_mi)} cy={yAt(c.avg_grade_pct)} r={hover === c ? 4.5 : 3}
-              fill="var(--mist-dim)" opacity={hover === c ? 1 : 0.55}
-              initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.25, delay: Math.min(i * 0.01, 0.5) }}
-            />
-          ))}
-
-          {/* race climb markers */}
-          {raceClimbs.map((c, i) => {
-            const x = xAt(c.length_mi), y = yAt(c.avg_grade_pct);
-            return (
-              <g key={c.id}>
-                <motion.rect
-                  x={x - 4.5} y={y - 4.5} width={9} height={9}
-                  transform={`rotate(45 ${x} ${y})`}
-                  fill="var(--lamp)" stroke="var(--night)" strokeWidth="1"
-                  initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.3, delay: 0.5 + i * 0.08 }}
-                >
-                  <title>
-                    {c.label} · {u.dist(c.length_mi)} {u.distUnit} · +{u.elev(c.gain_ft)} {u.elevUnit} · avg {c.avg_grade_pct.toFixed(1)}% · max {c.max_grade_pct.toFixed(0)}%
-                  </title>
-                </motion.rect>
-                <text
-                  x={x + 8} y={y + 3} fill="var(--lamp)"
-                  style={{ font: "9px var(--font-mono)", letterSpacing: "0.05em" }}
-                >
-                  {c.label.toLowerCase()}
-                </text>
-              </g>
-            );
-          })}
+        <svg width={width} height={H} style={{ display: "block" }}>
+          {scene}
         </svg>
+      )}
+
+      {/* hover highlight — a composited div outside the svg, so mousemove
+          never forces a repaint of the dot field */}
+      {hover && (
+        <div style={{
+          position: "absolute", left: -4.5, top: -4.5, width: 9, height: 9, borderRadius: "50%",
+          background: "var(--mist)", border: "1px solid var(--lamp)", pointerEvents: "none",
+          transform: `translate(${xAt(hover.length_mi)}px, ${yAt(hover.avg_grade_pct)}px)`, willChange: "transform",
+        }} />
       )}
 
       {hover && (
