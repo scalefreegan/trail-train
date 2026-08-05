@@ -853,8 +853,8 @@ function RoadAhead() {
   /* ---- plan blocks (persisted agent plan, else block targets) ---- */
   const { targets, totalWeeks } = useBlockConfig();
   const fallback: PlanBlock[] = useMemo(() => {
-    const start = Math.min(totalWeeks, currentWeek + 1);
-    const end = Math.min(totalWeeks, currentWeek + 6);
+    const start = Math.min(totalWeeks, currentWeek);
+    const end = Math.min(totalWeeks, currentWeek + 5);
     return targets.slice(start - 1, end).map((b) => ({
       wk: b.wk,
       label: b.wk === totalWeeks ? "Race week" : "Planned",
@@ -864,7 +864,26 @@ function RoadAhead() {
     }));
   }, [currentWeek, targets, totalWeeks]);
   const stateBlocks = state?.plan_blocks ?? null;
-  const blocks: PlanBlock[] = stateBlocks && stateBlocks.length > 0 ? stateBlocks : fallback;
+  const blocks: PlanBlock[] = useMemo(() => {
+    if (!stateBlocks || stateBlocks.length === 0) return fallback;
+    // The strip includes the CURRENT week. Older coach runs planned from
+    // current_week+1 — synthesize this week from block targets until the
+    // next coach run backfills it.
+    if (!stateBlocks.some((b) => b.wk === currentWeek) && targets[currentWeek - 1]) {
+      const t = targets[currentWeek - 1];
+      return [
+        {
+          wk: t.wk,
+          label: "This week",
+          dist_mi: t.target_dist,
+          elev_ft: t.target_elev,
+          focus: "Block target — coach hasn't planned this week yet; resync to fill in.",
+        },
+        ...stateBlocks,
+      ];
+    }
+    return stateBlocks;
+  }, [stateBlocks, fallback, currentWeek, targets]);
   const live = !!(stateBlocks && stateBlocks.length > 0);
   const maxDist = Math.max(...blocks.map((b) => b.dist_mi), 1);
 
@@ -940,6 +959,7 @@ function RoadAhead() {
       <div className="panel" style={{ marginTop: calOk ? 0 : 8, borderTop: calOk ? "none" : undefined }}>
         {blocks.map((w, i) => {
           const offset = w.wk - currentWeek;
+          const isNow = offset === 0;
           const isNext = offset === 1;
           const isRace = w.wk === totalWeeks;
           return (
@@ -954,12 +974,12 @@ function RoadAhead() {
                 alignItems: "center",
                 padding: "13px 18px",
                 borderTop: i > 0 ? "1px solid var(--edge)" : "none",
-                background: isNext ? "var(--lamp-glow)" : isRace ? "rgba(240, 102, 77, 0.06)" : "transparent",
+                background: isNow ? "var(--lamp-glow)" : isRace ? "rgba(240, 102, 77, 0.06)" : "transparent",
               }}
             >
               <div>
-                <div className="eyebrow" style={{ fontSize: 8, color: isNext ? "var(--lamp)" : isRace ? "var(--ember)" : "var(--mist-mute)" }}>
-                  {isNext ? "next" : isRace ? "race" : `+${offset} wk`}
+                <div className="eyebrow" style={{ fontSize: 8, color: isNow || isNext ? "var(--lamp)" : isRace ? "var(--ember)" : "var(--mist-mute)" }}>
+                  {isNow ? "now" : isNext ? "next" : isRace ? "race" : `+${offset} wk`}
                 </div>
                 <div className="numerals" style={{ fontSize: 19, fontWeight: 600, marginTop: 1 }}>w{String(w.wk).padStart(2, "0")}</div>
               </div>
