@@ -169,6 +169,11 @@ a { color: inherit; }
   flex-direction: column;
 }
 
+/* collapsed coach rail: hide (not unmount — chat state survives) and give
+   the main column the full width */
+.ops-grid.rail-hidden { grid-template-columns: minmax(0, 1fr); }
+.ops-grid.rail-hidden > .rail-sticky { display: none; }
+
 .vitals-band {
   display: grid;
   grid-template-columns: repeat(8, 1fr);

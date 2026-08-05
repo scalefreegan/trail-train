@@ -107,7 +107,10 @@ function BarStat({ label, value, accent }: { label: string; value: string; accen
 
 type AppView = "training" | "race";
 
-function CommandBar({ view, setView }: { view: AppView; setView: (v: AppView) => void }) {
+function CommandBar({ view, setView, railOpen, toggleRail }: {
+  view: AppView; setView: (v: AppView) => void;
+  railOpen: boolean; toggleRail: () => void;
+}) {
   const { syncing, lastSync, refresh, currentStep, lastLog, status } = useRefresh();
   const { fetchedAt, currentWeek } = useStrava();
   const { race, totalWeeks } = useBlockConfig();
@@ -183,6 +186,13 @@ function CommandBar({ view, setView }: { view: AppView; setView: (v: AppView) =>
               ))}
             </span>
           )}
+          <button
+            className={"chip" + (railOpen ? " active" : "")}
+            onClick={toggleRail}
+            title={railOpen ? "collapse the coach rail" : "show the coach rail"}
+          >
+            coach
+          </button>
           <UnitsToggle />
           <button
             onClick={refresh}
@@ -1264,7 +1274,7 @@ function loadStoredChat(): ChatMessage[] {
   }
 }
 
-function AgentRail() {
+function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
   const { data: agent, missing: agentMissing } = useAgentReadout();
   const { system } = useUnits();
   const facts = useFacts();
@@ -1402,6 +1412,15 @@ function AgentRail() {
                   clear
                 </button>
               )}
+          {onCollapse && (
+            <button
+              className="chip" onClick={onCollapse}
+              title="collapse the coach rail (reopen with the coach chip in the top bar)"
+              style={{ fontSize: 9, padding: "3px 7px" }}
+            >
+              »
+            </button>
+          )}
         </div>
 
         {/* scrollable body: flags + readout + chat thread */}
@@ -1873,11 +1892,20 @@ function AppBody() {
     setViewState(v);
     try { localStorage.setItem("view", v); } catch { /* private mode — preference just won't persist */ }
   };
+  const [railOpen, setRailOpen] = useState<boolean>(() =>
+    typeof localStorage === "undefined" || localStorage.getItem("rail.open") !== "0"
+  );
+  const toggleRail = () => {
+    setRailOpen((open) => {
+      try { localStorage.setItem("rail.open", open ? "0" : "1"); } catch { /* private mode */ }
+      return !open;
+    });
+  };
   return (
     <>
-      <CommandBar view={view} setView={setView} />
+      <CommandBar view={view} setView={setView} railOpen={railOpen} toggleRail={toggleRail} />
       <div className="shell">
-        <div className="ops-grid">
+        <div className={"ops-grid" + (railOpen ? "" : " rail-hidden")}>
           {/* main column */}
           <main style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
             {view === "training" ? (
@@ -1897,8 +1925,8 @@ function AppBody() {
             )}
           </main>
 
-          {/* the coach — persistent rail */}
-          <AgentRail />
+          {/* the coach — persistent rail (hidden, not unmounted, when collapsed) */}
+          <AgentRail onCollapse={toggleRail} />
         </div>
       </div>
     </>
