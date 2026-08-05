@@ -547,61 +547,71 @@ export function RacePlanner() {
               </div>
             );
           })}
-          {/* totals row */}
-          <div className="race-grid" style={{ padding: "10px 18px", borderTop: "1px solid var(--edge-bright)" }}>
+          {/* totals row — one line, left-aligned */}
+          <div style={{ padding: "11px 18px", borderTop: "1px solid var(--edge-bright)", display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
             <span className="eyebrow" style={{ fontSize: 8.5 }}>total planned aid-station time</span>
-            <span />
-            <span className="col-seg" />
-            <span className="col-stop numerals" style={{ fontSize: 12, fontWeight: 700, textAlign: "right", color: "var(--lamp)" }}>
+            <span className="numerals" style={{ fontSize: 13.5, fontWeight: 700, color: "var(--lamp)" }}>
               {fmtElapsed(proj.stopped_h)}
             </span>
             <span className="numerals" style={{ fontSize: 10, color: "var(--mist-mute)" }}>
               ≈ {Math.round((proj.stopped_h / proj.finish_h.avg) * 100)}% of expected race time
             </span>
-            <span className="col-goal" />
-            <span />
-            <span className="col-flags" />
           </div>
-          <div style={{ padding: "10px 18px", borderTop: "1px solid var(--edge)", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-            <span className="eyebrow" style={{ fontSize: 8.5 }}>
-              {fit ? `pacing fit: ${fit.basis} (eff. n=${fit.effN}) · ±${u.paceFmt(fit.residStd, 1)}${u.paceUnit} band · fatigue ×${(1 + fatigue / 100).toFixed(2)} per 10${u.distUnit}, compounding · stops ${aidStopMin}/${crewStopMin}m fresh, stretch late-race` : ""}
-            </span>
-            <span className="eyebrow" style={{ fontSize: 8.5, display: "inline-flex", alignItems: "center", gap: 10 }}>
-              <button
-                className="chip"
-                style={{ borderColor: "var(--lamp)", color: "var(--lamp)" }}
-                onClick={() => setSheetOpen(true)}
-              >
-                ⎙ crew sheet pdf
-              </button>
+
+          {/* footer meta — labeled lines left, actions right */}
+          <div style={{ padding: "12px 18px", borderTop: "1px solid var(--edge)", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 20, flexWrap: "wrap" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "44px minmax(0, 1fr)", gap: "6px 12px", alignItems: "baseline", flex: "1 1 460px" }}>
+              {fit && (
+                <>
+                  <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)" }}>model</span>
+                  <span className="eyebrow" style={{ fontSize: 8.5, lineHeight: 1.9 }}>
+                    fit: {fit.basis} (eff. n={fit.effN}) · ±{u.paceFmt(fit.residStd, 1)}{u.paceUnit} band · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}/{crewStopMin}m fresh
+                  </span>
+                </>
+              )}
+              {crewBase && (
+                <>
+                  <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)" }}>base</span>
+                  <span className="eyebrow" style={{ fontSize: 8.5, lineHeight: 1.9, color: "var(--creek)" }}>
+                    ⌂ {crewBase.base.address}
+                    {crewBase.base.drive_to_start_min != null && (
+                      <>
+                        {" · "}
+                        {course.map_track?.length ? (
+                          <a
+                            href={gmapsDirectionsUrl(crewBase.base.address, course.map_track[0][0], course.map_track[0][1])}
+                            target="_blank" rel="noopener noreferrer"
+                            title="google maps directions to the start (Two-Sixty TH)"
+                            style={{ color: "var(--creek)", textDecoration: "none", borderBottom: "1px dotted var(--creek)", whiteSpace: "nowrap" }}
+                          >
+                            drive to start {fmtDrive(crewBase.base.drive_to_start_min)} ↗
+                          </a>
+                        ) : (
+                          <span style={{ whiteSpace: "nowrap" }}>drive to start {fmtDrive(crewBase.base.drive_to_start_min)}</span>
+                        )}
+                      </>
+                    )}
+                  </span>
+                </>
+              )}
+              <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)" }}>race</span>
+              <span className="eyebrow" style={{ fontSize: 8.5, lineHeight: 1.9 }}>
+                cutoffs from 2025 manual · start {fmtRaceClock(race.date, 0)} · sunset {course.sun.sunset} · sunrise {course.sun.sunrise}
+              </span>
+            </div>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
               {Object.keys(stopOverrides).length > 0 && (
                 <button className="chip" style={{ fontSize: 8 }} onClick={clearStopOverrides}>
                   reset {Object.keys(stopOverrides).length} custom stop{Object.keys(stopOverrides).length > 1 ? "s" : ""}
                 </button>
               )}
-              {crewBase && (
-                <span style={{ color: "var(--creek)" }}>
-                  ⌂ {crewBase.base.address}
-                  {crewBase.base.drive_to_start_min != null && (
-                    <>
-                      {" · "}
-                      {course.map_track?.length ? (
-                        <a
-                          href={gmapsDirectionsUrl(crewBase.base.address, course.map_track[0][0], course.map_track[0][1])}
-                          target="_blank" rel="noopener noreferrer"
-                          title="google maps directions to the start (Two-Sixty TH)"
-                          style={{ color: "var(--creek)", textDecoration: "none", borderBottom: "1px dotted var(--creek)" }}
-                        >
-                          drive to start {fmtDrive(crewBase.base.drive_to_start_min)} ↗
-                        </a>
-                      ) : (
-                        <>drive to start {fmtDrive(crewBase.base.drive_to_start_min)}</>
-                      )}
-                    </>
-                  )}
-                </span>
-              )}
-              cutoffs from 2025 manual · start {fmtRaceClock(race.date, 0)} · sunset {course.sun.sunset} · sunrise {course.sun.sunrise}
+              <button
+                className="chip"
+                style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
+                onClick={() => setSheetOpen(true)}
+              >
+                ⎙ crew sheet pdf
+              </button>
             </span>
           </div>
         </div>
