@@ -22,7 +22,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { writeJsonAtomic } from "./lib.mjs";
-import { haversine, smoothProfile, detectClimbs } from "./climb-lib.mjs";
+import { haversine, smoothProfile, detectClimbs, gainBetween } from "./climb-lib.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const GPX_PATH = path.join(ROOT, "config", "mogollon-monster-100.gpx");
@@ -160,7 +160,7 @@ async function main() {
   const waypoints = parseWaypoints(gpx);
   const measuredDist = track[track.length - 1].mi;
 
-  const { grid, gain_ft: measuredGain } = smoothProfile(
+  const { grid, rawGrid, gain_ft: measuredGain } = smoothProfile(
     track.map((p) => ({ mi: p.mi, ele_ft: p.ele_ft }))
   );
 
@@ -229,6 +229,24 @@ async function main() {
   const detected = detectClimbs(grid, { minGainFt: 300, minAvgGradePct: 3 });
   console.log(`detected ${detected.length} climbs ≥300 ft / ≥3% over the course`);
 
+  // Extend a matched climb's start back toward its manual window when the
+  // approach is genuinely part of the climb — net uphill with < 70 ft of
+  // drawdown. (The start climb gains ~250 ft in its first mile, sits on a
+  // ~0.6 mi bench, then climbs the wall; plain detection starts at the wall.)
+  const extendStart = (startMi, windowLoMi) => {
+    if (windowLoMi >= startMi) return startMi;
+    const seg = rawGrid.filter((p) => p.mi >= windowLoMi && p.mi <= startMi);
+    if (seg.length < 2) return startMi;
+    const net = seg[seg.length - 1].ele_ft - seg[0].ele_ft;
+    let maxE = -Infinity;
+    let drawdown = 0;
+    for (const p of seg) {
+      maxE = Math.max(maxE, p.ele_ft);
+      drawdown = Math.max(drawdown, maxE - p.ele_ft);
+    }
+    return net > 0 && drawdown < 70 ? windowLoMi : startMi;
+  };
+
   const race_climbs = race.race_climbs.map((rc) => {
     // Windows in config are official miles; scale to measured space.
     const w0 = rc.approx_mi[0] * scale;
@@ -247,21 +265,29 @@ async function main() {
     let p;
     let stats;
     if (match) {
-      s = match.startIdx;
+      const startMi = extendStart(match.start_mi, w0);
+      s = nearestGridIdx(grid, startMi);
       p = match.peakIdx;
+      const lengthMi = match.end_mi - startMi;
+      // Gain from the un-averaged series: display smoothing clips switchback
+      // relief; the ±10 ft hysteresis alone handles noise (see climb-lib).
+      const gain = gainBetween(rawGrid, startMi, match.end_mi);
+      if (startMi < match.start_mi) {
+        console.log(`    ↳ ${rc.label}: start extended ${match.start_mi.toFixed(2)} → ${startMi.toFixed(2)} mi (uphill approach)`);
+      }
       stats = {
-        start_mi: +match.start_mi.toFixed(3),
+        start_mi: +startMi.toFixed(3),
         end_mi: +match.end_mi.toFixed(3),
-        length_mi: +match.length_mi.toFixed(3),
-        gain_ft: Math.round(match.gain_ft),
-        avg_grade_pct: +match.avg_grade_pct.toFixed(2),
+        length_mi: +lengthMi.toFixed(3),
+        gain_ft: Math.round(gain),
+        avg_grade_pct: +((gain / (lengthMi * 5280)) * 100).toFixed(2),
         max_grade_pct: +match.max_grade_pct.toFixed(2),
       };
     } else {
       // Fallback: raw window straight off the grid.
       s = nearestGridIdx(grid, w0);
       p = nearestGridIdx(grid, w1);
-      const gain = grid[p].ele_ft - grid[s].ele_ft;
+      const gain = gainBetween(rawGrid, grid[s].mi, grid[p].mi);
       const length_mi = grid[p].mi - grid[s].mi;
       let maxG = 0;
       for (let i = s; i <= p; i++) maxG = Math.max(maxG, grid[i].grade_pct);

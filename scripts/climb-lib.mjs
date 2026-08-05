@@ -140,27 +140,40 @@ function attachGrades(grid, step, spanMi) {
 /**
  * Smooth a raw elevation profile and report total gain.
  *
+ * Gain accounting vs display smoothing are deliberately different rulers:
+ * the moving-averaged grid is for *display and grade/climb-shape detection*,
+ * but averaging clips real switchback relief (~9–15% of ascent on this
+ * course), so gain_ft is accumulated on the resampled, UN-averaged series —
+ * the hysteresis dead-band alone handles sample noise there.
+ *
  * @param {{mi:number, ele_ft:number}[]} raw  cumulative-mile samples (any spacing)
  * @param {object} [opts]
  * @param {number} [opts.step=0.02]         grid spacing, miles
  * @param {number} [opts.window=7]          moving-average width (~0.14 mi at 0.02)
  * @param {number} [opts.hysteresisFt=10]   gain accumulator dead-band, ft
  * @param {number} [opts.gradeSpanMi=0.1]   grade measurement span, miles
- * @returns {{grid:{mi:number,ele_ft:number,grade_pct:number}[], gain_ft:number, step:number}}
+ * @returns {{grid:{mi:number,ele_ft:number,grade_pct:number}[], rawGrid:{mi:number,ele_ft:number}[], gain_ft:number, step:number}}
  */
 export function smoothProfile(raw, opts = {}) {
-  // window default is 7 (~0.14 mi), not the 9 (~0.18 mi) first prototyped: at 9
-  // the heavy average flattened real switchback gain enough to read total ascent
-  // ~17% under official; 7 keeps GPS noise out while landing within the tolerance
-  // the build verifies against (see scripts/build-course.mjs logging).
   const { step = 0.02, window = 7, hysteresisFt = 10, gradeSpanMi = 0.1 } = opts;
   const pts = monotonic(raw || []);
-  if (pts.length < 2) return { grid: [], gain_ft: 0, step };
+  if (pts.length < 2) return { grid: [], rawGrid: [], gain_ft: 0, step };
   const resampled = resample(pts, step);
   const smoothed = movingAverage(resampled, window);
-  const gain = gainHysteresis(smoothed, hysteresisFt);
+  const gain = gainHysteresis(resampled, hysteresisFt);
   const grid = attachGrades(smoothed, step, gradeSpanMi);
-  return { grid, gain_ft: gain, step };
+  return { grid, rawGrid: resampled, gain_ft: gain, step };
+}
+
+/**
+ * Ascent within [loMi, hiMi] on a (raw or smoothed) grid, via the same
+ * hysteresis accumulator — used to report climb gain off the un-averaged
+ * series so switchback relief isn't clipped by display smoothing.
+ */
+export function gainBetween(grid, loMi, hiMi, hysteresisFt = 10) {
+  const slice = grid.filter((p) => p.mi >= loMi && p.mi <= hiMi);
+  if (slice.length < 2) return 0;
+  return gainHysteresis(slice, hysteresisFt);
 }
 
 /**

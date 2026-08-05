@@ -3,7 +3,7 @@ import { motion } from "motion/react";
 import { useUnits, useMeasuredWidth } from "../data";
 import { SectionTag, Contours } from "../atoms";
 import { useClimbs, useCourse } from "./useRaceData";
-import type { RaceClimb, TrainingClimb } from "./types";
+import type { Course, RaceClimb, TrainingClimb } from "./types";
 
 /* ------------------------------------------------------------------ */
 /*  Climb comparison — every significant training climb (dots) vs the  */
@@ -170,26 +170,45 @@ function ClimbScatter({ training, raceClimbs }: { training: TrainingClimb[]; rac
   );
 }
 
-/* ---- race climb mini profile ---- */
+/* ---- race climb mini profile ----
+   Every card renders the SAME course-distance window (centered on its climb,
+   with surrounding terrain for context) and the SAME elevation span, so
+   climb length and steepness are visually comparable across cards. */
 
-function MiniProfile({ climb }: { climb: RaceClimb }) {
+function climbWindow(climb: RaceClimb, windowMi: number, courseMi: number): [number, number] {
+  const mid = (climb.start_mi + climb.end_mi) / 2;
+  const w0 = Math.max(0, Math.min(mid - windowMi / 2, courseMi - windowMi));
+  return [w0, w0 + windowMi];
+}
+
+function MiniProfile({ climb, course, windowMi, sharedSpanFt }: {
+  climb: RaceClimb; course: Course; windowMi: number; sharedSpanFt: number;
+}) {
   const u = useUnits();
   const W = 100, H = 46;
-  const pts = climb.profile;
+  const [w0, w1] = climbWindow(climb, windowMi, course.distance_mi);
+  const pts = useMemo(
+    () => course.profile.filter((p) => p.mi >= w0 - 1e-6 && p.mi <= w1 + 1e-6),
+    [course.profile, w0, w1],
+  );
   if (pts.length < 2) return null;
-  const minMi = pts[0].mi, maxMi = pts[pts.length - 1].mi;
-  let minE = Infinity, maxE = -Infinity;
-  for (const p of pts) { if (p.ele_ft < minE) minE = p.ele_ft; if (p.ele_ft > maxE) maxE = p.ele_ft; }
-  const spanE = maxE - minE || 1;
-  const xAt = (mi: number) => ((mi - minMi) / (maxMi - minMi || 1)) * W;
-  const yAt = (e: number) => 4 + (1 - (e - minE) / spanE) * (H - 8);
+  let minE = Infinity;
+  for (const p of pts) if (p.ele_ft < minE) minE = p.ele_ft;
+  const xAt = (mi: number) => ((mi - w0) / windowMi) * W;
+  const yAt = (e: number) => 4 + (1 - (e - minE) / sharedSpanFt) * (H - 8);
 
-  // grade-colored segments between consecutive points
+  const inClimb = (mi: number) => mi >= climb.start_mi && mi <= climb.end_mi;
   const segs = pts.slice(1).map((p, i) => {
     const a = pts[i];
+    const mid = (a.mi + p.mi) / 2;
     const g = (p.ele_ft - a.ele_ft) / Math.max(1, (p.mi - a.mi) * 5280) * 100;
-    return { x1: xAt(a.mi), y1: yAt(a.ele_ft), x2: xAt(p.mi), y2: yAt(p.ele_ft), color: gradeColor(g) };
+    return {
+      x1: xAt(a.mi), y1: yAt(a.ele_ft), x2: xAt(p.mi), y2: yAt(p.ele_ft),
+      color: inClimb(mid) ? gradeColor(g) : "var(--edge-bright)",
+      climb: inClimb(mid),
+    };
   });
+  const climbPts = pts.filter((p) => inClimb(p.mi));
 
   return (
     <div style={{ padding: "14px 16px" }}>
@@ -200,12 +219,16 @@ function MiniProfile({ climb }: { climb: RaceClimb }) {
         </span>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block", width: "100%", height: 78, marginTop: 8 }}>
-        <path
-          d={`M ${pts.map((p) => `${xAt(p.mi).toFixed(1)} ${yAt(p.ele_ft).toFixed(1)}`).join(" L ")} L ${W} ${H} L 0 ${H} Z`}
-          fill="var(--lamp)" opacity={0.06}
-        />
+        {climbPts.length > 1 && (
+          <path
+            d={`M ${climbPts.map((p) => `${xAt(p.mi).toFixed(1)} ${yAt(p.ele_ft).toFixed(1)}`).join(" L ")} L ${xAt(climbPts[climbPts.length - 1].mi).toFixed(1)} ${H} L ${xAt(climbPts[0].mi).toFixed(1)} ${H} Z`}
+            fill="var(--lamp)" opacity={0.07}
+          />
+        )}
         {segs.map((s, i) => (
-          <line key={i} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.color} strokeWidth="1.6" vectorEffect="non-scaling-stroke" strokeLinecap="round" />
+          <line key={i} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2}
+            stroke={s.color} strokeWidth={s.climb ? 1.6 : 1} opacity={s.climb ? 1 : 0.7}
+            vectorEffect="non-scaling-stroke" strokeLinecap="round" />
         ))}
       </svg>
       <div className="numerals" style={{ fontSize: 10, color: "var(--mist-dim)", marginTop: 8, display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -226,7 +249,29 @@ export function ClimbComparison() {
   const { climbs, missing } = useClimbs();
 
   const training = useMemo(() => climbs?.climbs ?? [], [climbs]);
-  const raceClimbs = course?.race_climbs ?? [];
+  const raceClimbs = useMemo(() => course?.race_climbs ?? [], [course]);
+
+  // shared scales for the mini profiles: every card shows the same course
+  // window and elevation span, so length and steepness compare truthfully
+  const windowMi = useMemo(
+    () => (raceClimbs.length ? Math.max(...raceClimbs.map((c) => c.length_mi)) * 1.25 : 5),
+    [raceClimbs],
+  );
+  const sharedSpanFt = useMemo(() => {
+    if (!course || !raceClimbs.length) return 1;
+    let span = 1;
+    for (const c of raceClimbs) {
+      const [w0, w1] = climbWindow(c, windowMi, course.distance_mi);
+      let lo = Infinity, hi = -Infinity;
+      for (const p of course.profile) {
+        if (p.mi < w0 || p.mi > w1) continue;
+        if (p.ele_ft < lo) lo = p.ele_ft;
+        if (p.ele_ft > hi) hi = p.ele_ft;
+      }
+      span = Math.max(span, hi - lo);
+    }
+    return span;
+  }, [course, raceClimbs, windowMi]);
 
   return (
     <section>
@@ -260,9 +305,11 @@ export function ClimbComparison() {
           </div>
         )}
 
-        {raceClimbs.length > 0 && (
+        {course && raceClimbs.length > 0 && (
           <div className="climb-grid">
-            {raceClimbs.map((c) => <MiniProfile key={c.id} climb={c} />)}
+            {raceClimbs.map((c) => (
+              <MiniProfile key={c.id} climb={c} course={course} windowMi={windowMi} sharedSpanFt={sharedSpanFt} />
+            ))}
           </div>
         )}
       </motion.div>

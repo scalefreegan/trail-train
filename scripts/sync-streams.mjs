@@ -21,7 +21,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { writeJsonAtomic } from "./lib.mjs";
 import { loadConfig, ensureToken } from "./strava-auth.mjs";
-import { smoothProfile, detectClimbs } from "./climb-lib.mjs";
+import { smoothProfile, detectClimbs, gainBetween } from "./climb-lib.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const STRAVA_PATH = path.join(ROOT, "web", "public", "strava.json");
@@ -148,16 +148,19 @@ async function main() {
     for (let i = 0; i < n; i++) {
       raw.push({ mi: distance[i] / M_PER_MI, ele_ft: altitude[i] / M_PER_FT });
     }
-    const { grid } = smoothProfile(raw);
+    const { grid, rawGrid } = smoothProfile(raw);
     for (const c of detectClimbs(grid)) {
+      // Gain off the un-averaged series — same ruler as the race climbs in
+      // build-course.mjs, so the scatter compares like with like.
+      const gain = gainBetween(rawGrid, c.start_mi, c.end_mi);
       climbs.push({
         activity_id: a.id,
         date: a.date,
         title: a.title,
         start_mi: +c.start_mi.toFixed(3),
         length_mi: +c.length_mi.toFixed(3),
-        gain_ft: Math.round(c.gain_ft),
-        avg_grade_pct: +c.avg_grade_pct.toFixed(2),
+        gain_ft: Math.round(gain),
+        avg_grade_pct: +((gain / (c.length_mi * 5280)) * 100).toFixed(2),
         max_grade_pct: +c.max_grade_pct.toFixed(2),
         strava_url: a.strava_url,
       });
