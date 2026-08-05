@@ -99,10 +99,24 @@ function authFlow({ clientId, clientSecret, redirectUri }) {
           <h1>✓ Trail Almanac is hooked into your Google Calendar.</h1>
           <p>Close this tab and return to your terminal. Run <code>npm run sync:google</code> to pull events.</p>`);
         server.close();
+        server.closeAllConnections?.(); // don't let a keep-alive socket hold the process open
         resolve();
       } catch (e) {
         res.writeHead(500); res.end(String(e.message || e));
         server.close();
+        reject(e);
+      }
+    });
+    // Fail loudly if anything else holds the callback port — a stray dev
+    // server here silently swallows the redirect and the CLI hangs forever.
+    server.on("error", (e) => {
+      if (e.code === "EADDRINUSE") {
+        reject(new Error(
+          `port ${port} is already in use — the OAuth redirect would go to the wrong process.\n` +
+          `  find it with:  lsof -nP -iTCP:${port} -sTCP:LISTEN\n` +
+          `  kill it, then re-run npm run auth:google`
+        ));
+      } else {
         reject(e);
       }
     });
