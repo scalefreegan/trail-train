@@ -137,6 +137,21 @@ function overlap(a0, a1, b0, b1) {
   return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
 }
 
+/** Driving route via the public OSRM demo server → { min, mi }. */
+async function osrmDrive(from, to) {
+  const url =
+    `https://router.project-osrm.org/route/v1/driving/` +
+    `${from.lon},${from.lat};${to.lon},${to.lat}?overview=false`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`osrm HTTP ${r.status}`);
+  const d = await r.json();
+  if (d.code !== "Ok" || !d.routes?.[0]) throw new Error(`osrm ${d.code}`);
+  return {
+    min: Math.round(d.routes[0].duration / 60),
+    mi: +(d.routes[0].distance / 1609.34).toFixed(1),
+  };
+}
+
 async function main() {
   const gpx = await fs.readFile(GPX_PATH, "utf8");
   const race = JSON.parse(await fs.readFile(RACE_PATH, "utf8"));
@@ -289,6 +304,46 @@ async function main() {
       ele_ft: Math.round(last.ele_ft),
       grade_pct: +last.grade_pct.toFixed(2),
     });
+  }
+
+  // ── Crew base + drive times → gitignored crew-base.json ─────────────────
+  // The base is the athlete's race-week lodging: it lives in the gitignored
+  // config/profile.json (key `race_base`) and the output goes to a separate
+  // gitignored snapshot, so neither the address nor anything derived from it
+  // ends up in the committed course.json of this public repo.
+  let personal = null;
+  try {
+    personal = JSON.parse(await fs.readFile(path.join(ROOT, "config", "profile.json"), "utf8"));
+  } catch { /* fresh checkout: no personal profile — crew-base.json just isn't written */ }
+  if (personal?.race_base) {
+    const base = { ...personal.race_base, drive_to_start_min: null, drive_to_start_mi: null };
+    const drives = {};
+    const startPt = { lat: track[0].lat, lon: track[0].lon };
+    try {
+      const d = await osrmDrive(base, startPt);
+      base.drive_to_start_min = d.min;
+      base.drive_to_start_mi = d.mi;
+      console.log(`drive base → start: ${d.min} min · ${d.mi} mi`);
+    } catch (e) {
+      console.warn(`⚠︎ drive base → start failed: ${e.message}`);
+    }
+    for (const s of aid_stations) {
+      if (!(s.crew || s.crew_only) || s.lat == null) continue;
+      try {
+        await new Promise((r) => setTimeout(r, 300));
+        const d = await osrmDrive(base, s);
+        drives[s.name] = { min: d.min, mi: d.mi };
+        console.log(`drive base → ${s.name}: ${d.min} min · ${d.mi} mi`);
+      } catch (e) {
+        console.warn(`⚠︎ drive base → ${s.name} failed: ${e.message}`);
+      }
+    }
+    await writeJsonAtomic(path.join(ROOT, "web", "public", "crew-base.json"), {
+      generated_at: new Date().toISOString(),
+      base,
+      drives,
+    });
+    console.log("✓ wrote crew-base.json (gitignored — contains the lodging address)\n");
   }
 
   // ── Overview-map polyline: track lat/lon downsampled to ~400 points ─────

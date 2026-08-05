@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useRefresh } from "../data";
-import type { ClimbsSnapshot, Course } from "./types";
+import type { ClimbsSnapshot, Course, CrewBase } from "./types";
 
 /* Snapshot hooks for the Race views — same provider-less pattern as
    useGoogleCal (data.ts): fetch keyed on the refresh pulse, `missing`
@@ -17,6 +17,19 @@ export function useCourse() {
       .catch(() => setMissing(true));
   }, [refreshKey]);
   return { course: data, missing };
+}
+
+/** Optional — crew-base.json only exists where profile.json has race_base. */
+export function useCrewBase() {
+  const { key: refreshKey } = useRefresh();
+  const [data, setData] = useState<CrewBase | null>(null);
+  useEffect(() => {
+    fetch(`/crew-base.json?t=${Date.now()}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then(setData)
+      .catch(() => setData(null));
+  }, [refreshKey]);
+  return { crewBase: data };
 }
 
 export function useClimbs() {

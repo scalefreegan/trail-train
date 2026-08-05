@@ -2,7 +2,7 @@ import { useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useUnits, useBlockConfig } from "../data";
 import { fmtRaceClock, fmtElapsed, type projectRace } from "./pacing";
-import type { Course } from "./types";
+import type { Course, CrewBase } from "./types";
 
 /* ------------------------------------------------------------------ */
 /*  Crew sheet — a light, printer-friendly handout: station table with */
@@ -18,13 +18,18 @@ const RULE = "#d8d4cc";
 
 const NO_TRACK: [number, number][] = [];
 
-function CourseMap({ course }: { course: Course }) {
+function fmtDrive(min: number): string {
+  return min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, "0")}m`;
+}
+
+function CourseMap({ course, base }: { course: Course; base: CrewBase["base"] | null }) {
   const u = useUnits();
   const pts = course.map_track ?? NO_TRACK;
   const geom = useMemo(() => {
     if (pts.length < 2) return null;
     const lats = pts.map((p) => p[0]);
     const lons = pts.map((p) => p[1]);
+    if (base) { lats.push(base.lat); lons.push(base.lon); }
     const minLat = Math.min(...lats), maxLat = Math.max(...lats);
     const minLon = Math.min(...lons), maxLon = Math.max(...lons);
     const kx = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
@@ -37,7 +42,7 @@ function CourseMap({ course }: { course: Course }) {
     const yAt = (lat: number) => PAD + ((maxLat - lat) / spanY) * (H - 2 * PAD);
     const path = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${xAt(p[1]).toFixed(1)} ${yAt(p[0]).toFixed(1)}`).join(" ");
     return { W, H: H + 2 * PAD - PAD, xAt, yAt, path, height: H };
-  }, [pts]);
+  }, [pts, base]);
   if (!geom) return null;
 
   const labeled = course.aid_stations.filter((s) => s.lat != null && s.lon != null);
@@ -79,6 +84,15 @@ function CourseMap({ course }: { course: Course }) {
           </text>
         </g>
       ))}
+      {/* crew base (lodging) */}
+      {base && (
+        <g>
+          <rect x={geom.xAt(base.lon) - 4.5} y={geom.yAt(base.lat) - 4.5} width={9} height={9} fill={INK} stroke="#fff" strokeWidth={1.2} />
+          <text x={geom.xAt(base.lon) + 8} y={geom.yAt(base.lat) + 4} style={{ font: "700 10.5px Archivo, sans-serif", fill: INK }}>
+            ⌂ BASE — {base.address.split(",")[0]}
+          </text>
+        </g>
+      )}
       <text x={geom.W - 8} y={geom.height + 26} textAnchor="end" style={{ font: "9px Archivo, sans-serif", fill: MUTED }}>
         ● crew access · ○ runner-only aid · line = course
       </text>
@@ -86,13 +100,16 @@ function CourseMap({ course }: { course: Course }) {
   );
 }
 
-export function CrewSheet({ course, proj, onClose }: {
+export function CrewSheet({ course, proj, crewBase, onClose }: {
   course: Course;
   proj: NonNullable<ReturnType<typeof projectRace>>;
+  crewBase: CrewBase | null;
   onClose: () => void;
 }) {
   const u = useUnits();
   const { race } = useBlockConfig();
+  const base = crewBase?.base ?? null;
+  const drives = crewBase?.drives ?? {};
 
   // print isolation: while the sheet is open, @media print shows only it
   useEffect(() => {
@@ -142,6 +159,14 @@ export function CrewSheet({ course, proj, onClose }: {
             {" · start "}{fmtRaceClock(race.date, 0)} · {u.dist(course.official_distance_mi, 1)} {u.distUnit} · {u.elev(course.official_gain_ft)} {u.elevUnit}↑
             {" · course closes "}{fmtRaceClock(race.date, 38)} (38h)
           </div>
+          {base && (
+            <div style={{ fontSize: 12, marginTop: 3 }}>
+              <b>⌂ Base:</b> {base.address}
+              {base.drive_to_start_min != null && (
+                <> · drive to the start (Two-Sixty TH) <b>{fmtDrive(base.drive_to_start_min)}</b> — shuttles leave Old Pine lot 4:25a/4:40a</>
+              )}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 26, marginTop: 10, fontSize: 12 }}>
             <span><b style={{ color: "#3d7a48" }}>{fmtRaceClock(race.date, proj.finish_h.best)}</b> best</span>
             <span><b style={{ color: ACCENT }}>{fmtRaceClock(race.date, proj.finish_h.avg)}</b> expected ({fmtElapsed(proj.finish_h.avg)})</span>
@@ -162,6 +187,7 @@ export function CrewSheet({ course, proj, onClose }: {
               <th style={th}>Cutoff</th>
               <th style={{ ...th, textAlign: "right" }}>Stop</th>
               <th style={th}>Access</th>
+              <th style={{ ...th, textAlign: "right" }}>Drive</th>
               <th style={th}>GPS</th>
             </tr>
           </thead>
@@ -190,10 +216,15 @@ export function CrewSheet({ course, proj, onClose }: {
                   <td style={cell}>{s.cutoff_h != null ? fmtRaceClock(race.date, s.cutoff_h) : "—"}</td>
                   <td style={{ ...cell, textAlign: "right" }}>{sp.stop_min > 0 ? `${sp.stop_min}m` : "—"}</td>
                   <td style={{ ...cell, fontSize: 9.5, color: crew ? ACCENT : MUTED, fontWeight: crew ? 700 : 400 }}>{access || "aid"}</td>
+                  <td style={{ ...cell, fontSize: 10, textAlign: "right", whiteSpace: "nowrap", fontWeight: crew ? 700 : 400 }}>
+                    {drives[s.name] ? fmtDrive(drives[s.name].min) : "—"}
+                  </td>
                   <td style={{ ...cell, fontSize: 9.5, whiteSpace: "nowrap" }}>
                     {s.lat != null && s.lon != null ? (
                       <a
-                        href={`https://maps.google.com/?q=${s.lat},${s.lon}`}
+                        href={base
+                          ? `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(base.address)}&destination=${s.lat},${s.lon}`
+                          : `https://maps.google.com/?q=${s.lat},${s.lon}`}
                         target="_blank" rel="noopener noreferrer"
                         style={{ color: INK, textDecoration: "none" }}
                       >
@@ -207,7 +238,7 @@ export function CrewSheet({ course, proj, onClose }: {
             <tr>
               <td style={{ ...cell, fontWeight: 700, borderBottom: "none" }} colSpan={5}>Total planned aid-station time</td>
               <td style={{ ...cell, textAlign: "right", fontWeight: 700, borderBottom: "none" }}>{fmtElapsed(proj.stopped_h)}</td>
-              <td style={{ ...cell, borderBottom: "none" }} colSpan={2} />
+              <td style={{ ...cell, borderBottom: "none" }} colSpan={3} />
             </tr>
           </tbody>
         </table>
@@ -220,13 +251,15 @@ export function CrewSheet({ course, proj, onClose }: {
           <b>Night:</b> sunset {course.sun.sunset} · sunrise {course.sun.sunrise} — headlamp in the Fish Hatchery drop bag.
           {" "}<b>If the runner drops:</b> they must report to an aid station captain — never leave the course unreported.<br />
           <span style={{ color: MUTED }}>
-            ETAs from Basecamp's pacing model (best/worst = ± model band); cutoffs from the 2025 runner manual. GPS links open Google Maps — coordinates are the station point, not the parking area.
+            ETAs from Basecamp's pacing model (best/worst = ± model band); cutoffs from the 2025 runner manual.
+            {" "}GPS links open Google Maps driving directions from the base — coordinates are the station point, not the parking area.
+            {" "}Drive times are OSRM road estimates; forest-road conditions vary, so verify against the official Crew Guide and add buffer.
           </span>
         </div>
 
         {/* map */}
         <div style={{ marginTop: 16, borderTop: `1px solid ${RULE}`, paddingTop: 12 }}>
-          <CourseMap course={course} />
+          <CourseMap course={course} base={base} />
         </div>
       </div>
     </div>,

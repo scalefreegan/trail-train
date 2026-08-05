@@ -17,6 +17,9 @@ web/public/coach.json
 web/public/state.json
 web/public/google-cal.json
 web/public/climbs.json
+# crew-base.json holds the race-week lodging address + drive times (from
+# profile.json race_base) — personal, never commit.
+web/public/crew-base.json
 
 # Athlete profile (name, location, local trails). The committed file is the
 # example with generic placeholders; copy it to profile.json and personalize.

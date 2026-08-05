@@ -58,6 +58,22 @@ export type Course = {
   map_track?: [number, number][];
 };
 
+/** crew-base.json — gitignored (contains the lodging address); written by
+    build-course.mjs from config/profile.json's `race_base`. */
+export type CrewBase = {
+  generated_at: string;
+  base: {
+    label: string;
+    address: string;
+    lat: number;
+    lon: number;
+    drive_to_start_min: number | null;
+    drive_to_start_mi: number | null;
+  };
+  /** OSRM driving estimates from the base, keyed by station name */
+  drives: Record<string, { min: number; mi: number }>;
+};
+
 export type TrainingClimb = {
   activity_id: string;
   date: string;

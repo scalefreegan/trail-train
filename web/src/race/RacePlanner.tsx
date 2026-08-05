@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { useUnits, useStrava, useBlockConfig, useMeasuredWidth } from "../data";
 import { SectionTag, Contours } from "../atoms";
-import { useCourse } from "./useRaceData";
+import { useCourse, useCrewBase } from "./useRaceData";
 import { CrewSheet } from "./CrewSheet";
 import {
   fitPacing, projectRace, nightIntervals,
@@ -50,6 +50,10 @@ function usePersistedNumber(key: string, initial: number) {
     try { localStorage.setItem(key, String(n)); } catch { /* private mode */ }
   };
   return [v, set] as const;
+}
+
+function fmtDrive(min: number): string {
+  return min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, "0")}m`;
 }
 
 function marginColor(marginH: number | null): string {
@@ -322,6 +326,7 @@ export function RacePlanner() {
   const { race } = useBlockConfig();
   const { activities } = useStrava();
   const { course, missing } = useCourse();
+  const { crewBase } = useCrewBase();
   const [fatigue, setFatigue] = usePersistedNumber("race.fatigue_pct_v2", 5);
   const [goalH, setGoalH] = usePersistedNumber("race.goal_h", 32);
   const [aidStopMin, setAidStopMin] = usePersistedNumber("race.aid_stop_min", 5);
@@ -517,8 +522,16 @@ export function RacePlanner() {
                     <span style={{ color: "var(--mist-mute)" }}>—</span>
                   )}
                 </span>
-                <span className="col-flags" style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
-                  {stationFlags(s).map((f) => <FlagChip key={f.label} label={f.label} color={f.color} />)}
+                <span className="col-flags" style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-start" }}>
+                  <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
+                    {stationFlags(s).map((f) => <FlagChip key={f.label} label={f.label} color={f.color} />)}
+                  </span>
+                  {crewBase?.drives[s.name] && (
+                    <span className="numerals" title={`driving from ${crewBase.base.address} · ${u.dist(crewBase.drives[s.name].mi, 0)} ${u.distUnit} (OSRM estimate)`}
+                      style={{ fontSize: 9, color: "var(--creek)" }}>
+                      ⌂ drive {fmtDrive(crewBase.drives[s.name].min)}
+                    </span>
+                  )}
                 </span>
               </div>
             );
@@ -548,6 +561,12 @@ export function RacePlanner() {
                   reset {Object.keys(stopOverrides).length} custom stop{Object.keys(stopOverrides).length > 1 ? "s" : ""}
                 </button>
               )}
+              {crewBase && (
+                <span style={{ color: "var(--creek)" }}>
+                  ⌂ {crewBase.base.address}
+                  {crewBase.base.drive_to_start_min != null ? ` · drive to start ${fmtDrive(crewBase.base.drive_to_start_min)}` : ""}
+                </span>
+              )}
               cutoffs from 2025 manual · start {fmtRaceClock(race.date, 0)} · sunset {course.sun.sunset} · sunrise {course.sun.sunrise}
             </span>
           </div>
@@ -555,7 +574,7 @@ export function RacePlanner() {
       )}
 
       {sheetOpen && proj && (
-        <CrewSheet course={course} proj={proj} onClose={() => setSheetOpen(false)} />
+        <CrewSheet course={course} proj={proj} crewBase={crewBase} onClose={() => setSheetOpen(false)} />
       )}
     </section>
   );
