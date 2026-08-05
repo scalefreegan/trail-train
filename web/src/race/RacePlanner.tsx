@@ -547,8 +547,40 @@ export function RacePlanner() {
               </div>
             );
           })}
+          {/* totals: elapsed-at-finish per scenario, aligned under the ETA columns */}
+          <div className="race-grid" style={{ padding: "11px 18px", borderTop: "1px solid var(--edge-bright)" }}>
+            <span className="eyebrow" style={{ fontSize: 8.5 }}>total elapsed at finish</span>
+            <span />
+            <span className="col-seg" />
+            <span className="col-stop" />
+            <span className="numerals" style={{ fontSize: 12, fontWeight: 600, display: "grid", gridTemplateColumns: "1fr 1fr 1.15fr", gap: 8, whiteSpace: "nowrap" }}>
+              <span style={{ color: "var(--pine)", textAlign: "right" }}>{fmtElapsed(proj.finish_h.best)}</span>
+              <span style={{ textAlign: "right" }}>{fmtElapsed(proj.finish_h.avg)}</span>
+              <span style={{ color: "var(--ember)", textAlign: "right" }}>{fmtElapsed(proj.finish_h.worst)}</span>
+            </span>
+            <span className="numerals col-goal" style={{ fontSize: 12, fontWeight: 600, color: "var(--creek)", textAlign: "right" }}>
+              {proj.goal_h != null ? fmtElapsed(proj.goal_h) : "—"}
+            </span>
+            <span className="numerals" style={{ fontSize: 11.5, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, whiteSpace: "nowrap" }}>
+              {(() => {
+                const fin = proj.stations[proj.stations.length - 1];
+                return fin?.station.cutoff_h != null ? (
+                  <>
+                    <span style={{ textAlign: "right" }}>{fmtElapsed(fin.station.cutoff_h)}</span>
+                    <span style={{ color: marginColor(fin.cutoff_margin_h) }}>
+                      {fin.cutoff_margin_h != null
+                        ? `${fin.cutoff_margin_h >= 0 ? "+" : "−"}${fmtElapsed(Math.abs(fin.cutoff_margin_h))}`
+                        : ""}
+                    </span>
+                  </>
+                ) : <span />;
+              })()}
+            </span>
+            <span className="col-flags" />
+          </div>
+
           {/* totals row — one line, left-aligned */}
-          <div style={{ padding: "11px 18px", borderTop: "1px solid var(--edge-bright)", display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ padding: "11px 18px", borderTop: "1px solid var(--edge)", display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
             <span className="eyebrow" style={{ fontSize: 8.5 }}>total planned aid-station time</span>
             <span className="numerals" style={{ fontSize: 13.5, fontWeight: 700, color: "var(--lamp)" }}>
               {fmtElapsed(proj.stopped_h)}
