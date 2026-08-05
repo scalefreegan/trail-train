@@ -407,9 +407,6 @@ export function RacePlanner() {
               />
               h
             </label>
-            {proj && (
-              <button className="chip" onClick={() => setSheetOpen(true)}>⎙ crew sheet</button>
-            )}
           </span>
         }
       >
@@ -570,6 +567,13 @@ export function RacePlanner() {
               {fit ? `pacing fit: ${fit.basis} (eff. n=${fit.effN}) · ±${u.paceFmt(fit.residStd, 1)}${u.paceUnit} band · fatigue ×${(1 + fatigue / 100).toFixed(2)} per 10${u.distUnit}, compounding · stops ${aidStopMin}/${crewStopMin}m fresh, stretch late-race` : ""}
             </span>
             <span className="eyebrow" style={{ fontSize: 8.5, display: "inline-flex", alignItems: "center", gap: 10 }}>
+              <button
+                className="chip"
+                style={{ borderColor: "var(--lamp)", color: "var(--lamp)" }}
+                onClick={() => setSheetOpen(true)}
+              >
+                ⎙ crew sheet pdf
+              </button>
               {Object.keys(stopOverrides).length > 0 && (
                 <button className="chip" style={{ fontSize: 8 }} onClick={clearStopOverrides}>
                   reset {Object.keys(stopOverrides).length} custom stop{Object.keys(stopOverrides).length > 1 ? "s" : ""}
