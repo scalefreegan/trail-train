@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useUnits, useBlockConfig } from "../data";
 import { fmtRaceClock, fmtElapsed, type projectRace } from "./pacing";
+import { gmapsDirectionsUrl } from "./links";
 import type { Course, CrewBase } from "./types";
 
 /* ------------------------------------------------------------------ */
@@ -164,7 +165,21 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
             <div style={{ fontSize: 12, marginTop: 3 }}>
               <b>⌂ Base:</b> {base.address}
               {base.drive_to_start_min != null && (
-                <> · drive to the start (Two-Sixty TH) <b>{fmtDrive(base.drive_to_start_min)}</b> — shuttles leave Old Pine lot 4:25a/4:40a</>
+                <>
+                  {" · drive to "}
+                  {course.map_track?.length ? (
+                    <a
+                      href={gmapsDirectionsUrl(base.address, course.map_track[0][0], course.map_track[0][1])}
+                      target="_blank" rel="noopener noreferrer"
+                      style={{ color: INK, textDecorationStyle: "dotted" }}
+                    >
+                      the start (Two-Sixty TH)
+                    </a>
+                  ) : (
+                    "the start (Two-Sixty TH)"
+                  )}
+                  {" "}<b>{fmtDrive(base.drive_to_start_min)}</b> — shuttles leave Old Pine lot 4:25a/4:40a
+                </>
               )}
             </div>
           )}
@@ -247,7 +262,7 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
                     {s.lat != null && s.lon != null ? (
                       <a
                         href={base
-                          ? `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(base.address)}&destination=${s.lat},${s.lon}`
+                          ? gmapsDirectionsUrl(base.address, s.lat, s.lon)
                           : `https://maps.google.com/?q=${s.lat},${s.lon}`}
                         target="_blank" rel="noopener noreferrer"
                         style={{ color: INK, textDecoration: "none" }}

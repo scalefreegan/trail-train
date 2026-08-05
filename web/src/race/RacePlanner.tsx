@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import { useUnits, useStrava, useBlockConfig, useMeasuredWidth } from "../data";
 import { SectionTag, Contours } from "../atoms";
 import { useCourse, useCrewBase } from "./useRaceData";
+import { gmapsDirectionsUrl } from "./links";
 import { CrewSheet } from "./CrewSheet";
 import {
   fitPacing, projectRace, nightIntervals,
@@ -529,10 +530,21 @@ export function RacePlanner() {
                     {stationFlags(s).map((f) => <FlagChip key={f.label} label={f.label} color={f.color} />)}
                   </span>
                   {crewBase?.drives[s.name] && (
-                    <span className="numerals" title={`driving from ${crewBase.base.address} · ${u.dist(crewBase.drives[s.name].mi, 0)} ${u.distUnit} (OSRM estimate)`}
-                      style={{ fontSize: 9, color: "var(--creek)" }}>
-                      ⌂ drive {fmtDrive(crewBase.drives[s.name].min)}
-                    </span>
+                    s.lat != null && s.lon != null ? (
+                      <a
+                        className="numerals"
+                        href={gmapsDirectionsUrl(crewBase.base.address, s.lat, s.lon)}
+                        target="_blank" rel="noopener noreferrer"
+                        title={`google maps directions from ${crewBase.base.address} · ${u.dist(crewBase.drives[s.name].mi, 0)} ${u.distUnit} (OSRM estimate)`}
+                        style={{ fontSize: 9, color: "var(--creek)", textDecoration: "none", borderBottom: "1px dotted var(--creek)" }}
+                      >
+                        ⌂ drive {fmtDrive(crewBase.drives[s.name].min)} ↗
+                      </a>
+                    ) : (
+                      <span className="numerals" style={{ fontSize: 9, color: "var(--creek)" }}>
+                        ⌂ drive {fmtDrive(crewBase.drives[s.name].min)}
+                      </span>
+                    )
                   )}
                 </span>
               </div>
@@ -566,7 +578,23 @@ export function RacePlanner() {
               {crewBase && (
                 <span style={{ color: "var(--creek)" }}>
                   ⌂ {crewBase.base.address}
-                  {crewBase.base.drive_to_start_min != null ? ` · drive to start ${fmtDrive(crewBase.base.drive_to_start_min)}` : ""}
+                  {crewBase.base.drive_to_start_min != null && (
+                    <>
+                      {" · "}
+                      {course.map_track?.length ? (
+                        <a
+                          href={gmapsDirectionsUrl(crewBase.base.address, course.map_track[0][0], course.map_track[0][1])}
+                          target="_blank" rel="noopener noreferrer"
+                          title="google maps directions to the start (Two-Sixty TH)"
+                          style={{ color: "var(--creek)", textDecoration: "none", borderBottom: "1px dotted var(--creek)" }}
+                        >
+                          drive to start {fmtDrive(crewBase.base.drive_to_start_min)} ↗
+                        </a>
+                      ) : (
+                        <>drive to start {fmtDrive(crewBase.base.drive_to_start_min)}</>
+                      )}
+                    </>
+                  )}
                 </span>
               )}
               cutoffs from 2025 manual · start {fmtRaceClock(race.date, 0)} · sunset {course.sun.sunset} · sunrise {course.sun.sunrise}
