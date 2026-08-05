@@ -450,9 +450,16 @@ export function RacePlanner() {
             <span className="eyebrow" style={{ fontSize: 8.5, textAlign: "right" }}>{u.distUnit}</span>
             <span className="eyebrow col-seg" style={{ fontSize: 8.5, textAlign: "right" }}>{u.elevUnit}↑ seg</span>
             <span className="eyebrow col-stop" style={{ fontSize: 8.5, textAlign: "right" }}>stop min</span>
-            <span className="eyebrow" style={{ fontSize: 8.5 }}>eta best · avg · worst</span>
-            <span className="eyebrow col-goal" style={{ fontSize: 8.5 }}>goal</span>
-            <span className="eyebrow" style={{ fontSize: 8.5 }}>cutoff · margin</span>
+            <span className="eyebrow" style={{ fontSize: 8.5, display: "grid", gridTemplateColumns: "1fr 1fr 1.15fr", gap: 8 }}>
+              <span style={{ textAlign: "right", color: "var(--pine)" }}>best</span>
+              <span style={{ textAlign: "right" }}>eta</span>
+              <span style={{ textAlign: "right", color: "var(--ember)" }}>worst</span>
+            </span>
+            <span className="eyebrow col-goal" style={{ fontSize: 8.5, textAlign: "right" }}>goal</span>
+            <span className="eyebrow" style={{ fontSize: 8.5, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <span style={{ textAlign: "right" }}>cutoff</span>
+              <span>margin</span>
+            </span>
             <span className="eyebrow col-flags" style={{ fontSize: 8.5 }}>access</span>
           </div>
           {proj.stations.map((sp, i) => {
@@ -499,28 +506,23 @@ export function RacePlanner() {
                     <span className="numerals" style={{ fontSize: 11.5, color: "var(--mist-mute)" }}>—</span>
                   )}
                 </span>
-                <span className="numerals" style={{ fontSize: 11.5, whiteSpace: "nowrap" }}>
-                  <span style={{ color: "var(--pine)" }}>{fmtRaceClock(race.date, sp.eta_h.best)}</span>
-                  <span style={{ color: "var(--mist-mute)" }}> · </span>
-                  <span style={{ fontWeight: 700 }}>{fmtRaceClock(race.date, sp.eta_h.avg)}</span>
-                  <span style={{ color: "var(--mist-mute)" }}> · </span>
-                  <span style={{ color: "var(--ember)" }}>{fmtRaceClock(race.date, sp.eta_h.worst)}</span>
+                <span className="numerals" style={{ fontSize: 11.5, display: "grid", gridTemplateColumns: "1fr 1fr 1.15fr", gap: 8, whiteSpace: "nowrap" }}>
+                  <span style={{ color: "var(--pine)", textAlign: "right" }}>{fmtRaceClock(race.date, sp.eta_h.best)}</span>
+                  <span style={{ fontWeight: 700, textAlign: "right" }}>{fmtRaceClock(race.date, sp.eta_h.avg)}</span>
+                  <span style={{ color: "var(--ember)", textAlign: "right" }}>{fmtRaceClock(race.date, sp.eta_h.worst)}</span>
                 </span>
-                <span className="numerals col-goal" style={{ fontSize: 11.5, color: "var(--creek)" }}>
+                <span className="numerals col-goal" style={{ fontSize: 11.5, color: "var(--creek)", textAlign: "right" }}>
                   {sp.goal_eta_h != null ? fmtRaceClock(race.date, sp.goal_eta_h) : "—"}
                 </span>
-                <span className="numerals" style={{ fontSize: 11.5, whiteSpace: "nowrap" }}>
-                  {s.cutoff_h != null ? (
-                    <>
-                      {fmtRaceClock(race.date, s.cutoff_h)}
-                      <span style={{ color: marginColor(sp.cutoff_margin_h), marginLeft: 6 }}>
-                        {sp.cutoff_margin_h != null && sp.cutoff_margin_h >= 0 ? "+" : "−"}
-                        {sp.cutoff_margin_h != null ? fmtElapsed(Math.abs(sp.cutoff_margin_h)) : ""}
-                      </span>
-                    </>
-                  ) : (
-                    <span style={{ color: "var(--mist-mute)" }}>—</span>
-                  )}
+                <span className="numerals" style={{ fontSize: 11.5, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, whiteSpace: "nowrap" }}>
+                  <span style={{ textAlign: "right" }}>
+                    {s.cutoff_h != null ? fmtRaceClock(race.date, s.cutoff_h) : <span style={{ color: "var(--mist-mute)" }}>—</span>}
+                  </span>
+                  <span style={{ color: marginColor(sp.cutoff_margin_h) }}>
+                    {sp.cutoff_margin_h != null
+                      ? `${sp.cutoff_margin_h >= 0 ? "+" : "−"}${fmtElapsed(Math.abs(sp.cutoff_margin_h))}`
+                      : ""}
+                  </span>
                 </span>
                 <span className="col-flags" style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-start" }}>
                   <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>

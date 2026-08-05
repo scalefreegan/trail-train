@@ -121,8 +121,9 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
   const dropNames = course.aid_stations.filter((s) => s.drop_bag).map((s) => s.name);
   const firstPacer = course.aid_stations.find((s) => s.pacers);
 
-  const cell: React.CSSProperties = { padding: "5px 8px", borderBottom: `1px solid ${RULE}`, fontSize: 11, color: INK, verticalAlign: "top" };
+  const cell: React.CSSProperties = { padding: "5px 8px", borderBottom: `1px solid ${RULE}`, fontSize: 11, color: INK, verticalAlign: "top", fontVariantNumeric: "tabular-nums" };
   const th: React.CSSProperties = { ...cell, fontSize: 9, textTransform: "uppercase", letterSpacing: "0.08em", color: MUTED, borderBottom: `2px solid ${INK}`, textAlign: "left" };
+  const etaGrid: React.CSSProperties = { display: "grid", gridTemplateColumns: "1fr 1fr 1.15fr", gap: 8, whiteSpace: "nowrap" };
 
   // portal to <body>: outside #root, so print CSS can hide the whole app
   // (display:none) without hiding the sheet — no blank trailing pages
@@ -195,9 +196,15 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
             <tr>
               <th style={th}>Station</th>
               <th style={{ ...th, textAlign: "right" }}>{u.distUnit}</th>
-              <th style={th}>ETA best · <b>avg</b> · worst</th>
-              <th style={th}>Goal</th>
-              <th style={th}>Cutoff</th>
+              <th style={th}>
+                <span style={etaGrid}>
+                  <span style={{ textAlign: "right" }}>Best</span>
+                  <span style={{ textAlign: "right", color: INK }}>ETA</span>
+                  <span style={{ textAlign: "right" }}>Worst</span>
+                </span>
+              </th>
+              <th style={{ ...th, textAlign: "right" }}>Goal</th>
+              <th style={{ ...th, textAlign: "right" }}>Cutoff</th>
               <th style={{ ...th, textAlign: "right" }}>Stop</th>
               <th style={th}>Access</th>
               <th style={{ ...th, textAlign: "right" }}>Drive</th>
@@ -222,11 +229,15 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
                     {s.notes && <div style={{ fontSize: 9, color: MUTED, fontWeight: 400 }}>{s.notes}</div>}
                   </td>
                   <td style={{ ...cell, textAlign: "right", fontWeight: 600 }}>{u.dist(s.total_mi)}</td>
-                  <td style={{ ...cell, whiteSpace: "nowrap" }}>
-                    {fmtRaceClock(race.date, sp.eta_h.best)} · <b>{fmtRaceClock(race.date, sp.eta_h.avg)}</b> · {fmtRaceClock(race.date, sp.eta_h.worst)}
+                  <td style={cell}>
+                    <span style={etaGrid}>
+                      <span style={{ textAlign: "right", color: "#3d7a48" }}>{fmtRaceClock(race.date, sp.eta_h.best)}</span>
+                      <b style={{ textAlign: "right" }}>{fmtRaceClock(race.date, sp.eta_h.avg)}</b>
+                      <span style={{ textAlign: "right", color: "#a33b2a" }}>{fmtRaceClock(race.date, sp.eta_h.worst)}</span>
+                    </span>
                   </td>
-                  <td style={cell}>{sp.goal_eta_h != null ? fmtRaceClock(race.date, sp.goal_eta_h) : "—"}</td>
-                  <td style={cell}>{s.cutoff_h != null ? fmtRaceClock(race.date, s.cutoff_h) : "—"}</td>
+                  <td style={{ ...cell, textAlign: "right" }}>{sp.goal_eta_h != null ? fmtRaceClock(race.date, sp.goal_eta_h) : "—"}</td>
+                  <td style={{ ...cell, textAlign: "right" }}>{s.cutoff_h != null ? fmtRaceClock(race.date, s.cutoff_h) : "—"}</td>
                   <td style={{ ...cell, textAlign: "right" }}>{sp.stop_min > 0 ? `${sp.stop_min}m` : "—"}</td>
                   <td style={{ ...cell, fontSize: 9.5, color: crew ? ACCENT : MUTED, fontWeight: crew ? 700 : 400 }}>{access || "aid"}</td>
                   <td style={{ ...cell, fontSize: 10, textAlign: "right", whiteSpace: "nowrap", fontWeight: crew ? 700 : 400 }}>
