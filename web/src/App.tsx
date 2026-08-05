@@ -230,16 +230,18 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
 /*  Race ribbon — name, countdown, elevation profile in one band       */
 /* ------------------------------------------------------------------ */
 
+// Pixel-space rendering (no viewBox stretching): uniform stroke weight on
+// flats and climbs alike, and aid dots stay true circles.
+const RIBBON_H = 96;
+const RIBBON_PAD = { top: 10, bottom: 6 };
+
 function ElevationRibbon() {
   const u = useUnits();
   const { race } = useBlockConfig();
   const { course } = useCourse();
   const { ref: measureRef, width } = useMeasuredWidth();
-
-  // Pixel-space rendering (no viewBox stretching): uniform stroke weight on
-  // flats and climbs alike, and aid dots stay true circles.
-  const H = 96;
-  const PAD = { top: 10, bottom: 6 };
+  const H = RIBBON_H;
+  const PAD = RIBBON_PAD;
 
   // Real course profile from course.json; decorative ridge only as a
   // fallback for a checkout where `npm run course:build` hasn't run.
