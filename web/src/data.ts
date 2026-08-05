@@ -187,7 +187,9 @@ export function relativeAgo(ts: number) {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m ago`;
+  if (h < 48) return `${h}h ${m % 60}m ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
 }
 
 export function fmtDuration(secs?: number | null) {

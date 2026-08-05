@@ -32,7 +32,9 @@ const API = "https://www.googleapis.com/calendar/v3";
 const SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"];
 
 const PAST_DAYS   = Number(arg("past",   7));
-const FUTURE_DAYS = Number(arg("future", 30));
+// 45 days forward so race-week logistics appear once the race is ~6 weeks out
+// (the old 30-day window hid them until race month).
+const FUTURE_DAYS = Number(arg("future", 45));
 // --cal takes a comma-separated list of calendar ids; when absent, profile.json
 // calendar_ids decides, falling back to "primary". Family logistics (childcare
 // markers, kid sports) usually live on shared calendars the athlete can read

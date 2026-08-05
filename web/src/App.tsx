@@ -895,6 +895,11 @@ function RoadAhead() {
             {calOk
               ? `${cal!.summary.upcoming_events} events · ${cal!.summary.races_upcoming} races · ${cal!.summary.travel_days_upcoming.length} travel days · ${cal!.summary.childcare_days_upcoming?.length ?? 0} kid days`
               : calMissing ? "calendar not connected" : "loading calendar…"}
+            {calOk && isStale(cal!.fetched_at, 26) && (
+              <span style={{ color: "var(--ember)" }} title="the calendar sync step has been failing — likely an expired Google token; run `node scripts/sync-google-cal.mjs --auth` to reconnect">
+                {" "}· snapshot from {relativeAgo(new Date(cal!.fetched_at).getTime())} — reauth google
+              </span>
+            )}
             {" — plan "}
             <span style={{ color: live ? "var(--pine)" : "var(--mist-mute)" }}>
               {live
