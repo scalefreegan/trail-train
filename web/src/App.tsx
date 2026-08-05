@@ -16,6 +16,7 @@ import { RefreshProvider, UnitsProvider, StravaProvider, OuraProvider, StateProv
 import { SectionTag, Contours } from "./atoms";
 import { RacePlanner } from "./race/RacePlanner";
 import { ClimbComparison } from "./race/ClimbComparison";
+import { useCourse } from "./race/useRaceData";
 
 /* ================================================================== */
 /*  BASECAMP — pre-dawn ops surface for ultra training                 */
@@ -232,57 +233,110 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
 function ElevationRibbon() {
   const u = useUnits();
   const { race } = useBlockConfig();
+  const { course } = useCourse();
+  const { ref: measureRef, width } = useMeasuredWidth();
+
+  // Pixel-space rendering (no viewBox stretching): uniform stroke weight on
+  // flats and climbs alike, and aid dots stay true circles.
+  const H = 96;
+  const PAD = { top: 10, bottom: 6 };
+
+  // Real course profile from course.json; decorative ridge only as a
+  // fallback for a checkout where `npm run course:build` hasn't run.
   const pts = useMemo(() => {
+    if (width <= 0) return [];
+    if (course && course.profile.length > 1) {
+      const prof = course.profile;
+      const target = Math.max(220, Math.min(600, Math.floor(width / 3)));
+      const step = Math.max(1, Math.ceil(prof.length / target));
+      const sel = prof.filter((_, i) => i % step === 0 || i === prof.length - 1);
+      let lo = Infinity, hi = -Infinity;
+      for (const p of sel) { if (p.ele_ft < lo) lo = p.ele_ft; if (p.ele_ft > hi) hi = p.ele_ft; }
+      const span = hi - lo || 1;
+      return sel.map((p) => ({
+        x: (p.mi / course.distance_mi) * width,
+        y: PAD.top + (1 - (p.ele_ft - lo) / span) * (H - PAD.top - PAD.bottom),
+      }));
+    }
     const n = 220;
     const arr: { x: number; y: number }[] = [];
     for (let i = 0; i < n; i++) {
-      const x = (i / (n - 1)) * 100;
-      const y =
+      const t = i / n;
+      const yy =
         50 +
-        Math.sin((i / n) * Math.PI * 6) * 20 +
-        Math.sin((i / n) * Math.PI * 14) * 5 +
-        Math.sin((i / n) * Math.PI * 2.1) * 7 +
-        Math.cos((i / n) * Math.PI * 9) * 3;
-      arr.push({ x, y: 100 - y });
+        Math.sin(t * Math.PI * 6) * 20 +
+        Math.sin(t * Math.PI * 14) * 5 +
+        Math.sin(t * Math.PI * 2.1) * 7 +
+        Math.cos(t * Math.PI * 9) * 3;
+      arr.push({
+        x: (i / (n - 1)) * width,
+        y: PAD.top + ((100 - yy) / 100) * (H - PAD.top - PAD.bottom),
+      });
     }
     return arr;
-  }, []);
+  }, [course, width]);
 
-  const linePath = "M" + pts.map((p) => p.x.toFixed(2) + " " + (p.y * 0.56).toFixed(2)).join(" L ");
-  const areaPath = linePath + ` L 100 60 L 0 60 Z`;
+  const yAtX = (x: number) => {
+    if (!pts.length) return H / 2;
+    let best = pts[0];
+    for (const p of pts) if (Math.abs(p.x - x) < Math.abs(best.x - x)) best = p;
+    return best.y;
+  };
+
+  // Real aid-station positions (GPX-snapped) when the course is loaded;
+  // state.json mile fractions otherwise.
+  const aidDots = course
+    ? course.aid_stations
+        .filter((a) => a.gpx_mi != null)
+        .map((a) => ({
+          name: a.name, mi: a.total_mi, crew: a.crew || a.crew_only,
+          x: (a.gpx_mi! / course.distance_mi) * width,
+        }))
+    : race.aid_stations.map((a) => ({
+        name: a.name, mi: a.mi, crew: false,
+        x: (a.mi / race.distance_mi) * width,
+      }));
+
+  const linePath = pts.length
+    ? "M" + pts.map((p) => p.x.toFixed(1) + " " + p.y.toFixed(1)).join(" L ")
+    : "";
+  const areaPath = linePath ? `${linePath} L ${width.toFixed(1)} ${H} L 0 ${H} Z` : "";
 
   return (
-    <svg viewBox="0 0 100 60" preserveAspectRatio="none" style={{ display: "block", width: "100%", height: "100%" }}>
-      <defs>
-        <linearGradient id="ribbonFill" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="var(--lamp)" stopOpacity="0.22" />
-          <stop offset="100%" stopColor="var(--lamp)" stopOpacity="0.01" />
-        </linearGradient>
-      </defs>
-      {[20, 35, 50].map((y) => (
-        <line key={y} x1="0" x2="100" y1={y} y2={y} stroke="var(--edge)" strokeWidth="0.18" strokeDasharray="0.6 1" />
-      ))}
-      <motion.path d={areaPath} fill="url(#ribbonFill)" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 1.2, delay: 0.4 }} />
-      <motion.path
-        d={linePath} fill="none" stroke="var(--lamp)" strokeWidth="0.5"
-        initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
-        transition={{ duration: 2, ease: [0.2, 0.8, 0.2, 1] }}
-      />
-      {race.aid_stations.map((a, i) => {
-        const idx = Math.min(pts.length - 1, Math.max(0, Math.round((a.mi / race.distance_mi) * (pts.length - 1))));
-        const p = pts[idx];
-        return (
-          <g key={a.name}>
+    <div ref={measureRef} style={{ position: "absolute", inset: 0 }}>
+      {width > 0 && pts.length > 1 && (
+        <svg width={width} height={H} style={{ display: "block" }}>
+          <defs>
+            <linearGradient id="ribbonFill" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor="var(--lamp)" stopOpacity="0.22" />
+              <stop offset="100%" stopColor="var(--lamp)" stopOpacity="0.01" />
+            </linearGradient>
+          </defs>
+          {[0.3, 0.55, 0.8].map((f) => (
+            <line key={f} x1="0" x2={width} y1={H * f} y2={H * f}
+              stroke="var(--edge)" strokeWidth="1" strokeDasharray="2 6" />
+          ))}
+          <motion.path d={areaPath} fill="url(#ribbonFill)" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 1.2, delay: 0.4 }} />
+          <motion.path
+            d={linePath} fill="none" stroke="var(--lamp)" strokeWidth="1.5"
+            strokeLinejoin="round" strokeLinecap="round"
+            initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
+            transition={{ duration: 2, ease: [0.2, 0.8, 0.2, 1] }}
+          />
+          {aidDots.map((a, i) => (
             <motion.circle
-              cx={p.x} cy={p.y * 0.56} r="0.8" fill="var(--night)" stroke="var(--mist-dim)" strokeWidth="0.25"
-              initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.3, delay: 1.2 + i * 0.06 }}
+              key={a.name}
+              cx={a.x} cy={yAtX(a.x)} r={a.crew ? 3 : 2.2}
+              fill="var(--night)" strokeWidth="1.2"
+              stroke={a.crew ? "var(--pine)" : "var(--mist-dim)"}
+              initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.3, delay: 1.2 + i * 0.05 }}
             >
-              <title>{a.name} · {u.dist(a.mi, 1)} {u.distUnit}</title>
+              <title>{a.name} · {u.dist(a.mi, 1)} {u.distUnit}{a.crew ? " · crew" : ""}</title>
             </motion.circle>
-          </g>
-        );
-      })}
-    </svg>
+          ))}
+        </svg>
+      )}
+    </div>
   );
 }
 
@@ -357,26 +411,64 @@ function VitalsBand() {
   const { activities } = useStrava();
   const oura = useOura();
   const facts = useFacts();
+  const { targets, blockStart } = useBlockConfig();
 
   // anchor "now" once per mount — the section remounts on every resync
   // (AppBody keys it on the refresh counter), so this stays fresh without
   // an impure Date.now() during render
   const [now] = useState(() => Date.now());
 
-  // daily distance + vert series, last 30 days (oldest → newest)
+  // daily series, last 30 days (oldest → newest); ACR and block-delta get
+  // true per-day series of their own metric (same formulas as
+  // computeCoachFacts, evaluated at each day's end)
   const daily = useMemo(() => {
     const n = 30;
+    const m = n + 28; // extra history so the day-1 ACR has a full 28d window
+    const dayMs = 86_400_000;
+    const distLong = Array(m).fill(0) as number[];
     const dist = Array(n).fill(0) as number[];
     const elev = Array(n).fill(0) as number[];
     for (const a of activities) {
-      const d = Math.floor((now - new Date(a.date).getTime()) / 86400000);
+      const d = Math.floor((now - new Date(a.date).getTime()) / dayMs);
+      if (d >= 0 && d < m) distLong[m - 1 - d] += a.distance_mi;
       if (d >= 0 && d < n) {
         dist[n - 1 - d] += a.distance_mi;
         elev[n - 1 - d] += a.elevation_ft;
       }
     }
-    return { dist, elev };
-  }, [activities, now]);
+    // rolling acute:chronic — 7d sum vs (28d sum / 4), per end-day
+    const acr: number[] = [];
+    for (let i = m - n; i < m; i++) {
+      let a7 = 0, a28 = 0;
+      for (let k = 0; k < 28 && i - k >= 0; k++) {
+        a28 += distLong[i - k];
+        if (k < 7) a7 += distLong[i - k];
+      }
+      acr.push(a28 > 0 ? a7 / (a28 / 4) : 1);
+    }
+    // block-vs-plan cumulative distance delta %, per day (weekly targets
+    // pro-rated by day so the trend moves within a week)
+    const start = new Date(blockStart + "T00:00:00").getTime();
+    const blockDelta: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const dayTime = now - (n - 1 - i) * dayMs;
+      let act = 0;
+      for (const a of activities) {
+        const t = new Date(a.date).getTime();
+        if (t >= start && t <= dayTime) act += a.distance_mi;
+      }
+      let rem = Math.max(0, Math.floor((dayTime - start) / dayMs) + 1);
+      let exp = 0;
+      for (const w of targets) {
+        if (rem <= 0) break;
+        const dd = Math.min(7, rem);
+        exp += w.target_dist * (dd / 7);
+        rem -= dd;
+      }
+      blockDelta.push(exp > 0 ? ((act - exp) / exp) * 100 : 0);
+    }
+    return { dist, elev, acr, blockDelta };
+  }, [activities, now, targets, blockStart]);
 
   const ouraTail = oura.days.slice(0, 30).slice().reverse();
   const seriesOf = (f: (d: OuraDay) => number | null | undefined) => ouraTail.map((d) => f(d) ?? 0);
@@ -422,7 +514,7 @@ function VitalsBand() {
       value: facts.acr_dist.toFixed(2),
       unit: "×",
       delta: undefined,
-      series: daily.dist,
+      series: daily.acr,
       color: facts.acr_dist > 1.5 ? "var(--ember)" : facts.acr_dist < 0.8 ? "var(--lamp)" : "var(--pine)",
       note: facts.acr_dist > 1.5 ? "load spike" : facts.acr_dist < 0.8 ? "volume low" : "in band",
     },
@@ -432,7 +524,7 @@ function VitalsBand() {
       value: `${facts.block_dist_delta_pct >= 0 ? "+" : ""}${facts.block_dist_delta_pct.toFixed(0)}`,
       unit: "%",
       delta: { value: facts.block_elev_delta_pct, suffix: "% vert", good: facts.block_elev_delta_pct >= 0 },
-      series: daily.dist,
+      series: daily.blockDelta,
       color: facts.block_dist_delta_pct >= 0 ? "var(--pine)" : "var(--ember)",
       note: "cumulative dist",
     },
@@ -503,7 +595,7 @@ function VitalsBand() {
               {v.delta && <Delta value={v.delta.value} suffix={v.delta.suffix} good={v.delta.good} />}
             </div>
             <div style={{ marginTop: 8 }}>
-              {v.series.some((x) => x > 0)
+              {v.series.some((x) => x !== 0)
                 ? <Spark values={v.series} color={v.color} height={30} />
                 : <div style={{ height: 30, display: "grid", placeItems: "center", border: "1px dashed var(--edge)" }}>
                     <span className="eyebrow" style={{ fontSize: 8 }}>no data</span>
