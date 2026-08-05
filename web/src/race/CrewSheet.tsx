@@ -176,6 +176,19 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
           </div>
         </div>
 
+        {/* emergency strip */}
+        {course.crew_info && (
+          <div style={{
+            display: "flex", flexWrap: "wrap", gap: "4px 26px", alignItems: "baseline",
+            border: `2px solid ${INK}`, padding: "7px 12px", marginBottom: 14, fontSize: 12,
+          }}>
+            <b style={{ letterSpacing: "0.06em" }}>EMERGENCY</b>
+            {course.crew_info.emergency.map((e) => (
+              <span key={e.phone}>{e.label}: <b style={{ whiteSpace: "nowrap" }}>{e.phone}</b></span>
+            ))}
+          </div>
+        )}
+
         {/* station table */}
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
@@ -257,8 +270,50 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
           </span>
         </div>
 
+        {/* crew manual distillation */}
+        {course.crew_info && (
+          <div style={{ marginTop: 16, borderTop: `1px solid ${RULE}`, paddingTop: 12 }}>
+            <div style={{ display: "flex", gap: 24, alignItems: "flex-start", flexWrap: "wrap" }}>
+              <div style={{ flex: "1 1 340px", breakInside: "avoid" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+                  Crew rules
+                </div>
+                <ol style={{ margin: 0, paddingLeft: 18, fontSize: 10.5, lineHeight: 1.55 }}>
+                  {course.crew_info.rules.map((r, i) => (
+                    <li key={i} style={{ marginBottom: 3 }}>{r}</li>
+                  ))}
+                </ol>
+                <div style={{ fontSize: 10.5, lineHeight: 1.55, marginTop: 8 }}>
+                  <b>Cell service:</b> {course.crew_info.cell_strategy}
+                </div>
+              </div>
+              <div style={{ flex: "1 1 340px", breakInside: "avoid" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+                  Crew stop directions
+                </div>
+                <div style={{ fontSize: 10.5, lineHeight: 1.55 }}>
+                  <div style={{ marginBottom: 5, breakInside: "avoid" }}>
+                    <b style={{ color: ACCENT }}>Start / parking.</b> {course.crew_info.start_notes}
+                  </div>
+                  {Object.entries(course.crew_info.station_notes).map(([name, note]) => (
+                    <div key={name} style={{ marginBottom: 5, breakInside: "avoid" }}>
+                      <b style={{ color: ACCENT }}>{name}
+                        {drives[name] ? ` (${fmtDrive(drives[name].min)} drive)` : ""}.
+                      </b>{" "}
+                      {note}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div style={{ fontSize: 9.5, color: MUTED, marginTop: 6 }}>
+              Distilled from the {course.crew_info.source}.
+            </div>
+          </div>
+        )}
+
         {/* map */}
-        <div style={{ marginTop: 16, borderTop: `1px solid ${RULE}`, paddingTop: 12 }}>
+        <div style={{ marginTop: 16, borderTop: `1px solid ${RULE}`, paddingTop: 12, breakInside: "avoid" }}>
           <CourseMap course={course} base={base} />
         </div>
       </div>

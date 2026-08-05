@@ -368,6 +368,8 @@ async function main() {
     race_climbs,
     /** [lat, lon] polyline for the crew-sheet overview map */
     map_track,
+    /** crew rules / directions distilled from the official crew manual */
+    crew_info: race.crew_info ?? null,
   };
   await writeJsonAtomic(OUT_PATH, payload);
   console.log(

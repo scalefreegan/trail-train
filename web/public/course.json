@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-05T00:50:28.430Z",
+  "generated_at": "2026-08-05T00:56:50.091Z",
   "source": "config/mogollon-monster-100.gpx + config/race-course.json",
   "distance_mi": 101.902,
   "gain_ft": 13567,
@@ -12768,5 +12768,36 @@
       34.38757,
       -111.45483
     ]
-  ]
+  ],
+  "crew_info": {
+    "source": "2025 Mogollon Monster 100 Crew Manual",
+    "emergency": [
+      {
+        "label": "MedStar 24-hr medical (printed on runner bibs)",
+        "phone": "480-269-4126"
+      },
+      {
+        "label": "Race Director Noah Dougherty (text or call)",
+        "phone": "480-518-6731"
+      }
+    ],
+    "rules": [
+      "Never impede traffic — park fully in pull-offs or keep moving. Emergency vehicles must be able to pass at all times; this is the permitting agencies' #1 issue.",
+      "If the runner drops, they MUST report to an aid station captain (or text the RD) before leaving the course. THIS IS CRITICAL.",
+      "No crewing, spectating, or pacing at ANY below-rim aid station — all crew zones are on top of the Rim.",
+      "Runners share the forest roads (Rim Rd/FS-300, FS-321, FS-393, Milk Ranch Point Rd) — drive slowly and minimize dust.",
+      "Rim Road is scenic but has hairpin turns and blind corners with 1,000-ft drops just off the edge. High clearance is nice; 4x4 not needed.",
+      "No facilities once you leave Pine/Payson for the Rim — pack food, water, and warm layers for a full day and night."
+    ],
+    "cell_strategy": "Best cell signal is near the edge of the Rim; there is NO service at Buck Springs, General Springs, or Dickerson Flat. Wait in a pull-off within signal to watch live timing (live.aravaiparunning.com — updates can lag), then drive in when your runner nears.",
+    "station_notes": {
+      "Black Mesa": "Crews-only zone spanning ~3 mi of Rim Road between Horton Creek and Babe Haught trails. Stop only in pull-offs, never on the road itself. NO parking or crewing at the Horton aid station just east of the zone.",
+      "Buck Springs": "From Rim Road turn onto FS-321 and continue ~3 mi; the aid is on the right. Runners are on FS-321/Rim Rd the entire way — drive slow. No cell at the aid; consider waiting in a pull-off on FS-300 in signal.",
+      "General Springs": "From Pine: AZ-87 north 14.5 mi to the Rim Road turnoff, Rim Road 12 mi to the powerlines, then left down FS-393 to the cabin (~1/3 mi). Runners are on this road — caution at the turn. No cell at the cabin (manual: ~1h16m from Pine).",
+      "Dickerson Flat": "From AZ-87 continue STRAIGHT onto Milk Ranch Point Rd — do NOT turn left onto Rim Road. 1.2 mi to a Y (stay right), then 1.7 mi to Turkey Springs TH. Crew only in the immediate trailhead area; do not block the roadway. No cell service.",
+      "Pine Trailhead": "Under 1 mi from town, no extended parking — quick stop only. A pacer may join here for the final ~2 mi.",
+      "Finish": "Pine Town Ramada / Community Center on the main road through Pine; parking surrounds the area, food within walking distance."
+    },
+    "start_notes": "Park at the Old Pine Parking Area (vehicles may stay all weekend; free dispersed camping). Two-Sixty TH is DROP-OFF ONLY — no parking at the start. Runner shuttles leave Old Pine at 4:25a and 4:40a."
+  }
 }

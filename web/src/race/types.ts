@@ -56,6 +56,15 @@ export type Course = {
   race_climbs: RaceClimb[];
   /** [lat, lon] polyline for the crew-sheet overview map */
   map_track?: [number, number][];
+  /** crew rules / directions distilled from the official crew manual */
+  crew_info?: {
+    source: string;
+    emergency: { label: string; phone: string }[];
+    rules: string[];
+    cell_strategy: string;
+    station_notes: Record<string, string>;
+    start_notes: string;
+  } | null;
 };
 
 /** crew-base.json — gitignored (contains the lodging address); written by
