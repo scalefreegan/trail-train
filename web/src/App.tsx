@@ -240,8 +240,6 @@ function ElevationRibbon() {
   const { race } = useBlockConfig();
   const { course } = useCourse();
   const { ref: measureRef, width } = useMeasuredWidth();
-  const H = RIBBON_H;
-  const PAD = RIBBON_PAD;
 
   // Real course profile from course.json; decorative ridge only as a
   // fallback for a checkout where `npm run course:build` hasn't run.
@@ -257,7 +255,7 @@ function ElevationRibbon() {
       const span = hi - lo || 1;
       return sel.map((p) => ({
         x: (p.mi / course.distance_mi) * width,
-        y: PAD.top + (1 - (p.ele_ft - lo) / span) * (H - PAD.top - PAD.bottom),
+        y: RIBBON_PAD.top + (1 - (p.ele_ft - lo) / span) * (RIBBON_H - RIBBON_PAD.top - RIBBON_PAD.bottom),
       }));
     }
     const n = 220;
@@ -272,14 +270,14 @@ function ElevationRibbon() {
         Math.cos(t * Math.PI * 9) * 3;
       arr.push({
         x: (i / (n - 1)) * width,
-        y: PAD.top + ((100 - yy) / 100) * (H - PAD.top - PAD.bottom),
+        y: RIBBON_PAD.top + ((100 - yy) / 100) * (RIBBON_H - RIBBON_PAD.top - RIBBON_PAD.bottom),
       });
     }
     return arr;
   }, [course, width]);
 
   const yAtX = (x: number) => {
-    if (!pts.length) return H / 2;
+    if (!pts.length) return RIBBON_H / 2;
     let best = pts[0];
     for (const p of pts) if (Math.abs(p.x - x) < Math.abs(best.x - x)) best = p;
     return best.y;
@@ -302,12 +300,12 @@ function ElevationRibbon() {
   const linePath = pts.length
     ? "M" + pts.map((p) => p.x.toFixed(1) + " " + p.y.toFixed(1)).join(" L ")
     : "";
-  const areaPath = linePath ? `${linePath} L ${width.toFixed(1)} ${H} L 0 ${H} Z` : "";
+  const areaPath = linePath ? `${linePath} L ${width.toFixed(1)} ${RIBBON_H} L 0 ${RIBBON_H} Z` : "";
 
   return (
     <div ref={measureRef} style={{ position: "absolute", inset: 0 }}>
       {width > 0 && pts.length > 1 && (
-        <svg width={width} height={H} style={{ display: "block" }}>
+        <svg width={width} height={RIBBON_H} style={{ display: "block" }}>
           <defs>
             <linearGradient id="ribbonFill" x1="0" x2="0" y1="0" y2="1">
               <stop offset="0%" stopColor="var(--lamp)" stopOpacity="0.22" />
@@ -315,7 +313,7 @@ function ElevationRibbon() {
             </linearGradient>
           </defs>
           {[0.3, 0.55, 0.8].map((f) => (
-            <line key={f} x1="0" x2={width} y1={H * f} y2={H * f}
+            <line key={f} x1="0" x2={width} y1={RIBBON_H * f} y2={RIBBON_H * f}
               stroke="var(--edge)" strokeWidth="1" strokeDasharray="2 6" />
           ))}
           <motion.path d={areaPath} fill="url(#ribbonFill)" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 1.2, delay: 0.4 }} />
