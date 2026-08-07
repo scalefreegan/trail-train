@@ -122,8 +122,10 @@ function ProfileChart({ course, proj }: {
     [minEle, maxEle, plotH],
   );
 
-  // O(1) nearest-point lookup — the profile is a uniform distance grid, so
-  // index math replaces the old linear scan (which ran 15× per render).
+  // Near-O(1) nearest-point lookup: the profile is a near-uniform distance
+  // grid, so index math jumps straight to the estimated bucket, then the two
+  // while-loops walk to the true nearest neighbor — correcting for grid drift
+  // and the off-grid final point the decimation always keeps (p[length-1]).
   const eleAt = useMemo(() => {
     const first = profile[0]?.mi ?? 0;
     const step = profile.length > 1 ? (profile[profile.length - 1].mi - first) / (profile.length - 1) : 1;
@@ -148,13 +150,13 @@ function ProfileChart({ course, proj }: {
 
   const aidWithMi = useMemo(
     () => course.aid_stations
-      .map((s, i) => ({ s, i, mi: s.gpx_mi ?? s.total_mi }))
-      .filter(({ mi }) => mi != null && mi <= maxMi + 0.5),
+      .map((s, i) => ({ s, i, mi: s.gpx_mi })) // gpx_mi = measured axis space, same as maxMi
+      .filter(({ mi }) => mi <= maxMi + 0.5),
     [course.aid_stations, maxMi],
   );
 
   /* The whole static scene is memoized: mousemove only re-renders the
-     crosshair layer + tooltip, never the 800-point paths or aid markers. */
+     crosshair layer + tooltip, never the decimated path scene or aid markers. */
   const scene = useMemo(() => {
     if (width <= 0) return null;
     const linePath = profile.map((p, i) => `${i === 0 ? "M" : "L"} ${xAt(p.mi).toFixed(1)} ${yAt(p.ele_ft).toFixed(1)}`).join(" ");
@@ -191,7 +193,7 @@ function ProfileChart({ course, proj }: {
 
         {/* aid stations */}
         {aidWithMi.map(({ s, i, mi }, idx) => {
-          const p = eleAt(mi!);
+          const p = eleAt(mi);
           const proj_i = proj?.stations[i] ?? null;
           const labelY = PAD.top + 6 + (idx % 3) * 11;
           return (
@@ -275,7 +277,7 @@ function ProfileChart({ course, proj }: {
       )}
 
       {/* hover crosshair — composited divs OUTSIDE the svg, so mousemove
-          never forces a repaint of the 800-point path scene */}
+          never forces a repaint of the decimated path scene */}
       {hover && (
         <>
           <div style={{
@@ -307,7 +309,7 @@ function ProfileChart({ course, proj }: {
           </div>
           <div className="numerals" style={{ fontSize: 10, color: "var(--mist-mute)", marginTop: 3 }}>
             grade {hover.p.grade_pct > 0 ? "+" : ""}{hover.p.grade_pct.toFixed(1)}%
-            {hover.next ? ` · next aid ${hover.next.s.name.toLowerCase()} in ${u.dist(Math.max(0, hover.next.mi! - hover.p.mi))} ${u.distUnit}` : ""}
+            {hover.next ? ` · next aid ${hover.next.s.name.toLowerCase()} in ${u.dist(Math.max(0, hover.next.mi - hover.p.mi))} ${u.distUnit}` : ""}
           </div>
           <div className="numerals" style={{ fontSize: 10, marginTop: 5, display: "grid", gridTemplateColumns: "auto auto", gap: "2px 10px" }}>
             <span style={{ color: "var(--pine)" }}>best</span><span>{fmtRaceClock(race.date, proj.elapsedAtMile(hover.p.mi, "best"))}</span>
@@ -326,7 +328,7 @@ export function RacePlanner() {
   const u = useUnits();
   const { race } = useBlockConfig();
   const { activities } = useStrava();
-  const { course, missing } = useCourse();
+  const { course, missing, error } = useCourse();
   const { crewBase } = useCrewBase();
   const [fatigue, setFatigue] = usePersistedNumber("race.fatigue_pct_v2", 5);
   const [goalH, setGoalH] = usePersistedNumber("race.goal_h", 32);
@@ -338,7 +340,9 @@ export function RacePlanner() {
   const fit = useMemo(() => fitPacing(activities), [activities]);
   const proj = useMemo(
     () => (course && fit ? projectRace(course, fit, {
-      fatiguePctPer10mi: fatigue, goalH, aidStopMin, crewStopMin, stopOverridesMin: stopOverrides,
+      // a cleared/zeroed goal field (Number("")=0) means "no goal" — coerce to
+      // null so the header ("—") and the table agree instead of collapsing ETAs
+      fatiguePctPer10mi: fatigue, goalH: goalH > 0 ? goalH : null, aidStopMin, crewStopMin, stopOverridesMin: stopOverrides,
     }) : null),
     [course, fit, fatigue, goalH, aidStopMin, crewStopMin, stopOverrides],
   );
@@ -348,8 +352,12 @@ export function RacePlanner() {
       <section>
         <SectionTag>race planner</SectionTag>
         <div className="panel notch" style={{ padding: "28px 26px" }}>
-          <span className="eyebrow" style={{ color: missing ? "var(--ember)" : "var(--mist-mute)" }}>
-            {missing ? "no course data — run `npm run course:build` to parse the race gpx" : "loading course…"}
+          <span className="eyebrow" style={{ color: missing || error ? "var(--ember)" : "var(--mist-mute)" }}>
+            {missing
+              ? "no course data — run `npm run course:build` to parse the race gpx"
+              : error
+              ? error
+              : "loading course…"}
           </span>
         </div>
       </section>
@@ -362,7 +370,7 @@ export function RacePlanner() {
     { label: "worst case", value: fmtRaceClock(race.date, proj.finish_h.worst), color: "var(--ember)" },
     { label: "expected elapsed", value: fmtElapsed(proj.finish_h.avg) },
     { label: "time stopped", value: fmtElapsed(proj.stopped_h) },
-    { label: "goal", value: goalH ? `${fmtElapsed(goalH)} → ${fmtRaceClock(race.date, goalH)}` : "—", color: "var(--creek)" },
+    { label: "goal", value: goalH > 0 ? `${fmtElapsed(goalH)} → ${fmtRaceClock(race.date, goalH)}` : "—", color: "var(--creek)" },
   ] : [];
 
   const numInput = (value: number, set: (n: number) => void, min: number, max: number, w = 44) => (

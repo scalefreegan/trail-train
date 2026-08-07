@@ -7,11 +7,13 @@
 // race climbs and the training climbs are measured by the *same* ruler.
 //
 // Why smooth at all: raw GPS/barometric elevation is noisy (±a few ft per sample),
-// and naively summing every up-tick inflates total gain by 30–50%. We resample to a
-// uniform grid, apply a centered moving average (~0.18 mi), then accumulate gain
-// with a ±10 ft hysteresis band so only real climbs count. The moving average
-// spans ~0.14 mi (7 samples at 0.02 mi) — wide enough to drop sample noise, tight
-// enough to preserve real gain on steep switchbacks.
+// and naively summing every up-tick inflates total gain by 30–50%. The pipeline is:
+// resample to a uniform grid, then accumulate total gain off that resampled but
+// UN-averaged series with a ±10 ft hysteresis band so only real climbs count. A
+// centered moving average — ~0.14 mi (7 samples at 0.02 mi), wide enough to drop
+// sample noise, tight enough to preserve real gain on steep switchbacks — is applied
+// separately and feeds only grade and climb-shape detection, never the gain total
+// (averaging clips switchback relief the hysteresis band already handles).
 //
 // Edge cases handled:
 //   - <2 usable samples → empty grid / no climbs (never throws).

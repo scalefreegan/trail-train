@@ -159,7 +159,7 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
           <div style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>
             {race.date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
             {" · start "}{fmtRaceClock(race.date, 0)} · {u.dist(course.official_distance_mi, 1)} {u.distUnit} · {u.elev(course.official_gain_ft)} {u.elevUnit}↑
-            {" · course closes "}{fmtRaceClock(race.date, 38)} (38h)
+            {" · course closes "}{fmtRaceClock(race.date, race.cutoff_h)} ({race.cutoff_h}h)
           </div>
           {base && (
             <div style={{ fontSize: 12, marginTop: 3 }}>

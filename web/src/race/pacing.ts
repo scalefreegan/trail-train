@@ -36,7 +36,8 @@ type FitInput = {
   avg_hr?: number | null;
 };
 
-/** Recency half-life for fit weights, in days. */
+/** Recency time constant (τ) for fit weights, in days: weight = e^(−age/τ).
+    75-day e-folding ⇒ true half-life ≈ 52 days (τ·ln2), not 75. */
 const RECENCY_TAU_DAYS = 75;
 /** Distance at (and beyond) which a run gets full distance weight. */
 const FULL_WEIGHT_DIST_MI = 13;
@@ -178,6 +179,11 @@ function gainBetween(profile: CourseProfilePoint[], fromMi: number, toMi: number
   return gain;
 }
 
+/** Reference distance (mi) at which the fitted fitness pace is evaluated — the
+    athlete's long-run regime. See projectRace's note on why kDist isn't
+    extrapolated to total_mi. */
+const D_REF = 20;
+
 /**
  * Project best/avg/worst arrival times at every aid station.
  *
@@ -192,8 +198,6 @@ function gainBetween(profile: CourseProfilePoint[], fromMi: number, toMi: number
  * - Station stops scale with the same curve (you linger longer at mile 80
  *   than mile 20), capped at 2× the fresh stop.
  */
-const D_REF = 20;
-
 export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions): RaceProjection {
   const f = opts.fatiguePctPer10mi / 100;
   const aidStopS = (opts.aidStopMin ?? 5) * 60;
@@ -202,9 +206,13 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   const mult = (mi: number) => Math.pow(1 + f, mi / 10);
 
   const segs = stations.map((st, i) => {
-    const prevMi = i === 0 ? 0 : stations[i - 1].total_mi;
+    const prev = i === 0 ? null : stations[i - 1];
+    const prevMi = prev ? prev.total_mi : 0; // official chart miles — pace/time math
     const seg_mi = Math.max(0, st.total_mi - prevMi);
-    const seg_gain_ft = st.seg_gain_ft ?? gainBetween(course.profile, prevMi, st.total_mi);
+    // Gain fallback slices the profile, which is indexed in MEASURED gpx miles,
+    // so bound it in gpx_mi (not official total_mi) to avoid a space mismatch.
+    const seg_gain_ft = st.seg_gain_ft
+      ?? gainBetween(course.profile, prev ? prev.gpx_mi : 0, st.gpx_mi);
     return { st, prevMi, seg_mi, seg_gain_ft };
   });
 
@@ -227,9 +235,9 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   // Crew zones count too (meeting your crew takes real minutes).
   const overrides = opts.stopOverridesMin ?? {};
   const stopAt = (st: CourseAidStation, isLast: boolean) => {
+    if (isLast) return 0; // no dwell at the finish — checked before any override
     const o = overrides[st.name];
     if (o != null && Number.isFinite(o)) return Math.max(0, o) * 60;
-    if (isLast) return 0;
     const fresh = st.crew || st.drop_bag ? crewStopS : aidStopS;
     return fresh * Math.min(2, mult(st.total_mi));
   };
@@ -285,9 +293,12 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
     worst: arrive.worst[last] / 3600,
   };
 
-  // piecewise-linear mile ↔ elapsed maps (dwell = vertical step at the station mile)
+  // piecewise-linear mile ↔ elapsed maps (dwell = vertical step at the station mile).
+  // Miles here are MEASURED gpx_mi — the chart's axis space and the profile's
+  // space, so callers (hover ETAs, night bands) share one axis; official
+  // total_mi drives only the display column and the pace/time math above.
   const boundaries = (sc: Scenario) => {
-    const mis = [0, ...segs.map(({ st }) => st.total_mi)];
+    const mis = [0, ...segs.map(({ st }) => st.gpx_mi)];
     const arr = [0, ...arrive[sc].map((s) => s / 3600)];
     const dep = [0, ...depart[sc].map((s) => s / 3600)];
     return { mis, arr, dep };

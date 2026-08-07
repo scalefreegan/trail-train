@@ -21,26 +21,35 @@ function gradeColor(pct: number): string {
 const H = 280;
 const PAD = { top: 20, right: 20, bottom: 34, left: 40 };
 
-/* Dot opacity encodes recency — same 75-day half-life as the pacing fit
-   weights (pacing.ts), so a climb's visual weight matches its model weight.
-   Age is measured against the snapshot's fetched_at (pure per render, and it
-   advances exactly when a sync lands). The floor keeps window-edge
+/* Strava stores start_date_local as a fake-Z timestamp — "…T06:00:00Z" means
+   6:00 LOCAL wall time, not UTC. Strip the trailing Z so the browser parses it
+   in the local zone; otherwise a pre-dawn run in a western (UTC−N) zone dates a
+   calendar day early and its recency age skews by the UTC offset. */
+function parseLocalDate(date: string): number {
+  return new Date(date.replace(/Z$/, "")).getTime();
+}
+
+/* Dot opacity encodes recency with the SAME curve as the pacing fit weights:
+   e^(−age/τ) with τ = pacing.ts's RECENCY_TAU_DAYS (75-day e-folding time
+   constant, ≈52-day half-life), so a climb's visual weight matches its model
+   weight. Age is measured against the snapshot's fetched_at (pure per render,
+   and it advances exactly when a sync lands). The floor keeps window-edge
    (6-month-old) climbs legible on the dark surface instead of fading out. */
-const DOT_HALFLIFE_DAYS = 75;
+const RECENCY_TAU_DAYS = 75; // mirror of pacing.ts's fit-weight time constant
 const DOT_OPACITY_MAX = 0.9;
 const DOT_OPACITY_FLOOR = 0.15;
 function opacityForAge(ageDays: number): number {
-  return DOT_OPACITY_FLOOR + (DOT_OPACITY_MAX - DOT_OPACITY_FLOOR) * Math.pow(2, -Math.max(0, ageDays) / DOT_HALFLIFE_DAYS);
+  return DOT_OPACITY_FLOOR + (DOT_OPACITY_MAX - DOT_OPACITY_FLOOR) * Math.exp(-Math.max(0, ageDays) / RECENCY_TAU_DAYS);
 }
 function dotOpacity(date: string, now: number): number {
-  return opacityForAge((now - new Date(date).getTime()) / 86400000);
+  return opacityForAge((now - parseLocalDate(date)) / 86400000);
 }
 
 /* Climbs from the last two weeks get an accent ring — the "what have I done
    lately" highlight on top of the continuous recency fade. */
 const HIGHLIGHT_DAYS = 14;
 const isRecent = (date: string, now: number) =>
-  (now - new Date(date).getTime()) / 86400000 <= HIGHLIGHT_DAYS;
+  (now - parseLocalDate(date)) / 86400000 <= HIGHLIGHT_DAYS;
 
 /* Reference scale drawn in the plot's top-right corner: dots at fixed ages
    so the opacity→recency mapping is readable off the chart itself, plus the
@@ -209,7 +218,7 @@ function ClimbScatter({ training, raceClimbs, now }: { training: TrainingClimb[]
         }}>
           <div style={{ fontSize: 12, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{hover.title}</div>
           <div className="numerals" style={{ fontSize: 10, color: "var(--mist-mute)", marginTop: 3 }}>
-            {new Date(hover.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase()}
+            {new Date(parseLocalDate(hover.date)).toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase()}
             {" · "}{u.dist(hover.length_mi)} {u.distUnit} · +{u.elev(hover.gain_ft)} {u.elevUnit}
           </div>
           <div className="numerals" style={{ fontSize: 10, color: "var(--mist-dim)", marginTop: 2 }}>
@@ -302,7 +311,7 @@ function MiniProfile({ climb, course, windowMi, sharedSpanFt }: {
 export function ClimbComparison() {
   const u = useUnits();
   const { course } = useCourse();
-  const { climbs, missing } = useClimbs();
+  const { climbs, missing, error } = useClimbs();
 
   const training = useMemo(() => climbs?.climbs ?? [], [climbs]);
   const raceClimbs = useMemo(() => course?.race_climbs ?? [], [course]);
@@ -334,8 +343,10 @@ export function ClimbComparison() {
     <section>
       <SectionTag
         right={
-          <span className="eyebrow">
-            {climbs
+          <span className="eyebrow" style={error ? { color: "var(--ember)" } : undefined}>
+            {error
+              ? climbs ? `climbs stale — ${error}` : error
+              : climbs
               ? `${training.length} training climbs ≥${u.elev(300)} ${u.elevUnit} · last ${Math.round((climbs.window_days ?? 183) / 30)} mo${climbs.activities_pending > 0 ? ` · ${climbs.activities_pending} runs awaiting sync` : ""}`
               : missing ? "no climb data yet" : "loading…"}
           </span>

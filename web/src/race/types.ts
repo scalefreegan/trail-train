@@ -14,8 +14,9 @@ export type CourseAidStation = {
   name: string;
   /** Official chart mile (table source of truth). */
   total_mi: number;
-  /** Mile measured by snapping the GPX waypoint to the track (plot position). */
-  gpx_mi: number | null;
+  /** Mile measured by snapping the GPX waypoint to the track (plot position).
+      Always set by build-course.mjs — the plot/ETA axis space. */
+  gpx_mi: number;
   seg_mi: number | null;
   seg_gain_ft: number | null;
   /** Cutoff as elapsed hours from the start, null if none posted. */

@@ -340,9 +340,30 @@ async function main() {
   let personal = null;
   try {
     personal = JSON.parse(await fs.readFile(path.join(ROOT, "config", "profile.json"), "utf8"));
-  } catch { /* fresh checkout: no personal profile — crew-base.json just isn't written */ }
-  if (personal?.race_base) {
-    const base = { ...personal.race_base, drive_to_start_min: null, drive_to_start_mi: null };
+  } catch (e) {
+    // Fresh checkout: no personal profile — crew-base.json just isn't written.
+    // But a hand-edited profile.json with bad JSON (e.g. a trailing comma) must
+    // NOT be swallowed, or crew-base.json silently keeps stale data. Fail loud.
+    if (e.code !== "ENOENT") {
+      console.error(`✗ config/profile.json is present but unreadable: ${e.message}`);
+      process.exit(1);
+    }
+  }
+  const raceBase = personal?.race_base;
+  if (raceBase && !(
+    Number.isFinite(raceBase.lat) &&
+    Number.isFinite(raceBase.lon) &&
+    typeof raceBase.label === "string" &&
+    raceBase.label.trim() !== ""
+  )) {
+    // Present but malformed: writing it would give CourseMap NaN geometry and
+    // fire OSRM fetches with `undefined` in the URL. Warn and skip, same as absent.
+    console.warn(
+      "⚠︎ config/profile.json race_base missing/invalid finite lat, lon, or non-empty " +
+        "label — skipping crew-base.json"
+    );
+  } else if (raceBase) {
+    const base = { ...raceBase, drive_to_start_min: null, drive_to_start_mi: null };
     const drives = {};
     const startPt = { lat: track[0].lat, lon: track[0].lon };
     try {

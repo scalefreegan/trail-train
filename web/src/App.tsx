@@ -117,6 +117,7 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
   const { race, totalWeeks } = useBlockConfig();
   const stamp = fetchedAt ? fetchedAt.getTime() : lastSync;
   const dleft = daysUntil(race.date);
+  const failedSteps = REFRESH_STEPS.filter((s) => status[s] === "error");
   const [, force] = useState(0);
   useEffect(() => {
     const id = setInterval(() => force((n) => n + 1), 20_000);
@@ -169,6 +170,15 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
               ? (currentStep ? `${currentStep}… ${lastLog || ""}` : "starting…")
               : `synced ${relativeAgo(stamp)}`}
           </span>
+          {!syncing && failedSteps.length > 0 && (
+            <span
+              className="eyebrow"
+              title={`sync steps that failed: ${failedSteps.join(", ")} — this data may be stale`}
+              style={{ color: "var(--ember)", whiteSpace: "nowrap" }}
+            >
+              · {failedSteps.join(", ")} failed
+            </span>
+          )}
           {syncing && (
             <span style={{ display: "inline-flex", gap: 4 }}>
               {REFRESH_STEPS.map((s) => (
@@ -284,14 +294,12 @@ function ElevationRibbon() {
   };
 
   // Real aid-station positions (GPX-snapped) when the course is loaded;
-  // state.json mile fractions otherwise.
+  // block-config miles (state.json or hardcoded defaults) otherwise.
   const aidDots = course
-    ? course.aid_stations
-        .filter((a) => a.gpx_mi != null)
-        .map((a) => ({
-          name: a.name, mi: a.total_mi, crew: a.crew || a.crew_only,
-          x: (a.gpx_mi! / course.distance_mi) * width,
-        }))
+    ? course.aid_stations.map((a) => ({
+        name: a.name, mi: a.total_mi, crew: a.crew || a.crew_only,
+        x: (a.gpx_mi / course.distance_mi) * width,
+      }))
     : race.aid_stations.map((a) => ({
         name: a.name, mi: a.mi, crew: false,
         x: (a.mi / race.distance_mi) * width,
@@ -418,9 +426,10 @@ function VitalsBand() {
   // an impure Date.now() during render
   const [now] = useState(() => Date.now());
 
-  // daily series, last 30 days (oldest → newest); ACR and block-delta get
-  // true per-day series of their own metric (same formulas as
-  // computeCoachFacts, evaluated at each day's end)
+  // daily series, last 30 days (oldest → newest). ACR uses the same
+  // 7d/(28d/4) formula as computeCoachFacts. Block-delta DIVERGES: here weekly
+  // targets are pro-rated by day so the trend moves within a week, whereas
+  // computeCoachFacts counts the full current week's target at once.
   const daily = useMemo(() => {
     const n = 30;
     const m = n + 28; // extra history so the day-1 ACR has a full 28d window

@@ -13,9 +13,15 @@
 // Rate-limit strategy (Strava allows ~100 reads / 15 min): fetch sequentially ~1 s
 // apart, hard-cap 90 requests per invocation, and on the first HTTP 429 stop
 // fetching entirely and proceed with whatever is already cached. Uncached
-// activities are reported as `activities_pending`; a second run finishes the
+// activities are reported as `activities_pending`; subsequent runs finish the
 // backlog. Activities with no altitude data (or 404) are cached as
 // {"no_altitude":true} so they're resolved once and never re-fetched.
+//
+// Failure handling: an HTTP 401/403 means the Strava token is revoked or lacks
+// the activity:read scope — no amount of retrying fixes that, so it's fatal
+// (exit non-zero, naming auth as the cause). Transient server errors (5xx etc.)
+// are tolerated up to 5 consecutive before we stop and proceed with cache, like
+// the 429 path.
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -54,12 +60,13 @@ async function writeCache(id, data) {
 
 /**
  * Fetch one activity's distance+altitude streams.
- * @returns {"streams"|"none"|"ratelimited"|"error"} outcome; caches on streams/none.
+ * @returns {"streams"|"none"|"ratelimited"|"auth"|"error"} outcome; caches on streams/none.
  */
 async function fetchStream(token, id) {
   const url = `https://www.strava.com/api/v3/activities/${id}/streams?keys=distance,altitude&key_by_type=true`;
   const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (r.status === 429) return "ratelimited";
+  if (r.status === 401 || r.status === 403) return "auth"; // revoked token / missing scope — fatal
   if (r.status === 404) {
     await writeCache(id, { no_altitude: true });
     return "none";
@@ -107,6 +114,7 @@ async function main() {
   }
   console.log(`• ${uncached.length} uncached · fetching up to ${FETCH_CAP} this run`);
 
+  let consecutiveErrors = 0;
   for (const a of uncached) {
     if (fetched >= FETCH_CAP) {
       console.log(`• hit fetch cap (${FETCH_CAP}); remaining stay pending`);
@@ -114,10 +122,28 @@ async function main() {
     }
     if (!token) token = await ensureToken(cfg);
     const outcome = await fetchStream(token, a.id);
+    if (outcome === "auth") {
+      // Revoked token or missing activity:read scope — retrying can't fix this.
+      // Fail hard so the /api/refresh step surfaces as error, not "done".
+      console.error(
+        "✗ Strava auth failed (HTTP 401/403) — token revoked or missing the " +
+          "activity:read scope. Re-authorize Strava; no more streams will sync until then."
+      );
+      process.exit(1);
+    }
     if (outcome === "ratelimited") {
       console.log("• Strava 429 rate limit — stopping fetch, proceeding with cache");
       rateLimited = true;
       break;
+    }
+    if (outcome === "error") {
+      consecutiveErrors += 1;
+      if (consecutiveErrors >= 5) {
+        console.log("• 5 consecutive server errors — stopping fetch, proceeding with cache");
+        break;
+      }
+    } else {
+      consecutiveErrors = 0;
     }
     fetched += 1;
     if (outcome === "streams") console.log(`  ✓ ${a.id} ${a.title || ""}`.trim());
