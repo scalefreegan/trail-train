@@ -10,8 +10,13 @@ import {
   computeCoachFacts, type CoachFacts, type Flag,
   type Activity, type AgentReadout, type PlanBlock, type GCalEvent,
   daysUntil, relativeAgo, fmtDuration, isStale,
+  useMeasuredWidth,
 } from "./data";
 import { RefreshProvider, UnitsProvider, StravaProvider, OuraProvider, StateProvider } from "./providers";
+import { SectionTag, Contours } from "./atoms";
+import { RacePlanner } from "./race/RacePlanner";
+import { ClimbComparison } from "./race/ClimbComparison";
+import { useCourse } from "./race/useRaceData";
 
 /* ================================================================== */
 /*  BASECAMP — pre-dawn ops surface for ultra training                 */
@@ -29,18 +34,6 @@ const SEVERITY_COLOR: Record<Flag["severity"], string> = {
 /* ------------------------------------------------------------------ */
 /*  Shared atoms                                                       */
 /* ------------------------------------------------------------------ */
-
-function SectionTag({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
-  return (
-    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, margin: "26px 0 10px" }}>
-      <span className="eyebrow" style={{ color: "var(--lamp)", display: "inline-flex", alignItems: "center", gap: 8 }}>
-        <span style={{ width: 5, height: 5, background: "var(--lamp)", transform: "rotate(45deg)", display: "inline-block" }} />
-        {children}
-      </span>
-      {right}
-    </div>
-  );
-}
 
 function Spark({ values, color = "var(--mist-dim)", height = 34, fill = true }: {
   values: number[]; color?: string; height?: number; fill?: boolean;
@@ -73,41 +66,6 @@ function Delta({ value, suffix = "", good }: { value: number | null; suffix?: st
     <span className="numerals" style={{ fontSize: 10, letterSpacing: "0.08em", color }}>
       {value > 0 ? "▲" : value < 0 ? "▼" : "•"} {Math.abs(value).toFixed(Math.abs(value) < 10 ? 1 : 0)}{suffix}
     </span>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Contour backdrop — faint ridge lines behind key panels             */
-/* ------------------------------------------------------------------ */
-
-function Contours({ seed = 1, opacity = 0.1 }: { seed?: number; opacity?: number }) {
-  const paths = useMemo(() => {
-    const out: string[] = [];
-    const cx = 50 + seed * 7;
-    const cy = 50 + seed * 3;
-    for (let r = 0; r < 12; r++) {
-      const radius = 8 + r * 7;
-      let d = "";
-      for (let i = 0; i <= 60; i++) {
-        const t = (i / 60) * Math.PI * 2;
-        const k = Math.sin(t * (3 + (r % 3)) + seed * 1.3 + r * 0.4);
-        const k2 = Math.cos(t * (2 + (seed % 4)) + r * 0.7);
-        const rad = radius + k * 1.8 + k2 * 1.3;
-        const x = cx + Math.cos(t) * rad;
-        const y = cy + Math.sin(t) * rad * 0.7;
-        d += (i === 0 ? "M" : "L") + x.toFixed(2) + " " + y.toFixed(2) + " ";
-      }
-      out.push(d + "Z");
-    }
-    return out;
-  }, [seed]);
-
-  return (
-    <svg className="topo-bg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice" style={{ opacity }} aria-hidden>
-      {paths.map((d, i) => (
-        <path key={i} d={d} fill="none" stroke="var(--edge-bright)" strokeWidth={i % 4 === 0 ? 0.4 : 0.2} />
-      ))}
-    </svg>
   );
 }
 
@@ -148,12 +106,18 @@ function BarStat({ label, value, accent }: { label: string; value: string; accen
   );
 }
 
-function CommandBar() {
+type AppView = "training" | "race";
+
+function CommandBar({ view, setView, railOpen, toggleRail }: {
+  view: AppView; setView: (v: AppView) => void;
+  railOpen: boolean; toggleRail: () => void;
+}) {
   const { syncing, lastSync, refresh, currentStep, lastLog, status } = useRefresh();
   const { fetchedAt, currentWeek } = useStrava();
   const { race, totalWeeks } = useBlockConfig();
   const stamp = fetchedAt ? fetchedAt.getTime() : lastSync;
   const dleft = daysUntil(race.date);
+  const failedSteps = REFRESH_STEPS.filter((s) => status[s] === "error");
   const [, force] = useState(0);
   useEffect(() => {
     const id = setInterval(() => force((n) => n + 1), 20_000);
@@ -179,6 +143,12 @@ function CommandBar() {
           <span className="eyebrow" style={{ fontSize: 8, marginTop: 3 }}>{race.short} ops</span>
         </div>
 
+        {/* view switcher */}
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className={"chip" + (view === "training" ? " active" : "")} onClick={() => setView("training")}>training</button>
+          <button className={"chip" + (view === "race" ? " active" : "")} onClick={() => setView("race")}>race</button>
+        </div>
+
         {/* mid stats */}
         <div className="commandbar-mid" style={{ flex: 1 }}>
           <BarStat label="block week" value={`${String(currentWeek).padStart(2, "0")} / ${totalWeeks}`} />
@@ -200,6 +170,15 @@ function CommandBar() {
               ? (currentStep ? `${currentStep}… ${lastLog || ""}` : "starting…")
               : `synced ${relativeAgo(stamp)}`}
           </span>
+          {!syncing && failedSteps.length > 0 && (
+            <span
+              className="eyebrow"
+              title={`sync steps that failed: ${failedSteps.join(", ")} — this data may be stale`}
+              style={{ color: "var(--ember)", whiteSpace: "nowrap" }}
+            >
+              · {failedSteps.join(", ")} failed
+            </span>
+          )}
           {syncing && (
             <span style={{ display: "inline-flex", gap: 4 }}>
               {REFRESH_STEPS.map((s) => (
@@ -218,6 +197,13 @@ function CommandBar() {
               ))}
             </span>
           )}
+          <button
+            className={"chip" + (railOpen ? " active" : "")}
+            onClick={toggleRail}
+            title={railOpen ? "collapse the coach rail" : "show the coach rail"}
+          >
+            coach
+          </button>
           <UnitsToggle />
           <button
             onClick={refresh}
@@ -254,60 +240,111 @@ function CommandBar() {
 /*  Race ribbon — name, countdown, elevation profile in one band       */
 /* ------------------------------------------------------------------ */
 
+// Pixel-space rendering (no viewBox stretching): uniform stroke weight on
+// flats and climbs alike, and aid dots stay true circles.
+const RIBBON_H = 96;
+const RIBBON_PAD = { top: 10, bottom: 6 };
+
 function ElevationRibbon() {
   const u = useUnits();
   const { race } = useBlockConfig();
+  const { course } = useCourse();
+  const { ref: measureRef, width } = useMeasuredWidth();
+
+  // Real course profile from course.json; decorative ridge only as a
+  // fallback for a checkout where `npm run course:build` hasn't run.
   const pts = useMemo(() => {
+    if (width <= 0) return [];
+    if (course && course.profile.length > 1) {
+      const prof = course.profile;
+      const target = Math.max(220, Math.min(600, Math.floor(width / 3)));
+      const step = Math.max(1, Math.ceil(prof.length / target));
+      const sel = prof.filter((_, i) => i % step === 0 || i === prof.length - 1);
+      let lo = Infinity, hi = -Infinity;
+      for (const p of sel) { if (p.ele_ft < lo) lo = p.ele_ft; if (p.ele_ft > hi) hi = p.ele_ft; }
+      const span = hi - lo || 1;
+      return sel.map((p) => ({
+        x: (p.mi / course.distance_mi) * width,
+        y: RIBBON_PAD.top + (1 - (p.ele_ft - lo) / span) * (RIBBON_H - RIBBON_PAD.top - RIBBON_PAD.bottom),
+      }));
+    }
     const n = 220;
     const arr: { x: number; y: number }[] = [];
     for (let i = 0; i < n; i++) {
-      const x = (i / (n - 1)) * 100;
-      const y =
+      const t = i / n;
+      const yy =
         50 +
-        Math.sin((i / n) * Math.PI * 6) * 20 +
-        Math.sin((i / n) * Math.PI * 14) * 5 +
-        Math.sin((i / n) * Math.PI * 2.1) * 7 +
-        Math.cos((i / n) * Math.PI * 9) * 3;
-      arr.push({ x, y: 100 - y });
+        Math.sin(t * Math.PI * 6) * 20 +
+        Math.sin(t * Math.PI * 14) * 5 +
+        Math.sin(t * Math.PI * 2.1) * 7 +
+        Math.cos(t * Math.PI * 9) * 3;
+      arr.push({
+        x: (i / (n - 1)) * width,
+        y: RIBBON_PAD.top + ((100 - yy) / 100) * (RIBBON_H - RIBBON_PAD.top - RIBBON_PAD.bottom),
+      });
     }
     return arr;
-  }, []);
+  }, [course, width]);
 
-  const linePath = "M" + pts.map((p) => p.x.toFixed(2) + " " + (p.y * 0.56).toFixed(2)).join(" L ");
-  const areaPath = linePath + ` L 100 60 L 0 60 Z`;
+  const yAtX = (x: number) => {
+    if (!pts.length) return RIBBON_H / 2;
+    let best = pts[0];
+    for (const p of pts) if (Math.abs(p.x - x) < Math.abs(best.x - x)) best = p;
+    return best.y;
+  };
+
+  // Real aid-station positions (GPX-snapped) when the course is loaded;
+  // block-config miles (state.json or hardcoded defaults) otherwise.
+  const aidDots = course
+    ? course.aid_stations.map((a) => ({
+        name: a.name, mi: a.total_mi, crew: a.crew || a.crew_only,
+        x: (a.gpx_mi / course.distance_mi) * width,
+      }))
+    : race.aid_stations.map((a) => ({
+        name: a.name, mi: a.mi, crew: false,
+        x: (a.mi / race.distance_mi) * width,
+      }));
+
+  const linePath = pts.length
+    ? "M" + pts.map((p) => p.x.toFixed(1) + " " + p.y.toFixed(1)).join(" L ")
+    : "";
+  const areaPath = linePath ? `${linePath} L ${width.toFixed(1)} ${RIBBON_H} L 0 ${RIBBON_H} Z` : "";
 
   return (
-    <svg viewBox="0 0 100 60" preserveAspectRatio="none" style={{ display: "block", width: "100%", height: "100%" }}>
-      <defs>
-        <linearGradient id="ribbonFill" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="var(--lamp)" stopOpacity="0.22" />
-          <stop offset="100%" stopColor="var(--lamp)" stopOpacity="0.01" />
-        </linearGradient>
-      </defs>
-      {[20, 35, 50].map((y) => (
-        <line key={y} x1="0" x2="100" y1={y} y2={y} stroke="var(--edge)" strokeWidth="0.18" strokeDasharray="0.6 1" />
-      ))}
-      <motion.path d={areaPath} fill="url(#ribbonFill)" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 1.2, delay: 0.4 }} />
-      <motion.path
-        d={linePath} fill="none" stroke="var(--lamp)" strokeWidth="0.5"
-        initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
-        transition={{ duration: 2, ease: [0.2, 0.8, 0.2, 1] }}
-      />
-      {race.aid_stations.map((a, i) => {
-        const idx = Math.min(pts.length - 1, Math.max(0, Math.round((a.mi / race.distance_mi) * (pts.length - 1))));
-        const p = pts[idx];
-        return (
-          <g key={a.name}>
+    <div ref={measureRef} style={{ position: "absolute", inset: 0 }}>
+      {width > 0 && pts.length > 1 && (
+        <svg width={width} height={RIBBON_H} style={{ display: "block" }}>
+          <defs>
+            <linearGradient id="ribbonFill" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor="var(--lamp)" stopOpacity="0.22" />
+              <stop offset="100%" stopColor="var(--lamp)" stopOpacity="0.01" />
+            </linearGradient>
+          </defs>
+          {[0.3, 0.55, 0.8].map((f) => (
+            <line key={f} x1="0" x2={width} y1={RIBBON_H * f} y2={RIBBON_H * f}
+              stroke="var(--edge)" strokeWidth="1" strokeDasharray="2 6" />
+          ))}
+          <motion.path d={areaPath} fill="url(#ribbonFill)" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 1.2, delay: 0.4 }} />
+          <motion.path
+            d={linePath} fill="none" stroke="var(--lamp)" strokeWidth="1.5"
+            strokeLinejoin="round" strokeLinecap="round"
+            initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
+            transition={{ duration: 2, ease: [0.2, 0.8, 0.2, 1] }}
+          />
+          {aidDots.map((a, i) => (
             <motion.circle
-              cx={p.x} cy={p.y * 0.56} r="0.8" fill="var(--night)" stroke="var(--mist-dim)" strokeWidth="0.25"
-              initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.3, delay: 1.2 + i * 0.06 }}
+              key={a.name}
+              cx={a.x} cy={yAtX(a.x)} r={a.crew ? 3 : 2.2}
+              fill="var(--night)" strokeWidth="1.2"
+              stroke={a.crew ? "var(--pine)" : "var(--mist-dim)"}
+              initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.3, delay: 1.2 + i * 0.05 }}
             >
-              <title>{a.name} · {u.dist(a.mi, 1)} {u.distUnit}</title>
+              <title>{a.name} · {u.dist(a.mi, 1)} {u.distUnit}{a.crew ? " · crew" : ""}</title>
             </motion.circle>
-          </g>
-        );
-      })}
-    </svg>
+          ))}
+        </svg>
+      )}
+    </div>
   );
 }
 
@@ -382,26 +419,65 @@ function VitalsBand() {
   const { activities } = useStrava();
   const oura = useOura();
   const facts = useFacts();
+  const { targets, blockStart } = useBlockConfig();
 
   // anchor "now" once per mount — the section remounts on every resync
   // (AppBody keys it on the refresh counter), so this stays fresh without
   // an impure Date.now() during render
   const [now] = useState(() => Date.now());
 
-  // daily distance + vert series, last 30 days (oldest → newest)
+  // daily series, last 30 days (oldest → newest). ACR uses the same
+  // 7d/(28d/4) formula as computeCoachFacts. Block-delta DIVERGES: here weekly
+  // targets are pro-rated by day so the trend moves within a week, whereas
+  // computeCoachFacts counts the full current week's target at once.
   const daily = useMemo(() => {
     const n = 30;
+    const m = n + 28; // extra history so the day-1 ACR has a full 28d window
+    const dayMs = 86_400_000;
+    const distLong = Array(m).fill(0) as number[];
     const dist = Array(n).fill(0) as number[];
     const elev = Array(n).fill(0) as number[];
     for (const a of activities) {
-      const d = Math.floor((now - new Date(a.date).getTime()) / 86400000);
+      const d = Math.floor((now - new Date(a.date).getTime()) / dayMs);
+      if (d >= 0 && d < m) distLong[m - 1 - d] += a.distance_mi;
       if (d >= 0 && d < n) {
         dist[n - 1 - d] += a.distance_mi;
         elev[n - 1 - d] += a.elevation_ft;
       }
     }
-    return { dist, elev };
-  }, [activities, now]);
+    // rolling acute:chronic — 7d sum vs (28d sum / 4), per end-day
+    const acr: number[] = [];
+    for (let i = m - n; i < m; i++) {
+      let a7 = 0, a28 = 0;
+      for (let k = 0; k < 28 && i - k >= 0; k++) {
+        a28 += distLong[i - k];
+        if (k < 7) a7 += distLong[i - k];
+      }
+      acr.push(a28 > 0 ? a7 / (a28 / 4) : 1);
+    }
+    // block-vs-plan cumulative distance delta %, per day (weekly targets
+    // pro-rated by day so the trend moves within a week)
+    const start = new Date(blockStart + "T00:00:00").getTime();
+    const blockDelta: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const dayTime = now - (n - 1 - i) * dayMs;
+      let act = 0;
+      for (const a of activities) {
+        const t = new Date(a.date).getTime();
+        if (t >= start && t <= dayTime) act += a.distance_mi;
+      }
+      let rem = Math.max(0, Math.floor((dayTime - start) / dayMs) + 1);
+      let exp = 0;
+      for (const w of targets) {
+        if (rem <= 0) break;
+        const dd = Math.min(7, rem);
+        exp += w.target_dist * (dd / 7);
+        rem -= dd;
+      }
+      blockDelta.push(exp > 0 ? ((act - exp) / exp) * 100 : 0);
+    }
+    return { dist, elev, acr, blockDelta };
+  }, [activities, now, targets, blockStart]);
 
   const ouraTail = oura.days.slice(0, 30).slice().reverse();
   const seriesOf = (f: (d: OuraDay) => number | null | undefined) => ouraTail.map((d) => f(d) ?? 0);
@@ -447,7 +523,7 @@ function VitalsBand() {
       value: facts.acr_dist.toFixed(2),
       unit: "×",
       delta: undefined,
-      series: daily.dist,
+      series: daily.acr,
       color: facts.acr_dist > 1.5 ? "var(--ember)" : facts.acr_dist < 0.8 ? "var(--lamp)" : "var(--pine)",
       note: facts.acr_dist > 1.5 ? "load spike" : facts.acr_dist < 0.8 ? "volume low" : "in band",
     },
@@ -457,7 +533,7 @@ function VitalsBand() {
       value: `${facts.block_dist_delta_pct >= 0 ? "+" : ""}${facts.block_dist_delta_pct.toFixed(0)}`,
       unit: "%",
       delta: { value: facts.block_elev_delta_pct, suffix: "% vert", good: facts.block_elev_delta_pct >= 0 },
-      series: daily.dist,
+      series: daily.blockDelta,
       color: facts.block_dist_delta_pct >= 0 ? "var(--pine)" : "var(--ember)",
       note: "cumulative dist",
     },
@@ -528,7 +604,7 @@ function VitalsBand() {
               {v.delta && <Delta value={v.delta.value} suffix={v.delta.suffix} good={v.delta.good} />}
             </div>
             <div style={{ marginTop: 8 }}>
-              {v.series.some((x) => x > 0)
+              {v.series.some((x) => x !== 0)
                 ? <Spark values={v.series} color={v.color} height={30} />
                 : <div style={{ height: 30, display: "grid", placeItems: "center", border: "1px dashed var(--edge)" }}>
                     <span className="eyebrow" style={{ fontSize: 8 }}>no data</span>
@@ -584,21 +660,6 @@ function SleepStagesInline() {
 /*  Trajectory — cumulative actual vs plan, the centerpiece chart      */
 /* ------------------------------------------------------------------ */
 
-function useMeasuredWidth() {
-  const ref = useRef<HTMLDivElement | null>(null);
-  const [width, setWidth] = useState(0);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      setWidth(entries[0].contentRect.width);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  return { ref, width };
-}
-
 function weekDates(wk: number, blockStart: string): string {
   const start = new Date(new Date(blockStart + "T00:00:00").getTime() + (wk - 1) * 7 * 86400_000);
   const end = new Date(start.getTime() + 6 * 86400_000);
@@ -611,6 +672,7 @@ function Trajectory() {
   const { weekly, currentWeek } = useStrava();
   const { targets, totalWeeks, blockStart } = useBlockConfig();
   const [view, setView] = useState<"dist" | "elev">("dist");
+  const [mode, setMode] = useState<"cum" | "wk">("cum");
   const [hoverWk, setHoverWk] = useState<number | null>(null); // 0-indexed
   const { ref: measureRef, width } = useMeasuredWidth();
 
@@ -633,6 +695,20 @@ function Trajectory() {
     return { cumTarget, cumActual };
   }, [view, weekly, currentWeek, targets]);
 
+  /* ---- per-week attainment (weekly mode) ---- */
+  const wkVals = useMemo(() => targets.map((t, i) => ({
+    target: view === "dist" ? t.target_dist : t.target_elev,
+    actual: i < currentWeek && weekly[i] ? (view === "dist" ? weekly[i].dist_mi : weekly[i].elev_ft) : null,
+  })), [targets, weekly, currentWeek, view]);
+  const completedWks = wkVals.slice(0, Math.max(0, currentWeek - 1)).filter((w) => w.actual != null && w.target > 0);
+  const weeksHit = completedWks.filter((w) => w.actual! / w.target >= 0.9).length;
+  const avgAttain = completedWks.length
+    ? (completedWks.reduce((s, w) => s + w.actual! / w.target, 0) / completedWks.length) * 100 : 0;
+  const thisWk = wkVals[currentWeek - 1] ?? { target: 0, actual: null };
+  const thisWkPct = thisWk.target > 0 ? ((thisWk.actual ?? 0) / thisWk.target) * 100 : 0;
+  const attainColor = (att: number | null) =>
+    att == null ? "var(--mist-mute)" : att >= 0.9 ? "var(--pine)" : att >= 0.6 ? "var(--lamp)" : "var(--ember)";
+
   const totalTarget = data.cumTarget[data.cumTarget.length - 1];
   const expectedToday = data.cumTarget[currentWeek - 1] || 1;
   const actualToday = data.cumActual[currentWeek - 1] ?? 0;
@@ -649,8 +725,14 @@ function Trajectory() {
   const PAD = { top: 26, right: 16, bottom: 26, left: 16 };
   const plotW = Math.max(0, width - PAD.left - PAD.right);
   const plotH = H - PAD.top - PAD.bottom;
-  const maxY = Math.max(totalTarget, projectedFinal) * 1.05;
+  const weeklyMax = Math.max(...wkVals.map((w) => Math.max(w.target, w.actual ?? 0)), 1) * 1.08;
+  const maxY = mode === "cum"
+    ? Math.max(totalTarget, projectedFinal) * 1.05
+    : weeklyMax;
   const xAt = (i: number) => PAD.left + (i / (totalWeeks - 1)) * plotW;
+  const slotW = plotW / totalWeeks;
+  const slotX = (i: number) => PAD.left + (i + 0.5) * slotW; // bar-slot center (weekly)
+  const wx = (i: number) => (mode === "cum" ? xAt(i) : slotX(i));
   const yAt = (v: number) => PAD.top + (1 - v / maxY) * plotH;
 
   const targetPath = data.cumTarget.map((v, i) => `${i === 0 ? "M" : "L"} ${xAt(i).toFixed(1)} ${yAt(v).toFixed(1)}`).join(" ");
@@ -658,33 +740,43 @@ function Trajectory() {
     .map((v, i) => (v == null ? "" : `${i === 0 ? "M" : "L"} ${xAt(i).toFixed(1)} ${yAt(v).toFixed(1)}`))
     .join(" ").replace(/^L/, "M");
 
-  const todayX = xAt(currentWeek - 1);
+  const todayX = wx(currentWeek - 1);
 
   /* ---- hover: snap to nearest week ---- */
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const i = Math.round(((x - PAD.left) / Math.max(1, plotW)) * (totalWeeks - 1));
+    const i = mode === "cum"
+      ? Math.round(((x - PAD.left) / Math.max(1, plotW)) * (totalWeeks - 1))
+      : Math.floor((x - PAD.left) / Math.max(1, slotW));
     setHoverWk(Math.max(0, Math.min(totalWeeks - 1, i)));
   };
 
   const hover = hoverWk != null ? {
     i: hoverWk,
-    x: xAt(hoverWk),
+    x: wx(hoverWk),
     plan: data.cumTarget[hoverWk],
     actual: data.cumActual[hoverWk],
-    wkTarget: view === "dist" ? targets[hoverWk]?.target_dist ?? 0 : targets[hoverWk]?.target_elev ?? 0,
-    wkActual: hoverWk < currentWeek && weekly[hoverWk] ? (view === "dist" ? weekly[hoverWk].dist_mi : weekly[hoverWk].elev_ft) : null,
+    wkTarget: wkVals[hoverWk]?.target ?? 0,
+    wkActual: wkVals[hoverWk]?.actual ?? null,
   } : null;
   const hoverDelta = hover && hover.actual != null && hover.plan > 0
     ? ((hover.actual - hover.plan) / hover.plan) * 100 : null;
+  const hoverAttain = hover && hover.wkActual != null && hover.wkTarget > 0
+    ? (hover.wkActual / hover.wkTarget) * 100 : null;
   const tipOnLeft = hover != null && width > 0 && hover.x > width * 0.62;
 
-  const stats: { label: string; value: string; color?: string }[] = [
+  const stats: { label: string; value: string; color?: string }[] = mode === "cum" ? [
     { label: "expected", value: `${fmt(expectedToday)} ${unit}` },
     { label: "actual", value: `${fmt(actualToday)} ${unit}`, color: lineColor },
     { label: "delta", value: `${ahead ? "+" : ""}${deltaPct.toFixed(1)}%`, color: lineColor },
     { label: "projected wk20", value: `${fmt(projectedFinal)} ${unit}`, color: lineColor },
+    { label: "block goal", value: `${fmt(totalTarget)} ${unit}` },
+  ] : [
+    { label: `this week`, value: `${fmt(thisWk.actual ?? 0)} / ${fmt(thisWk.target)} ${unit}`, color: "var(--lamp)" },
+    { label: "this week %", value: `${thisWkPct.toFixed(0)}%`, color: "var(--lamp)" },
+    { label: "weeks ≥90%", value: `${weeksHit} / ${completedWks.length}`, color: attainColor(completedWks.length ? weeksHit / completedWks.length : null) },
+    { label: "avg attainment", value: `${avgAttain.toFixed(0)}%`, color: attainColor(avgAttain / 100) },
     { label: "block goal", value: `${fmt(totalTarget)} ${unit}` },
   ];
 
@@ -692,9 +784,15 @@ function Trajectory() {
     <section>
       <SectionTag
         right={
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className={"chip" + (view === "dist" ? " active" : "")} onClick={() => setView("dist")}>dist</button>
-            <button className={"chip" + (view === "elev" ? " active" : "")} onClick={() => setView("elev")}>vert</button>
+          <div style={{ display: "flex", gap: 16 }}>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button className={"chip" + (mode === "cum" ? " active" : "")} onClick={() => setMode("cum")}>cumulative</button>
+              <button className={"chip" + (mode === "wk" ? " active" : "")} onClick={() => setMode("wk")}>weekly</button>
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button className={"chip" + (view === "dist" ? " active" : "")} onClick={() => setView("dist")}>dist</button>
+              <button className={"chip" + (view === "elev" ? " active" : "")} onClick={() => setView("elev")}>vert</button>
+            </div>
           </div>
         }
       >
@@ -735,52 +833,91 @@ function Trajectory() {
               {[1, ...Array.from({ length: Math.floor((totalWeeks - 1) / 5) }, (_, i) => (i + 1) * 5), totalWeeks]
                 .filter((w, i, arr) => arr.indexOf(w) === i)
                 .map((w) => (
-                <text key={w} x={xAt(w - 1)} y={H - 6} fontSize="9" fontFamily="Spline Sans Mono" letterSpacing="1"
+                <text key={w} x={wx(w - 1)} y={H - 6} fontSize="9" fontFamily="Spline Sans Mono" letterSpacing="1"
                   fill="var(--mist-mute)" textAnchor={w === 1 ? "start" : w === totalWeeks ? "end" : "middle"}>
                   WK {String(w).padStart(2, "0")}
                 </text>
               ))}
 
-              {/* plan target */}
-              <motion.path
-                d={targetPath} fill="none" stroke="var(--mist-mute)" strokeWidth="1.2" strokeDasharray="3 5" opacity="0.85"
-                initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4, ease: "easeOut" }}
-              />
-              {/* actual */}
-              <motion.path
-                d={actualPath} fill="none" stroke={lineColor} strokeWidth="2.2" strokeLinecap="round"
-                initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
-                transition={{ duration: 1.4, ease: [0.2, 0.7, 0.2, 1], delay: 0.2 }}
-              />
-              {/* projection */}
-              <motion.line
-                x1={todayX} y1={yAt(actualToday)} x2={xAt(totalWeeks - 1)} y2={yAt(projectedFinal)}
-                stroke={lineColor} strokeWidth="1" strokeDasharray="2 4"
-                initial={{ opacity: 0 }} animate={{ opacity: 0.7 }} transition={{ duration: 0.6, delay: 1.3 }}
-              />
+              {mode === "cum" ? (
+                <>
+                  {/* plan target */}
+                  <motion.path
+                    d={targetPath} fill="none" stroke="var(--mist-mute)" strokeWidth="1.2" strokeDasharray="3 5" opacity="0.85"
+                    initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4, ease: "easeOut" }}
+                  />
+                  {/* actual */}
+                  <motion.path
+                    d={actualPath} fill="none" stroke={lineColor} strokeWidth="2.2" strokeLinecap="round"
+                    initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
+                    transition={{ duration: 1.4, ease: [0.2, 0.7, 0.2, 1], delay: 0.2 }}
+                  />
+                  {/* projection */}
+                  <motion.line
+                    x1={todayX} y1={yAt(actualToday)} x2={xAt(totalWeeks - 1)} y2={yAt(projectedFinal)}
+                    stroke={lineColor} strokeWidth="1" strokeDasharray="2 4"
+                    initial={{ opacity: 0 }} animate={{ opacity: 0.7 }} transition={{ duration: 0.6, delay: 1.3 }}
+                  />
+                  <circle cx={todayX} cy={yAt(expectedToday)} r="2.5" fill="var(--mist-mute)" />
+                  <circle cx={todayX} cy={yAt(actualToday)} r="3.5" fill={lineColor} stroke="var(--night)" strokeWidth="1" />
+                  {/* race marker */}
+                  <circle cx={xAt(totalWeeks - 1)} cy={yAt(totalTarget)} r="3" fill="var(--lamp)" />
+                  <text x={xAt(totalWeeks - 1) - 7} y={yAt(totalTarget) - 7} fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)" textAnchor="end">
+                    RACE
+                  </text>
+                </>
+              ) : (
+                /* weekly bullet bars: outline = target, fill = actual (colored by attainment) */
+                wkVals.map((w, i) => {
+                  const bw = Math.max(4, slotW * 0.56);
+                  const x = slotX(i) - bw / 2;
+                  const isCurrent = i === currentWeek - 1;
+                  const att = w.actual != null && w.target > 0 ? w.actual / w.target : null;
+                  const fill = isCurrent ? "var(--lamp)" : attainColor(att);
+                  return (
+                    <g key={i}>
+                      <rect
+                        x={x} y={yAt(w.target)} width={bw} height={Math.max(0, PAD.top + plotH - yAt(w.target))}
+                        fill="none" stroke="var(--edge-bright)" strokeWidth="1" opacity={i < currentWeek ? 0.9 : 0.5}
+                      />
+                      {w.actual != null && w.actual > 0 && (
+                        <motion.rect
+                          x={x + 1.5} width={bw - 3}
+                          y={yAt(w.actual)} height={Math.max(0, PAD.top + plotH - yAt(w.actual))}
+                          fill={fill} opacity={isCurrent ? 0.75 : 0.88}
+                          initial={{ opacity: 0 }} animate={{ opacity: isCurrent ? 0.75 : 0.88 }}
+                          transition={{ duration: 0.4, delay: i * 0.02 }}
+                        />
+                      )}
+                      {/* target cap so the goal reads even when the bar is full */}
+                      <line x1={x - 1.5} x2={x + bw + 1.5} y1={yAt(w.target)} y2={yAt(w.target)}
+                        stroke={i < currentWeek ? "var(--mist-dim)" : "var(--edge-bright)"} strokeWidth="1.5" />
+                    </g>
+                  );
+                })
+              )}
+
               {/* today */}
               <motion.line
                 x1={todayX} x2={todayX} y1={PAD.top - 12} y2={H - PAD.bottom} stroke="var(--lamp)" strokeWidth="1"
                 initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 0.6, delay: 1 }}
+                opacity={mode === "cum" ? 1 : 0.45}
               />
               <text x={todayX + 6} y={PAD.top - 8} fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)">
                 WK {currentWeek} · TODAY
-              </text>
-              <circle cx={todayX} cy={yAt(expectedToday)} r="2.5" fill="var(--mist-mute)" />
-              <circle cx={todayX} cy={yAt(actualToday)} r="3.5" fill={lineColor} stroke="var(--night)" strokeWidth="1" />
-              {/* race marker */}
-              <circle cx={xAt(totalWeeks - 1)} cy={yAt(totalTarget)} r="3" fill="var(--lamp)" />
-              <text x={xAt(totalWeeks - 1) - 7} y={yAt(totalTarget) - 7} fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)" textAnchor="end">
-                RACE
               </text>
 
               {/* hover crosshair */}
               {hover && (
                 <g>
                   <line x1={hover.x} x2={hover.x} y1={PAD.top - 4} y2={H - PAD.bottom} stroke="var(--mist-dim)" strokeWidth="1" opacity="0.5" />
-                  <circle cx={hover.x} cy={yAt(hover.plan)} r="3" fill="var(--night)" stroke="var(--mist-dim)" strokeWidth="1.2" />
-                  {hover.actual != null && (
-                    <circle cx={hover.x} cy={yAt(hover.actual)} r="3.5" fill={lineColor} stroke="var(--night)" strokeWidth="1" />
+                  {mode === "cum" && (
+                    <>
+                      <circle cx={hover.x} cy={yAt(hover.plan)} r="3" fill="var(--night)" stroke="var(--mist-dim)" strokeWidth="1.2" />
+                      {hover.actual != null && (
+                        <circle cx={hover.x} cy={yAt(hover.actual)} r="3.5" fill={lineColor} stroke="var(--night)" strokeWidth="1" />
+                      )}
+                    </>
                   )}
                 </g>
               )}
@@ -832,6 +969,14 @@ function Trajectory() {
                 <span className="numerals" style={{ fontSize: 11, textAlign: "right", color: "var(--mist-dim)" }}>
                   {hover.wkActual != null ? `${fmt(hover.wkActual)} ${unit}` : "—"}
                 </span>
+                {hoverAttain != null && (
+                  <>
+                    <span className="eyebrow" style={{ fontSize: 8 }}>wk attained</span>
+                    <span className="numerals" style={{ fontSize: 11, textAlign: "right", color: hover.i + 1 === currentWeek ? "var(--lamp)" : attainColor(hoverAttain / 100) }}>
+                      {hoverAttain.toFixed(0)}%{hover.i + 1 === currentWeek ? " so far" : ""}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -903,8 +1048,8 @@ function RoadAhead() {
   /* ---- plan blocks (persisted agent plan, else block targets) ---- */
   const { targets, totalWeeks } = useBlockConfig();
   const fallback: PlanBlock[] = useMemo(() => {
-    const start = Math.min(totalWeeks, currentWeek + 1);
-    const end = Math.min(totalWeeks, currentWeek + 6);
+    const start = Math.min(totalWeeks, currentWeek);
+    const end = Math.min(totalWeeks, currentWeek + 5);
     return targets.slice(start - 1, end).map((b) => ({
       wk: b.wk,
       label: b.wk === totalWeeks ? "Race week" : "Planned",
@@ -914,7 +1059,26 @@ function RoadAhead() {
     }));
   }, [currentWeek, targets, totalWeeks]);
   const stateBlocks = state?.plan_blocks ?? null;
-  const blocks: PlanBlock[] = stateBlocks && stateBlocks.length > 0 ? stateBlocks : fallback;
+  const blocks: PlanBlock[] = useMemo(() => {
+    if (!stateBlocks || stateBlocks.length === 0) return fallback;
+    // The strip includes the CURRENT week. Older coach runs planned from
+    // current_week+1 — synthesize this week from block targets until the
+    // next coach run backfills it.
+    if (!stateBlocks.some((b) => b.wk === currentWeek) && targets[currentWeek - 1]) {
+      const t = targets[currentWeek - 1];
+      return [
+        {
+          wk: t.wk,
+          label: "This week",
+          dist_mi: t.target_dist,
+          elev_ft: t.target_elev,
+          focus: "Block target — coach hasn't planned this week yet; resync to fill in.",
+        },
+        ...stateBlocks,
+      ];
+    }
+    return stateBlocks;
+  }, [stateBlocks, fallback, currentWeek, targets]);
   const live = !!(stateBlocks && stateBlocks.length > 0);
   const maxDist = Math.max(...blocks.map((b) => b.dist_mi), 1);
 
@@ -926,6 +1090,11 @@ function RoadAhead() {
             {calOk
               ? `${cal!.summary.upcoming_events} events · ${cal!.summary.races_upcoming} races · ${cal!.summary.travel_days_upcoming.length} travel days · ${cal!.summary.childcare_days_upcoming?.length ?? 0} kid days`
               : calMissing ? "calendar not connected" : "loading calendar…"}
+            {calOk && isStale(cal!.fetched_at, 26) && (
+              <span style={{ color: "var(--ember)" }} title="the calendar sync step has been failing — likely an expired Google token; run `node scripts/sync-google-cal.mjs --auth` to reconnect">
+                {" "}· snapshot from {relativeAgo(new Date(cal!.fetched_at).getTime())} — reauth google
+              </span>
+            )}
             {" — plan "}
             <span style={{ color: live ? "var(--pine)" : "var(--mist-mute)" }}>
               {live
@@ -990,6 +1159,7 @@ function RoadAhead() {
       <div className="panel" style={{ marginTop: calOk ? 0 : 8, borderTop: calOk ? "none" : undefined }}>
         {blocks.map((w, i) => {
           const offset = w.wk - currentWeek;
+          const isNow = offset === 0;
           const isNext = offset === 1;
           const isRace = w.wk === totalWeeks;
           return (
@@ -1004,12 +1174,12 @@ function RoadAhead() {
                 alignItems: "center",
                 padding: "13px 18px",
                 borderTop: i > 0 ? "1px solid var(--edge)" : "none",
-                background: isNext ? "var(--lamp-glow)" : isRace ? "rgba(240, 102, 77, 0.06)" : "transparent",
+                background: isNow ? "var(--lamp-glow)" : isRace ? "rgba(240, 102, 77, 0.06)" : "transparent",
               }}
             >
               <div>
-                <div className="eyebrow" style={{ fontSize: 8, color: isNext ? "var(--lamp)" : isRace ? "var(--ember)" : "var(--mist-mute)" }}>
-                  {isNext ? "next" : isRace ? "race" : `+${offset} wk`}
+                <div className="eyebrow" style={{ fontSize: 8, color: isNow || isNext ? "var(--lamp)" : isRace ? "var(--ember)" : "var(--mist-mute)" }}>
+                  {isNow ? "now" : isNext ? "next" : isRace ? "race" : `+${offset} wk`}
                 </div>
                 <div className="numerals" style={{ fontSize: 19, fontWeight: 600, marginTop: 1 }}>w{String(w.wk).padStart(2, "0")}</div>
               </div>
@@ -1205,7 +1375,7 @@ function loadStoredChat(): ChatMessage[] {
   }
 }
 
-function AgentRail() {
+function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
   const { data: agent, missing: agentMissing } = useAgentReadout();
   const { system } = useUnits();
   const facts = useFacts();
@@ -1343,6 +1513,15 @@ function AgentRail() {
                   clear
                 </button>
               )}
+          {onCollapse && (
+            <button
+              className="chip" onClick={onCollapse}
+              title="collapse the coach rail (reopen with the coach chip in the top bar)"
+              style={{ fontSize: 9, padding: "3px 7px" }}
+            >
+              »
+            </button>
+          )}
         </div>
 
         {/* scrollable body: flags + readout + chat thread */}
@@ -1807,23 +1986,48 @@ function SetupDrawer() {
 
 function AppBody() {
   const { key } = useRefresh();
+  const [view, setViewState] = useState<AppView>(() =>
+    (typeof localStorage !== "undefined" && (localStorage.getItem("view") as AppView)) || "training"
+  );
+  const setView = (v: AppView) => {
+    setViewState(v);
+    try { localStorage.setItem("view", v); } catch { /* private mode — preference just won't persist */ }
+  };
+  const [railOpen, setRailOpen] = useState<boolean>(() =>
+    typeof localStorage === "undefined" || localStorage.getItem("rail.open") !== "0"
+  );
+  const toggleRail = () => {
+    setRailOpen((open) => {
+      try { localStorage.setItem("rail.open", open ? "0" : "1"); } catch { /* private mode */ }
+      return !open;
+    });
+  };
   return (
     <>
-      <CommandBar />
+      <CommandBar view={view} setView={setView} railOpen={railOpen} toggleRail={toggleRail} />
       <div className="shell">
-        <div className="ops-grid">
+        <div className={"ops-grid" + (railOpen ? "" : " rail-hidden")}>
           {/* main column */}
           <main style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
-            <RaceRibbon />
-            <div key={`vitals-${key}`}><VitalsBand /></div>
-            <div key={`traj-${key}`}><Trajectory /></div>
-            <div key={`road-${key}`}><RoadAhead /></div>
-            <div key={`log-${key}`}><LogTable /></div>
-            <SetupDrawer />
+            {view === "training" ? (
+              <>
+                <RaceRibbon />
+                <div key={`vitals-${key}`}><VitalsBand /></div>
+                <div key={`traj-${key}`}><Trajectory /></div>
+                <div key={`road-${key}`}><RoadAhead /></div>
+                <div key={`log-${key}`}><LogTable /></div>
+                <SetupDrawer />
+              </>
+            ) : (
+              <div key={`race-${key}`}>
+                <ClimbComparison />
+                <RacePlanner />
+              </div>
+            )}
           </main>
 
-          {/* the coach — persistent rail */}
-          <AgentRail />
+          {/* the coach — persistent rail (hidden, not unmounted, when collapsed) */}
+          <AgentRail onCollapse={toggleRail} />
         </div>
       </div>
     </>

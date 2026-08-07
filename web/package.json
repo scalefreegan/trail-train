@@ -9,6 +9,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "sync:strava": "node ../scripts/sync-strava.mjs",
+    "sync:streams": "node ../scripts/sync-streams.mjs",
+    "course:build": "node ../scripts/build-course.mjs",
     "auth:oura": "node ../scripts/sync-oura.mjs --auth",
     "sync:oura": "node ../scripts/sync-oura.mjs",
     "auth:google": "node ../scripts/sync-google-cal.mjs --auth",

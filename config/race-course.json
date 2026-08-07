@@ -1,0 +1,304 @@
+{
+  "race": "Mogollon Monster 100",
+  "year": 2025,
+  "source_notes": "Hand-authored from the 2025 Mogollon Monster 100 runner manual aid chart + the StravaGPX route. Segment miles/cutoff hours are 2025 values and may shift when the 2026 manual drops \u2014 this file is the single editable source. build-course.mjs snaps each aid station to the GPX track and treats course.json as the Race views' source of truth (state.json race object is left untouched). NOTE: the 2025 chart's 'total elapsed hours' column contradicts its own bold cutoff clock times (by up to 1h45m); cutoff_h here is derived from the posted CLOCK times (start 6:00 AM), which are what aid captains enforce.",
+  "official_distance_mi": 102.6,
+  "official_gain_ft": 15900,
+  "sun": {
+    "sunset": "18:35",
+    "sunrise": "06:15"
+  },
+  "aid_stations": [
+    {
+      "name": "See Canyon",
+      "gpx_wpt": "See Canyon Aid",
+      "seg_mi": 10.8,
+      "total_mi": 10.8,
+      "seg_gain_ft": 1100,
+      "cutoff_h": null,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "notes": "first aid; long rim climb behind you"
+    },
+    {
+      "name": "Horton",
+      "gpx_wpt": "Horton Aid",
+      "seg_mi": 10.5,
+      "total_mi": 21.3,
+      "seg_gain_ft": 3750,
+      "cutoff_h": 8.25,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "notes": "top of the biggest climb; first hard cutoff"
+    },
+    {
+      "name": "Black Mesa",
+      "gpx_wpt": "Black Mesa Crew Zone",
+      "seg_mi": 0.0,
+      "total_mi": 21.3,
+      "seg_gain_ft": 0,
+      "cutoff_h": null,
+      "crew": true,
+      "crew_only": true,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "notes": "crew zone only, alongside Horton"
+    },
+    {
+      "name": "Fish Hatchery",
+      "gpx_wpt": "Fish hatchery Aid",
+      "seg_mi": 5.4,
+      "total_mi": 26.7,
+      "seg_gain_ft": 125,
+      "cutoff_h": 10.0,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": true,
+      "pacers": false,
+      "water_only": false,
+      "notes": "first drop bag; hot exposed section ahead"
+    },
+    {
+      "name": "Myrtle",
+      "gpx_wpt": "Myrtle Aid",
+      "seg_mi": 12.5,
+      "total_mi": 39.2,
+      "seg_gain_ft": 1950,
+      "cutoff_h": null,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "notes": "long remote segment; rim climb into the station"
+    },
+    {
+      "name": "Buck Springs",
+      "gpx_wpt": "Buck Springs Aid",
+      "seg_mi": 3.5,
+      "total_mi": 42.7,
+      "seg_gain_ft": 135,
+      "cutoff_h": 15.75,
+      "crew": true,
+      "crew_only": false,
+      "drop_bag": true,
+      "pacers": true,
+      "water_only": false,
+      "notes": "first pacer pickup; crew + drop bag"
+    },
+    {
+      "name": "Pinchot Cabin",
+      "gpx_wpt": "Pinchot Cabin",
+      "seg_mi": 9.7,
+      "total_mi": 52.4,
+      "seg_gain_ft": 990,
+      "cutoff_h": 19.25,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "notes": "roughly halfway; runner-access only"
+    },
+    {
+      "name": "General Springs",
+      "gpx_wpt": "General Springs Crew Zone",
+      "seg_mi": 6.3,
+      "total_mi": 58.7,
+      "seg_gain_ft": 960,
+      "cutoff_h": null,
+      "crew": true,
+      "crew_only": true,
+      "drop_bag": false,
+      "pacers": true,
+      "water_only": false,
+      "notes": "crew zone; pacer swap point"
+    },
+    {
+      "name": "Washington Park",
+      "gpx_wpt": "Washington Park",
+      "seg_mi": 2.4,
+      "total_mi": 61.1,
+      "seg_gain_ft": 15,
+      "cutoff_h": 22.5,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "notes": "bottom of the canyon before the long climb out"
+    },
+    {
+      "name": "Geronimo",
+      "gpx_wpt": "Geronimo Aid",
+      "seg_mi": 11.2,
+      "total_mi": 72.3,
+      "seg_gain_ft": 1400,
+      "cutoff_h": 26.75,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": true,
+      "pacers": false,
+      "water_only": false,
+      "notes": "drop bag; deep in the overnight"
+    },
+    {
+      "name": "Donahue",
+      "gpx_wpt": "Donahue Aid",
+      "seg_mi": 9.5,
+      "total_mi": 81.8,
+      "seg_gain_ft": 2200,
+      "cutoff_h": 30.0,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "notes": "top of the Donahue rim climb"
+    },
+    {
+      "name": "Dickerson Flat",
+      "gpx_wpt": "Dickerson Flat Crew Zone",
+      "seg_mi": 3.8,
+      "total_mi": 85.6,
+      "seg_gain_ft": 1800,
+      "cutoff_h": null,
+      "crew": true,
+      "crew_only": true,
+      "drop_bag": false,
+      "pacers": true,
+      "water_only": false,
+      "notes": "crew zone after the Turkey Springs climb"
+    },
+    {
+      "name": "Pine Canyon",
+      "gpx_wpt": "Pine Canyon Aid",
+      "seg_mi": 4.9,
+      "total_mi": 90.5,
+      "seg_gain_ft": 140,
+      "cutoff_h": 33.5,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "notes": "last hard cutoff before the finish push"
+    },
+    {
+      "name": "Pine Trailhead",
+      "gpx_wpt": "Pine TH Water",
+      "seg_mi": 10.6,
+      "total_mi": 101.1,
+      "seg_gain_ft": 900,
+      "cutoff_h": null,
+      "crew": true,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": true,
+      "water_only": true,
+      "notes": "water only; crew + pacer access, 1.5 mi to go"
+    },
+    {
+      "name": "Finish",
+      "gpx_wpt": null,
+      "seg_mi": 1.5,
+      "total_mi": 102.6,
+      "seg_gain_ft": 45,
+      "cutoff_h": 38.0,
+      "crew": true,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "notes": "track end (no GPX waypoint); 38 h overall cutoff"
+    }
+  ],
+  "race_climbs": [
+    {
+      "id": "start",
+      "label": "Start Climb",
+      "approx_mi": [
+        0,
+        2.3
+      ]
+    },
+    {
+      "id": "see-canyon",
+      "label": "See Canyon",
+      "approx_mi": [
+        11,
+        13
+      ]
+    },
+    {
+      "id": "horton-spring",
+      "label": "Horton Spring",
+      "approx_mi": [
+        19,
+        21
+      ]
+    },
+    {
+      "id": "myrtle",
+      "label": "Myrtle",
+      "approx_mi": [
+        36,
+        39
+      ]
+    },
+    {
+      "id": "donahue",
+      "label": "Donahue",
+      "approx_mi": [
+        79,
+        81
+      ]
+    },
+    {
+      "id": "turkey-springs",
+      "label": "Turkey Springs",
+      "approx_mi": [
+        83,
+        85.6
+      ]
+    }
+  ],
+  "crew_info": {
+    "source": "2025 Mogollon Monster 100 Crew Manual",
+    "emergency": [
+      {
+        "label": "MedStar 24-hr medical (printed on runner bibs)",
+        "phone": "480-269-4126"
+      },
+      {
+        "label": "Race Director Noah Dougherty (text or call)",
+        "phone": "480-518-6731"
+      }
+    ],
+    "rules": [
+      "Never impede traffic \u2014 park fully in pull-offs or keep moving. Emergency vehicles must be able to pass at all times; this is the permitting agencies' #1 issue.",
+      "If the runner drops, they MUST report to an aid station captain (or text the RD) before leaving the course. THIS IS CRITICAL.",
+      "No crewing, spectating, or pacing at ANY below-rim aid station \u2014 all crew zones are on top of the Rim.",
+      "Runners share the forest roads (Rim Rd/FS-300, FS-321, FS-393, Milk Ranch Point Rd) \u2014 drive slowly and minimize dust.",
+      "Rim Road is scenic but has hairpin turns and blind corners with 1,000-ft drops just off the edge. High clearance is nice; 4x4 not needed.",
+      "No facilities once you leave Pine/Payson for the Rim \u2014 pack food, water, and warm layers for a full day and night."
+    ],
+    "cell_strategy": "Best cell signal is near the edge of the Rim; there is NO service at Buck Springs, General Springs, or Dickerson Flat. Wait in a pull-off within signal to watch live timing (live.aravaiparunning.com \u2014 updates can lag), then drive in when your runner nears.",
+    "station_notes": {
+      "Black Mesa": "Crews-only zone spanning ~3 mi of Rim Road between Horton Creek and Babe Haught trails. Stop only in pull-offs, never on the road itself. NO parking or crewing at the Horton aid station just east of the zone.",
+      "Buck Springs": "From Rim Road turn onto FS-321 and continue ~3 mi; the aid is on the right. Runners are on FS-321/Rim Rd the entire way \u2014 drive slow. No cell at the aid; consider waiting in a pull-off on FS-300 in signal.",
+      "General Springs": "From Pine: AZ-87 north 14.5 mi to the Rim Road turnoff, Rim Road 12 mi to the powerlines, then left down FS-393 to the cabin (~1/3 mi). Runners are on this road \u2014 caution at the turn. No cell at the cabin (manual: ~1h16m from Pine).",
+      "Dickerson Flat": "From AZ-87 continue STRAIGHT onto Milk Ranch Point Rd \u2014 do NOT turn left onto Rim Road. 1.2 mi to a Y (stay right), then 1.7 mi to Turkey Springs TH. Crew only in the immediate trailhead area; do not block the roadway. No cell service.",
+      "Pine Trailhead": "Under 1 mi from town, no extended parking \u2014 quick stop only. A pacer may join here for the final ~2 mi.",
+      "Finish": "Pine Town Ramada / Community Center on the main road through Pine; parking surrounds the area, food within walking distance."
+    },
+    "start_notes": "Park at the Old Pine Parking Area (vehicles may stay all weekend; free dispersed camping). Two-Sixty TH is DROP-OFF ONLY \u2014 no parking at the start. Runner shuttles leave Old Pine at 4:25a and 4:40a."
+  }
+}

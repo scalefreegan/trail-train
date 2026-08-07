@@ -20,5 +20,11 @@
   },
   "childcare_markers": [
     "whole-word all-day markers meaning solo kid duty, e.g. a partner's or kid's initial"
-  ]
+  ],
+  "race_base": {
+    "label": "Crew base",
+    "address": "street address of your race-week lodging (kept out of the public repo)",
+    "lat": 0,
+    "lon": 0
+  }
 }

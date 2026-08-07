@@ -5,6 +5,9 @@ node_modules/
 web/dist/
 web/.vite/
 
+# Local caches — Strava altitude streams fetched by `npm run sync:streams`.
+.cache/
+
 # Personal data snapshots — generated locally by `npm run sync:*`.
 # These contain Strava activity history, Oura sleep/HRV/RHR/tags, and the
 # agent's per-snapshot readout. Do NOT commit to a public repo.
@@ -13,6 +16,10 @@ web/public/oura.json
 web/public/coach.json
 web/public/state.json
 web/public/google-cal.json
+web/public/climbs.json
+# crew-base.json holds the race-week lodging address + drive times (from
+# profile.json race_base) — personal, never commit.
+web/public/crew-base.json
 
 # Athlete profile (name, location, local trails). The committed file is the
 # example with generic placeholders; copy it to profile.json and personalize.

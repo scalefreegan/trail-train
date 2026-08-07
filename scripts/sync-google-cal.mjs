@@ -32,7 +32,9 @@ const API = "https://www.googleapis.com/calendar/v3";
 const SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"];
 
 const PAST_DAYS   = Number(arg("past",   7));
-const FUTURE_DAYS = Number(arg("future", 30));
+// 45 days forward so race-week logistics appear once the race is ~6 weeks out
+// (the old 30-day window hid them until race month).
+const FUTURE_DAYS = Number(arg("future", 45));
 // --cal takes a comma-separated list of calendar ids; when absent, profile.json
 // calendar_ids decides, falling back to "primary". Family logistics (childcare
 // markers, kid sports) usually live on shared calendars the athlete can read
@@ -97,10 +99,24 @@ function authFlow({ clientId, clientSecret, redirectUri }) {
           <h1>✓ Trail Almanac is hooked into your Google Calendar.</h1>
           <p>Close this tab and return to your terminal. Run <code>npm run sync:google</code> to pull events.</p>`);
         server.close();
+        server.closeAllConnections?.(); // don't let a keep-alive socket hold the process open
         resolve();
       } catch (e) {
         res.writeHead(500); res.end(String(e.message || e));
         server.close();
+        reject(e);
+      }
+    });
+    // Fail loudly if anything else holds the callback port — a stray dev
+    // server here silently swallows the redirect and the CLI hangs forever.
+    server.on("error", (e) => {
+      if (e.code === "EADDRINUSE") {
+        reject(new Error(
+          `port ${port} is already in use — the OAuth redirect would go to the wrong process.\n` +
+          `  find it with:  lsof -nP -iTCP:${port} -sTCP:LISTEN\n` +
+          `  kill it, then re-run npm run auth:google`
+        ));
+      } else {
         reject(e);
       }
     });

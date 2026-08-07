@@ -169,6 +169,11 @@ a { color: inherit; }
   flex-direction: column;
 }
 
+/* collapsed coach rail: hide (not unmount — chat state survives) and give
+   the main column the full width */
+.ops-grid.rail-hidden { grid-template-columns: minmax(0, 1fr); }
+.ops-grid.rail-hidden > .rail-sticky { display: none; }
+
 .vitals-band {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
@@ -194,7 +199,38 @@ a { color: inherit; }
   align-items: center;
 }
 
+.race-grid {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.3fr) 44px 60px 52px minmax(170px, 1.4fr) 62px minmax(120px, 1fr) minmax(90px, 0.9fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.climb-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: var(--edge);
+  border-top: 1px solid var(--edge);
+}
+.climb-grid > * { background: var(--panel); }
+
 .commandbar-mid { display: flex; align-items: center; gap: 0; }
+
+/* ---- crew sheet printing: only the sheet reaches paper ----
+   The sheet portals to <body> (outside #root), so the app can be fully
+   display:none'd — no blank trailing pages from hidden layout. */
+@media print {
+  body.crew-printing #root { display: none !important; }
+  body.crew-printing .crew-sheet {
+    position: absolute !important;
+    inset: 0 !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+  body.crew-printing .no-print { display: none !important; }
+}
+@page { margin: 10mm; }
 
 /* ---- ≤ 1280px: rail drops below ---- */
 @media (max-width: 1280px) {
@@ -213,6 +249,12 @@ a { color: inherit; }
     gap: 10px;
   }
   .log-grid > .col-type, .log-grid > .col-pace { display: none; }
+  .race-grid {
+    grid-template-columns: minmax(100px, 1.2fr) 40px minmax(150px, 1.3fr) minmax(110px, 1fr);
+    gap: 10px;
+  }
+  .race-grid > .col-seg, .race-grid > .col-stop, .race-grid > .col-goal, .race-grid > .col-flags { display: none; }
+  .climb-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 /* ---- ≤ 600px ---- */

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 /* ------------------------------------------------------------------ */
 /*  Contexts + hooks + helpers. The provider components live in        */
@@ -9,7 +9,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 /*  Refresh context — drives a "resync everything" pulse               */
 /* ------------------------------------------------------------------ */
 
-export type RefreshStep = "strava" | "oura" | "gcal" | "coach";
+export type RefreshStep = "strava" | "streams" | "oura" | "gcal" | "coach";
 export type StepStatus = "pending" | "running" | "done" | "error";
 export type RefreshCtx = {
   key: number;
@@ -27,7 +27,7 @@ export const RefreshContext = createContext<RefreshCtx>({
 });
 export const useRefresh = () => useContext(RefreshContext);
 
-export const REFRESH_STEPS: RefreshStep[] = ["strava", "oura", "gcal", "coach"];
+export const REFRESH_STEPS: RefreshStep[] = ["strava", "streams", "oura", "gcal", "coach"];
 
 /* ------------------------------------------------------------------ */
 /*  Units context — imperial / metric toggle                           */
@@ -103,6 +103,7 @@ export type Activity = {
   distance_mi: number;
   elevation_ft: number;
   moving_s: number;
+  avg_hr?: number | null;
   rpe: 1 | 2 | 3 | 4 | 5;
   strava_url?: string;
   temp_max_f?: number | null;
@@ -186,7 +187,9 @@ export function relativeAgo(ts: number) {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m ago`;
+  if (h < 48) return `${h}h ${m % 60}m ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
 }
 
 export function fmtDuration(secs?: number | null) {
@@ -331,6 +334,22 @@ export type GCalRaw = {
   };
   events: GCalEvent[];
 };
+
+/** Measure a container's rendered width (for pixel-space SVG charts). */
+export function useMeasuredWidth() {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      setWidth(entries[0].contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return { ref, width };
+}
 
 export function useGoogleCal() {
   const { key: refreshKey } = useRefresh();

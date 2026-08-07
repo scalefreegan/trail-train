@@ -180,7 +180,7 @@ When done, respond with ONLY a single JSON object — no prose outside, no markd
   "summary": "150-250 words. Plain English. Reference SPECIFIC numbers (HRV ms, RHR delta, ACR ratio, miles, vert, run temps / heat index in °F). Tie load, recovery, heat exposure, and block progress together. Calm, direct ultrarunner-coach voice. Address the athlete in second person.",
   "watch_outs": ["short bullet quoting numbers", ...],     // 0-4 items
   "recommendations": ["actionable bullet w/ specific session/day", ...],   // 2-5 short-horizon items (next 14 days)
-  "plan_blocks": [                                          // 6 upcoming weeks, starting from current_week+1. KEEP prior plan unless data justifies a change.
+  "plan_blocks": [                                          // 6 weeks starting from the CURRENT week (current_week..current_week+5). KEEP prior plan unless data justifies a change.
     {
       "wk": 6,                                              // training-block week number (1..total_weeks)
       "label": "Specific endurance",                        // 1-3 word block theme
@@ -209,7 +209,9 @@ Rules:
 - The course climbs the rim 6×, max elev 7,912 ft. Heat / altitude / technical descent are the real wildcards.
 
 For plan_blocks:
-- Start at current_week + 1 and emit exactly 6 blocks (or fewer if fewer remain before race week 20).
+- Start at the CURRENT week (current_week) and emit exactly 6 blocks (or fewer if fewer
+  remain before race week 20). The current week's block reflects the plan for the REST of
+  this week: keep what already happened fixed, plan the remaining days.
 - The base targets are in block.weekly_target. Prior agent decisions are in state.plan_blocks.
   PREFER continuity — keep prior blocks if they still hold up; revise only what new data
   justifies. State your reason in summary or new_notes when you change something.

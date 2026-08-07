@@ -43,10 +43,11 @@ function refreshApi(): Plugin {
         }
 
         const steps = [
-          { id: 'strava', label: 'syncing strava',  script: 'scripts/sync-strava.mjs',     args: [] },
-          { id: 'oura',   label: 'syncing oura',    script: 'scripts/sync-oura.mjs',       args: [] },
-          { id: 'gcal',   label: 'syncing calendar', script: 'scripts/sync-google-cal.mjs', args: [] },
-          { id: 'coach',  label: 'running coach',   script: 'scripts/coach.mjs',           args: [] },
+          { id: 'strava',  label: 'syncing strava',        script: 'scripts/sync-strava.mjs',     args: [] },
+          { id: 'streams', label: 'syncing climb streams', script: 'scripts/sync-streams.mjs',    args: [] },
+          { id: 'oura',    label: 'syncing oura',          script: 'scripts/sync-oura.mjs',       args: [] },
+          { id: 'gcal',    label: 'syncing calendar',      script: 'scripts/sync-google-cal.mjs', args: [] },
+          { id: 'coach',   label: 'running coach',         script: 'scripts/coach.mjs',           args: [] },
         ] as const
 
         let aborted = false
@@ -86,8 +87,9 @@ function refreshApi(): Plugin {
           for (const s of steps) {
             if (aborted) break
             const r = await runStep(s)
-            if (!r.ok && s.id !== 'oura' && s.id !== 'gcal') {
-              // strava and coach are required; oura and gcal are optional (might be unconfigured)
+            if (!r.ok && s.id !== 'oura' && s.id !== 'gcal' && s.id !== 'streams') {
+              // strava and coach are required; oura, gcal and streams are optional
+              // (might be unconfigured / rate-limited — streams resumes next sync)
               send('done', { ok: false, failed_at: s.id })
               res.end()
               return
