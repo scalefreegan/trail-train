@@ -21,7 +21,57 @@ function gradeColor(pct: number): string {
 const H = 280;
 const PAD = { top: 20, right: 20, bottom: 34, left: 40 };
 
-function ClimbScatter({ training, raceClimbs }: { training: TrainingClimb[]; raceClimbs: RaceClimb[] }) {
+/* Dot opacity encodes recency — same 75-day half-life as the pacing fit
+   weights (pacing.ts), so a climb's visual weight matches its model weight.
+   Age is measured against the snapshot's fetched_at (pure per render, and it
+   advances exactly when a sync lands). The floor keeps window-edge
+   (6-month-old) climbs legible on the dark surface instead of fading out. */
+const DOT_HALFLIFE_DAYS = 75;
+const DOT_OPACITY_MAX = 0.9;
+const DOT_OPACITY_FLOOR = 0.15;
+function opacityForAge(ageDays: number): number {
+  return DOT_OPACITY_FLOOR + (DOT_OPACITY_MAX - DOT_OPACITY_FLOOR) * Math.pow(2, -Math.max(0, ageDays) / DOT_HALFLIFE_DAYS);
+}
+function dotOpacity(date: string, now: number): number {
+  return opacityForAge((now - new Date(date).getTime()) / 86400000);
+}
+
+/* Climbs from the last two weeks get an accent ring — the "what have I done
+   lately" highlight on top of the continuous recency fade. */
+const HIGHLIGHT_DAYS = 14;
+const isRecent = (date: string, now: number) =>
+  (now - new Date(date).getTime()) / 86400000 <= HIGHLIGHT_DAYS;
+
+/* Reference scale drawn in the plot's top-right corner: dots at fixed ages
+   so the opacity→recency mapping is readable off the chart itself, plus the
+   ringed "last 2 wk" marker. */
+const SCALE_AGES_DAYS = [180, 120, 60, 0];
+const SCALE_DOT_GAP = 13;
+
+function RecencyScale({ width }: { width: number }) {
+  const y = PAD.top + 2;
+  const lastX = width - PAD.right - 30;
+  const sixMoX = lastX - (SCALE_AGES_DAYS.length - 1) * SCALE_DOT_GAP - 9;
+  const ringX = sixMoX - 52;
+  return (
+    <g>
+      <text x={ringX - 9} y={y + 3} textAnchor="end"
+        fill="var(--mist-mute)" style={{ font: "9px var(--font-mono)" }}>last 2 wk</text>
+      <circle cx={ringX} cy={y} r={4} fill="var(--mist-dim)" stroke="var(--lamp)" strokeWidth="1" opacity={0.9} />
+      <text x={sixMoX} y={y + 3} textAnchor="end"
+        fill="var(--mist-mute)" style={{ font: "9px var(--font-mono)" }}>6 mo</text>
+      {SCALE_AGES_DAYS.map((age, i) => (
+        <circle key={age}
+          cx={lastX - (SCALE_AGES_DAYS.length - 1 - i) * SCALE_DOT_GAP} cy={y} r={3}
+          fill="var(--mist-dim)" opacity={opacityForAge(age)}
+        />
+      ))}
+      <text x={lastX + 9} y={y + 3} fill="var(--mist-mute)" style={{ font: "9px var(--font-mono)" }}>now</text>
+    </g>
+  );
+}
+
+function ClimbScatter({ training, raceClimbs, now }: { training: TrainingClimb[]; raceClimbs: RaceClimb[]; now: number }) {
   const u = useUnits();
   const { ref: measureRef, width } = useMeasuredWidth();
   const [hover, setHover] = useState<TrainingClimb | null>(null);
@@ -66,15 +116,21 @@ function ClimbScatter({ training, raceClimbs }: { training: TrainingClimb[]; rac
           CLIMB LENGTH · {u.distUnit.toUpperCase()}
         </text>
 
+        <RecencyScale width={width} />
+
         {/* training dots */}
         <motion.g initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.6 }}>
-          {training.map((c) => (
-            <circle
-              key={`${c.activity_id}-${c.start_mi.toFixed(2)}`}
-              cx={xAt(c.length_mi)} cy={yAt(c.avg_grade_pct)} r={3}
-              fill="var(--mist-dim)" opacity={0.55}
-            />
-          ))}
+          {training.map((c) => {
+            const recent = isRecent(c.date, now);
+            return (
+              <circle
+                key={`${c.activity_id}-${c.start_mi.toFixed(2)}`}
+                cx={xAt(c.length_mi)} cy={yAt(c.avg_grade_pct)} r={recent ? 4 : 3}
+                fill="var(--mist-dim)" opacity={dotOpacity(c.date, now)}
+                stroke={recent ? "var(--lamp)" : undefined} strokeWidth={recent ? 1 : undefined}
+              />
+            );
+          })}
         </motion.g>
 
         {/* race climb markers */}
@@ -103,7 +159,7 @@ function ClimbScatter({ training, raceClimbs }: { training: TrainingClimb[]; rac
         })}
       </>
     );
-  }, [width, training, raceClimbs, xAt, yAt, maxLen, maxGrade, u]);
+  }, [width, training, raceClimbs, now, xAt, yAt, maxLen, maxGrade, u]);
 
   const onMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -250,6 +306,7 @@ export function ClimbComparison() {
 
   const training = useMemo(() => climbs?.climbs ?? [], [climbs]);
   const raceClimbs = useMemo(() => course?.race_climbs ?? [], [course]);
+  const now = useMemo(() => (climbs ? new Date(climbs.fetched_at).getTime() : 0), [climbs]);
 
   // shared scales for the mini profiles: every card shows the same course
   // window and elevation span, so length and steepness compare truthfully
@@ -301,7 +358,7 @@ export function ClimbComparison() {
           </div>
         ) : (
           <div style={{ position: "relative", padding: "8px 0 0" }}>
-            <ClimbScatter training={training} raceClimbs={raceClimbs} />
+            <ClimbScatter training={training} raceClimbs={raceClimbs} now={now} />
           </div>
         )}
 
