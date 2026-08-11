@@ -567,9 +567,9 @@ function VitalsBand() {
     },
     {
       key: "sleep",
-      label: "sleep",
+      label: "last night's sleep",
       value: sleepS != null ? fmtDuration(sleepS) : "—",
-      delta: { value: facts.sleep_debt_h != null ? -facts.sleep_debt_h : null, suffix: "h debt", good: facts.sleep_debt_h != null ? facts.sleep_debt_h <= 0 : null },
+      delta: { value: facts.sleep_debt_h != null ? -facts.sleep_debt_h : null, suffix: "h 7d-debt", good: facts.sleep_debt_h != null ? facts.sleep_debt_h <= 0 : null },
       series: seriesOf((d) => (d.total_sleep_s ?? 0) / 3600),
       color: "var(--creek)",
       note: latest?.sleep_score != null ? `score ${latest.sleep_score}` : undefined,

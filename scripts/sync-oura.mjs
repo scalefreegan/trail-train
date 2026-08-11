@@ -229,28 +229,46 @@ async function main() {
     r.sleep_contributors = s.contributors ?? null;
   }
 
-  const longestByDay = new Map();
+  // A day can hold several sleep sessions: normally one long_sleep plus the
+  // occasional nap (type "sleep"/"late_nap"), but Oura can also split a
+  // fragmented night into multiple long_sleep records. Night totals SUM the
+  // long_sleep sessions; naps are summed separately into nap_s so they're
+  // visible without inflating night sleep. Vitals (HRV/HR/latency/efficiency)
+  // come from the longest long_sleep session — averaging across fragments
+  // would blur the main-night reading.
+  const sleepsByDay = new Map();
   for (const sl of sleeps) {
     if (!sl.day) continue;
-    const prev = longestByDay.get(sl.day);
-    if (!prev || (sl.total_sleep_duration ?? 0) > (prev.total_sleep_duration ?? 0)) {
-      longestByDay.set(sl.day, sl);
-    }
+    const arr = sleepsByDay.get(sl.day) ?? [];
+    arr.push(sl);
+    sleepsByDay.set(sl.day, arr);
   }
-  for (const [day, sl] of longestByDay) {
+  const sumOrNull = (arr, key) => {
+    const vals = arr.map((s) => s[key]).filter((v) => typeof v === "number");
+    return vals.length ? vals.reduce((a, b) => a + b, 0) : null;
+  };
+  for (const [day, arr] of sleepsByDay) {
+    const nights = arr.filter((s) => s.type === "long_sleep");
+    const naps = arr.filter((s) => s.type === "sleep" || s.type === "late_nap");
+    const main = nights.reduce(
+      (m, s) => (!m || (s.total_sleep_duration ?? 0) > (m.total_sleep_duration ?? 0) ? s : m),
+      null,
+    );
+    if (!main) continue; // nap-only day: no night to report
     const r = ensure(day);
-    r.total_sleep_s    = sl.total_sleep_duration ?? null;
-    r.time_in_bed_s    = sl.time_in_bed ?? null;
-    r.rem_sleep_s      = sl.rem_sleep_duration ?? null;
-    r.deep_sleep_s     = sl.deep_sleep_duration ?? null;
-    r.light_sleep_s    = sl.light_sleep_duration ?? null;
-    r.awake_s          = sl.awake_time ?? null;
-    r.avg_hrv          = sl.average_hrv ?? null;
-    r.avg_hr           = sl.average_heart_rate ?? null;
-    r.lowest_hr        = sl.lowest_heart_rate ?? null;
-    r.latency_s        = sl.latency ?? null;
-    r.efficiency       = sl.efficiency ?? null;
-    r.restless_periods = sl.restless_periods ?? null;
+    r.total_sleep_s    = sumOrNull(nights, "total_sleep_duration");
+    r.time_in_bed_s    = sumOrNull(nights, "time_in_bed");
+    r.rem_sleep_s      = sumOrNull(nights, "rem_sleep_duration");
+    r.deep_sleep_s     = sumOrNull(nights, "deep_sleep_duration");
+    r.light_sleep_s    = sumOrNull(nights, "light_sleep_duration");
+    r.awake_s          = sumOrNull(nights, "awake_time");
+    r.nap_s            = sumOrNull(naps, "total_sleep_duration");
+    r.avg_hrv          = main.average_hrv ?? null;
+    r.avg_hr           = main.average_heart_rate ?? null;
+    r.lowest_hr        = main.lowest_heart_rate ?? null;
+    r.latency_s        = main.latency ?? null;
+    r.efficiency       = main.efficiency ?? null;
+    r.restless_periods = main.restless_periods ?? null;
   }
 
   for (const r of dailyReadiness) {

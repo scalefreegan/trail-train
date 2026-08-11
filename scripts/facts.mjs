@@ -212,8 +212,12 @@ export function computeFacts(strava, oura, state) {
   const rhr_d7  = avgNum(o7.map((d) => d.lowest_hr));
   const rhr_d28 = avgNum(o28.map((d) => d.lowest_hr));
   const readiness_d7 = avgNum(o7.map((d) => d.readiness_score));
-  const sleep_total_s = sumNum(o7.map((d) => d.total_sleep_s));
+  // Debt counts only nights with data (an un-synced night isn't 0h slept);
+  // target prorates to 8h per recorded night. Mirrors computeCoachFacts.
+  const sleepNights = o7.filter((d) => typeof d.total_sleep_s === "number");
+  const sleep_total_s = sumNum(sleepNights.map((d) => d.total_sleep_s));
   const sleep_d7_h = sleep_total_s / 3600;
+  const sleep_debt_h = sleepNights.length ? sleepNights.length * 8 - sleep_d7_h : null;
   const recent_tags = ouraDays
     .filter((d) => within(d.day, 7, now))
     .flatMap((d) => (d.tags ?? []).map((t) => ({
@@ -303,7 +307,7 @@ export function computeFacts(strava, oura, state) {
       rhr_drift_bpm: rhr_d7 != null && rhr_d28 != null ? +(rhr_d7 - rhr_d28).toFixed(1) : null,
       readiness_d7: readiness_d7 != null ? +readiness_d7.toFixed(0) : null,
       sleep_d7_h: +sleep_d7_h.toFixed(1),
-      sleep_debt_h: +(56 - sleep_d7_h).toFixed(1),
+      sleep_debt_h: sleep_debt_h != null ? +sleep_debt_h.toFixed(1) : null,
       recent_tags,
     } : null,
     recent_runs: acts.slice(0, 14).map((a) => ({

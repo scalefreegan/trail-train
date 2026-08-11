@@ -229,6 +229,7 @@ export type OuraDay = {
   readiness_score?: number | null;
   activity_score?: number | null;
   total_sleep_s?: number | null;
+  nap_s?: number | null;
   rem_sleep_s?: number | null;
   deep_sleep_s?: number | null;
   avg_hrv?: number | null;
@@ -493,9 +494,13 @@ export function computeCoachFacts(
   const rhr_d7  = avg(o7.map((d) => d.lowest_hr));
   const rhr_d28 = avg(o28.map((d) => d.lowest_hr));
   const readiness_d7 = avg(o7.map((d) => d.readiness_score));
-  const sleep_total_s = sum(o7.map((d) => d.total_sleep_s));
-  const sleep_d7_total_h = sleep_total_s ? sleep_total_s / 3600 : null;
-  const sleep_debt_h = sleep_d7_total_h != null ? 7 * 8 - sleep_d7_total_h : null;
+  // Debt only counts nights with data — an un-synced night (today before the
+  // ring uploads) must not be scored as 0h slept. Target prorates to 8h per
+  // recorded night.
+  const sleepNights = o7.filter((d) => typeof d.total_sleep_s === "number");
+  const sleep_total_s = sum(sleepNights.map((d) => d.total_sleep_s));
+  const sleep_d7_total_h = sleepNights.length ? sleep_total_s / 3600 : null;
+  const sleep_debt_h = sleep_d7_total_h != null ? sleepNights.length * 8 - sleep_d7_total_h : null;
 
   const recent_tags = ouraDays
     .filter((d) => withinDays(d.day, 7, now))
@@ -538,9 +543,10 @@ export function computeCoachFacts(
     flags.push({ severity: "warn", label: "RHR elevated",
       detail: `7d resting HR +${(rhr_d7 - rhr_d28).toFixed(1)} bpm vs 28d baseline — under-recovery signal.` });
 
-  if (sleep_d7_total_h != null && sleep_d7_total_h < 49) // 7h avg
+  if (sleep_d7_total_h != null && sleepNights.length > 0
+      && sleep_d7_total_h / sleepNights.length < 7) // 7h/night avg
     flags.push({ severity: "warn", label: "sleep debt",
-      detail: `${sleep_d7_total_h.toFixed(1)}h slept in 7 days · ${(56 - sleep_d7_total_h).toFixed(1)}h under target.` });
+      detail: `${sleep_d7_total_h.toFixed(1)}h slept over ${sleepNights.length} nights · ${sleep_debt_h!.toFixed(1)}h under the 8h/night target.` });
 
   if (readiness_d7 != null && readiness_d7 < 70)
     flags.push({ severity: "watch", label: "readiness depressed",
