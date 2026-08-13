@@ -13,6 +13,7 @@ import {
   useMeasuredWidth,
 } from "./data";
 import { RefreshProvider, UnitsProvider, StravaProvider, OuraProvider, StateProvider } from "./providers";
+import CoachSettings from "./CoachSettings";
 import { SectionTag, Contours } from "./atoms";
 import { RacePlanner } from "./race/RacePlanner";
 import { ClimbComparison } from "./race/ClimbComparison";
@@ -1350,7 +1351,11 @@ type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
-  meta?: { num_turns?: number; cost_usd?: number | null; duration_ms?: number | null; error?: boolean };
+  meta?: {
+    num_turns?: number; cost_usd?: number | null; duration_ms?: number | null; error?: boolean;
+    saved_context?: { text: string; expires: string }[];
+    context_save_error?: string | null;
+  };
   pending?: boolean;
 };
 
@@ -1380,6 +1385,7 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
   const { system } = useUnits();
   const facts = useFacts();
   const [readoutOpen, setReadoutOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   /* chat state */
   const [messages, setMessages] = useState<ChatMessage[]>(loadStoredChat);
@@ -1513,6 +1519,13 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
                   clear
                 </button>
               )}
+          <button
+            className="chip" onClick={() => setSettingsOpen(true)}
+            title="coach settings — context, preferences, calendar markers"
+            style={{ fontSize: 10, padding: "3px 7px" }}
+          >
+            ⚙
+          </button>
           {onCollapse && (
             <button
               className="chip" onClick={onCollapse}
@@ -1590,6 +1603,7 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
           )}
         </div>
       </div>
+      {settingsOpen && <CoachSettings onClose={() => setSettingsOpen(false)} />}
     </aside>
   );
 }
@@ -1724,6 +1738,20 @@ function ChatBubble({ msg }: { msg: ChatMessage }) {
       }}>
         {msg.pending ? <TypingDots /> : msg.content}
       </div>
+      {((msg.meta?.saved_context?.length ?? 0) > 0 || msg.meta?.context_save_error) && (
+        <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
+          {(msg.meta?.saved_context ?? []).map((s, i) => (
+            <span key={i} className="eyebrow" style={{ fontSize: 8, color: "var(--pine)", textTransform: "none", letterSpacing: "0.04em" }}>
+              ● saved to coach memory: “{s.text.length > 72 ? `${s.text.slice(0, 72)}…` : s.text}” · until {s.expires}
+            </span>
+          ))}
+          {msg.meta?.context_save_error && (
+            <span className="eyebrow" style={{ fontSize: 8, color: "var(--ember)", textTransform: "none", letterSpacing: "0.04em" }}>
+              ● context save failed — {msg.meta.context_save_error} (the reply may still claim it saved)
+            </span>
+          )}
+        </div>
+      )}
     </motion.div>
   );
 }

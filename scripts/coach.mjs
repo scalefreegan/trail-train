@@ -18,7 +18,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { loadFactsFromRoot } from "./facts.mjs";
-import { saveState, mergeAgentUpdate } from "./state.mjs";
+import { loadState, saveState, mergeAgentUpdate } from "./state.mjs";
 import { arg, writeJsonAtomic } from "./lib.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
@@ -71,25 +71,6 @@ multi-day travel spans and recurring weekend commitments — a week overlapping 
 be planned as what it really is (travel maintenance, whatever terrain the destination
 offers), never as a build week, and weekend key sessions must clear recurring family
 events (note the timing workaround explicitly).
-
-CHILDCARE DAYS — events classified "childcare" are terse all-day markers on the family
-calendars: "Em" / "M" / "Emerson" means Em is away and the athlete has SOLO kid duty;
-"H" markers ("H no school", "Pick up H") mean Hawthorne is home and needs coverage.
-facts.calendar.summary.childcare_days_upcoming lists every covered date (multi-day markers
-expanded per-day); childcare_weekend_days_upcoming is the weekend subset. Severity depends
-on the DAY OF WEEK, not just the marker:
-- WEEKDAY (Mon-Fri) childcare days: the athlete can still train during work hours, roughly
-  08:00-16:00. Long sessions that fit that window are fine — plan weekday childcare days as
-  near-normal training days (note the window in the session text). Do NOT zero them out or
-  restrict them to pre-dawn shorts.
-- WEEKEND childcare days are the genuinely hard ones, worst when an "Em" marker covers a
-  weekend (solo duty, no daycare backup). Default a weekend childcare day to rest or a
-  short pre-dawn run (start ~05:30, done by 08:00), and plan the week's LONG runs to AVOID
-  Em weekends entirely: use a clear weekend day, or move the long run into a weekday
-  daytime window (a midday finish doubles as heat exposure). Name the swap in the plan —
-  never shrink the long run silently.
-Saturday "Hawthorn soccer" (09:00) additionally caps any Saturday session: finished and
-home by 08:30.
 
 TIME REALISM — every session you propose (recommendations AND key_session in plan_blocks)
 must fit the time the athlete actually has on that day. Do NOT assume road/flat pace on
@@ -158,12 +139,18 @@ shortfall against a dead plan or quietly accepting a light one. If the remaining
 send the athlete to the start line under-prepared (no remaining week near the achievable
 peak, longest pre-taper run well under ~6h), flag it in watch_outs with the recovery move.
 
-The athlete's preferences.personal_constraints (plain-English rules they've set) are HARD
-constraints. Every proposed session must respect them. Scan upcoming_14d and upcoming_notable
-against each constraint before locking in a key_session — e.g. if a constraint says events
-with "X" block long-run timing on weekends, do not schedule a long-run key_session on a
-day with an "X" event without explicitly noting the workaround (e.g. "5:30am start to
-finish before Em event").
+ATHLETE CONTEXT — facts.preferences.context is athlete-authored and authoritative.
+- context.sections (about_me, training_preferences, calendar_conventions) are verbatim
+  background from the athlete. calendar_conventions DEFINES the semantics of calendar
+  markers and classifications (childcare markers, recurring commitments, severity by day
+  of week) — apply it when reading facts.calendar, including the
+  childcare_days_upcoming / childcare_weekend_days_upcoming summaries.
+- context.temporary lists dated items currently in force; each is a HARD constraint until
+  its expires date (expired items are already filtered out before you see them).
+Every proposed session must respect the sections and every temporary item. Scan
+upcoming_14d and upcoming_notable against them before locking in a key_session, and when
+a constraint applies, name the workaround explicitly (e.g. "5:30am start to finish before
+Em event") — never work around one silently.
 
 Persistent state lives in web/public/state.json — you already see its key contents in the facts
 file (plan_blocks, agent_notes, preferences). Treat the EXISTING plan_blocks as the prior plan.
@@ -192,7 +179,8 @@ When done, respond with ONLY a single JSON object — no prose outside, no markd
     },
     ...
   ],
-  "new_notes": ["concise observation worth remembering across sessions", ...]   // 0-3 items — appended to agent_notes in state.json
+  "new_notes": ["concise observation worth remembering across sessions", ...],   // 0-3 items — appended to agent_notes in state.json
+  "new_context_items": [{"text": "durable athlete-side fact or dated constraint", "expires": "YYYY-MM-DD"}]   // 0-2 items — appended to the athlete's editable coach context; [] almost always
 }
 
 Rules:
@@ -226,7 +214,14 @@ For new_notes:
 - Persist insights that should survive across sessions: course-specific observations,
   long-arc trends (e.g. "wk 4–6 vert bias has worked, keep that ratio"), constraints the
   athlete has communicated. Existing agent_notes are visible in the facts file — don't
-  duplicate them. Empty array is fine if there's nothing new worth persisting.`;
+  duplicate them. Empty array is fine if there's nothing new worth persisting.
+
+For new_context_items:
+- These land in the athlete's own editable coach context (context.temporary), so use them
+  ONLY for durable ATHLETE-side facts the data reveals — a trip, an injury with a recovery
+  window, a schedule change — not for coaching observations (those are new_notes). Always
+  set a realistic expires date. Existing context.temporary is visible in the facts file —
+  never duplicate an item. [] is the norm.`;
 
 function runClaude({ prompt, systemPrompt, maxTurns, timeoutSec, cwd, allowedTools }) {
   return new Promise((resolve, reject) => {
@@ -359,20 +354,28 @@ in real numbers from the data.`;
     },
     ...readout,
   };
+  // new_context_items is merge input for state.json, not readout content
+  delete payload.new_context_items;
 
   await writeJsonAtomic(OUT_PATH, payload);
   await fs.unlink(factsPath).catch(() => {});
 
-  // Merge agent updates into persistent state.json (plan_blocks + new_notes).
-  // The agent does NOT overwrite state directly; this script controls writes
-  // so a malformed agent response can't corrupt persistent state.
+  // Merge agent updates into persistent state.json (plan_blocks + new_notes
+  // + new_context_items). The agent does NOT overwrite state directly; this
+  // script controls writes so a malformed agent response can't corrupt
+  // persistent state. Re-load fresh rather than merging into facts.state:
+  // that snapshot is minutes old (a settings save made during this run would
+  // be clobbered) and its preferences are expiry-filtered (merging it back
+  // would silently delete expired context items).
   if (facts.state) {
-    const merged = mergeAgentUpdate(facts.state, readout);
+    const freshState = await loadState(ROOT);
+    const merged = mergeAgentUpdate(freshState, readout);
     const saved = await saveState(ROOT, merged);
-    const prevCount = facts.state.plan_blocks?.length ?? 0;
+    const prevCount = freshState.plan_blocks?.length ?? 0;
     const newCount = saved.plan_blocks?.length ?? 0;
-    const notesDelta = (saved.agent_notes?.length ?? 0) - (facts.state.agent_notes?.length ?? 0);
-    console.log(`✓ merged into state.json  (plan_blocks ${prevCount}→${newCount}, +${notesDelta} note${notesDelta === 1 ? "" : "s"})`);
+    const notesDelta = (saved.agent_notes?.length ?? 0) - (freshState.agent_notes?.length ?? 0);
+    const ctxDelta = (saved.preferences?.context?.temporary?.length ?? 0) - (freshState.preferences?.context?.temporary?.length ?? 0);
+    console.log(`✓ merged into state.json  (plan_blocks ${prevCount}→${newCount}, +${notesDelta} note${notesDelta === 1 ? "" : "s"}${ctxDelta > 0 ? `, +${ctxDelta} context item${ctxDelta === 1 ? "" : "s"}` : ""})`);
   }
 
   console.log(`✓ wrote ${OUT_PATH}  (${elapsed}s · ${numTurns ?? "?"} turns${cost != null ? ` · $${cost.toFixed(4)}` : ""})`);

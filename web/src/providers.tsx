@@ -313,12 +313,19 @@ export function StateProvider({ children }: { children: React.ReactNode }) {
   const { key: refreshKey } = useRefresh();
   const [data, setData] = useState<PersistentState | null>(null);
   const [missing, setMissing] = useState(false);
+  // bumped after a settings save — refetches only /state.json, without the
+  // full resync a useRefresh() bump would trigger
+  const [nonce, setNonce] = useState(0);
   useEffect(() => {
     fetch(`/state.json?t=${Date.now()}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`status ${r.status}`))))
       .then((d) => { setData(d); setMissing(false); })
-      .catch(() => setMissing(true));
-  }, [refreshKey]);
-  const value = useMemo(() => ({ data, missing }), [data, missing]);
+      .catch((e) => {
+        console.warn(`[state] /state.json fetch failed: ${(e as Error).message}`);
+        setMissing(true);
+      });
+  }, [refreshKey, nonce]);
+  const reload = useCallback(() => setNonce((n) => n + 1), []);
+  const value = useMemo(() => ({ data, missing, reload }), [data, missing, reload]);
   return <PersistentStateContext.Provider value={value}>{children}</PersistentStateContext.Provider>;
 }
