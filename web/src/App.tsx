@@ -119,6 +119,7 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
   const stamp = fetchedAt ? fetchedAt.getTime() : lastSync;
   const dleft = daysUntil(race.date);
   const failedSteps = REFRESH_STEPS.filter((s) => status[s] === "error");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [, force] = useState(0);
   useEffect(() => {
     const id = setInterval(() => force((n) => n + 1), 20_000);
@@ -221,8 +222,17 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
             <span style={{ display: "inline-block", animation: syncing ? "spin 0.9s linear infinite" : undefined }}>↻</span>
             {syncing ? "syncing" : "resync"}
           </button>
+          <button
+            className="chip"
+            onClick={() => setSettingsOpen(true)}
+            title="coach settings — context, preferences, calendar markers"
+            style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+          >
+            <span style={{ fontSize: 13, lineHeight: 1 }}>⚙</span> settings
+          </button>
         </div>
       </div>
+      {settingsOpen && <CoachSettings onClose={() => setSettingsOpen(false)} />}
       {/* sync progress filament */}
       <AnimatePresence>
         {syncing && (
@@ -1385,7 +1395,6 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
   const { system } = useUnits();
   const facts = useFacts();
   const [readoutOpen, setReadoutOpen] = useState(true);
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
   /* chat state */
   const [messages, setMessages] = useState<ChatMessage[]>(loadStoredChat);
@@ -1519,13 +1528,6 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
                   clear
                 </button>
               )}
-          <button
-            className="chip" onClick={() => setSettingsOpen(true)}
-            title="coach settings — context, preferences, calendar markers"
-            style={{ fontSize: 10, padding: "3px 7px" }}
-          >
-            ⚙
-          </button>
           {onCollapse && (
             <button
               className="chip" onClick={onCollapse}
@@ -1603,7 +1605,6 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
           )}
         </div>
       </div>
-      {settingsOpen && <CoachSettings onClose={() => setSettingsOpen(false)} />}
     </aside>
   );
 }

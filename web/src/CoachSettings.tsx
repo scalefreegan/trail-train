@@ -1,5 +1,5 @@
 // Coach settings dialog — the write surface for the agent's context.
-// Opened from the gear chip in the coach rail. Edits:
+// Opened from the "⚙ settings" chip in the command bar. Edits:
 //   - scalar preferences + free-text context sections + dated temporary
 //     notes  → state.json preferences (via PUT /api/settings)
 //   - childcare markers + calendar keywords → config/profile.json
@@ -50,15 +50,48 @@ function plusDays(iso: string, days: number): string {
 
 const inputStyle: React.CSSProperties = {
   background: "var(--night-deep)", border: "1px solid var(--edge-bright)",
-  color: "var(--mist)", fontSize: 12, padding: "5px 8px", outline: "none",
+  color: "var(--mist)", fontSize: 12.5, padding: "7px 10px", outline: "none",
 };
 
-function Eyebrow({ children }: { children: React.ReactNode }) {
-  return <div className="eyebrow" style={{ fontSize: 8.5, color: "var(--lamp)", margin: "18px 0 8px" }}>{children}</div>;
+/* Textarea that grows with its content — no inner scrollbars, no manual
+   resize handles. Height tracks scrollHeight on every value change. */
+function AutoGrowArea({ value, onChange, minHeight = 72, ...rest }: {
+  value: string;
+  onChange: (v: string) => void;
+  minHeight?: number;
+} & Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, "value" | "onChange">) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.max(el.scrollHeight + 2, minHeight)}px`;
+  }, [value, minHeight]);
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      {...rest}
+      style={{
+        ...inputStyle, width: "100%", resize: "none", overflow: "hidden",
+        lineHeight: 1.55, font: "12.5px var(--font-body)", minHeight,
+        ...(rest.style ?? {}),
+      }}
+    />
+  );
 }
 
-function Hint({ children }: { children: React.ReactNode }) {
-  return <div style={{ fontSize: 10.5, color: "var(--mist-mute)", marginTop: 3, lineHeight: 1.4 }}>{children}</div>;
+function Eyebrow({ children }: { children: React.ReactNode }) {
+  return <div className="eyebrow" style={{ fontSize: 9, color: "var(--lamp)", margin: "0 0 8px" }}>{children}</div>;
+}
+
+function Hint({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+  return <div style={{ fontSize: 10.5, color: "var(--mist-mute)", marginTop: 4, lineHeight: 1.45, ...style }}>{children}</div>;
+}
+
+function Block({ children }: { children: React.ReactNode }) {
+  return <div style={{ marginBottom: 26 }}>{children}</div>;
 }
 
 export default function CoachSettings({ onClose }: { onClose: () => void }) {
@@ -190,225 +223,250 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
   };
 
   const body = !form ? (
-    <p style={{ fontSize: 12, color: loadError ? "var(--ember)" : "var(--mist-mute)", padding: "8px 0" }}>
+    <p style={{ fontSize: 12.5, color: loadError ? "var(--ember)" : "var(--mist-mute)", padding: "24px 0" }}>
       {loadError ?? "loading…"}
     </p>
   ) : (
-    <>
-      {/* scalar preferences */}
-      <Eyebrow>preferences</Eyebrow>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <label style={{ gridColumn: "1 / -1" }}>
-          <Hint>training philosophy</Hint>
-          <input style={{ ...inputStyle, width: "100%", marginTop: 3 }} value={form.training_philosophy}
-            onChange={(e) => patch({ training_philosophy: e.target.value })} />
-        </label>
-        <label>
-          <Hint>weekly rest day</Hint>
-          <input style={{ ...inputStyle, width: "100%", marginTop: 3 }} value={form.weekly_rest_day}
-            onChange={(e) => patch({ weekly_rest_day: e.target.value })} />
-        </label>
-        <div style={{ display: "flex", gap: 10 }}>
-          <label>
-            <Hint>fuel kcal/h</Hint>
-            <input type="number" min={0} max={1000} className="numerals" style={{ ...inputStyle, width: 64, marginTop: 3 }}
-              value={form.nutrition_target_kcal_per_hour}
-              onChange={(e) => patch({ nutrition_target_kcal_per_hour: e.target.value === "" ? "" : Number(e.target.value) })} />
-          </label>
-          <label>
-            <Hint>heat °C</Hint>
-            <input type="number" min={-10} max={50} className="numerals" style={{ ...inputStyle, width: 64, marginTop: 3 }}
-              value={form.heat_threshold_c}
-              onChange={(e) => patch({ heat_threshold_c: e.target.value === "" ? "" : Number(e.target.value) })} />
-          </label>
-        </div>
-      </div>
-
-      {/* free-text context sections */}
-      {SECTION_META.map(({ key, label, hint }) => (
-        <div key={key}>
-          <Eyebrow>{label}</Eyebrow>
-          <textarea
-            value={form.sections[key]}
-            onChange={(e) => patch({ sections: { ...form.sections, [key]: e.target.value } })}
-            rows={key === "calendar_conventions" ? 7 : 4}
-            maxLength={4000}
-            style={{
-              ...inputStyle, width: "100%", resize: "vertical", lineHeight: 1.5,
-              font: "12px var(--font-body)", minHeight: 60,
-            }}
-          />
-          <Hint>{hint} · sent to the coach verbatim</Hint>
-        </div>
-      ))}
-
-      {/* temporary notes */}
-      <Eyebrow>temporary notes</Eyebrow>
-      <Hint>dated context the coach treats as a hard constraint until it expires — expired notes are ignored by the coach but kept here until you delete them</Hint>
-      <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 9 }}>
-        {form.temporary.length === 0 && (
-          <span style={{ fontSize: 11.5, color: "var(--mist-mute)" }}>none yet</span>
-        )}
-        {form.temporary.map((t) => {
-          const expired = t.expires < today;
-          return (
-            <div key={t.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", opacity: expired ? 0.45 : 1 }}>
-              <textarea
-                value={t.text} rows={2} maxLength={2000}
-                onChange={(e) => patch({ temporary: form.temporary.map((x) => x.id === t.id ? { ...x, text: e.target.value } : x) })}
-                style={{ ...inputStyle, flex: 1, resize: "vertical", lineHeight: 1.45, font: "11.5px var(--font-body)", minHeight: 34 }}
-              />
-              <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end", flexShrink: 0 }}>
-                <input
-                  type="date" value={t.expires} className="numerals"
-                  onChange={(e) => patch({ temporary: form.temporary.map((x) => x.id === t.id ? { ...x, expires: e.target.value } : x) })}
-                  style={{ ...inputStyle, fontSize: 10.5, padding: "3px 6px", colorScheme: "dark" }}
-                />
-                <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
-                  {t.source === "agent" && (
-                    <span className="eyebrow" style={{ fontSize: 7.5, border: "1px dashed var(--edge-bright)", padding: "1px 5px", color: "var(--lamp)" }}>agent</span>
-                  )}
-                  {expired && (
-                    <span className="eyebrow" style={{ fontSize: 7.5, color: "var(--ember)" }}>expired</span>
-                  )}
-                  <button className="chip" style={{ fontSize: 8.5, padding: "2px 6px" }}
-                    onClick={() => patch({ temporary: form.temporary.filter((x) => x.id !== t.id) })}>
-                    delete
-                  </button>
-                </div>
-              </div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: "8px 48px" }}>
+      {/* left column: who you are + how the coach should read things */}
+      <div style={{ minWidth: 0 }}>
+        <Block>
+          <Eyebrow>preferences</Eyebrow>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <label style={{ gridColumn: "1 / -1" }}>
+              <Hint style={{ marginTop: 0, marginBottom: 4 }}>training philosophy</Hint>
+              <input style={{ ...inputStyle, width: "100%" }} value={form.training_philosophy}
+                onChange={(e) => patch({ training_philosophy: e.target.value })} />
+            </label>
+            <label>
+              <Hint style={{ marginTop: 0, marginBottom: 4 }}>weekly rest day</Hint>
+              <input style={{ ...inputStyle, width: "100%" }} value={form.weekly_rest_day}
+                onChange={(e) => patch({ weekly_rest_day: e.target.value })} />
+            </label>
+            <div style={{ display: "flex", gap: 14 }}>
+              <label>
+                <Hint style={{ marginTop: 0, marginBottom: 4 }}>fuel kcal/h</Hint>
+                <input type="number" min={0} max={1000} className="numerals" style={{ ...inputStyle, width: 80 }}
+                  value={form.nutrition_target_kcal_per_hour}
+                  onChange={(e) => patch({ nutrition_target_kcal_per_hour: e.target.value === "" ? "" : Number(e.target.value) })} />
+              </label>
+              <label>
+                <Hint style={{ marginTop: 0, marginBottom: 4 }}>heat °C</Hint>
+                <input type="number" min={-10} max={50} className="numerals" style={{ ...inputStyle, width: 80 }}
+                  value={form.heat_threshold_c}
+                  onChange={(e) => patch({ heat_threshold_c: e.target.value === "" ? "" : Number(e.target.value) })} />
+              </label>
             </div>
-          );
-        })}
-        {/* add row */}
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 2 }}>
-          <input
-            placeholder="add a note — e.g. travel, niggle, schedule change…"
-            value={newNote.text}
-            onChange={(e) => setNewNote((n) => ({ ...n, text: e.target.value }))}
-            onKeyDown={(e) => { if (e.key === "Enter") addNote(); }}
-            style={{ ...inputStyle, flex: 1, font: "11.5px var(--font-body)" }}
-          />
-          <input
-            type="date" value={newNote.expires} className="numerals"
-            onChange={(e) => setNewNote((n) => ({ ...n, expires: e.target.value }))}
-            style={{ ...inputStyle, fontSize: 10.5, padding: "4px 6px", colorScheme: "dark" }}
-          />
-          <button className="chip" style={{ fontSize: 9 }} onClick={addNote}
-            disabled={!newNote.text.trim() || !newNote.expires}
-            title={!newNote.expires ? "pick an end date first" : undefined}>add</button>
-        </div>
-      </div>
+          </div>
+        </Block>
 
-      {/* calendar classifier config */}
-      <Eyebrow>calendar markers</Eyebrow>
-      <Hint>single words that mark childcare days when they appear in an event title · applies at the next resync</Hint>
-      {calendarError && (
-        <p style={{ fontSize: 11, color: "var(--ember)", marginTop: 6 }}>{calendarError}</p>
-      )}
-      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
-        {form.childcare_markers.map((mk) => (
-          <button key={mk} className="chip" style={{ fontSize: 9, textTransform: "none" }} title="remove"
-            disabled={!!calendarError}
-            onClick={() => patch({ childcare_markers: form.childcare_markers.filter((x) => x !== mk) })}>
-            {mk} ×
-          </button>
+        {SECTION_META.map(({ key, label, hint }) => (
+          <Block key={key}>
+            <Eyebrow>{label}</Eyebrow>
+            <AutoGrowArea
+              value={form.sections[key]}
+              onChange={(v) => patch({ sections: { ...form.sections, [key]: v } })}
+              minHeight={key === "calendar_conventions" ? 140 : 88}
+              maxLength={4000}
+            />
+            <Hint>{hint} · sent to the coach verbatim</Hint>
+          </Block>
         ))}
-        <input
-          placeholder="add marker…" value={newMarker} disabled={!!calendarError}
-          onChange={(e) => { setNewMarker(e.target.value); setMarkerHint(null); }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && newMarker.trim()) {
-              const mk = newMarker.trim().toLowerCase();
-              if (/\s/.test(mk)) {
-                // the classifier matches markers against single words of the
-                // title — a spaced marker would save fine and match nothing
-                setMarkerHint("single words only — the sync matches each word of the event title");
-                return;
-              }
-              if (!form.childcare_markers.includes(mk)) patch({ childcare_markers: [...form.childcare_markers, mk] });
-              setNewMarker("");
-            }
-          }}
-          style={{ ...inputStyle, width: 110, fontSize: 10.5, padding: "3px 7px" }}
-        />
-        {markerHint && <span style={{ fontSize: 10, color: "var(--ember)" }}>{markerHint}</span>}
       </div>
-      {Object.keys(form.calendar_keywords).length > 0 && (
-        <>
-          <Eyebrow>calendar keywords</Eyebrow>
-          <Hint>title keywords that classify events (per classification) · applies at the next resync</Hint>
-          {Object.entries(form.calendar_keywords).map(([cls, words]) => (
-            <div key={cls} style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 7, alignItems: "center" }}>
-              <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--mist-dim)", width: 76, flexShrink: 0 }}>{cls}</span>
-              {words.map((w) => (
-                <button key={w} className="chip" style={{ fontSize: 9, textTransform: "none" }} title="remove"
-                  onClick={() => patch({ calendar_keywords: { ...form.calendar_keywords, [cls]: words.filter((x) => x !== w) } })}>
-                  {w} ×
-                </button>
-              ))}
-              <input
-                placeholder="add…" value={newKeyword[cls] ?? ""}
-                onChange={(e) => setNewKeyword((k) => ({ ...k, [cls]: e.target.value }))}
-                onKeyDown={(e) => {
-                  const v = (newKeyword[cls] ?? "").trim().toLowerCase();
-                  if (e.key === "Enter" && v) {
-                    if (!words.includes(v)) patch({ calendar_keywords: { ...form.calendar_keywords, [cls]: [...words, v] } });
-                    setNewKeyword((k) => ({ ...k, [cls]: "" }));
-                  }
-                }}
-                style={{ ...inputStyle, width: 84, fontSize: 10.5, padding: "3px 7px" }}
+
+      {/* right column: dated notes + calendar classifier config */}
+      <div style={{ minWidth: 0 }}>
+        <Block>
+          <Eyebrow>temporary notes</Eyebrow>
+          <Hint style={{ marginTop: 0, marginBottom: 12 }}>
+            dated context the coach treats as a hard constraint until it expires — expired notes are
+            ignored by the coach but kept here until you delete them
+          </Hint>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {form.temporary.length === 0 && (
+              <span style={{ fontSize: 12, color: "var(--mist-mute)" }}>none yet</span>
+            )}
+            {form.temporary.map((t) => {
+              const expired = t.expires < today;
+              return (
+                <div key={t.id} style={{
+                  border: "1px solid var(--edge)", borderLeft: `2px solid ${expired ? "var(--edge-bright)" : "var(--lamp)"}`,
+                  padding: "10px 12px 12px", opacity: expired ? 0.5 : 1, background: "var(--night-deep)",
+                }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                    <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--mist-mute)" }}>until</span>
+                    <input
+                      type="date" value={t.expires} className="numerals"
+                      onChange={(e) => patch({ temporary: form.temporary.map((x) => x.id === t.id ? { ...x, expires: e.target.value } : x) })}
+                      style={{ ...inputStyle, fontSize: 11, padding: "3px 7px", colorScheme: "dark" }}
+                    />
+                    {t.source === "agent" && (
+                      <span className="eyebrow" style={{ fontSize: 8, border: "1px dashed var(--edge-bright)", padding: "2px 6px", color: "var(--lamp)" }}>agent</span>
+                    )}
+                    {expired && (
+                      <span className="eyebrow" style={{ fontSize: 8, color: "var(--ember)" }}>expired</span>
+                    )}
+                    <button className="chip" style={{ fontSize: 9, padding: "2px 8px", marginLeft: "auto" }}
+                      onClick={() => patch({ temporary: form.temporary.filter((x) => x.id !== t.id) })}>
+                      delete
+                    </button>
+                  </div>
+                  <AutoGrowArea
+                    value={t.text} minHeight={40} maxLength={2000}
+                    onChange={(v) => patch({ temporary: form.temporary.map((x) => x.id === t.id ? { ...x, text: v } : x) })}
+                    style={{ border: "1px solid var(--edge)", fontSize: 12 }}
+                  />
+                </div>
+              );
+            })}
+            {/* add card */}
+            <div style={{ border: "1px dashed var(--edge-bright)", padding: "10px 12px 12px" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--mist-mute)" }}>new note · until</span>
+                <input
+                  type="date" value={newNote.expires} className="numerals"
+                  onChange={(e) => setNewNote((n) => ({ ...n, expires: e.target.value }))}
+                  style={{ ...inputStyle, fontSize: 11, padding: "3px 7px", colorScheme: "dark" }}
+                />
+                <button className="chip" style={{ fontSize: 9, padding: "2px 10px", marginLeft: "auto" }} onClick={addNote}
+                  disabled={!newNote.text.trim() || !newNote.expires}
+                  title={!newNote.expires ? "pick an end date first" : undefined}>add</button>
+              </div>
+              <AutoGrowArea
+                value={newNote.text} minHeight={40} maxLength={2000}
+                onChange={(v) => setNewNote((n) => ({ ...n, text: v }))}
+                placeholder="e.g. travel, a niggle, a schedule change…"
+                style={{ border: "1px solid var(--edge)", fontSize: 12 }}
               />
             </div>
-          ))}
-        </>
-      )}
+          </div>
+        </Block>
 
-      {/* footer */}
-      {saveError && (
-        <p style={{ fontSize: 11.5, color: "var(--ember)", marginTop: 14 }}>{saveError}</p>
-      )}
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18, paddingTop: 14, borderTop: "1px solid var(--edge)" }}>
-        <button className="chip" onClick={requestClose} style={{ fontSize: 10 }}>cancel</button>
-        <button
-          className="chip" onClick={save} disabled={saving}
-          style={{
-            fontSize: 10,
-            background: saving ? "transparent" : "var(--lamp)",
-            borderColor: "var(--lamp)",
-            color: saving ? "var(--lamp)" : "var(--night)",
-          }}
-        >
-          {saving ? "saving…" : "save"}
-        </button>
+        <Block>
+          <Eyebrow>calendar markers</Eyebrow>
+          <Hint style={{ marginTop: 0 }}>single words that mark childcare days when they appear in an event title · applies at the next resync</Hint>
+          {calendarError && (
+            <p style={{ fontSize: 11.5, color: "var(--ember)", marginTop: 8 }}>{calendarError}</p>
+          )}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+            {form.childcare_markers.map((mk) => (
+              <button key={mk} className="chip" style={{ fontSize: 10, textTransform: "none" }} title="remove"
+                disabled={!!calendarError}
+                onClick={() => patch({ childcare_markers: form.childcare_markers.filter((x) => x !== mk) })}>
+                {mk} ×
+              </button>
+            ))}
+            <input
+              placeholder="add marker…" value={newMarker} disabled={!!calendarError}
+              onChange={(e) => { setNewMarker(e.target.value); setMarkerHint(null); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && newMarker.trim()) {
+                  const mk = newMarker.trim().toLowerCase();
+                  if (/\s/.test(mk)) {
+                    // the classifier matches markers against single words of the
+                    // title — a spaced marker would save fine and match nothing
+                    setMarkerHint("single words only — the sync matches each word of the event title");
+                    return;
+                  }
+                  if (!form.childcare_markers.includes(mk)) patch({ childcare_markers: [...form.childcare_markers, mk] });
+                  setNewMarker("");
+                }
+              }}
+              style={{ ...inputStyle, width: 130, fontSize: 11, padding: "4px 8px" }}
+            />
+            {markerHint && <span style={{ fontSize: 10.5, color: "var(--ember)" }}>{markerHint}</span>}
+          </div>
+        </Block>
+
+        {Object.keys(form.calendar_keywords).length > 0 && (
+          <Block>
+            <Eyebrow>calendar keywords</Eyebrow>
+            <Hint style={{ marginTop: 0 }}>title keywords that classify events (per classification) · applies at the next resync</Hint>
+            {Object.entries(form.calendar_keywords).map(([cls, words]) => (
+              <div key={cls} style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+                <span className="eyebrow" style={{ fontSize: 9, color: "var(--mist-dim)", width: 90, flexShrink: 0 }}>{cls}</span>
+                {words.map((w) => (
+                  <button key={w} className="chip" style={{ fontSize: 10, textTransform: "none" }} title="remove"
+                    onClick={() => patch({ calendar_keywords: { ...form.calendar_keywords, [cls]: words.filter((x) => x !== w) } })}>
+                    {w} ×
+                  </button>
+                ))}
+                <input
+                  placeholder="add…" value={newKeyword[cls] ?? ""}
+                  onChange={(e) => setNewKeyword((k) => ({ ...k, [cls]: e.target.value }))}
+                  onKeyDown={(e) => {
+                    const v = (newKeyword[cls] ?? "").trim().toLowerCase();
+                    if (e.key === "Enter" && v) {
+                      if (!words.includes(v)) patch({ calendar_keywords: { ...form.calendar_keywords, [cls]: [...words, v] } });
+                      setNewKeyword((k) => ({ ...k, [cls]: "" }));
+                    }
+                  }}
+                  style={{ ...inputStyle, width: 100, fontSize: 11, padding: "4px 8px" }}
+                />
+              </div>
+            ))}
+          </Block>
+        )}
       </div>
-    </>
+    </div>
   );
 
   return createPortal(
     <div
       onClick={requestClose}
       style={{
-        position: "fixed", inset: 0, zIndex: 100, background: "rgba(4, 8, 12, 0.72)",
-        display: "flex", alignItems: "flex-start", justifyContent: "center",
-        overflowY: "auto", padding: "6vh 16px 40px",
+        position: "fixed", inset: 0, zIndex: 100, background: "rgba(4, 8, 12, 0.78)",
+        display: "flex", padding: "clamp(12px, 3vh, 32px)",
       }}
     >
       <div
         className="panel notch"
         onClick={(e) => e.stopPropagation()}
-        style={{ width: "min(640px, 100%)", padding: "18px 22px 20px" }}
+        style={{
+          width: "min(1240px, 100%)", margin: "0 auto", display: "flex", flexDirection: "column",
+          maxHeight: "100%", flex: "0 1 auto",
+        }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--edge)", paddingBottom: 12 }}>
+        {/* header */}
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          borderBottom: "1px solid var(--edge)", padding: "16px 28px", flexShrink: 0,
+        }}>
           <div>
-            <div className="eyebrow" style={{ color: "var(--mist-dim)" }}>coach settings</div>
-            <div style={{ fontSize: 11, color: "var(--mist-mute)", marginTop: 3 }}>
+            <div className="eyebrow" style={{ color: "var(--mist-dim)" }}>⚙ coach settings</div>
+            <div style={{ fontSize: 11.5, color: "var(--mist-mute)", marginTop: 3 }}>
               the context the coach reads before every readout and chat reply
             </div>
           </div>
           <button className="chip" onClick={requestClose} style={{ fontSize: 9 }}>close esc</button>
         </div>
-        {body}
+
+        {/* scrollable content */}
+        <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "24px 28px 8px" }}>
+          {body}
+        </div>
+
+        {/* footer */}
+        <div style={{
+          display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10,
+          borderTop: "1px solid var(--edge)", padding: "14px 28px", flexShrink: 0,
+        }}>
+          {saveError && (
+            <span style={{ fontSize: 11.5, color: "var(--ember)", marginRight: "auto" }}>{saveError}</span>
+          )}
+          <button className="chip" onClick={requestClose} style={{ fontSize: 10 }}>cancel</button>
+          <button
+            className="chip" onClick={save} disabled={saving || !form}
+            style={{
+              fontSize: 10, padding: "5px 16px",
+              background: saving || !form ? "transparent" : "var(--lamp)",
+              borderColor: "var(--lamp)",
+              color: saving || !form ? "var(--lamp)" : "var(--night)",
+            }}
+          >
+            {saving ? "saving…" : "save"}
+          </button>
+        </div>
       </div>
     </div>,
     document.body,
