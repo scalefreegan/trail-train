@@ -7,7 +7,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { loadState } from "./state.mjs";
+import { loadState, activeContext, isoDate } from "./state.mjs";
 
 // Heat exposure threshold (Celsius) — mirrors weather.mjs WEATHER_HOT_THRESHOLD_C.
 const HOT_THRESHOLD_C = 24;
@@ -247,7 +247,9 @@ export function computeFacts(strava, oura, state) {
   const daysUntilRace = Math.ceil((new Date(race.date).getTime() - now) / 86400000);
 
   return {
-    today: new Date().toISOString().slice(0, 10),
+    // local date, matching the expiry filtering — a UTC date would tell the
+    // agent it's tomorrow from ~17:00 MT and skew its expiry reasoning
+    today: isoDate(new Date()),
     race: { ...race, days_until: daysUntilRace },
     block: {
       current_week: currentWeek,
@@ -326,7 +328,10 @@ export function computeFacts(strava, oura, state) {
     })),
     plan_blocks: state?.plan_blocks ?? [],
     agent_notes: (state?.agent_notes ?? []).slice(-10),
-    preferences: state?.preferences ?? {},
+    // expired temporary context items are filtered out here — the agent
+    // only ever sees constraints still in force. Local date, not UTC: an
+    // item must stay active through the end of its expires day here.
+    preferences: activeContext(state?.preferences ?? {}, isoDate(new Date())),
   };
 }
 
@@ -342,7 +347,13 @@ export async function loadFactsFromRoot(projectRoot) {
     loadState(projectRoot),
   ]);
   if (!strava) throw new Error("strava.json missing — run sync:strava");
-  const base = { profile, state, ...computeFacts(strava, oura, state) };
+  const base = {
+    profile,
+    // same expiry filter on the embedded raw state, so the agent can't see
+    // expired temporary items through this path either
+    state: { ...state, preferences: activeContext(state?.preferences ?? {}, isoDate(new Date())) },
+    ...computeFacts(strava, oura, state),
+  };
   if (cal) {
     base.calendar = {
       fetched_at: cal.fetched_at,

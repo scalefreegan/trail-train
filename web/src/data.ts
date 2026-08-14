@@ -283,6 +283,25 @@ export type AgentReadout = {
   plan_blocks?: PlanBlock[];
 };
 
+export type TemporaryContextItem = {
+  id: string;
+  text: string;
+  added: string; // YYYY-MM-DD
+  expires: string; // YYYY-MM-DD — the agent ignores the item after this date
+  source: "user" | "agent";
+};
+export type CoachContext = {
+  sections: { about_me: string; calendar_conventions: string; training_preferences: string };
+  temporary: TemporaryContextItem[];
+};
+export type Preferences = {
+  training_philosophy?: string;
+  weekly_rest_day?: string;
+  nutrition_target_kcal_per_hour?: number;
+  heat_threshold_c?: number;
+  context?: CoachContext;
+} & Record<string, unknown>;
+
 export type PersistentState = {
   version: number;
   last_updated: string | null;
@@ -305,7 +324,7 @@ export type PersistentState = {
   };
   plan_blocks?: PlanBlock[];
   agent_notes?: { at: string; note: string }[];
-  preferences?: Record<string, unknown>;
+  preferences?: Preferences;
 };
 
 export type GCalEvent = {
@@ -368,8 +387,8 @@ export function useGoogleCal() {
 /* state.json is fetched once (by StateProvider in providers.tsx) and shared
    via this context — it feeds both the agent plan (RoadAhead) and the
    race/block config (useBlockConfig). */
-export type StateCtx = { data: PersistentState | null; missing: boolean };
-export const PersistentStateContext = createContext<StateCtx>({ data: null, missing: false });
+export type StateCtx = { data: PersistentState | null; missing: boolean; reload: () => void };
+export const PersistentStateContext = createContext<StateCtx>({ data: null, missing: false, reload: () => {} });
 
 export const usePersistentState = () => useContext(PersistentStateContext);
 
