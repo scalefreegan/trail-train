@@ -128,6 +128,9 @@ export type StationProjection = {
   seg_gain_ft: number;
   /** projected pace over this segment (s/mi, avg scenario, incl. fatigue) */
   seg_pace_s_per_mi: number;
+  /** pace this segment must be run at to hit the goal (s/mi — the avg pace
+      uniformly rescaled to the goal's moving time), or null with no goal */
+  goal_pace_s_per_mi: number | null;
   /** planned stop at this station, minutes (0 at the finish) */
   stop_min: number;
   /** cumulative elapsed hours at ARRIVAL (includes dwell at prior stations) */
@@ -309,9 +312,11 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   const totalStopS = segs.reduce((s, { st }, i) => s + stopAt(st, i === segs.length - 1), 0);
   const avgMovingTotalS = segTimes.reduce((s, t) => s + t.avg, 0);
   let goalArrive: number[] | null = null;
+  let goalScale: number | null = null;
   if (opts.goalH != null && avgMovingTotalS > 0) {
     const goalMovingS = Math.max(0, opts.goalH * 3600 - totalStopS);
-    const scale = goalMovingS / avgMovingTotalS;
+    goalScale = goalMovingS / avgMovingTotalS;
+    const scale = goalScale;
     let moving = 0, stopped = 0;
     goalArrive = segs.map(({ st }, i) => {
       moving += segTimes[i].avg * scale;
@@ -329,6 +334,7 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
       seg_mi,
       seg_gain_ft,
       seg_pace_s_per_mi: seg_mi > 0 ? segTimes[i].avg / seg_mi : 0,
+      goal_pace_s_per_mi: goalScale != null && seg_mi > 0 ? (segTimes[i].avg * goalScale) / seg_mi : null,
       stop_min: Math.round(stopAt(st, i === segs.length - 1) / 60),
       eta_h: { best: arrive.best[i] / 3600, avg: avgH, worst: worstH },
       goal_eta_h: goalArrive ? goalArrive[i] / 3600 : null,

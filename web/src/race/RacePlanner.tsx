@@ -86,6 +86,11 @@ function stationFlags(s: StationProjection["station"]) {
 
 const H = 320;
 const PAD = { top: 56, right: 16, bottom: 26, left: 46 };
+/* pace trace strip below the profile — same x-axis, own y-scale
+   (faster at the top, Strava-style; slower dips down) */
+const PACE_TOP = H + 6;
+const PACE_H = 56;
+const TOTAL_H = PACE_TOP + PACE_H + 22;
 
 function ProfileChart({ course, proj }: {
   course: Course;
@@ -155,6 +160,21 @@ function ProfileChart({ course, proj }: {
     [course.aid_stations, maxMi],
   );
 
+  /* pace trace: per-split projected pace as a step line, x in gpx miles so
+     the steps land exactly on the plotted aid-station markers */
+  const paceSegs = useMemo(() => {
+    if (!proj) return [];
+    const perUnit = u.paceUnit === "/km" ? 1 / 1.609344 : 1; // display units
+    return course.aid_stations
+      .map((s, i) => ({
+        x0: i === 0 ? 0 : course.aid_stations[i - 1].gpx_mi,
+        x1: s.gpx_mi,
+        pace: proj.stations[i].seg_pace_s_per_mi * perUnit,
+        goal: proj.stations[i].goal_pace_s_per_mi != null ? proj.stations[i].goal_pace_s_per_mi! * perUnit : null,
+      }))
+      .filter((g) => g.x1 > g.x0 + 0.05 && g.pace > 0);
+  }, [proj, course.aid_stations, u.paceUnit]);
+
   /* The whole static scene is memoized: mousemove only re-renders the
      crosshair layer + tooltip, never the decimated path scene or aid markers. */
   const scene = useMemo(() => {
@@ -222,15 +242,58 @@ function ProfileChart({ course, proj }: {
           );
         })}
 
+        {/* pace strip — projected split pace (and goal) on the same mile axis */}
+        {paceSegs.length > 0 && (() => {
+          const vals = paceSegs.flatMap((g) => (g.goal != null ? [g.pace, g.goal] : [g.pace]));
+          const lo = Math.min(...vals), hi = Math.max(...vals);
+          const span = Math.max(hi - lo, 30);
+          const [pLo, pHi] = [lo - span * 0.12, hi + span * 0.12];
+          // faster (smaller) at the top
+          const yPace = (p: number) => PACE_TOP + ((p - pLo) / (pHi - pLo)) * PACE_H;
+          const stepPath = (key: "pace" | "goal") =>
+            paceSegs
+              .filter((g) => g[key] != null)
+              .map((g, i) => `${i === 0 ? "M" : "L"} ${xAt(g.x0).toFixed(1)} ${yPace(g[key]!).toFixed(1)} L ${xAt(g.x1).toFixed(1)} ${yPace(g[key]!).toFixed(1)}`)
+              .join(" ");
+          // gridline ticks at whole display minutes inside the range —
+          // 2-3 lines max, the strip is only ~56px tall
+          const ticks: number[] = [];
+          const stepS = span > 300 ? 240 : span > 150 ? 120 : 60;
+          for (let t = Math.ceil(pLo / stepS) * stepS; t <= pHi; t += stepS) ticks.push(t);
+          const fmtPace = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+          const hasGoal = paceSegs.some((g) => g.goal != null);
+          return (
+            <g>
+              <text x={PAD.left} y={PACE_TOP - 2} fill="var(--mist-mute)" style={{ font: "8.5px var(--font-mono)", letterSpacing: "0.14em" }}>
+                PACE {u.paceUnit.toUpperCase()}
+                <tspan fill="var(--lamp)"> ── ETA</tspan>
+                {hasGoal && <tspan fill="var(--creek)"> ┄ GOAL</tspan>}
+              </text>
+              {ticks.map((t) => (
+                <g key={t}>
+                  <line x1={PAD.left} x2={width - PAD.right} y1={yPace(t)} y2={yPace(t)} stroke="var(--edge)" strokeWidth="1" strokeDasharray="2 5" />
+                  <text x={4} y={yPace(t) + 3} fill="var(--mist-mute)" style={{ font: "8.5px var(--font-mono)" }}>
+                    {fmtPace(t)}
+                  </text>
+                </g>
+              ))}
+              {hasGoal && (
+                <path d={stepPath("goal")} fill="none" stroke="var(--creek)" strokeWidth="1.2" strokeDasharray="3 4" strokeLinejoin="round" opacity={0.85} />
+              )}
+              <path d={stepPath("pace")} fill="none" stroke="var(--lamp)" strokeWidth="1.6" strokeLinejoin="round" />
+            </g>
+          );
+        })()}
+
         {/* mile axis */}
         {Array.from({ length: Math.floor(maxMi / 10) + 1 }, (_, i) => i * 10).map((mi) => (
-          <text key={mi} x={xAt(mi)} y={H - 6} textAnchor="middle" fill="var(--mist-mute)" style={{ font: "9px var(--font-mono)" }}>
+          <text key={mi} x={xAt(mi)} y={TOTAL_H - 6} textAnchor="middle" fill="var(--mist-mute)" style={{ font: "9px var(--font-mono)" }}>
             {u.dist(mi, 0)}
           </text>
         ))}
       </>
     );
-  }, [width, profile, xAt, yAt, maxMi, plotH, minEle, maxEle, nights, aidWithMi, eleAt, proj, u, race.date]);
+  }, [width, profile, xAt, yAt, maxMi, plotH, minEle, maxEle, nights, aidWithMi, eleAt, proj, u, race.date, paceSegs]);
 
   // rAF-coalesced hover: at most one state update per frame, snapped to the
   // profile grid so identical points bail out entirely
@@ -265,7 +328,7 @@ function ProfileChart({ course, proj }: {
       {width > 0 && (
         // translateZ isolates the path scene in its own paint layer, so the
         // moving tooltip never forces it to re-rasterize
-        <svg width={width} height={H} style={{ display: "block", transform: "translateZ(0)" }}>
+        <svg width={width} height={TOTAL_H} style={{ display: "block", transform: "translateZ(0)" }}>
           <defs>
             <linearGradient id="courseFill" x1="0" x2="0" y1="0" y2="1">
               <stop offset="0%" stopColor="var(--lamp)" stopOpacity="0.2" />
@@ -315,6 +378,20 @@ function ProfileChart({ course, proj }: {
             <span style={{ color: "var(--pine)" }}>best</span><span>{fmtRaceClock(race.date, proj.elapsedAtMile(hover.p.mi, "best"))}</span>
             <span style={{ color: "var(--lamp)" }}>avg</span><span>{fmtRaceClock(race.date, proj.elapsedAtMile(hover.p.mi, "avg"))}</span>
             <span style={{ color: "var(--ember)" }}>worst</span><span>{fmtRaceClock(race.date, proj.elapsedAtMile(hover.p.mi, "worst"))}</span>
+            {(() => {
+              const seg = paceSegs.find((g) => hover.p.mi >= g.x0 && hover.p.mi <= g.x1);
+              if (!seg) return null;
+              const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+              return (
+                <>
+                  <span style={{ color: "var(--mist-dim)" }}>pace</span>
+                  <span>
+                    {fmt(seg.pace)}{u.paceUnit}
+                    {seg.goal != null && <span style={{ color: "var(--creek)" }}> · goal {fmt(seg.goal)}</span>}
+                  </span>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -481,6 +558,10 @@ export function RacePlanner() {
             <span className="eyebrow" style={{ fontSize: 8.5, textAlign: "right" }}>{u.distUnit}</span>
             <span className="eyebrow col-seg" style={{ fontSize: 8.5, textAlign: "right" }}>{u.elevUnit}↑ seg</span>
             <span className="eyebrow col-stop" style={{ fontSize: 8.5, textAlign: "right" }}>stop min</span>
+            <span className="eyebrow col-pace" style={{ fontSize: 8.5, textAlign: "right" }}
+              title={`projected pace over this split (top) and the pace needed to hit the goal (below, when a goal is set) — min${u.paceUnit}, fatigue + hold-back included`}>
+              pace {u.paceUnit}
+            </span>
             <span className="eyebrow" style={{ fontSize: 8.5, display: "grid", gridTemplateColumns: "1fr 1fr 1.15fr", gap: 8 }}>
               <span style={{ textAlign: "right", color: "var(--pine)" }}>best</span>
               <span style={{ textAlign: "right" }}>eta</span>
@@ -537,6 +618,18 @@ export function RacePlanner() {
                     <span className="numerals" style={{ fontSize: 11.5, color: "var(--mist-mute)" }}>—</span>
                   )}
                 </span>
+                <span className="numerals col-pace" style={{ fontSize: 11.5, textAlign: "right" }}>
+                  {sp.seg_mi > 0.01 ? (
+                    <>
+                      <span style={{ display: "block", fontWeight: 600 }}>{u.paceFmt(sp.seg_pace_s_per_mi, 1)}</span>
+                      {sp.goal_pace_s_per_mi != null && (
+                        <span style={{ display: "block", fontSize: 9.5, color: "var(--creek)" }}>{u.paceFmt(sp.goal_pace_s_per_mi, 1)}</span>
+                      )}
+                    </>
+                  ) : (
+                    <span style={{ color: "var(--mist-mute)" }}>—</span>
+                  )}
+                </span>
                 <span className="numerals" style={{ fontSize: 11.5, display: "grid", gridTemplateColumns: "1fr 1fr 1.15fr", gap: 8, whiteSpace: "nowrap" }}>
                   <span style={{ color: "var(--pine)", textAlign: "right" }}>{fmtRaceClock(race.date, sp.eta_h.best)}</span>
                   <span style={{ fontWeight: 700, textAlign: "right" }}>{fmtRaceClock(race.date, sp.eta_h.avg)}</span>
@@ -586,6 +679,23 @@ export function RacePlanner() {
             <span />
             <span className="col-seg" />
             <span className="col-stop" />
+            <span className="numerals col-pace" style={{ fontSize: 11.5, textAlign: "right" }}
+              title={`overall moving pace, min${u.paceUnit} (stops excluded)`}>
+              {(() => {
+                const totalMi = proj.stations[proj.stations.length - 1].station.total_mi;
+                const movingH = proj.finish_h.avg - proj.stopped_h;
+                return (
+                  <>
+                    <span style={{ display: "block", fontWeight: 600 }}>{u.paceFmt((movingH * 3600) / totalMi, 1)}</span>
+                    {proj.goal_h != null && (
+                      <span style={{ display: "block", fontSize: 9.5, color: "var(--creek)" }}>
+                        {u.paceFmt(((proj.goal_h - proj.stopped_h) * 3600) / totalMi, 1)}
+                      </span>
+                    )}
+                  </>
+                );
+              })()}
+            </span>
             <span className="numerals" style={{ fontSize: 12, fontWeight: 600, display: "grid", gridTemplateColumns: "1fr 1fr 1.15fr", gap: 8, whiteSpace: "nowrap" }}>
               <span style={{ color: "var(--pine)", textAlign: "right" }}>{fmtElapsed(proj.finish_h.best)}</span>
               <span style={{ textAlign: "right" }}>{fmtElapsed(proj.finish_h.avg)}</span>
