@@ -141,6 +141,15 @@ export type StationProjection = {
 export type ProjectOptions = {
   /** pace degradation per 10 miles, compounding — e.g. 5 → ×1.05 every 10 mi */
   fatiguePctPer10mi: number;
+  /** race-pace calibration, % added to ALL projected paces — corrects for the
+      fit being trained on runs that are stronger efforts than race-sustainable
+      pace. e.g. 6 → every pace ×1.06 */
+  calibrationPct?: number;
+  /** deliberate first-half restraint, % slower than model pace through mile
+      RESTRAINT_FULL_MI (tapering to 0 by RESTRAINT_END_MI). Restrained miles
+      also age the athlete less: they count (1 − payoff·restraint) miles on the
+      fatigue clock, so holding back early buys a flatter late-race fade. */
+  restraintPct?: number;
   /** target finish in hours, or null to skip the goal overlay */
   goalH: number | null;
   /** fresh stop minutes at a regular aid station (scales up late-race) */
@@ -184,6 +193,36 @@ function gainBetween(profile: CourseProfilePoint[], fromMi: number, toMi: number
     extrapolated to total_mi. */
 const D_REF = 20;
 
+/** First-half restraint window: full hold-back through mile 50, tapering
+    linearly to zero by mile 60 (no pace cliff at an aid station boundary). */
+const RESTRAINT_FULL_MI = 50;
+const RESTRAINT_END_MI = 60;
+
+/** How strongly restraint pays down the fatigue clock: each restrained mile
+    counts (1 − PAYOFF·restraint) fatigue-miles. At 8% restraint each early
+    mile ages you ~16% less — banking energy, not time. */
+const RESTRAINT_FATIGUE_PAYOFF = 2;
+
+/** Restraint weight at a course mile: 1 through the full window, linear taper
+    to 0 across the taper zone. */
+function restraintWeight(mi: number): number {
+  if (mi <= RESTRAINT_FULL_MI) return 1;
+  if (mi >= RESTRAINT_END_MI) return 0;
+  return (RESTRAINT_END_MI - mi) / (RESTRAINT_END_MI - RESTRAINT_FULL_MI);
+}
+
+/** Integral of restraintWeight from 0 to mi (closed form for the piecewise
+    linear shape) — used to compute cumulative fatigue-miles. */
+function restraintWeightIntegral(mi: number): number {
+  const full = Math.min(mi, RESTRAINT_FULL_MI);
+  let s = full;
+  if (mi > RESTRAINT_FULL_MI) {
+    const m1 = Math.min(mi, RESTRAINT_END_MI);
+    s += ((restraintWeight(RESTRAINT_FULL_MI) + restraintWeight(m1)) / 2) * (m1 - RESTRAINT_FULL_MI);
+  }
+  return s;
+}
+
 /**
  * Project best/avg/worst arrival times at every aid station.
  *
@@ -193,17 +232,29 @@ const D_REF = 20;
  *   evaluated at a fixed reference distance (D_REF = 20 mi, the athlete's
  *   long-run regime) and ALL ultra-distance slowdown comes from the explicit
  *   fatigue multiplier. Don't "fix" this back to kDist·total_mi.
- * - Fatigue COMPOUNDS: mult(mi) = (1 + f)^(mi/10). Ultra fade is nonlinear —
- *   mild through 50, heavy after 80 (at 5%: ×1.28 @50mi, ×1.63 @100mi).
- * - Station stops scale with the same curve (you linger longer at mile 80
- *   than mile 20), capped at 2× the fresh stop.
+ * - Fatigue COMPOUNDS: mult(mi) = (1 + f)^(fatigueMiles(mi)/10). Ultra fade is
+ *   nonlinear — mild through 50, heavy after 80 (at 5%: ×1.28 @50mi, ×1.63
+ *   @100mi). With restraint, fatigue-miles accrue slower than course miles
+ *   through the restraint window (see RESTRAINT_FATIGUE_PAYOFF), so the late
+ *   fade flattens — that's the modeled payoff of going out easy.
+ * - calibrationPct multiplies every pace: the fit comes from training runs
+ *   that are stronger efforts than race-sustainable pace, so raw fit paces
+ *   read optimistic for a 100.
+ * - restraintPct slows miles 0–50 on purpose (tapering to 0 by 60): banking
+ *   energy for a relatively stronger second 50.
+ * - Station stops scale with the same fatigue curve (you linger longer at
+ *   mile 80 than mile 20), capped at 2× the fresh stop.
  */
 export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions): RaceProjection {
   const f = opts.fatiguePctPer10mi / 100;
+  const cal = 1 + (opts.calibrationPct ?? 0) / 100;
+  const r = (opts.restraintPct ?? 0) / 100;
   const aidStopS = (opts.aidStopMin ?? 5) * 60;
   const crewStopS = (opts.crewStopMin ?? 10) * 60;
   const stations = course.aid_stations;
-  const mult = (mi: number) => Math.pow(1 + f, mi / 10);
+  const fatigueMiles = (mi: number) => mi - RESTRAINT_FATIGUE_PAYOFF * r * restraintWeightIntegral(mi);
+  const mult = (mi: number) => Math.pow(1 + f, fatigueMiles(mi) / 10);
+  const effort = (mi: number) => 1 + r * restraintWeight(mi);
 
   const segs = stations.map((st, i) => {
     const prev = i === 0 ? null : stations[i - 1];
@@ -221,10 +272,10 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   const segTimes = segs.map(({ seg_mi, seg_gain_ft, prevMi }) => {
     const vfpm = seg_mi > 0 ? seg_gain_ft / seg_mi : 0;
     const midMi = prevMi + seg_mi / 2;
-    const m = mult(midMi);
+    const m = mult(midMi) * effort(midMi);
     const out = {} as Record<Scenario, number>;
     for (const sc of ["best", "avg", "worst"] as Scenario[]) {
-      const pace = Math.max(300, fit.base + paceShift[sc] + fit.kVert * vfpm + fit.kDist * D_REF);
+      const pace = Math.max(300, (fit.base + paceShift[sc] + fit.kVert * vfpm + fit.kDist * D_REF) * cal);
       out[sc] = seg_mi * pace * m; // seconds
     }
     return out;

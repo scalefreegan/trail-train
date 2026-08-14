@@ -331,6 +331,12 @@ export function RacePlanner() {
   const { course, missing, error } = useCourse();
   const { crewBase } = useCrewBase();
   const [fatigue, setFatigue] = usePersistedNumber("race.fatigue_pct_v2", 5);
+  // training runs are stronger efforts than race-sustainable pace — slow every
+  // projected pace by this much (athlete-requested honesty correction)
+  const [calibration, setCalibration] = usePersistedNumber("race.calibration_pct", 6);
+  // deliberate hold-back through mile 50 (taper to 60); restrained miles also
+  // age the fatigue clock less — bank energy for the second 50
+  const [restraint, setRestraint] = usePersistedNumber("race.restraint_pct", 8);
   const [goalH, setGoalH] = usePersistedNumber("race.goal_h", 32);
   const [aidStopMin, setAidStopMin] = usePersistedNumber("race.aid_stop_min", 5);
   const [crewStopMin, setCrewStopMin] = usePersistedNumber("race.crew_stop_min", 10);
@@ -342,9 +348,10 @@ export function RacePlanner() {
     () => (course && fit ? projectRace(course, fit, {
       // a cleared/zeroed goal field (Number("")=0) means "no goal" — coerce to
       // null so the header ("—") and the table agree instead of collapsing ETAs
-      fatiguePctPer10mi: fatigue, goalH: goalH > 0 ? goalH : null, aidStopMin, crewStopMin, stopOverridesMin: stopOverrides,
+      fatiguePctPer10mi: fatigue, calibrationPct: calibration, restraintPct: restraint,
+      goalH: goalH > 0 ? goalH : null, aidStopMin, crewStopMin, stopOverridesMin: stopOverrides,
     }) : null),
-    [course, fit, fatigue, goalH, aidStopMin, crewStopMin, stopOverrides],
+    [course, fit, fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides],
   );
 
   if (missing || !course) {
@@ -389,13 +396,31 @@ export function RacePlanner() {
     <section>
       <SectionTag
         right={
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 14 }}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+            <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+              title="race-pace calibration — training runs are stronger efforts than race-sustainable pace, so every projected pace is slowed by this much">
+              race-cal +{calibration.toFixed(1)}%
+              <input
+                type="range" min={0} max={12} step={0.5} value={calibration}
+                onChange={(e) => setCalibration(Number(e.target.value))}
+                style={{ width: 70, accentColor: "var(--lamp)" }}
+              />
+            </label>
+            <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+              title="deliberate first-half hold-back — this much slower than model pace through mile 50 (tapering off by 60); restrained miles also age the fatigue clock less, flattening the late-race fade">
+              hold-back +{restraint.toFixed(1)}%
+              <input
+                type="range" min={0} max={15} step={0.5} value={restraint}
+                onChange={(e) => setRestraint(Number(e.target.value))}
+                style={{ width: 70, accentColor: "var(--lamp)" }}
+              />
+            </label>
             <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               fatigue +{fatigue.toFixed(1)}%/10{u.distUnit}
               <input
                 type="range" min={0} max={10} step={0.5} value={fatigue}
                 onChange={(e) => setFatigue(Number(e.target.value))}
-                style={{ width: 90, accentColor: "var(--lamp)" }}
+                style={{ width: 70, accentColor: "var(--lamp)" }}
               />
             </label>
             <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
@@ -605,7 +630,7 @@ export function RacePlanner() {
                 <>
                   <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)" }}>model</span>
                   <span className="eyebrow" style={{ fontSize: 8.5, lineHeight: 1.9 }}>
-                    fit: {fit.basis} (eff. n={fit.effN}) · ±{u.paceFmt(fit.residStd, 1)}{u.paceUnit} band · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}/{crewStopMin}m fresh
+                    fit: {fit.basis} (eff. n={fit.effN}) · ±{u.paceFmt(fit.residStd, 1)}{u.paceUnit} band · race-cal +{calibration}% all paces · restraint +{restraint}% thru mi 50 (fades by 60, restrained miles age ×{(1 - 2 * restraint / 100).toFixed(2)} on the fatigue clock) · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}/{crewStopMin}m fresh
                   </span>
                 </>
               )}
