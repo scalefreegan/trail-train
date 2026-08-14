@@ -233,6 +233,62 @@ export function appendContextItems(state, items, todayIso = isoDate(new Date()))
   };
 }
 
+// Per-append and per-section caps for agent section appends. The section
+// total matches the settings dialog / PUT edit limit — an append must never
+// push a section past what the dialog can save back.
+const SECTION_APPEND_MAX = 1000;
+const SECTION_TOTAL_MAX = 4000;
+
+/**
+ * Append agent-authored paragraphs to the free-text context sections.
+ * APPEND-ONLY by design: the agent can add a paragraph but can never edit
+ * or remove athlete-written prose. Invalid appends (unknown section, empty
+ * or oversized text, section already at capacity) are dropped with a warn
+ * and reported via `dropped` so the chat UI can surface them.
+ */
+export function appendSectionText(state, appends) {
+  const added = [];
+  const dropped = [];
+  if (!Array.isArray(appends) || appends.length === 0) return { state, added, dropped };
+  const prefs = state.preferences ?? {};
+  const ctx = prefs.context ?? {};
+  const sections = { ...EMPTY_SECTIONS, ...(ctx.sections ?? {}) };
+  for (const a of appends) {
+    const section = a?.section;
+    const text = typeof a?.text === "string" ? a.text.trim() : "";
+    if (!Object.hasOwn(EMPTY_SECTIONS, section)) {
+      dropped.push({ ...a, reason: "unknown section" });
+      console.warn(`• section append rejected (unknown section): ${JSON.stringify(a).slice(0, 120)}`);
+      continue;
+    }
+    if (!text || text.length > SECTION_APPEND_MAX) {
+      dropped.push({ ...a, reason: "empty or over " + SECTION_APPEND_MAX + " chars" });
+      console.warn(`• section append rejected (empty/oversized text) for ${section}`);
+      continue;
+    }
+    const next = sections[section] ? `${sections[section]}\n\n${text}` : text;
+    if (next.length > SECTION_TOTAL_MAX) {
+      dropped.push({ ...a, reason: "section full" });
+      console.warn(`• section append rejected: ${section} would exceed ${SECTION_TOTAL_MAX} chars — trim it in the settings dialog`);
+      continue;
+    }
+    sections[section] = next;
+    added.push({ section, text });
+  }
+  if (added.length === 0) return { state, added, dropped };
+  return {
+    state: {
+      ...state,
+      preferences: {
+        ...prefs,
+        context: { sections, temporary: Array.isArray(ctx.temporary) ? [...ctx.temporary] : [] },
+      },
+    },
+    added,
+    dropped,
+  };
+}
+
 // Matches "Jun 29 - Jul 8, 2026" / "March 3-9, 2027" style ranges inside a
 // prose constraint; the range END becomes the migrated item's expires date.
 const DATE_RANGE_RE =

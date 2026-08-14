@@ -143,16 +143,25 @@ filtered out). When asked about a session on a specific day, cross-check the day
 against the sections and every temporary item before suggesting timing — work around a
 constraint explicitly (e.g. early start before the conflicting event) or move the session.
 
-SAVING CONTEXT — when the athlete asks you to remember something, or states a new dated
-constraint (a trip, an injury window, a schedule change), append at the VERY END of your
-reply, after all prose:
+SAVING CONTEXT — you can persist things the athlete tells you. Append at the VERY END of
+your reply, after all prose:
 <<<CONTEXT_SAVE
-{"items":[{"text":"<concise item, athlete voice>","expires":"YYYY-MM-DD"}]}
+{"items":[{"text":"<dated constraint, athlete voice>","expires":"YYYY-MM-DD"}],
+ "section_appends":[{"section":"about_me","text":"<durable fact, athlete voice>"}]}
 CONTEXT_SAVE>>>
-Include the block ONLY when there is genuinely something new to save — never emit an
-empty one, and never re-save something already in context.temporary. It is stripped
-before display and stored in the athlete's editable coach context. Confirm in your prose
-what you saved and until when. If no end date is implied, use roughly 30 days out.
+Routing: DATED, self-expiring facts (a trip, an injury window, a one-off schedule change)
+→ items, with a realistic expires (roughly 30 days out if none is implied). DURABLE facts
+(background, lasting training preferences, what a calendar pattern means) →
+section_appends into exactly one of: about_me, training_preferences,
+calendar_conventions. Appends ADD a new paragraph to the section — they can never edit or
+remove existing text — so keep each append tight, self-contained, and in the athlete's
+voice. Omit either key when it has nothing; include the block ONLY when there is
+genuinely something new — never emit an empty one, and never re-save what is already in
+context. It is stripped before display and stored in the athlete's editable coach
+context. Confirm in your prose exactly what you saved and where (or until when).
+If the athlete asks you to interview them to build out their context/profile, ask short
+focused questions a few at a time, and at the natural end of the exchange save what you
+learned — durable answers via section_appends, dated ones via items.
 
 Load philosophy: recovery signals gate the plan in BOTH directions. Only recommend extra
 rest or reduced mileage when a concrete signal in the data justifies it (HRV ratio below
@@ -354,6 +363,7 @@ function chatApi(): Plugin {
             // all items rejected, write error) surface via meta.
             let display = String(text).trim()
             const pendingItems: unknown[] = []
+            const pendingSections: unknown[] = []
             let saveError: string | null = null
             // peel from the LAST marker each pass — a leftmost regex match
             // would span two adjacent blocks (lazy or not) and fail to parse
@@ -365,16 +375,20 @@ function chatApi(): Plugin {
               const m = display.slice(i).match(TRAILING_SAVE_RE)
               if (!m) break // not a clean trailing block (e.g. quoted mid-reply) — leave it visible
               try {
-                const items = JSON.parse(m[1])?.items
+                const parsed = JSON.parse(m[1])
+                const items = parsed?.items
+                const sects = parsed?.section_appends
                 if (Array.isArray(items)) pendingItems.unshift(...items)
-                else saveError = 'save block had no items array'
+                if (Array.isArray(sects)) pendingSections.unshift(...sects)
+                if (!Array.isArray(items) && !Array.isArray(sects)) saveError = 'save block had neither items nor section_appends'
               } catch (e) {
                 saveError = `malformed save block: ${(e as Error).message}`
               }
               display = display.slice(0, i).trim()
             }
             let savedContext: { text: string; expires: string }[] = []
-            if (pendingItems.length > 0) {
+            let savedSections: { section: string; text: string }[] = []
+            if (pendingItems.length > 0 || pendingSections.length > 0) {
               try {
                 const stateMod = await import(path.join(projectRoot, 'scripts/state.mjs')) as {
                   loadState: (root: string) => Promise<{ preferences?: Record<string, unknown> }>
@@ -384,12 +398,25 @@ function chatApi(): Plugin {
                     added: { text: string; expires: string }[]
                     dropped: unknown[]
                   }
+                  appendSectionText: (s: unknown, a: unknown) => {
+                    state: unknown
+                    added: { section: string; text: string }[]
+                    dropped: { reason?: string }[]
+                  }
                 }
                 const fresh = await stateMod.loadState(projectRoot)
-                const { state: withCtx, added, dropped } = stateMod.appendContextItems(fresh, pendingItems)
-                if (added.length > 0) await stateMod.saveState(projectRoot, withCtx)
-                savedContext = added.map((a) => ({ text: a.text, expires: a.expires }))
-                if (dropped.length > 0) saveError = `${dropped.length} item(s) failed validation and were not saved`
+                const itemsRes = stateMod.appendContextItems(fresh, pendingItems)
+                const sectsRes = stateMod.appendSectionText(itemsRes.state, pendingSections)
+                if (itemsRes.added.length > 0 || sectsRes.added.length > 0) {
+                  await stateMod.saveState(projectRoot, sectsRes.state)
+                }
+                savedContext = itemsRes.added.map((a) => ({ text: a.text, expires: a.expires }))
+                savedSections = sectsRes.added
+                const droppedCount = itemsRes.dropped.length + sectsRes.dropped.length
+                if (droppedCount > 0) {
+                  const reasons = sectsRes.dropped.map((d) => d.reason).filter(Boolean).join('; ')
+                  saveError = `${droppedCount} save(s) failed validation and were not stored${reasons ? ` (${reasons})` : ''}`
+                }
               } catch (e) {
                 saveError = `context write failed: ${(e as Error).message}`
               }
@@ -403,6 +430,7 @@ function chatApi(): Plugin {
                 cost_usd: wrapper?.total_cost_usd ?? null,
                 duration_ms: wrapper?.duration_ms ?? null,
                 saved_context: savedContext,
+                saved_sections: savedSections,
                 context_save_error: saveError,
               },
             })

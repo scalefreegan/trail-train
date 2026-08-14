@@ -1364,6 +1364,7 @@ type ChatMessage = {
   meta?: {
     num_turns?: number; cost_usd?: number | null; duration_ms?: number | null; error?: boolean;
     saved_context?: { text: string; expires: string }[];
+    saved_sections?: { section: string; text: string }[];
     context_save_error?: string | null;
   };
   pending?: boolean;
@@ -1739,11 +1740,16 @@ function ChatBubble({ msg }: { msg: ChatMessage }) {
       }}>
         {msg.pending ? <TypingDots /> : msg.content}
       </div>
-      {((msg.meta?.saved_context?.length ?? 0) > 0 || msg.meta?.context_save_error) && (
+      {((msg.meta?.saved_context?.length ?? 0) > 0 || (msg.meta?.saved_sections?.length ?? 0) > 0 || msg.meta?.context_save_error) && (
         <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
           {(msg.meta?.saved_context ?? []).map((s, i) => (
             <span key={i} className="eyebrow" style={{ fontSize: 8, color: "var(--pine)", textTransform: "none", letterSpacing: "0.04em" }}>
               ● saved to coach memory: “{s.text.length > 72 ? `${s.text.slice(0, 72)}…` : s.text}” · until {s.expires}
+            </span>
+          ))}
+          {(msg.meta?.saved_sections ?? []).map((s, i) => (
+            <span key={`s-${i}`} className="eyebrow" style={{ fontSize: 8, color: "var(--pine)", textTransform: "none", letterSpacing: "0.04em" }}>
+              ● added to {s.section.replace(/_/g, " ")}: “{s.text.length > 72 ? `${s.text.slice(0, 72)}…` : s.text}”
             </span>
           ))}
           {msg.meta?.context_save_error && (
