@@ -256,7 +256,9 @@ export function appendSectionText(state, appends) {
   for (const a of appends) {
     const section = a?.section;
     const text = typeof a?.text === "string" ? a.text.trim() : "";
-    if (!Object.hasOwn(EMPTY_SECTIONS, section)) {
+    // typeof guard matters: Object.hasOwn coerces property keys, so
+    // ["about_me"] would pass it and then leak a non-string into `added`
+    if (typeof section !== "string" || !Object.hasOwn(EMPTY_SECTIONS, section)) {
       dropped.push({ ...a, reason: "unknown section" });
       console.warn(`• section append rejected (unknown section): ${JSON.stringify(a).slice(0, 120)}`);
       continue;

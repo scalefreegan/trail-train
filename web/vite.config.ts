@@ -155,7 +155,8 @@ Routing: DATED, self-expiring facts (a trip, an injury window, a one-off schedul
 section_appends into exactly one of: about_me, training_preferences,
 calendar_conventions. Appends ADD a new paragraph to the section — they can never edit or
 remove existing text — so keep each append tight, self-contained, and in the athlete's
-voice. Omit either key when it has nothing; include the block ONLY when there is
+voice, UNDER 1000 characters (longer appends are rejected outright; split into multiple
+appends instead). Omit either key when it has nothing; include the block ONLY when there is
 genuinely something new — never emit an empty one, and never re-save what is already in
 context. It is stripped before display and stored in the athlete's editable coach
 context. Confirm in your prose exactly what you saved and where (or until when).
@@ -364,10 +365,11 @@ function chatApi(): Plugin {
             let display = String(text).trim()
             const pendingItems: unknown[] = []
             const pendingSections: unknown[] = []
-            let saveError: string | null = null
+            const saveErrors: string[] = []
             // peel from the LAST marker each pass — a leftmost regex match
             // would span two adjacent blocks (lazy or not) and fail to parse
             const SAVE_START = '<<<CONTEXT_SAVE'
+            const SAVE_END = 'CONTEXT_SAVE>>>'
             const TRAILING_SAVE_RE = /^<<<CONTEXT_SAVE\s*([\s\S]*?)\s*CONTEXT_SAVE>>>\s*$/
             for (;;) {
               const i = display.lastIndexOf(SAVE_START)
@@ -379,12 +381,25 @@ function chatApi(): Plugin {
                 const items = parsed?.items
                 const sects = parsed?.section_appends
                 if (Array.isArray(items)) pendingItems.unshift(...items)
+                else if (items !== undefined) saveErrors.push('items was not an array')
                 if (Array.isArray(sects)) pendingSections.unshift(...sects)
-                if (!Array.isArray(items) && !Array.isArray(sects)) saveError = 'save block had neither items nor section_appends'
+                else if (sects !== undefined) saveErrors.push('section_appends was not an array')
+                if (items === undefined && sects === undefined) saveErrors.push('save block had neither items nor section_appends')
               } catch (e) {
-                saveError = `malformed save block: ${(e as Error).message}`
+                saveErrors.push(`malformed save block: ${(e as Error).message}`)
               }
               display = display.slice(0, i).trim()
+            }
+            // a marker INSIDE a saved text makes the parse fail mid-block and
+            // can leave the unclosed head of the outer block visible — strip
+            // any trailing start-marker with no end-marker after it (a quoted
+            // COMPLETE example still has its end marker, so it survives)
+            {
+              const j = display.lastIndexOf(SAVE_START)
+              if (j >= 0 && !display.slice(j).includes(SAVE_END)) {
+                display = display.slice(0, j).trim()
+                saveErrors.push('stripped an unclosed save block from the reply')
+              }
             }
             let savedContext: { text: string; expires: string }[] = []
             let savedSections: { section: string; text: string }[] = []
@@ -415,12 +430,13 @@ function chatApi(): Plugin {
                 const droppedCount = itemsRes.dropped.length + sectsRes.dropped.length
                 if (droppedCount > 0) {
                   const reasons = sectsRes.dropped.map((d) => d.reason).filter(Boolean).join('; ')
-                  saveError = `${droppedCount} save(s) failed validation and were not stored${reasons ? ` (${reasons})` : ''}`
+                  saveErrors.push(`${droppedCount} save(s) failed validation and were not stored${reasons ? ` (${reasons})` : ''}`)
                 }
               } catch (e) {
-                saveError = `context write failed: ${(e as Error).message}`
+                saveErrors.push(`context write failed: ${(e as Error).message}`)
               }
             }
+            const saveError = saveErrors.length > 0 ? saveErrors.join(' · ') : null
             if (saveError) console.warn(`[chat] context save problem: ${saveError}`)
             send('message', {
               role: 'assistant',
@@ -503,6 +519,7 @@ function settingsApi(): Plugin {
     prefs?: Record<string, unknown>
     context?: {
       sections: Record<string, string>
+      sectionsBaseline: Record<string, string> | null
       temporary: Record<string, unknown>[]
       knownIds: string[] | null
     }
@@ -559,7 +576,20 @@ function settingsApi(): Plugin {
       if (ctx.known_ids !== undefined && (!Array.isArray(ctx.known_ids) || ctx.known_ids.some((x) => typeof x !== 'string'))) {
         return { error: 'context.known_ids: string array required' }
       }
-      context = { sections, temporary, knownIds: (ctx.known_ids as string[] | undefined) ?? null }
+      // the section text as of the dialog's GET — lets the server detect and
+      // re-apply agent appends that landed while the dialog was open
+      let sectionsBaseline: Record<string, string> | null = null
+      const rawBase = (ctx as { sections_baseline?: unknown }).sections_baseline
+      if (rawBase !== undefined) {
+        if (!isPlainObject(rawBase)) return { error: 'context.sections_baseline: object required' }
+        sectionsBaseline = {}
+        for (const [key, v] of Object.entries(rawBase)) {
+          if (!SECTION_KEYS.includes(key)) return { error: `context.sections_baseline.${key}: unknown section` }
+          if (typeof v !== 'string') return { error: `context.sections_baseline.${key}: string required` }
+          sectionsBaseline[key] = v
+        }
+      }
+      context = { sections, sectionsBaseline, temporary, knownIds: (ctx.known_ids as string[] | undefined) ?? null }
     }
     let calendar
     if (body.calendar !== undefined) {
@@ -646,8 +676,22 @@ function settingsApi(): Plugin {
             const knownIds = new Set(context.knownIds ?? context.temporary.map((t) => t.id as string))
             const clientIds = new Set(context.temporary.map((t) => t.id as string))
             const preserved = (freshCtx.temporary ?? []).filter((t) => !knownIds.has(t.id) && !clientIds.has(t.id))
+            // Sections: the client's text wins, but an agent append that
+            // landed AFTER the dialog's GET (fresh = baseline + tail) is
+            // re-applied on top so it isn't silently clobbered. Without a
+            // baseline (curl), the client's text simply wins.
+            const mergedSections: Record<string, string> = { ...(freshCtx.sections ?? {}) }
+            for (const [key, clientText] of Object.entries(context.sections)) {
+              const freshText = mergedSections[key] ?? ''
+              const base = context.sectionsBaseline?.[key]
+              if (typeof base === 'string' && freshText !== base && freshText.startsWith(base)) {
+                mergedSections[key] = clientText + freshText.slice(base.length)
+              } else {
+                mergedSections[key] = clientText
+              }
+            }
             nextContext = {
-              sections: { ...(freshCtx.sections ?? {}), ...context.sections },
+              sections: mergedSections,
               temporary: [...context.temporary, ...preserved],
             }
           }

@@ -5,7 +5,7 @@
 //   - childcare markers + calendar keywords → config/profile.json
 // Dev-only like chat/resync: the endpoints live in vite dev middleware.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { usePersistentState, type CoachContext, type TemporaryContextItem } from "./data";
 
@@ -54,19 +54,37 @@ const inputStyle: React.CSSProperties = {
 };
 
 /* Textarea that grows with its content — no inner scrollbars, no manual
-   resize handles. Height tracks scrollHeight on every value change. */
+   resize handles. Height tracks scrollHeight on every value change AND on
+   width changes (grid reflow / window resize rewraps the text). */
 function AutoGrowArea({ value, onChange, minHeight = 72, ...rest }: {
   value: string;
   onChange: (v: string) => void;
   minHeight?: number;
 } & Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, "value" | "onChange">) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
-  useEffect(() => {
+  const lastWidth = useRef(0);
+  const measure = useCallback(() => {
     const el = ref.current;
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.max(el.scrollHeight + 2, minHeight)}px`;
-  }, [value, minHeight]);
+  }, [minHeight]);
+  // layout effect: sized before paint, no one-frame flash on mount
+  useLayoutEffect(measure, [value, measure]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      // re-measure only on WIDTH changes — our own height writes also fire
+      // the observer and would loop otherwise
+      if (el.clientWidth !== lastWidth.current) {
+        lastWidth.current = el.clientWidth;
+        measure();
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [measure]);
   return (
     <textarea
       ref={ref}
@@ -75,7 +93,7 @@ function AutoGrowArea({ value, onChange, minHeight = 72, ...rest }: {
       {...rest}
       style={{
         ...inputStyle, width: "100%", resize: "none", overflow: "hidden",
-        lineHeight: 1.55, font: "12.5px var(--font-body)", minHeight,
+        font: "12.5px var(--font-body)", lineHeight: 1.55, minHeight,
         ...(rest.style ?? {}),
       }}
     />
@@ -110,12 +128,17 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
   // ids present at load time — the server preserves any item it has that
   // isn't in this set (e.g. appended by the coach while the dialog was open)
   const knownIdsRef = useRef<string[]>([]);
+  // section text at load time — lets the server re-apply agent appends that
+  // landed while the dialog was open instead of clobbering them
+  const sectionsBaselineRef = useRef<CoachContext["sections"] | null>(null);
+  const backdropMouseDown = useRef(false);
 
-  // discarding a long edit deserves one confirmation; a clean form closes freely
+  // discarding a long edit deserves one confirmation; a clean form closes
+  // freely — a typed-but-not-added note draft counts as an edit too
   const requestClose = useCallback(() => {
     if (saving) return;
-    if (!dirty || window.confirm("discard unsaved changes?")) onClose();
-  }, [dirty, saving, onClose]);
+    if ((!dirty && !newNote.text.trim()) || window.confirm("discard unsaved changes?")) onClose();
+  }, [dirty, saving, newNote.text, onClose]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") requestClose(); };
@@ -140,6 +163,11 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
         setCalendarError(d.calendar_error ?? null);
         setNewNote({ text: "", expires: plusDays(d.today, 30) });
         knownIdsRef.current = (p.context?.temporary ?? []).map((t) => t.id);
+        sectionsBaselineRef.current = {
+          about_me: p.context?.sections?.about_me ?? "",
+          calendar_conventions: p.context?.sections?.calendar_conventions ?? "",
+          training_preferences: p.context?.sections?.training_preferences ?? "",
+        };
         setForm({
           training_philosophy: p.training_philosophy ?? "",
           weekly_rest_day: p.weekly_rest_day ?? "",
@@ -178,7 +206,12 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
             // cleared number fields are omitted, not saved as 0
             ...(form.nutrition_target_kcal_per_hour !== "" ? { nutrition_target_kcal_per_hour: form.nutrition_target_kcal_per_hour } : {}),
             ...(form.heat_threshold_c !== "" ? { heat_threshold_c: form.heat_threshold_c } : {}),
-            context: { sections: form.sections, temporary: form.temporary, known_ids: knownIdsRef.current },
+            context: {
+              sections: form.sections,
+              sections_baseline: sectionsBaselineRef.current ?? undefined,
+              temporary: form.temporary,
+              known_ids: knownIdsRef.current,
+            },
           },
           // a corrupt profile.json makes calendar edits refusable server-side;
           // don't send them at all in that case
@@ -192,9 +225,25 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
       });
       const body = await res.json().catch(() => null);
       // even a failed save may have committed preferences (partial write) —
-      // adopt the server's item ids so a retry can't resurrect a deletion
+      // adopt the server's item ids and section text so a retry can't
+      // resurrect a deletion or re-clobber a merged append
       const returnedIds = body?.preferences?.context?.temporary?.map((t: TemporaryContextItem) => t.id);
       if (Array.isArray(returnedIds)) knownIdsRef.current = returnedIds;
+      const returnedSections = body?.preferences?.context?.sections;
+      if (returnedSections && typeof returnedSections === "object") {
+        const adopted = {
+          about_me: returnedSections.about_me ?? "",
+          calendar_conventions: returnedSections.calendar_conventions ?? "",
+          training_preferences: returnedSections.training_preferences ?? "",
+        };
+        sectionsBaselineRef.current = adopted;
+        if (!res.ok) {
+          // dialog stays open — show the server's merged text (it contains
+          // this form's edits plus any re-applied agent append) so a retry
+          // can't clobber the merge
+          setForm((f) => (f ? { ...f, sections: adopted } : f));
+        }
+      }
       if (!res.ok) throw new Error(body?.error ?? `save failed (${res.status})`);
       reload();
       onClose();
@@ -387,12 +436,13 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                 <span className="eyebrow" style={{ fontSize: 9, color: "var(--mist-dim)", width: 90, flexShrink: 0 }}>{cls}</span>
                 {words.map((w) => (
                   <button key={w} className="chip" style={{ fontSize: 10, textTransform: "none" }} title="remove"
+                    disabled={!!calendarError}
                     onClick={() => patch({ calendar_keywords: { ...form.calendar_keywords, [cls]: words.filter((x) => x !== w) } })}>
                     {w} ×
                   </button>
                 ))}
                 <input
-                  placeholder="add…" value={newKeyword[cls] ?? ""}
+                  placeholder="add…" value={newKeyword[cls] ?? ""} disabled={!!calendarError}
                   onChange={(e) => setNewKeyword((k) => ({ ...k, [cls]: e.target.value }))}
                   onKeyDown={(e) => {
                     const v = (newKeyword[cls] ?? "").trim().toLowerCase();
@@ -413,7 +463,10 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
 
   return createPortal(
     <div
-      onClick={requestClose}
+      // close only when the CLICK STARTED on the backdrop — releasing a
+      // text-selection drag over the edge of the panel must not close it
+      onMouseDown={(e) => { backdropMouseDown.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (e.target === e.currentTarget && backdropMouseDown.current) requestClose(); }}
       style={{
         position: "fixed", inset: 0, zIndex: 100, background: "rgba(4, 8, 12, 0.78)",
         display: "flex", padding: "clamp(12px, 3vh, 32px)",
