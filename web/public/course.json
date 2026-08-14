@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-05T03:11:33.677Z",
+  "generated_at": "2026-08-14T21:53:28.889Z",
   "source": "config/mogollon-monster-100.gpx + config/race-course.json",
   "distance_mi": 101.902,
   "gain_ft": 15346,
@@ -8524,6 +8524,7 @@
       "pacers": false,
       "water_only": false,
       "notes": "first aid; long rim climb behind you",
+      "tech_pct": 4,
       "lat": 34.33614,
       "lon": -111.01403,
       "gpx_mi": 10.778
@@ -8540,6 +8541,7 @@
       "pacers": false,
       "water_only": false,
       "notes": "top of the biggest climb; first hard cutoff",
+      "tech_pct": 4,
       "lat": 34.38131,
       "lon": -111.06096,
       "gpx_mi": 21.276
@@ -8556,6 +8558,7 @@
       "pacers": false,
       "water_only": false,
       "notes": "crew zone only, alongside Horton",
+      "tech_pct": 0,
       "lat": 34.38032,
       "lon": -111.06384,
       "gpx_mi": 21.455
@@ -8572,6 +8575,7 @@
       "pacers": false,
       "water_only": false,
       "notes": "first drop bag; hot exposed section ahead",
+      "tech_pct": 0,
       "lat": 34.37769,
       "lon": -111.0997,
       "gpx_mi": 26.638
@@ -8588,6 +8592,7 @@
       "pacers": false,
       "water_only": false,
       "notes": "long remote segment; rim climb into the station",
+      "tech_pct": 5,
       "lat": 34.40663,
       "lon": -111.17664,
       "gpx_mi": 38.671
@@ -8604,6 +8609,7 @@
       "pacers": true,
       "water_only": false,
       "notes": "first pacer pickup; crew + drop bag",
+      "tech_pct": 0,
       "lat": 34.44348,
       "lon": -111.15021,
       "gpx_mi": 42.219
@@ -8620,6 +8626,7 @@
       "pacers": false,
       "water_only": false,
       "notes": "roughly halfway; runner-access only",
+      "tech_pct": 0,
       "lat": 34.50952,
       "lon": -111.1965,
       "gpx_mi": 51.776
@@ -8636,6 +8643,7 @@
       "pacers": true,
       "water_only": false,
       "notes": "crew zone; pacer swap point",
+      "tech_pct": 0,
       "lat": 34.45842,
       "lon": -111.25156,
       "gpx_mi": 58.074
@@ -8652,6 +8660,7 @@
       "pacers": false,
       "water_only": false,
       "notes": "bottom of the canyon before the long climb out",
+      "tech_pct": 0,
       "lat": 34.43015,
       "lon": -111.26079,
       "gpx_mi": 60.437
@@ -8668,6 +8677,7 @@
       "pacers": false,
       "water_only": false,
       "notes": "drop bag; deep in the overnight",
+      "tech_pct": 0,
       "lat": 34.40077,
       "lon": -111.36551,
       "gpx_mi": 71.703
@@ -8684,6 +8694,7 @@
       "pacers": false,
       "water_only": false,
       "notes": "top of the Donahue rim climb",
+      "tech_pct": 6,
       "lat": 34.39875,
       "lon": -111.40862,
       "gpx_mi": 81.121
@@ -8700,6 +8711,7 @@
       "pacers": true,
       "water_only": false,
       "notes": "crew zone after the Turkey Springs climb",
+      "tech_pct": 0,
       "lat": 34.41772,
       "lon": -111.40737,
       "gpx_mi": 84.991
@@ -8716,6 +8728,7 @@
       "pacers": false,
       "water_only": false,
       "notes": "last hard cutoff before the finish push",
+      "tech_pct": 4,
       "lat": 34.44991,
       "lon": -111.41778,
       "gpx_mi": 89.868
@@ -8732,6 +8745,7 @@
       "pacers": true,
       "water_only": true,
       "notes": "water only; crew + pacer access, 1.5 mi to go",
+      "tech_pct": 0,
       "lat": 34.37437,
       "lon": -111.44336,
       "gpx_mi": 100.453
@@ -8748,6 +8762,7 @@
       "pacers": false,
       "water_only": false,
       "notes": "track end (no GPX waypoint); 38 h overall cutoff",
+      "tech_pct": 0,
       "gpx_mi": 101.902,
       "lat": 34.38757,
       "lon": -111.45483

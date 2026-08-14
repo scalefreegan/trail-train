@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
-import { useUnits, useStrava, useBlockConfig, useMeasuredWidth } from "../data";
+import { useRefresh, useUnits, useStrava, useBlockConfig, useMeasuredWidth } from "../data";
 import { SectionTag, Contours } from "../atoms";
 import { useCourse, useCrewBase } from "./useRaceData";
 import { gmapsDirectionsUrl } from "./links";
@@ -8,9 +8,23 @@ import { CrewSheet } from "./CrewSheet";
 import {
   fitPacing, projectRace, nightIntervals,
   fmtRaceClock, fmtElapsed,
-  type StationProjection,
+  type StationProjection, type PaceGradeCurve,
 } from "./pacing";
 import type { Course } from "./types";
+
+/** Personal pace-vs-grade curve written by sync-streams (null until the time
+    streams have been fetched and fitted — projectRace falls back). */
+function usePaceGrade(): PaceGradeCurve {
+  const { key: refreshKey } = useRefresh();
+  const [curve, setCurve] = useState<PaceGradeCurve>(null);
+  useEffect(() => {
+    fetch(`/pace-grade.json?t=${Date.now()}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setCurve(d && Array.isArray(d.curve) ? d : null))
+      .catch(() => setCurve(null));
+  }, [refreshKey]);
+  return curve;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Race planner — the course as it will actually unfold: real GPX     */
@@ -242,23 +256,42 @@ function ProfileChart({ course, proj }: {
           );
         })}
 
-        {/* pace strip — projected split pace (and goal) on the same mile axis */}
-        {paceSegs.length > 0 && (() => {
-          const vals = paceSegs.flatMap((g) => (g.goal != null ? [g.pace, g.goal] : [g.pace]));
-          const lo = Math.min(...vals), hi = Math.max(...vals);
+        {/* pace strip — continuous grade-adjusted pace plus split averages
+            (and goal) on the same mile axis */}
+        {paceSegs.length > 0 && proj && (() => {
+          const perUnit = u.paceUnit === "/km" ? 1 / 1.609344 : 1;
+          // continuous point pace over the decimated profile, smoothed over
+          // ~0.4 mi so the strip reads as terrain response, not GPS noise
+          const raw = profile.map((p) => proj.paceAtMile(p.mi) * perUnit);
+          const cont = raw.map((_, i) => {
+            let s = 0, n = 0;
+            for (let j = Math.max(0, i - 4); j <= Math.min(raw.length - 1, i + 4); j++) { s += raw[j]; n++; }
+            return s / n;
+          });
+          // display range: clamp the slow end at the 95th percentile — the
+          // savage pitches flat-line at the bottom instead of stretching the
+          // whole axis (their true cost still shows in tooltip + splits)
+          const sorted = [...cont].sort((a, b) => a - b);
+          const p95 = sorted[Math.floor(sorted.length * 0.95)];
+          const segVals = paceSegs.flatMap((g) => (g.goal != null ? [g.pace, g.goal] : [g.pace]));
+          const lo = Math.min(sorted[0], ...segVals);
+          const hi = Math.max(p95, ...segVals);
           const span = Math.max(hi - lo, 30);
-          const [pLo, pHi] = [lo - span * 0.12, hi + span * 0.12];
+          const [pLo, pHi] = [lo - span * 0.1, hi + span * 0.1];
           // faster (smaller) at the top
-          const yPace = (p: number) => PACE_TOP + ((p - pLo) / (pHi - pLo)) * PACE_H;
+          const yPace = (p: number) => PACE_TOP + ((Math.min(p, pHi) - pLo) / (pHi - pLo)) * PACE_H;
+          const contPath = profile
+            .map((p, i) => `${i === 0 ? "M" : "L"} ${xAt(p.mi).toFixed(1)} ${yPace(cont[i]).toFixed(1)}`)
+            .join(" ");
           const stepPath = (key: "pace" | "goal") =>
             paceSegs
               .filter((g) => g[key] != null)
               .map((g, i) => `${i === 0 ? "M" : "L"} ${xAt(g.x0).toFixed(1)} ${yPace(g[key]!).toFixed(1)} L ${xAt(g.x1).toFixed(1)} ${yPace(g[key]!).toFixed(1)}`)
               .join(" ");
-          // gridline ticks at whole display minutes inside the range —
-          // 2-3 lines max, the strip is only ~56px tall
+          // ~3 gridlines, stepped to a round pace interval
+          const NICE_STEPS = [60, 120, 300, 600, 1200];
+          const stepS = NICE_STEPS.find((s) => span / s <= 3.2) ?? 1200;
           const ticks: number[] = [];
-          const stepS = span > 300 ? 240 : span > 150 ? 120 : 60;
           for (let t = Math.ceil(pLo / stepS) * stepS; t <= pHi; t += stepS) ticks.push(t);
           const fmtPace = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
           const hasGoal = paceSegs.some((g) => g.goal != null);
@@ -266,7 +299,8 @@ function ProfileChart({ course, proj }: {
             <g>
               <text x={PAD.left} y={PACE_TOP - 2} fill="var(--mist-mute)" style={{ font: "8.5px var(--font-mono)", letterSpacing: "0.14em" }}>
                 PACE {u.paceUnit.toUpperCase()}
-                <tspan fill="var(--lamp)"> ── ETA</tspan>
+                <tspan fill="var(--lamp)"> ── POINT</tspan>
+                <tspan fill="var(--mist-dim)"> ─ SPLIT AVG</tspan>
                 {hasGoal && <tspan fill="var(--creek)"> ┄ GOAL</tspan>}
               </text>
               {ticks.map((t) => (
@@ -280,7 +314,8 @@ function ProfileChart({ course, proj }: {
               {hasGoal && (
                 <path d={stepPath("goal")} fill="none" stroke="var(--creek)" strokeWidth="1.2" strokeDasharray="3 4" strokeLinejoin="round" opacity={0.85} />
               )}
-              <path d={stepPath("pace")} fill="none" stroke="var(--lamp)" strokeWidth="1.6" strokeLinejoin="round" />
+              <path d={stepPath("pace")} fill="none" stroke="var(--mist-dim)" strokeWidth="1.1" strokeLinejoin="round" opacity={0.9} />
+              <path d={contPath} fill="none" stroke="var(--lamp)" strokeWidth="1.3" strokeLinejoin="round" opacity={0.95} />
             </g>
           );
         })()}
@@ -380,15 +415,22 @@ function ProfileChart({ course, proj }: {
             <span style={{ color: "var(--ember)" }}>worst</span><span>{fmtRaceClock(race.date, proj.elapsedAtMile(hover.p.mi, "worst"))}</span>
             {(() => {
               const seg = paceSegs.find((g) => hover.p.mi >= g.x0 && hover.p.mi <= g.x1);
-              if (!seg) return null;
+              const perUnit = u.paceUnit === "/km" ? 1 / 1.609344 : 1;
+              const point = proj.paceAtMile(hover.p.mi) * perUnit;
               const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
               return (
                 <>
-                  <span style={{ color: "var(--mist-dim)" }}>pace</span>
-                  <span>
-                    {fmt(seg.pace)}{u.paceUnit}
-                    {seg.goal != null && <span style={{ color: "var(--creek)" }}> · goal {fmt(seg.goal)}</span>}
-                  </span>
+                  <span style={{ color: "var(--mist-dim)" }}>pace here</span>
+                  <span>{point > 0 ? `${fmt(point)}${u.paceUnit}` : "—"}</span>
+                  {seg && (
+                    <>
+                      <span style={{ color: "var(--mist-dim)" }}>split avg</span>
+                      <span>
+                        {fmt(seg.pace)}{u.paceUnit}
+                        {seg.goal != null && <span style={{ color: "var(--creek)" }}> · goal {fmt(seg.goal)}</span>}
+                      </span>
+                    </>
+                  )}
                 </>
               );
             })()}
@@ -420,15 +462,17 @@ export function RacePlanner() {
   const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops("race.stop_overrides");
   const [sheetOpen, setSheetOpen] = useState(false);
 
+  const paceGrade = usePaceGrade();
   const fit = useMemo(() => fitPacing(activities), [activities]);
   const proj = useMemo(
     () => (course && fit ? projectRace(course, fit, {
       // a cleared/zeroed goal field (Number("")=0) means "no goal" — coerce to
       // null so the header ("—") and the table agree instead of collapsing ETAs
       fatiguePctPer10mi: fatigue, calibrationPct: calibration, restraintPct: restraint,
+      gradeCurve: paceGrade,
       goalH: goalH > 0 ? goalH : null, aidStopMin, crewStopMin, stopOverridesMin: stopOverrides,
     }) : null),
-    [course, fit, fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides],
+    [course, fit, paceGrade, fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides],
   );
 
   if (missing || !course) {
@@ -740,7 +784,7 @@ export function RacePlanner() {
                 <>
                   <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)" }}>model</span>
                   <span className="eyebrow" style={{ fontSize: 8.5, lineHeight: 1.9 }}>
-                    fit: {fit.basis} (eff. n={fit.effN}) · ±{u.paceFmt(fit.residStd, 1)}{u.paceUnit} band · race-cal +{calibration}% all paces · restraint +{restraint}% thru mi 50 (fades by 60, restrained miles age ×{(1 - 2 * restraint / 100).toFixed(2)} on the fatigue clock) · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}/{crewStopMin}m fresh
+                    fit: {fit.basis} (eff. n={fit.effN}) · ±{u.paceFmt(fit.residStd, 1)}{u.paceUnit} band · grade: {proj?.grade_basis ?? "—"} · tech: {course.aid_stations.filter((s) => (s.tech_pct ?? 0) > 0).map((s) => `${s.name.toLowerCase()} +${s.tech_pct}%`).join(", ") || "none"} · race-cal +{calibration}% all paces · restraint +{restraint}% thru mi 50 (fades by 60, restrained miles age ×{(1 - 2 * restraint / 100).toFixed(2)} on the fatigue clock) · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}/{crewStopMin}m fresh
                   </span>
                 </>
               )}

@@ -195,6 +195,10 @@ async function main() {
       pacers: a.pacers,
       water_only: a.water_only,
       notes: a.notes,
+      // optional %-slowdown for technical tread on the segment INTO this
+      // station (editable in config/race-course.json; consumed by the race
+      // pace projection on top of grade adjustment)
+      tech_pct: a.tech_pct ?? 0,
     };
     if (!a.gpx_wpt) {
       // Finish: no waypoint — track end is the finish line.
