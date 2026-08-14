@@ -128,6 +128,9 @@ export type StationProjection = {
   seg_gain_ft: number;
   /** projected pace over this segment (s/mi, avg scenario, incl. fatigue) */
   seg_pace_s_per_mi: number;
+  /** same, best/worst scenarios (±fit band) — the paces behind those ETA columns */
+  seg_pace_best_s_per_mi: number;
+  seg_pace_worst_s_per_mi: number;
   /** pace this segment must be run at to hit the goal (s/mi — the avg pace
       uniformly rescaled to the goal's moving time), or null with no goal */
   goal_pace_s_per_mi: number | null;
@@ -484,6 +487,8 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
       seg_mi,
       seg_gain_ft,
       seg_pace_s_per_mi: seg_mi > 0 ? segTimes[i].avg / seg_mi : 0,
+      seg_pace_best_s_per_mi: seg_mi > 0 ? segTimes[i].best / seg_mi : 0,
+      seg_pace_worst_s_per_mi: seg_mi > 0 ? segTimes[i].worst / seg_mi : 0,
       goal_pace_s_per_mi: goalScale != null && seg_mi > 0 ? (segTimes[i].avg * goalScale) / seg_mi : null,
       stop_min: Math.round(stopAt(st, i === segs.length - 1) / 60),
       eta_h: { best: arrive.best[i] / 3600, avg: avgH, worst: worstH },

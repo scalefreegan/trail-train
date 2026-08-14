@@ -662,7 +662,12 @@ export function RacePlanner() {
                     <span className="numerals" style={{ fontSize: 11.5, color: "var(--mist-mute)" }}>—</span>
                   )}
                 </span>
-                <span className="numerals col-pace" style={{ fontSize: 11.5, textAlign: "right" }}>
+                <span
+                  className="numerals col-pace" style={{ fontSize: 11.5, textAlign: "right" }}
+                  title={sp.seg_mi > 0.01
+                    ? `split pace ${u.paceUnit}: best ${u.paceFmt(sp.seg_pace_best_s_per_mi, 1)} · expected ${u.paceFmt(sp.seg_pace_s_per_mi, 1)} · worst ${u.paceFmt(sp.seg_pace_worst_s_per_mi, 1)}${sp.goal_pace_s_per_mi != null ? ` · goal ${u.paceFmt(sp.goal_pace_s_per_mi, 1)}` : ""} — these are the paces behind the arrival columns`
+                    : undefined}
+                >
                   {sp.seg_mi > 0.01 ? (
                     <>
                       <span style={{ display: "block", fontWeight: 600 }}>{u.paceFmt(sp.seg_pace_s_per_mi, 1)}</span>
