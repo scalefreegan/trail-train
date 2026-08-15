@@ -113,20 +113,42 @@ function gradeWindows(distance, altitude, time) {
  * time streams not fetched yet).
  */
 function fitGradeCurve(runs, nowMs) {
-  const samples = []; // { g, mult, w }
-  let runsUsed = 0;
+  // First pass: per-run windows + flat baselines. Runs with enough flat
+  // tread normalize against their own median flat speed.
+  const prepared = [];
+  const baselineSamples = []; // { v, w } — pooled flat speeds for the fallback
   for (const { activity, cache } of runs) {
     const wins = gradeWindows(cache.distance, cache.altitude, cache.time);
-    const flat = wins.filter((s) => Math.abs(s.g) < 2).map((s) => s.v);
-    if (flat.length < 8) continue; // no flat baseline — can't normalize this run
-    flat.sort((a, b) => a - b);
-    const base = flat[Math.floor(flat.length / 2)];
-    if (!(base > 0)) continue;
+    if (wins.length === 0) continue;
+    const flat = wins.filter((s) => Math.abs(s.g) < 2).map((s) => s.v).sort((a, b) => a - b);
+    const ownBase = flat.length >= 8 ? flat[Math.floor(flat.length / 2)] : null;
     const ageDays = activity.date ? Math.max(0, (nowMs - new Date(activity.date).getTime()) / 86400000) : 90;
     const wRun = Math.exp(-ageDays / RECENCY_TAU_DAYS);
+    if (ownBase != null && ownBase > 0) baselineSamples.push({ v: ownBase, w: wRun });
+    prepared.push({ wins, ownBase, wRun });
+  }
+  // Recency-weighted median of the per-run flat baselines — lets steep
+  // vert-repeat sessions (too steep to contain flat tread) still inform the
+  // steep bins instead of being excluded, which biased the steep end of the
+  // curve toward runs that also contain flat trail.
+  const pooledBase = baselineSamples.length >= 5
+    ? weightedMedian(baselineSamples.map((b) => ({ v: b.v, w: b.w })))
+    : null;
+
+  const samples = []; // { g, mult, w }
+  let runsUsed = 0;
+  let runsPooledBase = 0;
+  for (const { wins, ownBase, wRun } of prepared) {
+    const base = ownBase ?? pooledBase;
+    if (!(base > 0)) continue;
     const wPer = wRun / wins.length; // a run's weight splits across its windows
-    for (const s of wins) samples.push({ g: s.g, mult: base / s.v, w: wPer });
+    // pooled-baseline runs contribute only clearly-steep windows: their flat
+    // behavior is unknown, steep response is what they add
+    const usable = ownBase != null ? wins : wins.filter((s) => Math.abs(s.g) >= 8);
+    if (usable.length === 0) continue;
+    for (const s of usable) samples.push({ g: s.g, mult: base / s.v, w: wPer });
     runsUsed += 1;
+    if (ownBase == null) runsPooledBase += 1;
   }
   if (runsUsed < 5 || samples.length < 500) return null;
 
@@ -139,6 +161,10 @@ function fitGradeCurve(runs, nowMs) {
     bins.push({ g: lo + GRADE_BIN_PCT / 2, mult: med, n: inBin.length, w: inBin.reduce((s, x) => s + x.w, 0) });
   }
   if (bins.length < 6) return null;
+  // the F(0)=1 normalization (and the client's flat-pace anchor) is
+  // meaningless without near-zero data — refuse to publish a curve that
+  // doesn't cover flat ground
+  if (!bins.some((b) => Math.abs(b.g) <= 3)) return null;
   const smoothed = bins.map((b, i) => {
     const win = [bins[i - 1], b, bins[i + 1]].filter(Boolean);
     const tw = win.reduce((s, x) => s + x.w, 0);
@@ -164,7 +190,7 @@ function fitGradeCurve(runs, nowMs) {
   }));
   return {
     fitted_at: new Date().toISOString(),
-    basis: `${runsUsed} runs · ${samples.length} windows (${GRADE_WINDOW_M} m) · recency-weighted, per-run flat-normalized`,
+    basis: `${runsUsed} runs · ${samples.length} windows (${GRADE_WINDOW_M} m) · recency-weighted (τ ${RECENCY_TAU_DAYS}d), flat-normalized${runsPooledBase ? ` (${runsPooledBase} steep runs on pooled baseline)` : ""}`,
     window_m: GRADE_WINDOW_M,
     bin_pct: GRADE_BIN_PCT,
     runs_used: runsUsed,
@@ -175,14 +201,24 @@ function fitGradeCurve(runs, nowMs) {
 async function readCache(id) {
   try {
     return JSON.parse(await fs.readFile(path.join(CACHE_DIR, `${id}.json`), "utf8"));
-  } catch {
+  } catch (e) {
+    // ENOENT = never cached (silent). Anything else — torn JSON, permission
+    // problem — self-heals via refetch but should be visible: it spends
+    // rate-cap quota and could recur forever.
+    if (e.code !== "ENOENT") {
+      console.warn(`  ! cache ${id}: ${e.code ?? e.message} — will refetch`);
+    }
     return null;
   }
 }
 
 async function writeCache(id, data) {
   await fs.mkdir(CACHE_DIR, { recursive: true });
-  await fs.writeFile(path.join(CACHE_DIR, `${id}.json`), JSON.stringify(data));
+  // write-then-rename: a kill mid-write must not leave a torn cache file
+  const p = path.join(CACHE_DIR, `${id}.json`);
+  const tmp = `${p}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(data));
+  await fs.rename(tmp, p);
 }
 
 /**
@@ -256,7 +292,13 @@ async function main() {
       break;
     }
     if (!token) token = await ensureToken(cfg);
-    const outcome = await fetchStream(token, a.id);
+    // a THROWN fetch error (ECONNRESET, DNS blip, malformed body) joins the
+    // consecutive-error budget like an HTTP 5xx instead of aborting the whole
+    // step before any artifact is written
+    const outcome = await fetchStream(token, a.id).catch((e) => {
+      console.warn(`  ! ${a.id}: ${e.message} — leaving pending`);
+      return "error";
+    });
     if (outcome === "auth") {
       // Revoked token or missing activity:read scope — retrying can't fix this.
       // Fail hard so the /api/refresh step surfaces as error, not "done".
@@ -345,8 +387,13 @@ async function main() {
   for (const a of qualifying) {
     const cache = await readCache(a.id);
     if (!cache || cache.no_altitude) continue;
-    if (cache.time) timedRuns.push({ activity: a, cache });
-    else pendingTime += 1;
+    // strict shape check — a truthy-but-invalid time would be counted as a
+    // timed run while contributing zero windows, overstating the fit's inputs
+    if (Array.isArray(cache.time) && Array.isArray(cache.distance) && Array.isArray(cache.altitude)) {
+      timedRuns.push({ activity: a, cache });
+    } else if (!cache.no_time) {
+      pendingTime += 1;
+    }
   }
   const gradeFit = fitGradeCurve(timedRuns, now);
   if (gradeFit) {

@@ -197,8 +197,16 @@ async function main() {
       notes: a.notes,
       // optional %-slowdown for technical tread on the segment INTO this
       // station (editable in config/race-course.json; consumed by the race
-      // pace projection on top of grade adjustment)
-      tech_pct: a.tech_pct ?? 0,
+      // pace projection on top of grade adjustment). Validated loudly: a
+      // hand-edited "5%" or negative value would otherwise NaN-poison or
+      // silently speed up every ETA downstream.
+      tech_pct: (() => {
+        const t = Number(a.tech_pct ?? 0);
+        if (!Number.isFinite(t) || t < 0 || t > 50) {
+          throw new Error(`aid station "${a.name}": tech_pct ${JSON.stringify(a.tech_pct)} must be a number in [0, 50]`);
+        }
+        return t;
+      })(),
     };
     if (!a.gpx_wpt) {
       // Finish: no waypoint — track end is the finish line.
@@ -405,6 +413,18 @@ async function main() {
   }
   const endPt = track[track.length - 1];
   map_track.push([+endPt.lat.toFixed(5), +endPt.lon.toFixed(5)]);
+
+  // The projection's segment integrals and dwell walk assume ascending
+  // gpx_mi — a bad waypoint snap (e.g. onto the wrong side of the Horton
+  // out-and-back spur) would corrupt ETAs silently downstream. Fail loudly.
+  for (let i = 1; i < aid_stations.length; i++) {
+    if (aid_stations[i].gpx_mi < aid_stations[i - 1].gpx_mi) {
+      throw new Error(
+        `aid stations out of order on the track: "${aid_stations[i].name}" snapped to mi ${aid_stations[i].gpx_mi} ` +
+          `before "${aid_stations[i - 1].name}" at mi ${aid_stations[i - 1].gpx_mi} — check the GPX waypoint snap`
+      );
+    }
+  }
 
   const payload = {
     generated_at: new Date().toISOString(),

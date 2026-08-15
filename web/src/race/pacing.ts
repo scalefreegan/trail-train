@@ -147,7 +147,12 @@ export type StationProjection = {
 /** One point of a pace-vs-grade multiplier curve (F(0) = 1). */
 export type GradeCurvePoint = { g: number; mult: number };
 /** Personal curve payload from /pace-grade.json (fitted by sync-streams). */
-export type PaceGradeCurve = { basis?: string; curve: GradeCurvePoint[] } | null;
+export type PaceGradeCurve = {
+  basis?: string;
+  fitted_at?: string;
+  runs_pending_time?: number;
+  curve: GradeCurvePoint[];
+} | null;
 
 export type ProjectOptions = {
   /** pace degradation per 10 miles, compounding — e.g. 5 → ×1.05 every 10 mi */
@@ -228,10 +233,15 @@ function makeGradeFn(fit: PacingFit, personal: PaceGradeCurve | undefined): { f:
   const pFlat = fit.base + fit.kDist * D_REF;
   const fb = (g: number) =>
     g >= 0 ? 1 + (fit.kVert * FT_PER_MI_PER_PCT * g) / pFlat : interpPairs(DOWNHILL_FALLBACK, g);
+  // require a usable curve that SPANS 0% — without near-zero bins the F(0)=1
+  // normalization is meaningless and the continuity extension would let the
+  // flat pace drift far from the fitted flat pace
   const pts = personal?.curve && personal.curve.length >= 6
     ? [...personal.curve].sort((a, b) => a.g - b.g)
     : null;
-  if (!pts) return { f: fb, basis: "kVert-anchored standard curve (no personal fit yet)" };
+  if (!pts || pts[0].g > 0 || pts[pts.length - 1].g < 0) {
+    return { f: fb, basis: "kVert-anchored standard curve (no personal fit yet)" };
+  }
   const table: [number, number][] = pts.map((p) => [p.g, p.mult]);
   const gMin = table[0][0];
   const gMax = table[table.length - 1][0];
@@ -264,14 +274,16 @@ function gainBetween(profile: CourseProfilePoint[], fromMi: number, toMi: number
 const D_REF = 20;
 
 /** First-half restraint window: full hold-back through mile 50, tapering
-    linearly to zero by mile 60 (no pace cliff at an aid station boundary). */
-const RESTRAINT_FULL_MI = 50;
-const RESTRAINT_END_MI = 60;
+    linearly to zero by mile 60 (no pace cliff at an aid station boundary).
+    Exported so UI copy (footer, slider tooltips) interpolates the real
+    constants instead of re-typing them. */
+export const RESTRAINT_FULL_MI = 50;
+export const RESTRAINT_END_MI = 60;
 
 /** How strongly restraint pays down the fatigue clock: each restrained mile
     counts (1 − PAYOFF·restraint) fatigue-miles. At 8% restraint each early
     mile ages you ~16% less — banking energy, not time. */
-const RESTRAINT_FATIGUE_PAYOFF = 2;
+export const RESTRAINT_FATIGUE_PAYOFF = 2;
 
 /** Restraint weight at a course mile: 1 through the full window, linear taper
     to 0 across the taper zone. */
@@ -324,9 +336,13 @@ function restraintWeightIntegral(mi: number): number {
 export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions): RaceProjection {
   const f = opts.fatiguePctPer10mi / 100;
   const cal = 1 + (opts.calibrationPct ?? 0) / 100;
-  const r = (opts.restraintPct ?? 0) / 100;
-  const aidStopS = (opts.aidStopMin ?? 5) * 60;
-  const crewStopS = (opts.crewStopMin ?? 10) * 60;
+  // restraint > 50% would make fatigue-miles run BACKWARD (payoff 2×) —
+  // unreachable from the slider, but localStorage is hand-editable
+  const r = Math.min(0.5, Math.max(0, (opts.restraintPct ?? 0) / 100));
+  // negative stop minutes (typed past the input's min) would break ETA
+  // monotonicity — clamp at the model boundary
+  const aidStopS = Math.max(0, opts.aidStopMin ?? 5) * 60;
+  const crewStopS = Math.max(0, opts.crewStopMin ?? 10) * 60;
   const stations = course.aid_stations;
   const fatigueMiles = (mi: number) => mi - RESTRAINT_FATIGUE_PAYOFF * r * restraintWeightIntegral(mi);
   const mult = (mi: number) => Math.pow(1 + f, fatigueMiles(mi) / 10);
@@ -355,30 +371,45 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   // Anchor the curve's AGGREGATE to the fitted climb cost. The personal
   // curve is normalized within-run (a hilly run's own flat baseline is
   // already slowed by that day's altitude/tech/fatigue), so its raw
-  // multipliers understate cost relative to fresh flat pace — used raw it
-  // projected an implausibly fast race. Scaling the excess (F−1) so the
-  // course-average multiplier equals what kVert charges for the course's
-  // average gain rate keeps the OLS fit as the source of truth for HOW MUCH
-  // climbing costs, while the grade curve decides WHERE the time goes.
+  // multipliers understate climbing cost relative to fresh flat pace — used
+  // raw it projected an implausibly fast race. Scaling the UPHILL excess
+  // (F−1 for g>0) so the course-average multiplier equals what kVert charges
+  // for the course's average gain rate keeps the OLS fit as the source of
+  // truth for HOW MUCH climbing costs, while the grade curve decides WHERE
+  // the time goes. Downhill stays RAW: the fitted descent behavior (barely
+  // faster than flat, technical trail) is the believable half of the curve,
+  // and amplifying a downhill BONUS would be a different physical claim.
+  // Gain uses the course's canonical hysteresis total (course.gain_ft), the
+  // same ruler build-course publishes — summing smoothed profile deltas
+  // under-counts by ~11%.
   let gradeF = rawGradeF;
   let grade_basis = rawBasis;
   {
     const pp = course.profile;
-    let sumF = 0, dist = 0, gain = 0;
+    let upExcess = 0, downSum = 0, downDist = 0, dist = 0;
     for (let k = 1; k < pp.length; k++) {
       const step = Math.max(0, pp[k].mi - pp[k - 1].mi);
-      sumF += rawGradeF(pp[k - 1].grade_pct) * step;
+      const g = Number.isFinite(pp[k - 1].grade_pct) ? pp[k - 1].grade_pct : 0;
+      const F = rawGradeF(g);
+      if (g > 0) upExcess += (F - 1) * step;
+      else { downSum += F * step; downDist += step; }
       dist += step;
-      const dEle = pp[k].ele_ft - pp[k - 1].ele_ft;
-      if (dEle > 0) gain += dEle;
     }
-    const meanF = dist > 0 ? sumF / dist : 1;
-    const olsMult = 1 + (fit.kVert * (dist > 0 ? gain / dist : 0)) / pFlat;
-    if (meanF > 1.02 && olsMult > 1.02) {
-      const lambda = Math.min(4, Math.max(0.5, (olsMult - 1) / (meanF - 1)));
+    const olsMult = 1 + (fit.kVert * (dist > 0 ? course.gain_ft / dist : 0)) / pFlat;
+    // solve: (upDist·1 + λ·upExcess + downSum) / dist = olsMult
+    const targetUpExcess = olsMult * dist - (dist - downDist) - downSum;
+    if (upExcess > 0.01 && targetUpExcess > 0) {
+      const lambdaRaw = targetUpExcess / upExcess;
+      const lambda = Math.min(6, Math.max(0.5, lambdaRaw));
       if (Math.abs(lambda - 1) > 0.05) {
-        gradeF = (g: number) => 1 + lambda * (rawGradeF(g) - 1);
-        grade_basis = `${rawBasis} · excess ×${lambda.toFixed(2)} to match fitted climb cost`;
+        gradeF = (g: number) => {
+          const F = rawGradeF(g);
+          return g > 0 ? 1 + lambda * (F - 1) : F;
+        };
+        const achieved = 1 + (lambda * upExcess + downSum - downDist) / dist;
+        grade_basis = Math.abs(lambda - lambdaRaw) < 0.01
+          ? `${rawBasis} · uphill excess ×${lambda.toFixed(2)} to match fitted climb cost`
+          : `${rawBasis} · uphill excess ×${lambda.toFixed(2)} (CAPPED — course avg ×${achieved.toFixed(2)} vs fitted ×${olsMult.toFixed(2)})`;
       }
     }
   }
@@ -401,7 +432,9 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   for (let k = 1; k < nPts; k++) {
     const step = Math.max(0, pts[k].mi - pts[k - 1].mi);
     const midMi = (pts[k].mi + pts[k - 1].mi) / 2;
-    const gF = gradeF(pts[k - 1].grade_pct);
+    // a NaN grade would otherwise price as the steepest bin (interp
+    // fall-through) and a null as flat — treat both as flat, explicitly
+    const gF = gradeF(Number.isFinite(pts[k - 1].grade_pct) ? pts[k - 1].grade_pct : 0);
     // fatigue/restraint/technicality scale the floored fresh grade pace
     const lateMult = mult(midMi) * effort(midMi) * techAt(midMi);
     for (const sc of ["best", "avg", "worst"] as Scenario[]) {
@@ -466,8 +499,10 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   const avgMovingTotalS = segTimes.reduce((s, t) => s + t.avg, 0);
   let goalArrive: number[] | null = null;
   let goalScale: number | null = null;
-  if (opts.goalH != null && avgMovingTotalS > 0) {
-    const goalMovingS = Math.max(0, opts.goalH * 3600 - totalStopS);
+  // a goal at or below total stop time is infeasible, not a pace — treat it
+  // as "no goal" instead of rendering 0:00 paces and negative overall pace
+  if (opts.goalH != null && avgMovingTotalS > 0 && opts.goalH * 3600 > totalStopS) {
+    const goalMovingS = opts.goalH * 3600 - totalStopS;
     goalScale = goalMovingS / avgMovingTotalS;
     const scale = goalScale;
     let moving = 0, stopped = 0;
@@ -567,7 +602,9 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   };
 
   return {
-    stations: projections, finish_h, stopped_h: totalStopS / 3600, goal_h: opts.goalH,
+    // an infeasible goal (≤ total stop time) reports as "no goal" everywhere
+    stations: projections, finish_h, stopped_h: totalStopS / 3600,
+    goal_h: goalScale != null ? opts.goalH : null,
     elapsedAtMile, mileAtElapsed, paceAtMile, grade_basis,
   };
 }
@@ -600,8 +637,10 @@ export function fmtRaceClock(raceStart: Date, elapsedH: number): string {
 
 /** Format elapsed hours as "31h 24m". */
 export function fmtElapsed(h: number): string {
-  const hh = Math.floor(h);
-  const mm = Math.round((h - hh) * 60);
+  // round to whole minutes FIRST — independent floor/round yields "1h 60m"
+  const total = Math.round(h * 60);
+  const hh = Math.floor(total / 60);
+  const mm = total - hh * 60;
   return `${hh}h ${String(mm).padStart(2, "0")}m`;
 }
 

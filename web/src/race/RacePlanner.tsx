@@ -1,30 +1,24 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
-import { useRefresh, useUnits, useStrava, useBlockConfig, useMeasuredWidth } from "../data";
+import { useUnits, useStrava, useBlockConfig, useMeasuredWidth, relativeAgo } from "../data";
 import { SectionTag, Contours } from "../atoms";
-import { useCourse, useCrewBase } from "./useRaceData";
+import { useCourse, useCrewBase, usePaceGrade } from "./useRaceData";
 import { gmapsDirectionsUrl } from "./links";
 import { CrewSheet } from "./CrewSheet";
 import {
   fitPacing, projectRace, nightIntervals,
   fmtRaceClock, fmtElapsed,
-  type StationProjection, type PaceGradeCurve,
+  RESTRAINT_FULL_MI, RESTRAINT_END_MI, RESTRAINT_FATIGUE_PAYOFF,
+  type StationProjection,
 } from "./pacing";
 import type { Course } from "./types";
 
-/** Personal pace-vs-grade curve written by sync-streams (null until the time
-    streams have been fetched and fitted — projectRace falls back). */
-function usePaceGrade(): PaceGradeCurve {
-  const { key: refreshKey } = useRefresh();
-  const [curve, setCurve] = useState<PaceGradeCurve>(null);
-  useEffect(() => {
-    fetch(`/pace-grade.json?t=${Date.now()}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => setCurve(d && Array.isArray(d.curve) ? d : null))
-      .catch(() => setCurve(null));
-  }, [refreshKey]);
-  return curve;
-}
+/** m:ss from seconds — rounds to whole seconds FIRST (independent
+    floor/round renders "9:60"). */
+const fmtPaceS = (s: number) => {
+  const t = Math.max(0, Math.round(s));
+  return `${Math.floor(t / 60)}:${String(t - Math.floor(t / 60) * 60).padStart(2, "0")}`;
+};
 
 /* ------------------------------------------------------------------ */
 /*  Race planner — the course as it will actually unfold: real GPX     */
@@ -293,7 +287,7 @@ function ProfileChart({ course, proj }: {
           const stepS = NICE_STEPS.find((s) => span / s <= 3.2) ?? 1200;
           const ticks: number[] = [];
           for (let t = Math.ceil(pLo / stepS) * stepS; t <= pHi; t += stepS) ticks.push(t);
-          const fmtPace = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+          const fmtPace = fmtPaceS;
           const hasGoal = paceSegs.some((g) => g.goal != null);
           return (
             <g>
@@ -417,7 +411,7 @@ function ProfileChart({ course, proj }: {
               const seg = paceSegs.find((g) => hover.p.mi >= g.x0 && hover.p.mi <= g.x1);
               const perUnit = u.paceUnit === "/km" ? 1 / 1.609344 : 1;
               const point = proj.paceAtMile(hover.p.mi) * perUnit;
-              const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+              const fmt = fmtPaceS;
               return (
                 <>
                   <span style={{ color: "var(--mist-dim)" }}>pace here</span>
@@ -462,7 +456,7 @@ export function RacePlanner() {
   const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops("race.stop_overrides");
   const [sheetOpen, setSheetOpen] = useState(false);
 
-  const paceGrade = usePaceGrade();
+  const { paceGrade, error: paceGradeError } = usePaceGrade();
   const fit = useMemo(() => fitPacing(activities), [activities]);
   const proj = useMemo(
     () => (course && fit ? projectRace(course, fit, {
@@ -504,7 +498,9 @@ export function RacePlanner() {
   const numInput = (value: number, set: (n: number) => void, min: number, max: number, w = 44) => (
     <input
       type="number" min={min} max={max} step={1} value={value}
-      onChange={(e) => set(Number(e.target.value))}
+      // HTML min/max don't constrain TYPED values — clamp here so a typed
+      // "-10" can't reach the model and break ETA monotonicity
+      onChange={(e) => set(Math.min(max, Math.max(min, Number(e.target.value) || 0)))}
       className="numerals"
       style={{
         width: w, background: "var(--night-deep)", border: "1px solid var(--edge-bright)",
@@ -552,7 +548,7 @@ export function RacePlanner() {
               goal
               <input
                 type="number" min={20} max={38} step={0.5} value={goalH}
-                onChange={(e) => setGoalH(Number(e.target.value))}
+                onChange={(e) => setGoalH(Math.max(0, Number(e.target.value) || 0))}
                 className="numerals"
                 style={{
                   width: 52, background: "var(--night-deep)", border: "1px solid var(--edge-bright)",
@@ -649,7 +645,7 @@ export function RacePlanner() {
                       title={stopOverrides[s.name] != null
                         ? "custom stop — clear the field to restore the default"
                         : "default stop (scales with fatigue) — edit to set your own"}
-                      onChange={(e) => setStopOverride(s.name, e.target.value === "" ? null : Number(e.target.value))}
+                      onChange={(e) => setStopOverride(s.name, e.target.value === "" ? null : Math.min(120, Math.max(0, Number(e.target.value) || 0)))}
                       className="numerals"
                       style={{
                         width: 42, textAlign: "right", fontSize: 11, padding: "3px 5px",
@@ -789,7 +785,10 @@ export function RacePlanner() {
                 <>
                   <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)" }}>model</span>
                   <span className="eyebrow" style={{ fontSize: 8.5, lineHeight: 1.9 }}>
-                    fit: {fit.basis} (eff. n={fit.effN}) · ±{u.paceFmt(fit.residStd, 1)}{u.paceUnit} band · grade: {proj?.grade_basis ?? "—"} · tech: {course.aid_stations.filter((s) => (s.tech_pct ?? 0) > 0).map((s) => `${s.name.toLowerCase()} +${s.tech_pct}%`).join(", ") || "none"} · race-cal +{calibration}% all paces · restraint +{restraint}% thru mi 50 (fades by 60, restrained miles age ×{(1 - 2 * restraint / 100).toFixed(2)} on the fatigue clock) · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}/{crewStopMin}m fresh
+                    fit: {fit.basis} (eff. n={fit.effN}) · ±{u.paceFmt(fit.residStd, 1)}{u.paceUnit} band · grade: {proj?.grade_basis ?? "—"}
+                    {paceGrade?.fitted_at && ` (fitted ${relativeAgo(new Date(paceGrade.fitted_at).getTime())}${paceGrade.runs_pending_time ? `, ${paceGrade.runs_pending_time} runs awaiting time streams` : ""})`}
+                    {paceGradeError && <span style={{ color: "var(--ember)" }}> · {paceGradeError}</span>}
+                    {" "}· tech: {course.aid_stations.filter((s) => (s.tech_pct ?? 0) > 0).map((s) => `${s.name.toLowerCase()} +${s.tech_pct}%`).join(", ") || "none"} · race-cal +{calibration}% all paces · restraint +{restraint}% thru mi {RESTRAINT_FULL_MI} (fades by {RESTRAINT_END_MI}, restrained miles age ×{(1 - RESTRAINT_FATIGUE_PAYOFF * restraint / 100).toFixed(2)} on the fatigue clock) · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}/{crewStopMin}m fresh
                   </span>
                 </>
               )}
