@@ -492,7 +492,9 @@ export function RacePlanner() {
     { label: "worst case", value: fmtRaceClock(race.date, proj.finish_h.worst), color: "var(--ember)" },
     { label: "expected elapsed", value: fmtElapsed(proj.finish_h.avg) },
     { label: "time stopped", value: fmtElapsed(proj.stopped_h) },
-    { label: "goal", value: goalH > 0 ? `${fmtElapsed(goalH)} → ${fmtRaceClock(race.date, goalH)}` : "—", color: "var(--creek)" },
+    // proj.goal_h (not raw goalH): an infeasible typed goal reports "—"
+    // here just like the table, instead of a confident header time
+    { label: "goal", value: proj.goal_h != null ? `${fmtElapsed(proj.goal_h)} → ${fmtRaceClock(race.date, proj.goal_h)}` : "—", color: "var(--creek)" },
   ] : [];
 
   const numInput = (value: number, set: (n: number) => void, min: number, max: number, w = 44) => (

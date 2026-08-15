@@ -201,7 +201,10 @@ async function main() {
       // hand-edited "5%" or negative value would otherwise NaN-poison or
       // silently speed up every ETA downstream.
       tech_pct: (() => {
-        const t = Number(a.tech_pct ?? 0);
+        const raw = a.tech_pct ?? 0;
+        // reject booleans/arrays up front — Number(true) is 1 and would
+        // silently become a 1% tech factor instead of failing the build
+        const t = typeof raw === "number" || typeof raw === "string" ? Number(raw) : NaN;
         if (!Number.isFinite(t) || t < 0 || t > 50) {
           throw new Error(`aid station "${a.name}": tech_pct ${JSON.stringify(a.tech_pct)} must be a number in [0, 50]`);
         }

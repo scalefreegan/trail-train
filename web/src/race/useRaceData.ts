@@ -71,7 +71,7 @@ export function usePaceGrade() {
         const valid = d && Array.isArray(d.curve) && d.curve.length > 0 &&
           d.curve.every((p: { g: unknown; mult: unknown }) =>
             Number.isFinite(p.g) && Number.isFinite(p.mult) && (p.mult as number) > 0);
-        if (!valid) { setError("pace-grade.json invalid — using previous curve or fallback"); return; }
+        if (!valid) { if (!stale) setError("pace-grade.json invalid — using previous curve or fallback"); return; }
         if (stale) return;
         setData(d); setError(null);
       })
