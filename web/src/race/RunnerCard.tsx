@@ -56,7 +56,7 @@ function CardFace({ side, stations, course, proj }: {
     color: MUTED, borderBottom: `1px solid ${INK}`, fontWeight: 600,
   };
 
-  const emergency = course.crew_info?.emergency[0];
+  const emergency = course.crew_info?.emergency?.[0];
 
   return (
     <div
@@ -102,8 +102,11 @@ function CardFace({ side, stations, course, proj }: {
             const f = flags(sp);
             return (
               <tr key={s.name} style={crew ? { background: "#efe6d8" } : undefined}>
-                <td style={{ ...cell, textAlign: "left", fontWeight: crew ? 700 : 500, maxWidth: 78, overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {s.name}{s.crew_only ? "*" : ""}
+                <td style={{ ...cell, textAlign: "left", fontWeight: crew ? 700 : 500 }}>
+                  {/* JS truncation, not CSS: max-width is inert on auto-layout
+                      table cells, and an overgrown name would silently push the
+                      right columns off the printed card */}
+                  {s.name.length > 17 ? `${s.name.slice(0, 16)}…` : s.name}{s.crew_only ? "*" : ""}
                 </td>
                 <td style={{ ...cell, fontWeight: 600 }}>{u.dist(s.total_mi)}</td>
                 <td style={{ ...cell, color: BEST, fontSize: "7.5px" }}>{fmtRaceClock(race.date, sp.eta_h.best)}</td>
@@ -123,22 +126,23 @@ function CardFace({ side, stations, course, proj }: {
       </table>
 
       {/* footer strip */}
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 6, fontSize: "6px", color: MUTED, paddingTop: 1.5, whiteSpace: "nowrap" }}>
-        {side === 1 ? (
-          <>
-            <span>C crew · D drop · P pacer · W water-only · <b>* no aid</b> · {u.paceUnit} + ↑ = segment into that station</span>
-            <span>sunset <b style={{ color: INK }}>{course.sun.sunset}</b></span>
-          </>
-        ) : (
-          <>
-            <span>
-              drop only at a station — tell the captain
-              {emergency && <> · {emergency.label} <b style={{ color: INK }}>{emergency.phone}</b></>}
-            </span>
+      {side === 1 ? (
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 6, fontSize: "6px", color: MUTED, paddingTop: 1.5, whiteSpace: "nowrap" }}>
+          <span>C crew · D drop · P pacer · W water-only · <b>* no aid</b> · {u.paceUnit} + ↑ = segment into that station</span>
+          <span>sunset <b style={{ color: INK }}>{course.sun.sunset}</b></span>
+        </div>
+      ) : (
+        <div style={{ fontSize: "6px", color: MUTED, paddingTop: 1.5, whiteSpace: "nowrap" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
+            <span>C crew · D drop · P pacer · W water-only · <b>* no aid</b></span>
             <span>sunrise <b style={{ color: INK }}>{course.sun.sunrise}</b></span>
-          </>
-        )}
-      </div>
+          </div>
+          <div>
+            drop only at a station — tell the captain
+            {emergency && <> · {emergency.label} <b style={{ color: INK }}>{emergency.phone}</b></>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -155,10 +159,8 @@ export function RunnerCard({ course, proj, onClose }: {
   }, []);
 
   const split = Math.ceil(proj.stations.length / 2);
-  const halves: [StationProjection[], StationProjection[]] = [
-    proj.stations.slice(0, split),
-    proj.stations.slice(split),
-  ];
+  const halves = [proj.stations.slice(0, split), proj.stations.slice(split)]
+    .filter((h) => h.length > 0);
 
   // portal to <body>: outside #root, so print CSS can hide the whole app
   return createPortal(

@@ -835,14 +835,14 @@ export function RacePlanner() {
               <button
                 className="chip"
                 style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
-                onClick={() => setCardOpen(true)}
+                onClick={() => { setSheetOpen(false); setCardOpen(true); }}
               >
                 ⎙ runner card 3×5
               </button>
               <button
                 className="chip"
                 style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
-                onClick={() => setSheetOpen(true)}
+                onClick={() => { setCardOpen(false); setSheetOpen(true); }}
               >
                 ⎙ crew sheet pdf
               </button>
