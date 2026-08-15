@@ -5,6 +5,7 @@ import { SectionTag, Contours } from "../atoms";
 import { useCourse, useCrewBase, usePaceGrade } from "./useRaceData";
 import { gmapsDirectionsUrl } from "./links";
 import { CrewSheet } from "./CrewSheet";
+import { RunnerCard } from "./RunnerCard";
 import {
   fitPacing, projectRace, nightIntervals,
   fmtRaceClock, fmtElapsed,
@@ -455,6 +456,7 @@ export function RacePlanner() {
   const [crewStopMin, setCrewStopMin] = usePersistedNumber("race.crew_stop_min", 10);
   const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops("race.stop_overrides");
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [cardOpen, setCardOpen] = useState(false);
 
   const { paceGrade, error: paceGradeError } = usePaceGrade();
   const fit = useMemo(() => fitPacing(activities), [activities]);
@@ -833,6 +835,13 @@ export function RacePlanner() {
               <button
                 className="chip"
                 style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
+                onClick={() => setCardOpen(true)}
+              >
+                ⎙ runner card 3×5
+              </button>
+              <button
+                className="chip"
+                style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
                 onClick={() => setSheetOpen(true)}
               >
                 ⎙ crew sheet pdf
@@ -844,6 +853,9 @@ export function RacePlanner() {
 
       {sheetOpen && proj && (
         <CrewSheet course={course} proj={proj} crewBase={crewBase} onClose={() => setSheetOpen(false)} />
+      )}
+      {cardOpen && proj && (
+        <RunnerCard course={course} proj={proj} onClose={() => setCardOpen(false)} />
       )}
     </section>
   );

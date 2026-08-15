@@ -229,6 +229,27 @@ a { color: inherit; }
     background: #fff !important;
   }
   body.crew-printing .no-print { display: none !important; }
+
+  /* runner card: same isolation; each face becomes one 5×3in page */
+  body.card-printing #root { display: none !important; }
+  body.card-printing .runner-card {
+    position: absolute !important;
+    inset: 0 !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+  body.card-printing .runner-card > div {
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  body.card-printing .runner-card-page { margin: 0 !important; }
+  body.card-printing .runner-card-page > div {
+    border: none !important;
+    box-shadow: none !important;
+  }
+  body.card-printing .runner-card-break { break-after: page; }
+  body.card-printing .no-print { display: none !important; }
 }
 @page { margin: 10mm; }
 
