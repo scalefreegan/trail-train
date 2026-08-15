@@ -38,6 +38,14 @@ function flags(sp: StationProjection): { text: string; warn: boolean } {
   return { text: f, warn: s.water_only || s.crew_only };
 }
 
+/* truncated to 17 glyphs INCLUDING the no-aid asterisk, which must survive
+   truncation — it marks a station the runner can't count on for supplies */
+function stationLabel(name: string, crewOnly: boolean): string {
+  const suffix = crewOnly ? "*" : "";
+  const avail = 17 - suffix.length;
+  return (name.length > avail ? `${name.slice(0, avail - 1)}…` : name) + suffix;
+}
+
 function CardFace({ side, stations, course, proj }: {
   side: 1 | 2;
   stations: StationProjection[];
@@ -106,7 +114,7 @@ function CardFace({ side, stations, course, proj }: {
                   {/* JS truncation, not CSS: max-width is inert on auto-layout
                       table cells, and an overgrown name would silently push the
                       right columns off the printed card */}
-                  {s.name.length > 17 ? `${s.name.slice(0, 16)}…` : s.name}{s.crew_only ? "*" : ""}
+                  {stationLabel(s.name, s.crew_only)}
                 </td>
                 <td style={{ ...cell, fontWeight: 600 }}>{u.dist(s.total_mi)}</td>
                 <td style={{ ...cell, color: BEST, fontSize: "7.5px" }}>{fmtRaceClock(race.date, sp.eta_h.best)}</td>
@@ -198,7 +206,7 @@ export function RunnerCard({ course, proj, onClose }: {
         </div>
 
         {halves.map((stations, i) => (
-          <div key={i} className={i === 0 ? "runner-card-page runner-card-break" : "runner-card-page"} style={{ marginBottom: 18 }}>
+          <div key={i} className={i < halves.length - 1 ? "runner-card-page runner-card-break" : "runner-card-page"} style={{ marginBottom: 18 }}>
             <div className="no-print" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: MUTED, marginBottom: 4 }}>
               side {i + 1} — {stations[0].station.name} → {stations[stations.length - 1].station.name}
             </div>
