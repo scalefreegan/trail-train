@@ -146,11 +146,12 @@ export function UnitsProvider({ children }: { children: React.ReactNode }) {
       }),
       elev: (ft) => Math.round(elevVal(ft)).toLocaleString("en-US"),
       paceFmt: (sec, mi) => {
-        if (!mi) return "—";
+        if (!mi || !Number.isFinite(sec)) return "—";
         const distanceUnits = metric ? mi * MI_TO_KM : mi;
-        const perUnit = sec / distanceUnits;
-        const m = Math.floor(perUnit / 60);
-        const s = Math.round(perUnit % 60);
+        // round to whole seconds FIRST — independent floor/round yields "9:60"
+        const t = Math.max(0, Math.round(sec / distanceUnits));
+        const m = Math.floor(t / 60);
+        const s = t - m * 60;
         return `${m}:${s.toString().padStart(2, "0")}`;
       },
     };

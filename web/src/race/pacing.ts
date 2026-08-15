@@ -128,6 +128,12 @@ export type StationProjection = {
   seg_gain_ft: number;
   /** projected pace over this segment (s/mi, avg scenario, incl. fatigue) */
   seg_pace_s_per_mi: number;
+  /** same, best/worst scenarios (±fit band) — the paces behind those ETA columns */
+  seg_pace_best_s_per_mi: number;
+  seg_pace_worst_s_per_mi: number;
+  /** pace this segment must be run at to hit the goal (s/mi — the avg pace
+      uniformly rescaled to the goal's moving time), or null with no goal */
+  goal_pace_s_per_mi: number | null;
   /** planned stop at this station, minutes (0 at the finish) */
   stop_min: number;
   /** cumulative elapsed hours at ARRIVAL (includes dwell at prior stations) */
@@ -138,9 +144,30 @@ export type StationProjection = {
   cutoff_margin_worst_h: number | null;
 };
 
+/** One point of a pace-vs-grade multiplier curve (F(0) = 1). */
+export type GradeCurvePoint = { g: number; mult: number };
+/** Personal curve payload from /pace-grade.json (fitted by sync-streams). */
+export type PaceGradeCurve = {
+  basis?: string;
+  fitted_at?: string;
+  runs_pending_time?: number;
+  curve: GradeCurvePoint[];
+} | null;
+
 export type ProjectOptions = {
   /** pace degradation per 10 miles, compounding — e.g. 5 → ×1.05 every 10 mi */
   fatiguePctPer10mi: number;
+  /** personal pace-vs-grade curve; null/absent → kVert-anchored fallback */
+  gradeCurve?: PaceGradeCurve;
+  /** race-pace calibration, % added to ALL projected paces — corrects for the
+      fit being trained on runs that are stronger efforts than race-sustainable
+      pace. e.g. 6 → every pace ×1.06 */
+  calibrationPct?: number;
+  /** deliberate first-half restraint, % slower than model pace through mile
+      RESTRAINT_FULL_MI (tapering to 0 by RESTRAINT_END_MI). Restrained miles
+      also age the athlete less: they count (1 − payoff·restraint) miles on the
+      fatigue clock, so holding back early buys a flatter late-race fade. */
+  restraintPct?: number;
   /** target finish in hours, or null to skip the goal overlay */
   goalH: number | null;
   /** fresh stop minutes at a regular aid station (scales up late-race) */
@@ -158,11 +185,73 @@ export type RaceProjection = {
   /** total time stopped at stations, hours (same in every scenario) */
   stopped_h: number;
   goal_h: number | null;
-  /** piecewise-linear course-mile → elapsed hours (avg scenario unless given) */
+  /** course-mile → elapsed hours at profile resolution (avg unless given) */
   elapsedAtMile: (mi: number, scenario?: Scenario) => number;
   /** inverse of elapsedAtMile — used to place time-based bands (night) on the mile axis */
   mileAtElapsed: (h: number, scenario?: Scenario) => number;
+  /** grade/terrain-adjusted pace (s/mi, avg scenario, all multipliers) at a course mile */
+  paceAtMile: (mi: number) => number;
+  /** which grade-response curve drove the projection (for the model footer) */
+  grade_basis: string;
 };
+
+/* ------------------- grade-response curve ------------------- */
+
+/** 1% grade sustained for a mile = 52.8 ft of gain. */
+const FT_PER_MI_PER_PCT = 52.8;
+
+/** Standard downhill shape (GAP-like): gentle downs help, ~-8% is the
+    optimum, steep technical descents cost more than flat. Used when no
+    personal curve covers a grade. */
+const DOWNHILL_FALLBACK: [number, number][] = [
+  [-30, 1.6], [-25, 1.38], [-20, 1.2], [-15, 1.05], [-12, 0.97],
+  [-10, 0.93], [-8, 0.91], [-6, 0.92], [-4, 0.94], [-2, 0.97], [0, 1],
+];
+
+function interpPairs(table: [number, number][], g: number): number {
+  if (g <= table[0][0]) return table[0][1];
+  for (let i = 1; i < table.length; i++) {
+    if (g <= table[i][0]) {
+      const [g0, m0] = table[i - 1];
+      const [g1, m1] = table[i];
+      return m0 + ((g - g0) / (g1 - g0)) * (m1 - m0);
+    }
+  }
+  return table[table.length - 1][1];
+}
+
+/**
+ * Build the grade → pace-multiplier function.
+ * - Personal curve (fitted from the athlete's own streams) when available;
+ *   outside its data range it extends with the fallback SHAPE scaled for
+ *   continuity at the edge.
+ * - Fallback: uphill is the linear kVert cost from the pacing fit expressed
+ *   per-grade (exactly the OLS model, so no-curve behavior stays anchored to
+ *   the athlete's aggregate climb cost); downhill is the standard shape.
+ */
+function makeGradeFn(fit: PacingFit, personal: PaceGradeCurve | undefined): { f: (g: number) => number; basis: string } {
+  const pFlat = fit.base + fit.kDist * D_REF;
+  const fb = (g: number) =>
+    g >= 0 ? 1 + (fit.kVert * FT_PER_MI_PER_PCT * g) / pFlat : interpPairs(DOWNHILL_FALLBACK, g);
+  // require a usable curve that SPANS 0% — without near-zero bins the F(0)=1
+  // normalization is meaningless and the continuity extension would let the
+  // flat pace drift far from the fitted flat pace
+  const pts = personal?.curve && personal.curve.length >= 6
+    ? [...personal.curve].sort((a, b) => a.g - b.g)
+    : null;
+  if (!pts || pts[0].g > 0 || pts[pts.length - 1].g < 0) {
+    return { f: fb, basis: "kVert-anchored standard curve (no personal fit yet)" };
+  }
+  const table: [number, number][] = pts.map((p) => [p.g, p.mult]);
+  const gMin = table[0][0];
+  const gMax = table[table.length - 1][0];
+  const f = (g: number) => {
+    if (g < gMin) return interpPairs(table, gMin) * (fb(g) / fb(gMin));
+    if (g > gMax) return interpPairs(table, gMax) * (fb(g) / fb(gMax));
+    return interpPairs(table, g);
+  };
+  return { f, basis: personal?.basis ? `personal grade curve — ${personal.basis}` : "personal grade curve" };
+}
 
 /** Segment gain from the course profile with a ±10 ft hysteresis accumulator
     (fallback for stations whose official seg_gain_ft is not published). */
@@ -184,26 +273,80 @@ function gainBetween(profile: CourseProfilePoint[], fromMi: number, toMi: number
     extrapolated to total_mi. */
 const D_REF = 20;
 
+/** First-half restraint window: full hold-back through mile 50, tapering
+    linearly to zero by mile 60 (no pace cliff at an aid station boundary).
+    Exported so UI copy (footer, slider tooltips) interpolates the real
+    constants instead of re-typing them. */
+export const RESTRAINT_FULL_MI = 50;
+export const RESTRAINT_END_MI = 60;
+
+/** How strongly restraint pays down the fatigue clock: each restrained mile
+    counts (1 − PAYOFF·restraint) fatigue-miles. At 8% restraint each early
+    mile ages you ~16% less — banking energy, not time. */
+export const RESTRAINT_FATIGUE_PAYOFF = 2;
+
+/** Restraint weight at a course mile: 1 through the full window, linear taper
+    to 0 across the taper zone. */
+function restraintWeight(mi: number): number {
+  if (mi <= RESTRAINT_FULL_MI) return 1;
+  if (mi >= RESTRAINT_END_MI) return 0;
+  return (RESTRAINT_END_MI - mi) / (RESTRAINT_END_MI - RESTRAINT_FULL_MI);
+}
+
+/** Integral of restraintWeight from 0 to mi (closed form for the piecewise
+    linear shape) — used to compute cumulative fatigue-miles. */
+function restraintWeightIntegral(mi: number): number {
+  const full = Math.min(mi, RESTRAINT_FULL_MI);
+  let s = full;
+  if (mi > RESTRAINT_FULL_MI) {
+    const m1 = Math.min(mi, RESTRAINT_END_MI);
+    s += ((restraintWeight(RESTRAINT_FULL_MI) + restraintWeight(m1)) / 2) * (m1 - RESTRAINT_FULL_MI);
+  }
+  return s;
+}
+
 /**
  * Project best/avg/worst arrival times at every aid station.
  *
  * Modeling notes:
+ * - Times are INTEGRATED over the course profile (~0.06 mi steps): each step
+ *   is priced by the grade-response curve at that point's grade (personal
+ *   curve from streams when fitted, else the kVert-anchored fallback), plus
+ *   fatigue/restraint at that mile and the segment's technicality factor.
+ *   Station splits are the integrals between station boundaries — reported
+ *   split paces are true terrain-weighted averages.
  * - kDist was fitted on training runs ≤ ~26 mi. Linearly extrapolating it to
  *   mile 100 double-counts fatigue and explodes, so the fitness pace is
  *   evaluated at a fixed reference distance (D_REF = 20 mi, the athlete's
  *   long-run regime) and ALL ultra-distance slowdown comes from the explicit
  *   fatigue multiplier. Don't "fix" this back to kDist·total_mi.
- * - Fatigue COMPOUNDS: mult(mi) = (1 + f)^(mi/10). Ultra fade is nonlinear —
- *   mild through 50, heavy after 80 (at 5%: ×1.28 @50mi, ×1.63 @100mi).
- * - Station stops scale with the same curve (you linger longer at mile 80
- *   than mile 20), capped at 2× the fresh stop.
+ * - Fatigue COMPOUNDS: mult(mi) = (1 + f)^(fatigueMiles(mi)/10). Ultra fade is
+ *   nonlinear — mild through 50, heavy after 80 (at 5%: ×1.28 @50mi, ×1.63
+ *   @100mi). With restraint, fatigue-miles accrue slower than course miles
+ *   through the restraint window (see RESTRAINT_FATIGUE_PAYOFF), so the late
+ *   fade flattens — that's the modeled payoff of going out easy.
+ * - calibrationPct multiplies every pace: the fit comes from training runs
+ *   that are stronger efforts than race-sustainable pace, so raw fit paces
+ *   read optimistic for a 100.
+ * - restraintPct slows miles 0–50 on purpose (tapering to 0 by 60): banking
+ *   energy for a relatively stronger second 50.
+ * - Station stops scale with the same fatigue curve (you linger longer at
+ *   mile 80 than mile 20), capped at 2× the fresh stop.
  */
 export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions): RaceProjection {
   const f = opts.fatiguePctPer10mi / 100;
-  const aidStopS = (opts.aidStopMin ?? 5) * 60;
-  const crewStopS = (opts.crewStopMin ?? 10) * 60;
+  const cal = 1 + (opts.calibrationPct ?? 0) / 100;
+  // restraint > 50% would make fatigue-miles run BACKWARD (payoff 2×) —
+  // unreachable from the slider, but localStorage is hand-editable
+  const r = Math.min(0.5, Math.max(0, (opts.restraintPct ?? 0) / 100));
+  // negative stop minutes (typed past the input's min) would break ETA
+  // monotonicity — clamp at the model boundary
+  const aidStopS = Math.max(0, opts.aidStopMin ?? 5) * 60;
+  const crewStopS = Math.max(0, opts.crewStopMin ?? 10) * 60;
   const stations = course.aid_stations;
-  const mult = (mi: number) => Math.pow(1 + f, mi / 10);
+  const fatigueMiles = (mi: number) => mi - RESTRAINT_FATIGUE_PAYOFF * r * restraintWeightIntegral(mi);
+  const mult = (mi: number) => Math.pow(1 + f, fatigueMiles(mi) / 10);
+  const effort = (mi: number) => 1 + r * restraintWeight(mi);
 
   const segs = stations.map((st, i) => {
     const prev = i === 0 ? null : stations[i - 1];
@@ -216,16 +359,113 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
     return { st, prevMi, seg_mi, seg_gain_ft };
   });
 
-  // moving time per segment per scenario (before stops)
+  // ── full-course integration over the profile ─────────────────────────
+  // Moving time accumulates point-by-point (~0.06 mi steps): each step is
+  // priced by the athlete's grade-response curve at THAT point's grade, plus
+  // fatigue/restraint at that mile and the segment's technicality factor —
+  // no more "average gain rate over a 10-mile split".
+  const { f: rawGradeF, basis: rawBasis } = makeGradeFn(fit, opts.gradeCurve);
+  const pFlat = fit.base + fit.kDist * D_REF;
   const paceShift: Record<Scenario, number> = { best: -fit.residStd, avg: 0, worst: fit.residStd };
-  const segTimes = segs.map(({ seg_mi, seg_gain_ft, prevMi }) => {
-    const vfpm = seg_mi > 0 ? seg_gain_ft / seg_mi : 0;
-    const midMi = prevMi + seg_mi / 2;
-    const m = mult(midMi);
+
+  // Anchor the curve's AGGREGATE to the fitted climb cost. The personal
+  // curve is normalized within-run (a hilly run's own flat baseline is
+  // already slowed by that day's altitude/tech/fatigue), so its raw
+  // multipliers understate climbing cost relative to fresh flat pace — used
+  // raw it projected an implausibly fast race. Scaling the UPHILL excess
+  // (F−1 for g>0) so the course-average multiplier equals what kVert charges
+  // for the course's average gain rate keeps the OLS fit as the source of
+  // truth for HOW MUCH climbing costs, while the grade curve decides WHERE
+  // the time goes. Downhill stays RAW: the fitted descent behavior (barely
+  // faster than flat, technical trail) is the believable half of the curve,
+  // and amplifying a downhill BONUS would be a different physical claim.
+  // Gain uses the course's canonical hysteresis total (course.gain_ft), the
+  // same ruler build-course publishes — summing smoothed profile deltas
+  // under-counts by ~11%.
+  let gradeF = rawGradeF;
+  let grade_basis = rawBasis;
+  {
+    const pp = course.profile;
+    let upExcess = 0, downSum = 0, downDist = 0, dist = 0;
+    for (let k = 1; k < pp.length; k++) {
+      const step = Math.max(0, pp[k].mi - pp[k - 1].mi);
+      const g = Number.isFinite(pp[k - 1].grade_pct) ? pp[k - 1].grade_pct : 0;
+      const F = rawGradeF(g);
+      if (g > 0) upExcess += (F - 1) * step;
+      else { downSum += F * step; downDist += step; }
+      dist += step;
+    }
+    const olsMult = 1 + (fit.kVert * (dist > 0 ? course.gain_ft / dist : 0)) / pFlat;
+    // solve: (upDist·1 + λ·upExcess + downSum) / dist = olsMult
+    const targetUpExcess = olsMult * dist - (dist - downDist) - downSum;
+    if (upExcess > 0.01 && targetUpExcess > 0) {
+      const lambdaRaw = targetUpExcess / upExcess;
+      const lambda = Math.min(6, Math.max(0.5, lambdaRaw));
+      if (Math.abs(lambda - 1) > 0.05) {
+        gradeF = (g: number) => {
+          const F = rawGradeF(g);
+          return g > 0 ? 1 + lambda * (F - 1) : F;
+        };
+        const achieved = 1 + (lambda * upExcess + downSum - downDist) / dist;
+        grade_basis = Math.abs(lambda - lambdaRaw) < 0.01
+          ? `${rawBasis} · uphill excess ×${lambda.toFixed(2)} to match fitted climb cost`
+          : `${rawBasis} · uphill excess ×${lambda.toFixed(2)} (CAPPED — course avg ×${achieved.toFixed(2)} vs fitted ×${olsMult.toFixed(2)})`;
+      }
+    }
+  }
+
+  // technicality per gpx-space segment (segment INTO each station)
+  const techSegs = segs.map(({ st }, i) => ({
+    x0: i === 0 ? 0 : segs[i - 1].st.gpx_mi,
+    x1: st.gpx_mi,
+    factor: 1 + ((st.tech_pct ?? 0) / 100),
+  }));
+  const techAt = (mi: number) => techSegs.find((t) => mi >= t.x0 && mi < t.x1)?.factor
+    ?? techSegs[techSegs.length - 1]?.factor ?? 1;
+
+  const pts = course.profile;
+  const nPts = pts.length;
+  const cum: Record<Scenario, Float64Array> = {
+    best: new Float64Array(nPts), avg: new Float64Array(nPts), worst: new Float64Array(nPts),
+  };
+  const pacePoint = new Float64Array(nPts); // avg-scenario pace used from pt k → k+1 (s/mi)
+  for (let k = 1; k < nPts; k++) {
+    const step = Math.max(0, pts[k].mi - pts[k - 1].mi);
+    const midMi = (pts[k].mi + pts[k - 1].mi) / 2;
+    // a NaN grade would otherwise price as the steepest bin (interp
+    // fall-through) and a null as flat — treat both as flat, explicitly
+    const gF = gradeF(Number.isFinite(pts[k - 1].grade_pct) ? pts[k - 1].grade_pct : 0);
+    // fatigue/restraint/technicality scale the floored fresh grade pace
+    const lateMult = mult(midMi) * effort(midMi) * techAt(midMi);
+    for (const sc of ["best", "avg", "worst"] as Scenario[]) {
+      const freshGradePace = Math.max(300, (pFlat + paceShift[sc]) * cal * gF);
+      cum[sc][k] = cum[sc][k - 1] + step * freshGradePace * lateMult;
+    }
+    pacePoint[k - 1] = step > 0 ? (cum.avg[k] - cum.avg[k - 1]) / step : pacePoint[Math.max(0, k - 2)];
+  }
+  if (nPts > 1) pacePoint[nPts - 1] = pacePoint[nPts - 2];
+
+  // cumulative moving seconds at an arbitrary course mile (binary search + lerp)
+  const cumAt = (sc: Scenario, mi: number) => {
+    const arr = cum[sc];
+    if (mi <= pts[0].mi) return 0;
+    if (mi >= pts[nPts - 1].mi) return arr[nPts - 1];
+    let lo = 0, hi = nPts - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (pts[mid].mi <= mi) lo = mid; else hi = mid;
+    }
+    const span = pts[hi].mi - pts[lo].mi;
+    const t = span > 0 ? (mi - pts[lo].mi) / span : 1;
+    return arr[lo] + t * (arr[hi] - arr[lo]);
+  };
+
+  // moving time per segment per scenario (before stops) — integrated
+  const segTimes = segs.map(({ st }, i) => {
+    const x0 = i === 0 ? 0 : segs[i - 1].st.gpx_mi;
     const out = {} as Record<Scenario, number>;
     for (const sc of ["best", "avg", "worst"] as Scenario[]) {
-      const pace = Math.max(300, fit.base + paceShift[sc] + fit.kVert * vfpm + fit.kDist * D_REF);
-      out[sc] = seg_mi * pace * m; // seconds
+      out[sc] = Math.max(0, cumAt(sc, st.gpx_mi) - cumAt(sc, x0));
     }
     return out;
   });
@@ -258,9 +498,13 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   const totalStopS = segs.reduce((s, { st }, i) => s + stopAt(st, i === segs.length - 1), 0);
   const avgMovingTotalS = segTimes.reduce((s, t) => s + t.avg, 0);
   let goalArrive: number[] | null = null;
-  if (opts.goalH != null && avgMovingTotalS > 0) {
-    const goalMovingS = Math.max(0, opts.goalH * 3600 - totalStopS);
-    const scale = goalMovingS / avgMovingTotalS;
+  let goalScale: number | null = null;
+  // a goal at or below total stop time is infeasible, not a pace — treat it
+  // as "no goal" instead of rendering 0:00 paces and negative overall pace
+  if (opts.goalH != null && avgMovingTotalS > 0 && opts.goalH * 3600 > totalStopS) {
+    const goalMovingS = opts.goalH * 3600 - totalStopS;
+    goalScale = goalMovingS / avgMovingTotalS;
+    const scale = goalScale;
     let moving = 0, stopped = 0;
     goalArrive = segs.map(({ st }, i) => {
       moving += segTimes[i].avg * scale;
@@ -278,6 +522,9 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
       seg_mi,
       seg_gain_ft,
       seg_pace_s_per_mi: seg_mi > 0 ? segTimes[i].avg / seg_mi : 0,
+      seg_pace_best_s_per_mi: seg_mi > 0 ? segTimes[i].best / seg_mi : 0,
+      seg_pace_worst_s_per_mi: seg_mi > 0 ? segTimes[i].worst / seg_mi : 0,
+      goal_pace_s_per_mi: goalScale != null && seg_mi > 0 ? (segTimes[i].avg * goalScale) / seg_mi : null,
       stop_min: Math.round(stopAt(st, i === segs.length - 1) / 60),
       eta_h: { best: arrive.best[i] / 3600, avg: avgH, worst: worstH },
       goal_eta_h: goalArrive ? goalArrive[i] / 3600 : null,
@@ -293,45 +540,73 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
     worst: arrive.worst[last] / 3600,
   };
 
-  // piecewise-linear mile ↔ elapsed maps (dwell = vertical step at the station mile).
+  // mile ↔ elapsed maps at PROFILE resolution (dwell = vertical step at the
+  // station mile) — a climb at the end of a long split now shows up in the
+  // hover ETA instead of being smeared linearly across the split.
   // Miles here are MEASURED gpx_mi — the chart's axis space and the profile's
   // space, so callers (hover ETAs, night bands) share one axis; official
-  // total_mi drives only the display column and the pace/time math above.
-  const boundaries = (sc: Scenario) => {
-    const mis = [0, ...segs.map(({ st }) => st.gpx_mi)];
-    const arr = [0, ...arrive[sc].map((s) => s / 3600)];
-    const dep = [0, ...depart[sc].map((s) => s / 3600)];
-    return { mis, arr, dep };
+  // total_mi drives only the display column.
+  const stationStops = segs.map(({ st }, i) => ({
+    mi: st.gpx_mi,
+    stopS: stopAt(st, i === segs.length - 1),
+  }));
+  const dwellBefore = (mi: number) => {
+    let s = 0;
+    for (const st of stationStops) {
+      if (st.mi < mi) s += st.stopS;
+      else break;
+    }
+    return s;
   };
 
-  const elapsedAtMile = (mi: number, sc: Scenario = "avg") => {
-    const { mis, arr, dep } = boundaries(sc);
-    if (mi <= 0) return 0;
-    for (let i = 1; i < mis.length; i++) {
-      if (mi <= mis[i]) {
-        const span = mis[i] - mis[i - 1];
-        const frac = span > 0 ? (mi - mis[i - 1]) / span : 1;
-        return dep[i - 1] + frac * (arr[i] - dep[i - 1]);
-      }
-    }
-    return arr[arr.length - 1];
-  };
+  const elapsedAtMile = (mi: number, sc: Scenario = "avg") =>
+    (cumAt(sc, Math.max(0, mi)) + dwellBefore(mi)) / 3600;
 
   const mileAtElapsed = (h: number, sc: Scenario = "avg") => {
-    const { mis, arr, dep } = boundaries(sc);
-    if (h <= 0) return 0;
-    for (let i = 1; i < mis.length; i++) {
-      if (h <= arr[i]) {
-        if (h <= dep[i - 1]) return mis[i - 1]; // sitting at the prior station
-        const span = arr[i] - dep[i - 1];
-        const frac = span > 0 ? (h - dep[i - 1]) / span : 1;
-        return mis[i - 1] + frac * (mis[i] - mis[i - 1]);
+    const target = h * 3600;
+    if (target <= 0) return 0;
+    // walk stations: within each dwell window the runner sits at the station
+    let dwell = 0;
+    let prevMi = 0;
+    for (const st of stationStops) {
+      const arriveS = cumAt(sc, st.mi) + dwell;
+      if (target <= arriveS) {
+        // moving somewhere in (prevMi, st.mi] — binary search the cum array
+        const movingTarget = target - dwell;
+        let lo = 0, hi = nPts - 1;
+        while (hi - lo > 1) {
+          const mid = (lo + hi) >> 1;
+          if (cum[sc][mid] <= movingTarget) lo = mid; else hi = mid;
+        }
+        const span = cum[sc][hi] - cum[sc][lo];
+        const t = span > 0 ? (movingTarget - cum[sc][lo]) / span : 1;
+        return Math.max(prevMi, Math.min(st.mi, pts[lo].mi + t * (pts[hi].mi - pts[lo].mi)));
       }
+      if (target <= arriveS + st.stopS) return st.mi; // sitting at this station
+      dwell += st.stopS;
+      prevMi = st.mi;
     }
-    return mis[mis.length - 1];
+    return pts[nPts - 1].mi;
   };
 
-  return { stations: projections, finish_h, stopped_h: totalStopS / 3600, goal_h: opts.goalH, elapsedAtMile, mileAtElapsed };
+  const paceAtMile = (mi: number) => {
+    if (nPts < 2) return 0;
+    if (mi <= pts[0].mi) return pacePoint[0];
+    if (mi >= pts[nPts - 1].mi) return pacePoint[nPts - 1];
+    let lo = 0, hi = nPts - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (pts[mid].mi <= mi) lo = mid; else hi = mid;
+    }
+    return pacePoint[lo];
+  };
+
+  return {
+    // an infeasible goal (≤ total stop time) reports as "no goal" everywhere
+    stations: projections, finish_h, stopped_h: totalStopS / 3600,
+    goal_h: goalScale != null ? opts.goalH : null,
+    elapsedAtMile, mileAtElapsed, paceAtMile, grade_basis,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -362,8 +637,10 @@ export function fmtRaceClock(raceStart: Date, elapsedH: number): string {
 
 /** Format elapsed hours as "31h 24m". */
 export function fmtElapsed(h: number): string {
-  const hh = Math.floor(h);
-  const mm = Math.round((h - hh) * 60);
+  // round to whole minutes FIRST — independent floor/round yields "1h 60m"
+  const total = Math.round(h * 60);
+  const hh = Math.floor(total / 60);
+  const mm = total - hh * 60;
   return `${hh}h ${String(mm).padStart(2, "0")}m`;
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useRefresh } from "../data";
 import type { ClimbsSnapshot, Course, CrewBase } from "./types";
+import type { PaceGradeCurve } from "./pacing";
 
 /* Snapshot hooks for the Race views — same provider-less pattern as
    useGoogleCal (data.ts): fetch keyed on the refresh pulse.
@@ -47,6 +48,37 @@ export function useCrewBase() {
       .catch(() => setError("crew-base.json corrupt or unreadable"));
   }, [refreshKey]);
   return { crewBase: data, error };
+}
+
+/** Personal pace-vs-grade curve written by sync-streams. Same failure
+    semantics as the other snapshot hooks: 404 = not fitted yet (null, no
+    error); any other failure KEEPS the previously loaded curve and surfaces
+    an error string, so the projection never silently swaps to the fallback
+    grade model mid-session. Entries are validated — a hand-corrupted file
+    reads as a load failure, not as a curve. */
+export function usePaceGrade() {
+  const { key: refreshKey } = useRefresh();
+  const [data, setData] = useState<PaceGradeCurve>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let stale = false;
+    fetch(`/pace-grade.json?t=${Date.now()}`)
+      .then(async (r) => {
+        if (stale) return;
+        if (r.status === 404) { setData(null); setError(null); return; }
+        if (!r.ok) { setError(`pace-grade.json failed to load (HTTP ${r.status})`); return; }
+        const d = await r.json().catch(() => { throw new Error("parse"); });
+        const valid = d && Array.isArray(d.curve) && d.curve.length > 0 &&
+          d.curve.every((p: { g: unknown; mult: unknown }) =>
+            Number.isFinite(p.g) && Number.isFinite(p.mult) && (p.mult as number) > 0);
+        if (!valid) { if (!stale) setError("pace-grade.json invalid — using previous curve or fallback"); return; }
+        if (stale) return;
+        setData(d); setError(null);
+      })
+      .catch(() => { if (!stale) setError("pace-grade.json corrupt or unreadable"); });
+    return () => { stale = true; };
+  }, [refreshKey]);
+  return { paceGrade: data, error };
 }
 
 export function useClimbs() {

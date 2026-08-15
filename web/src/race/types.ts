@@ -30,6 +30,9 @@ export type CourseAidStation = {
   pacers: boolean;
   water_only: boolean;
   notes: string;
+  /** %-slowdown for technical tread on the segment INTO this station
+      (editable in config/race-course.json; 0/absent = none). */
+  tech_pct?: number;
 };
 
 export type RaceClimb = {
