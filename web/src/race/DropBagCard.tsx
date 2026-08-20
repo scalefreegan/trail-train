@@ -34,6 +34,14 @@ export function DropBagCard({ plan, cfg, onClose }: {
   const gunEmpty = Math.max(0, flasksOwned - gunMix - gunWater);
   const gunNote = `${flasksOwned} flasks @ gun: ${gunMix} mix · ${gunWater} water${gunEmpty > 0 ? ` · ${gunEmpty} empty` : ""}`;
 
+  // stash advice must be DERIVED, not asserted: a one-notch fatigue change
+  // can add a water flask to a late leg. Stated as "flasks needed ahead" so
+  // consecutive rows can't be read as cumulative stash permissions.
+  const maxFillAhead = (atH: number): number => {
+    const ahead = plan.segments.filter((s) => s.departH >= atH);
+    return ahead.length ? Math.max(...ahead.map((s) => s.flasks + s.water_flasks)) : 0;
+  };
+
   useEffect(() => {
     document.body.classList.add("card-printing");
     return () => document.body.classList.remove("card-printing");
@@ -137,7 +145,10 @@ export function DropBagCard({ plan, cfg, onClose }: {
                         </td>
                         <td style={{ ...bagCell, textAlign: "left", fontSize: "8px" }}>
                           {bag.night && <span style={{ color: NIGHT, fontWeight: 700 }}>☾ night ahead </span>}
-                          {bag.station === "Start" ? gunNote : ""}
+                          {bag.station === "Start" ? gunNote : (() => {
+                            const m = maxFillAhead(bag.atH);
+                            return m > 0 && m < flasksOwned ? `only ${m} flasks needed ahead` : "";
+                          })()}
                         </td>
                       </tr>
                       {bag.gear.length > 0 && (
@@ -162,7 +173,7 @@ export function DropBagCard({ plan, cfg, onClose }: {
               </table>
 
               <div style={{ fontSize: "6px", color: MUTED, paddingTop: 1.5 }}>
-                add <b>+1 gel · +1 tab spare per bag</b> · hcf = High Carb scoops (1 per flask fill; aid supplies base Tailwind)
+                add <b>+1 gel · +1 tab spare per bag</b> · hcf = High Carb scoops (1 per MIX flask; W flasks are plain water, no scoop)
                 · gel {cfg.gel.carb_g}g · blk pack {cfg.bloks.carb_g}g · edit gear + constants in nutrition.json
               </div>
             </div>

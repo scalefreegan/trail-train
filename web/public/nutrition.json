@@ -1,5 +1,5 @@
 {
-  "comment": "Fueling constants for the fuel card + planner column. Edit freely — the app falls back to built-in defaults if this file is missing or invalid. bloks_frac = share of a phase's carried units taken as Clif Bloks instead of gels. On 4F segments the 4th flask is assumed filled with Tailwind mix (counted), not water.",
+  "comment": "Fueling constants for the fuel/drop-bag cards + planner column. Edit freely — the app falls back to built-in defaults if this file is missing or invalid. Demand-driven fills: base = tailwind_flasks of mix; when a leg's fluid shortfall exceeds preload_over_flask_ml, ONE extra flask takes mix (carbs ride along), further spares (up to spare_flasks total) take plain water; smaller shortfalls are drunk at the aid before leaving. bloks_frac = share of a phase's carried units taken as Clif Bloks. drop_bag_gear = non-food items per bag ('Start' = the vest).",
   "flask_ml": 500,
   "tailwind_flasks": 2,
   "flask_carb_g": 55,
@@ -60,8 +60,7 @@
       "main headlamp + spare battery",
       "beanie + gloves",
       "warm midlayer",
-      "caffeine starts here",
-      "stash 1 spare flask here — max fill ahead is 3M+1W"
+      "caffeine starts here"
     ],
     "Geronimo": [
       "fresh socks + blister kit",

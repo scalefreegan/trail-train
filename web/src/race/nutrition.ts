@@ -71,7 +71,7 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   drop_bag_gear: {
     "Start": ["sunscreen + hat", "arm sleeves (am chill)"],
     "Fish Hatchery": ["small headlamp (dusk cover → Buck Springs)", "long-sleeve for night", "anti-chafe"],
-    "Buck Springs": ["main headlamp + spare battery", "beanie + gloves", "warm midlayer", "caffeine starts here", "stash 1 spare flask here — max fill ahead is 3M+1W"],
+    "Buck Springs": ["main headlamp + spare battery", "beanie + gloves", "warm midlayer", "caffeine starts here"],
     "Geronimo": ["fresh socks + blister kit", "sunscreen for day 2"],
   },
 };
@@ -176,8 +176,9 @@ export function useNutrition() {
 export type FuelSegment = {
   /** Clif Blok packets (3-blok servings) to carry — phase-2+ substitution */
   bloks: number;
-  /** Tailwind flasks filled at departure (3 with the 4th flask) — each fill
-      takes one HCF scoop; aid supplies the base mix */
+  /** MIX flasks filled at departure (tailwind_flasks + at most one extra on
+      heavy legs) — each takes one HCF scoop; aid supplies the base mix.
+      Water flasks are counted separately in water_flasks and take no scoop. */
   flasks: number;
   /** station you leave (index into proj.stations, -1 = the start line) */
   fromIdx: number;

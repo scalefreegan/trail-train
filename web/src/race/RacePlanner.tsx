@@ -627,7 +627,7 @@ export function RacePlanner() {
               <span>margin</span>
             </span>
             <span className="eyebrow col-fuel" style={{ fontSize: 8.5, textAlign: "right" }}
-              title="fuel carried OUT of the previous refill for this split — carb target, Gels/Bloks/tabs beyond the drink mix, heat-adjusted fluid + fill code (M mix flask · W spare water · ↑ drink at aid before leaving); constants in nutrition.json">
+              title="fuel carried OUT of the previous refill for this split — carb target, Gels/Bloks/tabs beyond the drink mix, heat-adjusted fluid + fill code counting every flask (M mix · W plain water · ↑ drink at aid before leaving); constants in nutrition.json">
               fuel
             </span>
             <span className="eyebrow col-flags" style={{ fontSize: 8.5 }}>access</span>
@@ -826,7 +826,7 @@ export function RacePlanner() {
               <>
                 <span className="eyebrow" style={{ fontSize: 8.5 }}>fuel totals</span>
                 <span className="numerals" style={{ fontSize: 11, fontWeight: 600 }}
-                  title="whole-race consumables (no-crew plan): Maurten gels, Clif Blok packets, Tailwind High Carb scoops (1 per flask fill; base mix from aid), salt tabs — split across drop bags via ⎙ drop bags 3×5">
+                  title="whole-race consumables (no-crew plan): Maurten gels, Clif Blok packets, Tailwind High Carb scoops (1 per MIX flask; W flasks are plain water, no scoop), salt tabs — split across drop bags via ⎙ drop bags 3×5">
                   ≈{(fuelPlan.total_carb_g / 1000).toFixed(1)}kg carb · {fuelPlan.total_gels} gels · {fuelPlan.total_bloks} bloks · {fuelPlan.total_hcf_scoops} HCF scoops · {fuelPlan.total_tabs} tabs
                 </span>
               </>
