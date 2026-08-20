@@ -6,6 +6,9 @@ import { useCourse, useCrewBase, usePaceGrade } from "./useRaceData";
 import { gmapsDirectionsUrl } from "./links";
 import { CrewSheet } from "./CrewSheet";
 import { RunnerCard } from "./RunnerCard";
+import { FuelCard } from "./FuelCard";
+import { DropBagCard } from "./DropBagCard";
+import { fmtCarry, planFuel, useNutrition } from "./nutrition";
 import {
   fitPacing, projectRace, nightIntervals,
   fmtRaceClock, fmtElapsed,
@@ -455,8 +458,9 @@ export function RacePlanner() {
   const [aidStopMin, setAidStopMin] = usePersistedNumber("race.aid_stop_min", 5);
   const [crewStopMin, setCrewStopMin] = usePersistedNumber("race.crew_stop_min", 10);
   const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops("race.stop_overrides");
-  const [sheetOpen, setSheetOpen] = useState(false);
-  const [cardOpen, setCardOpen] = useState(false);
+  // one printable document at a time — the print-isolation body classes
+  // (crew-printing / card-printing) must never coexist
+  const [openDoc, setOpenDoc] = useState<null | "crew" | "card" | "fuel" | "drops">(null);
 
   const { paceGrade, error: paceGradeError } = usePaceGrade();
   const fit = useMemo(() => fitPacing(activities), [activities]);
@@ -469,6 +473,12 @@ export function RacePlanner() {
       goalH: goalH > 0 ? goalH : null, aidStopMin, crewStopMin, stopOverridesMin: stopOverrides,
     }) : null),
     [course, fit, paceGrade, fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides],
+  );
+
+  const { nutrition, error: nutritionError } = useNutrition();
+  const fuelPlan = useMemo(
+    () => (course && proj ? planFuel(proj, course, race.date, nutrition) : null),
+    [course, proj, race.date, nutrition],
   );
 
   if (missing || !course) {
@@ -596,7 +606,7 @@ export function RacePlanner() {
 
       {/* station table */}
       {proj && (
-        <div className="panel" style={{ marginTop: 14 }}>
+        <div className="panel race-table" style={{ marginTop: 14 }}>
           <div className="race-grid" style={{ padding: "10px 18px", borderBottom: "1px solid var(--edge-bright)" }}>
             <span className="eyebrow" style={{ fontSize: 8.5 }}>station</span>
             <span className="eyebrow" style={{ fontSize: 8.5, textAlign: "right" }}>{u.distUnit}</span>
@@ -615,6 +625,10 @@ export function RacePlanner() {
             <span className="eyebrow" style={{ fontSize: 8.5, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <span style={{ textAlign: "right" }}>cutoff</span>
               <span>margin</span>
+            </span>
+            <span className="eyebrow col-fuel" style={{ fontSize: 8.5, textAlign: "right" }}
+              title="fuel carried OUT of the previous refill for this split — carb target, Gels/Bloks/tabs beyond the drink mix, heat-adjusted fluid + fill code counting every flask (M mix · W plain water · ↑ drink at aid before leaving); constants in nutrition.json">
+              fuel
             </span>
             <span className="eyebrow col-flags" style={{ fontSize: 8.5 }}>access</span>
           </div>
@@ -697,6 +711,28 @@ export function RacePlanner() {
                       : ""}
                   </span>
                 </span>
+                <span className="numerals col-fuel" style={{ fontSize: 10.5, textAlign: "right" }}
+                  title={(() => {
+                    const f = fuelPlan?.segments.find((seg) => seg.toIdx === i);
+                    if (!f) return "no resupply here (no-crew plan) — this station is covered by the carry from the previous refill point";
+                    return `${f.from} → ${f.to}${f.via.length ? ` (thru ${f.via.join(", ")} — no resupply)` : ""} · ${fmtCarry(f.carryH)} carry: ${f.carb_g}g carb target (drink ~${f.liquid_carb_g}g), ${f.gels} gel + ${f.bloks} blok pk, ${f.salt_tabs} tab, ${(f.fluid_ml / 1000).toFixed(1)}L fluid${f.water_note ? ` (${f.water_note})` : ""}${f.heat ? " · heat-adjusted" : ""}${f.night ? " · overnight" : ""} · FILL ${f.fill} — every flask you leave with (M = mix, W = plain water)${f.preloads.map((p) => ` · DRINK ${p.ml}mL AT ${p.at ? p.at.toUpperCase() : "THE AID"}`).join("")}${f.ration ? " · RATION: demand exceeds flasks + pre-load" : ""} · ${f.supplement}`;
+                  })()}>
+                  {(() => {
+                    const f = fuelPlan?.segments.find((seg) => seg.toIdx === i);
+                    if (!f) return <span style={{ color: "var(--mist-mute)" }}>—</span>;
+                    const units = [f.gels > 0 ? `${f.gels}G` : "", f.bloks > 0 ? `${f.bloks}B` : ""].filter(Boolean).join("+");
+                    return (
+                      <>
+                        <span style={{ display: "block", fontWeight: 600, whiteSpace: "nowrap" }}>
+                          {f.carb_g}g{units ? ` · ${units}` : ""}{f.salt_tabs > 0 ? ` ${f.salt_tabs}t` : ""}
+                        </span>
+                        <span style={{ display: "block", fontSize: 9, whiteSpace: "nowrap", color: f.extra_fill ? "var(--ember)" : "var(--mist-dim)", fontWeight: f.extra_fill ? 700 : 400 }}>
+                          {(f.fluid_ml / 1000).toFixed(1)}L {f.fill}{f.preloads.length > 0 ? "↑" : ""}
+                        </span>
+                      </>
+                    );
+                  })()}
+                </span>
                 <span className="col-flags" style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-start" }}>
                   <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
                     {stationFlags(s).map((f) => <FlagChip key={f.label} label={f.label} color={f.color} />)}
@@ -768,6 +804,15 @@ export function RacePlanner() {
                 ) : <span />;
               })()}
             </span>
+            <span className="numerals col-fuel" style={{ fontSize: 10.5, textAlign: "right" }}
+              title="race totals from the fuel plan — distributed across the drop bags (see ⎙ drop bags 3×5)">
+              {fuelPlan && (
+                <>
+                  <span style={{ display: "block", fontWeight: 600, whiteSpace: "nowrap" }}>{fuelPlan.total_gels}G+{fuelPlan.total_bloks}B {fuelPlan.total_tabs}t</span>
+                  <span style={{ display: "block", fontSize: 9, whiteSpace: "nowrap", color: "var(--mist-dim)" }}>{fuelPlan.total_hcf_scoops} hcf</span>
+                </>
+              )}
+            </span>
             <span className="col-flags" />
           </div>
 
@@ -777,6 +822,15 @@ export function RacePlanner() {
             <span className="numerals" style={{ fontSize: 13.5, fontWeight: 700, color: "var(--lamp)" }}>
               {fmtElapsed(proj.stopped_h)}
             </span>
+            {fuelPlan && (
+              <>
+                <span className="eyebrow" style={{ fontSize: 8.5 }}>fuel totals</span>
+                <span className="numerals" style={{ fontSize: 11, fontWeight: 600 }}
+                  title="whole-race consumables (no-crew plan): Maurten gels, Clif Blok packets, Tailwind High Carb scoops (1 per MIX flask; W flasks are plain water, no scoop), salt tabs — split across drop bags via ⎙ drop bags 3×5">
+                  ≈{(fuelPlan.total_carb_g / 1000).toFixed(1)}kg carb · {fuelPlan.total_gels} gels · {fuelPlan.total_bloks} bloks · {fuelPlan.total_hcf_scoops} HCF scoops · {fuelPlan.total_tabs} tabs
+                </span>
+              </>
+            )}
             <span className="numerals" style={{ fontSize: 10, color: "var(--mist-mute)" }}>
               ≈ {Math.round((proj.stopped_h / proj.finish_h.avg) * 100)}% of expected race time
             </span>
@@ -792,6 +846,7 @@ export function RacePlanner() {
                     fit: {fit.basis} (eff. n={fit.effN}) · ±{u.paceFmt(fit.residStd, 1)}{u.paceUnit} band · grade: {proj?.grade_basis ?? "—"}
                     {paceGrade?.fitted_at && ` (fitted ${relativeAgo(new Date(paceGrade.fitted_at).getTime())}${paceGrade.runs_pending_time ? `, ${paceGrade.runs_pending_time} runs awaiting time streams` : ""})`}
                     {paceGradeError && <span style={{ color: "var(--ember)" }}> · {paceGradeError}</span>}
+                    {nutritionError && <span style={{ color: "var(--ember)" }}> · {nutritionError}</span>}
                     {" "}· tech: {course.aid_stations.filter((s) => (s.tech_pct ?? 0) > 0).map((s) => `${s.name.toLowerCase()} +${s.tech_pct}%`).join(", ") || "none"} · race-cal +{calibration}% all paces · restraint +{restraint}% thru mi {RESTRAINT_FULL_MI} (fades by {RESTRAINT_END_MI}, restrained miles age ×{(1 - RESTRAINT_FATIGUE_PAYOFF * restraint / 100).toFixed(2)} on the fatigue clock) · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}/{crewStopMin}m fresh
                   </span>
                 </>
@@ -835,14 +890,28 @@ export function RacePlanner() {
               <button
                 className="chip"
                 style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
-                onClick={() => { setSheetOpen(false); setCardOpen(true); }}
+                onClick={() => setOpenDoc("card")}
               >
                 ⎙ runner card 3×5
               </button>
               <button
                 className="chip"
                 style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
-                onClick={() => { setCardOpen(false); setSheetOpen(true); }}
+                onClick={() => setOpenDoc("fuel")}
+              >
+                ⎙ fuel card 3×5
+              </button>
+              <button
+                className="chip"
+                style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
+                onClick={() => setOpenDoc("drops")}
+              >
+                ⎙ drop bags 3×5
+              </button>
+              <button
+                className="chip"
+                style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
+                onClick={() => setOpenDoc("crew")}
               >
                 ⎙ crew sheet pdf
               </button>
@@ -851,11 +920,17 @@ export function RacePlanner() {
         </div>
       )}
 
-      {sheetOpen && proj && (
-        <CrewSheet course={course} proj={proj} crewBase={crewBase} onClose={() => setSheetOpen(false)} />
+      {openDoc === "crew" && proj && (
+        <CrewSheet course={course} proj={proj} crewBase={crewBase} onClose={() => setOpenDoc(null)} />
       )}
-      {cardOpen && proj && (
-        <RunnerCard course={course} proj={proj} onClose={() => setCardOpen(false)} />
+      {openDoc === "card" && proj && (
+        <RunnerCard course={course} proj={proj} onClose={() => setOpenDoc(null)} />
+      )}
+      {openDoc === "fuel" && fuelPlan && (
+        <FuelCard plan={fuelPlan} cfg={nutrition} onClose={() => setOpenDoc(null)} />
+      )}
+      {openDoc === "drops" && fuelPlan && (
+        <DropBagCard plan={fuelPlan} cfg={nutrition} onClose={() => setOpenDoc(null)} />
       )}
     </section>
   );

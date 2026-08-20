@@ -201,10 +201,20 @@ a { color: inherit; }
 
 .race-grid {
   display: grid;
-  grid-template-columns: minmax(120px, 1.3fr) 44px 60px 52px 58px minmax(170px, 1.4fr) 62px minmax(120px, 1fr) minmax(90px, 0.9fr);
-  gap: 12px;
+  /* every fixed/min width fits its widest real content (day-suffixed clocks
+     like "12:25p+1", fuel cells like "245g · 2G+2B 2t") — squeezing tracks
+     below content just bleeds nowrap text into the neighboring column */
+  grid-template-columns: minmax(110px, 1.3fr) 44px 58px 50px 58px minmax(184px, 1.4fr) 62px minmax(124px, 1fr) 96px minmax(90px, 0.9fr);
+  gap: 11px;
   align-items: center;
 }
+
+/* station table: when the viewport can't fit the columns' true widths, the
+   panel scrolls horizontally — never squeeze, never spill into the rail */
+.race-table { overflow-x: auto; }
+/* ≥ every row's intrinsic minimum (station rows carry a 2px borderLeft the
+   header lacks) so all rows share one width while the panel scrolls */
+.race-table > .race-grid { min-width: 1015px; }
 
 .climb-grid {
   display: grid;
@@ -274,7 +284,10 @@ a { color: inherit; }
     grid-template-columns: minmax(100px, 1.2fr) 40px minmax(150px, 1.3fr) minmax(110px, 1fr);
     gap: 10px;
   }
-  .race-grid > .col-seg, .race-grid > .col-stop, .race-grid > .col-pace, .race-grid > .col-goal, .race-grid > .col-flags { display: none; }
+  .race-grid > .col-seg, .race-grid > .col-stop, .race-grid > .col-pace, .race-grid > .col-goal, .race-grid > .col-fuel, .race-grid > .col-flags { display: none; }
+  /* the desktop min-width floor would force the collapsed 4-column layout
+     to scroll on every phone — the narrow template fits natively */
+  .race-table > .race-grid { min-width: 0; }
   .climb-grid { grid-template-columns: repeat(2, 1fr); }
 }
 

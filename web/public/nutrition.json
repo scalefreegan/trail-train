@@ -1,0 +1,72 @@
+{
+  "comment": "Fueling constants for the fuel/drop-bag cards + planner column. Edit freely — the app falls back to built-in defaults if this file is missing or invalid. Demand-driven fills: base = tailwind_flasks of mix; when a leg's fluid shortfall exceeds preload_over_flask_ml, ONE extra flask takes mix (carbs ride along), further spares (up to spare_flasks total) take plain water; smaller shortfalls are drunk at the aid before leaving. bloks_frac = share of a phase's carried units taken as Clif Bloks. drop_bag_gear = non-food items per bag ('Start' = the vest).",
+  "flask_ml": 500,
+  "tailwind_flasks": 2,
+  "flask_carb_g": 55,
+  "flask_sodium_mg": 537,
+  "liquid_carb_rate_g_hr": 55,
+  "gel": {
+    "carb_g": 25,
+    "sodium_mg": 20,
+    "label": "Maurten 100"
+  },
+  "bloks": {
+    "carb_g": 24,
+    "sodium_mg": 50,
+    "label": "3 Clif Bloks"
+  },
+  "salt_tab_mg": 250,
+  "phases": [
+    {
+      "until_h": 12,
+      "carb_g_hr": 75,
+      "bloks_frac": 0.4,
+      "supplement": "gels lead; bloks while chewing is easy"
+    },
+    {
+      "until_h": 24,
+      "carb_g_hr": 70,
+      "bloks_frac": 0.3,
+      "supplement": "gels + occasional bloks"
+    },
+    {
+      "until_h": 48,
+      "carb_g_hr": 62,
+      "bloks_frac": 0.2,
+      "supplement": "gels + coke/broth at aid"
+    }
+  ],
+  "carb_cap_over_h": 3,
+  "carb_cap_g_hr": 70,
+  "sodium_mg_hr": 650,
+  "fluid_ml_hr": 500,
+  "fluid_ml_hr_heat": 650,
+  "heat_window": {
+    "start": "10:00",
+    "end": "17:00"
+  },
+  "long_carry_h": 2.5,
+  "drop_bag_gear": {
+    "Start": [
+      "sunscreen + hat",
+      "arm sleeves (am chill)"
+    ],
+    "Fish Hatchery": [
+      "small headlamp (dusk cover → Buck Springs)",
+      "long-sleeve for night",
+      "anti-chafe"
+    ],
+    "Buck Springs": [
+      "main headlamp + spare battery",
+      "beanie + gloves",
+      "warm midlayer",
+      "caffeine starts here"
+    ],
+    "Geronimo": [
+      "fresh socks + blister kit",
+      "sunscreen for day 2"
+    ]
+  },
+  "preload_over_flask_ml": 350,
+  "spare_flasks": 3
+}
