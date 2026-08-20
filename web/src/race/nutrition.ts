@@ -22,6 +22,9 @@ export type NutritionConfig = {
   water_reserve_ml: number;
   /** 5th flask carried empty; filled with PLAIN WATER on 5F legs (no scoop) */
   spare_flask_ml: number;
+  /** shortfalls up to this are covered by drinking at the aid before leaving
+      instead of carrying another 500g flask for a 50mL overage */
+  preload_over_flask_ml: number;
   /** how fast the drink mix is actually consumed, g carb per hour */
   liquid_carb_rate_g_hr: number;
   gel: { carb_g: number; sodium_mg: number; label: string };
@@ -50,6 +53,7 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   water_flask_ml: 500,
   water_reserve_ml: 250,
   spare_flask_ml: 500,
+  preload_over_flask_ml: 300,
   liquid_carb_rate_g_hr: 55,
   gel: { carb_g: 25, sodium_mg: 20, label: "Maurten 100" },
   bloks: { carb_g: 24, sodium_mg: 50, label: "3 Clif Bloks" },
@@ -136,6 +140,7 @@ export function normalizeNutrition(d: unknown): NutritionConfig | null {
     "flask_ml", "flask_carb_g", "flask_sodium_mg", "water_flask_ml",
     "liquid_carb_rate_g_hr", "salt_tab_mg", "sodium_mg_hr",
     "fluid_ml_hr", "fluid_ml_hr_heat", "carb_cap_over_h", "carb_cap_g_hr", "long_carry_h",
+    "preload_over_flask_ml",
   ] as const;
   for (const k of positive) merged[k] = posOr(merged[k], DEFAULT_NUTRITION[k]);
   merged.tailwind_flasks = Number.isFinite(merged.tailwind_flasks) && merged.tailwind_flasks >= 1
@@ -347,12 +352,15 @@ export function planFuel(
     for (let w = 0; w + 1 < waterPoints.length; w++) {
       fluid_ml = Math.max(fluid_ml, heatFluid(waterPoints[w], waterPoints[w + 1]));
     }
-    const fourth_flask = fluid_ml > fluidCap;
+    // a flask is only added when the shortfall is genuinely flask-sized —
+    // small gaps are cheaper swallowed at the aid than carried as 500g
+    const fourth_flask = fluid_ml - fluidCap > cfg.preload_over_flask_ml;
     // the 5th flask only exists when configured; without it the shortfall
     // rolls into the pre-load instruction instead
-    const fifth_flask = cfg.spare_flask_ml > 0 && fluid_ml > fluidCap + cfg.flask_ml;
-    const rawPreload = Math.max(0,
-      Math.ceil((fluid_ml - (fluidCap + cfg.flask_ml + cfg.spare_flask_ml)) / 50) * 50);
+    const fifth_flask = cfg.spare_flask_ml > 0 && fourth_flask &&
+      fluid_ml - (fluidCap + cfg.flask_ml) > cfg.preload_over_flask_ml;
+    const capacity = fluidCap + (fourth_flask ? cfg.flask_ml : 0) + (fifth_flask ? cfg.spare_flask_ml : 0);
+    const rawPreload = Math.max(0, Math.ceil((fluid_ml - capacity) / 50) * 50);
     // nobody can pre-load more than ~800 mL at an aid table — beyond that the
     // honest instruction is "ration", not a bigger number
     const preload_ml = Math.min(rawPreload, 800);

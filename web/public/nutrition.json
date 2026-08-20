@@ -69,5 +69,6 @@
       "fresh socks + blister kit",
       "sunscreen for day 2"
     ]
-  }
+  },
+  "preload_over_flask_ml": 300
 }
