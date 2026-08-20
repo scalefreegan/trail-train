@@ -224,6 +224,8 @@ export function StravaProvider({ children }: { children: React.ReactNode }) {
   const { blockStart, totalWeeks } = useBlockConfig();
   const [fetchState, setFetchState] = useState<StravaFetch>({ loading: true, error: null, data: null });
   const [crossData, setCrossData] = useState<CrossRaw | null>(null);
+  const [crossError, setCrossError] = useState<string | null>(null);
+  const [crossLoading, setCrossLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -236,11 +238,21 @@ export function StravaProvider({ children }: { children: React.ReactNode }) {
       .catch((e) => {
         if (!cancelled) setFetchState((s) => ({ loading: false, error: String(e.message || e), data: s.data }));
       });
-    // optional snapshot — absent until the next sync:strava writes it
+    // optional snapshot — absent until the next sync:strava writes it. Only a
+    // 404 is the soft "not synced yet" path; anything else (5xx, network,
+    // malformed JSON) is a real error the UI must be able to distinguish.
     fetch(`/cross-train.json?t=${Date.now()}`)
-      .then((r) => (r.ok ? (r.json() as Promise<CrossRaw>) : null))
-      .then((d) => { if (!cancelled && d) setCrossData(d); })
-      .catch(() => { /* no cross-train snapshot yet */ });
+      .then(async (r) => {
+        if (r.status === 404) {
+          if (!cancelled) { setCrossData(null); setCrossError(null); }
+          return;
+        }
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d = (await r.json()) as CrossRaw;
+        if (!cancelled) { setCrossData(d); setCrossError(null); }
+      })
+      .catch((e) => { if (!cancelled) setCrossError(String((e as Error).message || e)); })
+      .finally(() => { if (!cancelled) setCrossLoading(false); });
     return () => { cancelled = true; };
   }, [refreshKey]);
 
@@ -297,9 +309,10 @@ export function StravaProvider({ children }: { children: React.ReactNode }) {
     return {
       loading, error,
       fetchedAt: data ? new Date(data.fetched_at) : null,
-      activities, cross, weekly, currentWeek: cw,
+      activities, cross, crossError, crossLoading, crossSynced: crossData !== null,
+      weekly, currentWeek: cw,
     };
-  }, [fetchState, crossData, blockStart, totalWeeks]);
+  }, [fetchState, crossData, crossError, crossLoading, blockStart, totalWeeks]);
 
   return <StravaContext.Provider value={value}>{children}</StravaContext.Provider>;
 }

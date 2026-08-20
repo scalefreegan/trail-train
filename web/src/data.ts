@@ -226,6 +226,9 @@ export type StravaCtx = {
   activities: Activity[];
   // non-run activities — display + agent context only, never in metrics
   cross: CrossActivity[];
+  crossError: string | null;   // fetch/parse failure (a missing file is not an error)
+  crossLoading: boolean;       // cross-train.json fetch not yet settled
+  crossSynced: boolean;        // cross-train.json loaded, even if empty
   // weekly buckets by training block week (1..totalWeeks) — runs only
   weekly: { wk: number; dist_mi: number; elev_ft: number; sessions: number }[];
   currentWeek: number; // 1..totalWeeks

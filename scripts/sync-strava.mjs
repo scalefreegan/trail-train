@@ -140,16 +140,6 @@ async function main() {
     { distance_km: 0, elevation_m: 0, moving_s: 0, count: 0 }
   );
 
-  const payload = {
-    fetched_at: new Date().toISOString(),
-    window: { start: START, end: END },
-    totals,
-    activities,
-  };
-  await writeJsonAtomic(OUT_PATH, payload);
-  console.log(`✓ wrote ${activities.length} activities → ${OUT_PATH}`);
-  console.log(`  total: ${totals.distance_km.toFixed(1)} km · ${Math.round(totals.elevation_m).toLocaleString()} m vert · ${(totals.moving_s / 3600).toFixed(1)} h`);
-
   // Non-run activities land in their own snapshot so every run-only consumer
   // of strava.json (weekly buckets, ACR, pacing model, climbs) stays pure.
   // No classify/rpe/weather — these are context for the coach, not load.
@@ -170,7 +160,7 @@ async function main() {
       max_hr: a.max_heartrate ?? null,
       strava_url: `https://www.strava.com/activities/${a.id}`,
     };
-  }).sort((x, y) => y.date.localeCompare(x.date));
+  }).sort((x, y) => (y.date || "").localeCompare(x.date || ""));
 
   const crossTotals = cross.reduce(
     (s, a) => ({
@@ -181,12 +171,26 @@ async function main() {
     }),
     { distance_km: 0, elevation_m: 0, moving_s: 0, count: 0 }
   );
-  await writeJsonAtomic(CROSS_OUT_PATH, {
-    fetched_at: new Date().toISOString(),
+
+  // Both payloads are fully built before either write so a data-shape error
+  // can't leave the pair inconsistent (each write is itself atomic).
+  const fetchedAt = new Date().toISOString();
+  const payload = {
+    fetched_at: fetchedAt,
+    window: { start: START, end: END },
+    totals,
+    activities,
+  };
+  const crossPayload = {
+    fetched_at: fetchedAt,
     window: { start: START, end: END },
     totals: crossTotals,
     activities: cross,
-  });
+  };
+  await writeJsonAtomic(OUT_PATH, payload);
+  console.log(`✓ wrote ${activities.length} activities → ${OUT_PATH}`);
+  console.log(`  total: ${totals.distance_km.toFixed(1)} km · ${Math.round(totals.elevation_m).toLocaleString()} m vert · ${(totals.moving_s / 3600).toFixed(1)} h`);
+  await writeJsonAtomic(CROSS_OUT_PATH, crossPayload);
   console.log(`✓ wrote ${cross.length} cross-training activities → ${CROSS_OUT_PATH}`);
 }
 

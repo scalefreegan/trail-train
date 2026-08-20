@@ -1247,76 +1247,93 @@ const TYPE_META: Record<Activity["type"], { label: string; color: string }> = {
 // Compact badge for the raw Strava sport of a non-run activity.
 const SPORT_ABBREV: Record<string, string> = {
   Ride: "RIDE", VirtualRide: "VRIDE", GravelRide: "GRVL", MountainBikeRide: "MTB", EBikeRide: "EBIKE",
-  Hike: "HIKE", Walk: "WALK", WeightTraining: "WTS", Workout: "GYM", Yoga: "YOGA",
+  VirtualRun: "VRUN", Hike: "HIKE", Walk: "WALK", WeightTraining: "WTS", Workout: "GYM", Yoga: "YOGA",
   Swim: "SWIM", Rowing: "ROW", RockClimbing: "CLMB",
   AlpineSki: "SKI", BackcountrySki: "BC SKI", NordicSki: "XC SKI", Snowboard: "BOARD", Snowshoe: "SHOE",
 };
-const sportLabel = (sport: string) => SPORT_ABBREV[sport] ?? sport.slice(0, 5).toUpperCase();
+const sportLabel = (sport?: string) => (sport && SPORT_ABBREV[sport]) ?? (sport ?? "").slice(0, 5).toUpperCase();
 
 const durFmt = (s: number) => {
-  const h = Math.floor(s / 3600);
-  const m = Math.round((s - h * 3600) / 60);
+  // round to whole minutes FIRST — rounding the remainder yields "1:60h"
+  const mins = Math.round(s / 60);
+  const h = Math.floor(mins / 60), m = mins % 60;
   return h > 0 ? `${h}:${m.toString().padStart(2, "0")}h` : `${m}m`;
 };
+
+// shared motion/hover shell for log rows — keeps run and cross rows in step
+const logRowShell = (i: number) => ({
+  initial: { opacity: 0 }, animate: { opacity: 1 },
+  transition: { duration: 0.3, delay: Math.min(i * 0.025, 0.4) },
+  style: { padding: "11px 18px", borderTop: i > 0 ? "1px solid var(--edge)" : "none" },
+  onMouseEnter: (e: React.MouseEvent<HTMLDivElement>) => ((e.currentTarget as HTMLDivElement).style.background = "var(--panel-raise)"),
+  onMouseLeave: (e: React.MouseEvent<HTMLDivElement>) => ((e.currentTarget as HTMLDivElement).style.background = "transparent"),
+});
 
 function LogTable() {
   const [limit, setLimit] = useState(12);
   // "other" lists non-run activities (cross-train.json) — coach context only,
   // never part of vitals/trajectory/pacing, which stay runs-only
   const [tab, setTab] = useState<"runs" | "other">("runs");
-  const { activities, cross, loading, error } = useStrava();
+  const { activities, cross, crossError, crossSynced, crossLoading, loading, error } = useStrava();
   const { syncing } = useRefresh();
   const u = useUnits();
   const runsTab = tab === "runs";
   const visible = activities.slice(0, limit);
   const visibleCross = cross.slice(0, limit);
   const shownCount = runsTab ? activities.length : cross.length;
+  const switchTab = (t: typeof tab) => { if (t !== tab) { setTab(t); setLimit(12); } };
+  const gridClass = "log-grid" + (runsTab ? "" : " cross");
 
   return (
     <section>
       <SectionTag right={
-        <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
-          <button className={`chip${runsTab ? " active" : ""}`} onClick={() => { setTab("runs"); setLimit(12); }}>runs</button>
-          <button className={`chip${runsTab ? "" : " active"}`} onClick={() => { setTab("other"); setLimit(12); }}>other · {cross.length}</button>
+        <div style={{ display: "flex", gap: 6, alignItems: "baseline" }}>
+          <button className={"chip" + (tab === "runs" ? " active" : "")} onClick={() => switchTab("runs")}>runs</button>
+          <button className={"chip" + (tab === "other" ? " active" : "")} onClick={() => switchTab("other")}>other · {cross.length}</button>
           <span className="eyebrow">{syncing ? "pulling strava…" : `${shownCount} activities`}</span>
-        </span>
+        </div>
       }>
         the log
       </SectionTag>
       <div className="panel">
-        <div className="log-grid" style={{ padding: "10px 18px", borderBottom: "1px solid var(--edge-bright)" }}>
+        <div className={gridClass} style={{ padding: "10px 18px", borderBottom: "1px solid var(--edge-bright)" }}>
           <span className="eyebrow" style={{ fontSize: 8.5 }}>date</span>
           <span className="eyebrow" style={{ fontSize: 8.5 }}>activity</span>
           <span className="eyebrow col-type" style={{ fontSize: 8.5 }}>{runsTab ? "type" : "sport"}</span>
-          <span className="eyebrow" style={{ fontSize: 8.5, textAlign: "right" }}>{u.distUnit}</span>
-          <span className="eyebrow" style={{ fontSize: 8.5, textAlign: "right" }}>{u.elevUnit}↑</span>
+          <span className="eyebrow col-dist" style={{ fontSize: 8.5, textAlign: "right" }}>{u.distUnit}</span>
+          <span className="eyebrow col-elev" style={{ fontSize: 8.5, textAlign: "right" }}>{u.elevUnit}↑</span>
           <span className="eyebrow col-pace" style={{ fontSize: 8.5, textAlign: "right" }}>{runsTab ? `pace${u.paceUnit}` : "time"}</span>
           <span className="eyebrow col-rpe" style={{ fontSize: 8.5 }}>{runsTab ? "rpe" : "hr"}</span>
         </div>
 
-        {loading && activities.length === 0 && (
+        {runsTab && loading && activities.length === 0 && (
           <div style={{ padding: "28px 0", textAlign: "center" }}><span className="eyebrow">loading strava snapshot…</span></div>
+        )}
+        {!runsTab && crossLoading && (
+          <div style={{ padding: "28px 0", textAlign: "center" }}><span className="eyebrow">loading cross-train snapshot…</span></div>
         )}
         {runsTab && error && (
           <div style={{ padding: "28px 0", textAlign: "center" }}>
             <span className="eyebrow" style={{ color: "var(--ember)" }}>couldn't load strava.json — run `node scripts/sync-strava.mjs`</span>
           </div>
         )}
-        {!runsTab && !loading && cross.length === 0 && (
+        {!runsTab && !crossLoading && crossError && (
           <div style={{ padding: "28px 0", textAlign: "center" }}>
-            <span className="eyebrow">no non-run activities yet — resync strava to pull them</span>
+            <span className="eyebrow" style={{ color: "var(--ember)" }}>couldn't load cross-train.json — {crossError}</span>
+          </div>
+        )}
+        {!runsTab && !crossLoading && !crossError && cross.length === 0 && (
+          <div style={{ padding: "28px 0", textAlign: "center" }}>
+            <span className="eyebrow">
+              {crossSynced
+                ? "no non-run activities in this window"
+                : "no cross-train snapshot yet — resync strava to pull it"}
+            </span>
           </div>
         )}
 
-        {!runsTab && visibleCross.map((a, i) => (
-          <motion.div
-            key={a.id}
-            className="log-grid"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3, delay: Math.min(i * 0.025, 0.4) }}
-            style={{ padding: "11px 18px", borderTop: i > 0 ? "1px solid var(--edge)" : "none" }}
-            onMouseEnter={(e) => ((e.currentTarget as HTMLDivElement).style.background = "var(--panel-raise)")}
-            onMouseLeave={(e) => ((e.currentTarget as HTMLDivElement).style.background = "transparent")}
-          >
+        {!runsTab && !crossLoading && visibleCross.map((a, i) => (
+          <motion.div key={a.id} className="log-grid cross" {...logRowShell(i)}>
             <span className="numerals" style={{ fontSize: 11.5, color: "var(--mist-mute)" }}>
               {new Date(a.date).toLocaleDateString("en-US", { month: "short", day: "2-digit" }).toLowerCase()}
             </span>
@@ -1338,22 +1355,15 @@ function LogTable() {
                 {sportLabel(a.sport)}
               </span>
             </span>
-            <span className="numerals" style={{ fontSize: 14, fontWeight: 600, textAlign: "right" }}>{a.distance_mi >= 0.05 ? u.dist(a.distance_mi) : "—"}</span>
-            <span className="numerals" style={{ fontSize: 14, fontWeight: 600, textAlign: "right", color: "var(--mist-dim)" }}>{a.elevation_ft >= 1 ? u.elev(a.elevation_ft) : "—"}</span>
+            <span className="numerals col-dist" style={{ fontSize: 14, fontWeight: 600, textAlign: "right" }}>{a.distance_mi >= 0.05 ? u.dist(a.distance_mi) : "—"}</span>
+            <span className="numerals col-elev" style={{ fontSize: 14, fontWeight: 600, textAlign: "right", color: "var(--mist-dim)" }}>{a.elevation_ft >= 1 ? u.elev(a.elevation_ft) : "—"}</span>
             <span className="numerals col-pace" style={{ fontSize: 11.5, color: "var(--mist-mute)", textAlign: "right" }}>{durFmt(a.moving_s)}</span>
             <span className="numerals col-rpe" style={{ fontSize: 11.5, color: "var(--mist-mute)" }}>{a.avg_hr != null ? Math.round(a.avg_hr) : "—"}</span>
           </motion.div>
         ))}
 
         {runsTab && visible.map((a, i) => (
-          <motion.div
-            key={a.id}
-            className="log-grid"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3, delay: Math.min(i * 0.025, 0.4) }}
-            style={{ padding: "11px 18px", borderTop: i > 0 ? "1px solid var(--edge)" : "none" }}
-            onMouseEnter={(e) => ((e.currentTarget as HTMLDivElement).style.background = "var(--panel-raise)")}
-            onMouseLeave={(e) => ((e.currentTarget as HTMLDivElement).style.background = "transparent")}
-          >
+          <motion.div key={a.id} className="log-grid" {...logRowShell(i)}>
             <span className="numerals" style={{ fontSize: 11.5, color: "var(--mist-mute)" }}>
               {new Date(a.date).toLocaleDateString("en-US", { month: "short", day: "2-digit" }).toLowerCase()}
             </span>
