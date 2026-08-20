@@ -606,7 +606,7 @@ export function RacePlanner() {
 
       {/* station table */}
       {proj && (
-        <div className="panel" style={{ marginTop: 14 }}>
+        <div className="panel race-table" style={{ marginTop: 14 }}>
           <div className="race-grid" style={{ padding: "10px 18px", borderBottom: "1px solid var(--edge-bright)" }}>
             <span className="eyebrow" style={{ fontSize: 8.5 }}>station</span>
             <span className="eyebrow" style={{ fontSize: 8.5, textAlign: "right" }}>{u.distUnit}</span>
@@ -627,8 +627,8 @@ export function RacePlanner() {
               <span>margin</span>
             </span>
             <span className="eyebrow col-fuel" style={{ fontSize: 8.5, textAlign: "right" }}
-              title="fuel carried OUT of the previous station for this split — carbs needed, gels/tabs beyond the drink mix, heat-adjusted fluid (4F = take a 4th flask); constants in nutrition.json">
-              fuel in-seg
+              title="fuel carried OUT of the previous refill for this split — carb target, Gels/Bloks/tabs beyond the drink mix, heat-adjusted fluid + fill code (M mix flask · W spare water · ↑ drink at aid before leaving); constants in nutrition.json">
+              fuel
             </span>
             <span className="eyebrow col-flags" style={{ fontSize: 8.5 }}>access</span>
           </div>
@@ -723,11 +723,11 @@ export function RacePlanner() {
                     const units = [f.gels > 0 ? `${f.gels}G` : "", f.bloks > 0 ? `${f.bloks}B` : ""].filter(Boolean).join("+");
                     return (
                       <>
-                        <span style={{ display: "block", fontWeight: 600 }}>
-                          {f.carb_g}g{units ? ` · ${units}` : ""}
+                        <span style={{ display: "block", fontWeight: 600, whiteSpace: "nowrap" }}>
+                          {f.carb_g}g{units ? ` · ${units}` : ""}{f.salt_tabs > 0 ? ` ${f.salt_tabs}t` : ""}
                         </span>
-                        <span style={{ display: "block", fontSize: 9, color: f.fourth_flask ? "var(--ember)" : "var(--mist-dim)", fontWeight: f.fourth_flask ? 700 : 400 }}>
-                          {(f.fluid_ml / 1000).toFixed(1)}L {f.fill}{f.preload_ml > 0 ? " +drink" : ""}{f.salt_tabs > 0 ? ` · ${f.salt_tabs}tab` : ""}
+                        <span style={{ display: "block", fontSize: 9, whiteSpace: "nowrap", color: f.fourth_flask ? "var(--ember)" : "var(--mist-dim)", fontWeight: f.fourth_flask ? 700 : 400 }}>
+                          {(f.fluid_ml / 1000).toFixed(1)}L {f.fill}{f.preload_ml > 0 ? "↑" : ""}
                         </span>
                       </>
                     );
@@ -808,8 +808,8 @@ export function RacePlanner() {
               title="race totals from the fuel plan — distributed across the drop bags (see ⎙ drop bags 3×5)">
               {fuelPlan && (
                 <>
-                  <span style={{ display: "block", fontWeight: 600 }}>{fuelPlan.total_gels}G+{fuelPlan.total_bloks}B</span>
-                  <span style={{ display: "block", fontSize: 9, color: "var(--mist-dim)" }}>{fuelPlan.total_hcf_scoops}hcf · {fuelPlan.total_tabs}tab</span>
+                  <span style={{ display: "block", fontWeight: 600, whiteSpace: "nowrap" }}>{fuelPlan.total_gels}G+{fuelPlan.total_bloks}B {fuelPlan.total_tabs}t</span>
+                  <span style={{ display: "block", fontSize: 9, whiteSpace: "nowrap", color: "var(--mist-dim)" }}>{fuelPlan.total_hcf_scoops} hcf</span>
                 </>
               )}
             </span>

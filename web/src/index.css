@@ -201,10 +201,15 @@ a { color: inherit; }
 
 .race-grid {
   display: grid;
-  grid-template-columns: minmax(120px, 1.3fr) 44px 60px 52px 58px minmax(170px, 1.4fr) 62px minmax(120px, 1fr) 86px minmax(90px, 0.9fr);
-  gap: 12px;
+  grid-template-columns: minmax(110px, 1.3fr) 44px 58px 50px 58px minmax(158px, 1.4fr) 60px minmax(112px, 1fr) 76px minmax(90px, 0.9fr);
+  gap: 11px;
   align-items: center;
 }
+
+/* station table: scroll inside the panel rather than overflow into the
+   coach rail when the viewport squeezes below the columns' minimums */
+.race-table { overflow-x: auto; }
+.race-table > .race-grid { min-width: 930px; }
 
 .climb-grid {
   display: grid;
