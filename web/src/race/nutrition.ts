@@ -53,7 +53,9 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   liquid_carb_rate_g_hr: 55,
   gel: { carb_g: 25, sodium_mg: 20, label: "Maurten 100" },
   bloks: { carb_g: 24, sodium_mg: 50, label: "3 Clif Bloks" },
-  salt_tab_mg: 250,
+  // SaltStick Caps: 215 mg sodium per capsule (also 63 K / 22 Ca / 11 Mg,
+  // untracked — the plan budgets by sodium)
+  salt_tab_mg: 215,
   // gels stay the majority throughout; bloks are a steady minority that
   // tapers as chewing gets harder, rather than clustering in one phase
   phases: [
