@@ -75,7 +75,7 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   drop_bag_gear: {
     "Start": ["sunscreen + hat", "arm sleeves (am chill)"],
     "Fish Hatchery": ["small headlamp (dusk cover → Buck Springs)", "long-sleeve for night", "anti-chafe"],
-    "Buck Springs": ["main headlamp + spare battery", "beanie + gloves", "warm midlayer", "caffeine starts here"],
+    "Buck Springs": ["main headlamp + spare battery", "beanie + gloves", "warm midlayer", "caffeine starts here", "stash empty 5th flask here — never fills again"],
     "Geronimo": ["fresh socks + blister kit", "sunscreen for day 2"],
   },
 };
