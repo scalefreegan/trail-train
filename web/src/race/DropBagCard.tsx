@@ -24,6 +24,16 @@ export function DropBagCard({ plan, cfg, onClose }: {
 }) {
   const { race } = useBlockConfig();
 
+  // the vest note must match the FIRST leg's fill instruction on the fuel
+  // card (a long opening carry can demand the 4th/5th flask at the gun),
+  // not restate the default doctrine
+  const first = plan.segments[0];
+  const flasksOwned = cfg.tailwind_flasks + 1 + 1 + (cfg.spare_flask_ml > 0 ? 1 : 0);
+  const gunMix = first ? first.flasks : cfg.tailwind_flasks;
+  const gunWater = 1 + (first?.fifth_flask ? 1 : 0);
+  const gunEmpty = Math.max(0, flasksOwned - gunMix - gunWater);
+  const gunNote = `${flasksOwned} flasks @ gun: ${gunMix} mix · ${gunWater} water${gunEmpty > 0 ? ` · ${gunEmpty} empty` : ""}`;
+
   useEffect(() => {
     document.body.classList.add("card-printing");
     return () => document.body.classList.remove("card-printing");
@@ -125,7 +135,7 @@ export function DropBagCard({ plan, cfg, onClose }: {
                         </td>
                         <td style={{ ...bagCell, textAlign: "left", fontSize: "8px" }}>
                           {bag.night && <span style={{ color: NIGHT, fontWeight: 700 }}>☾ night ahead </span>}
-                          {bag.station === "Start" ? `${cfg.tailwind_flasks + (cfg.spare_flask_ml > 0 ? 3 : 2)} flasks: ${cfg.tailwind_flasks} mix · 1 water · ${cfg.spare_flask_ml > 0 ? 2 : 1} empty` : ""}
+                          {bag.station === "Start" ? gunNote : ""}
                         </td>
                       </tr>
                       {bag.gear.length > 0 && (
