@@ -73,6 +73,7 @@ function FuelFace({ side, segments, plan, cfg }: {
             <th style={th}>carry</th>
             <th style={th}>need g</th>
             <th style={th}>gel</th>
+            <th style={th}>blk</th>
             <th style={th}>tab</th>
             <th style={th}>fluid L</th>
             <th style={{ ...th, textAlign: "left" }}>·</th>
@@ -86,6 +87,12 @@ function FuelFace({ side, segments, plan, cfg }: {
                 <td style={{ ...cell, textAlign: "left", fontWeight: 600 }}>
                   {seg.from.length > 14 ? `${seg.from.slice(0, 13)}…` : seg.from}
                   <span style={{ color: MUTED, fontWeight: 400 }}> →{seg.to.length > 10 ? `${seg.to.slice(0, 9)}…` : seg.to}</span>
+                  {(seg.via.length > 0 || seg.water_note) && (
+                    <span style={{ display: "block", fontSize: "5.5px", color: MUTED, fontWeight: 400 }}>
+                      {seg.via.length > 0 ? `thru ${seg.via.join(", ")} — no resupply` : ""}
+                      {seg.water_note ? `${seg.via.length ? " · " : ""}${seg.water_note}` : ""}
+                    </span>
+                  )}
                 </td>
                 <td style={{ ...cell, fontSize: "7.5px", color: MUTED }}>
                   {seg.fromIdx >= 0 ? fmtRaceClock(race.date, seg.departH) : fmtRaceClock(race.date, 0)}
@@ -96,6 +103,9 @@ function FuelFace({ side, segments, plan, cfg }: {
                 <td style={{ ...cell, fontWeight: 700 }}>{seg.carb_g}</td>
                 <td style={{ ...cell, fontWeight: seg.gels > 0 ? 700 : 400, color: seg.gels > 0 ? INK : MUTED }}>
                   {seg.gels > 0 ? seg.gels : "·"}
+                </td>
+                <td style={{ ...cell, fontWeight: seg.bloks > 0 ? 700 : 400, color: seg.bloks > 0 ? INK : MUTED }}>
+                  {seg.bloks > 0 ? seg.bloks : "·"}
                 </td>
                 <td style={{ ...cell, color: seg.salt_tabs > 0 ? INK : MUTED, fontWeight: seg.salt_tabs > 0 ? 700 : 400 }}>
                   {seg.salt_tabs > 0 ? seg.salt_tabs : "·"}
@@ -118,17 +128,17 @@ function FuelFace({ side, segments, plan, cfg }: {
         {side === 1 ? (
           <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
             <span>
-              fill every aid: {cfg.tailwind_flasks}×{cfg.flask_ml}mL TW+HC = <b>{cfg.tailwind_flasks * cfg.flask_carb_g}g · {cfg.tailwind_flasks * cfg.flask_sodium_mg}Na</b> ·
-              keep ≥{cfg.water_reserve_ml}mL plain water · gel {cfg.gel.carb_g}g · tab {cfg.salt_tab_mg}mg
+              fill every aid: {cfg.tailwind_flasks}×{cfg.flask_ml}mL TW + 1 HCF scoop each = <b>{cfg.tailwind_flasks * cfg.flask_carb_g}g · {cfg.tailwind_flasks * cfg.flask_sodium_mg}Na</b> ·
+              keep ≥{cfg.water_reserve_ml}mL plain water · gel {cfg.gel.carb_g}g · blk {cfg.bloks.carb_g}g · tab {cfg.salt_tab_mg}mg
             </span>
             <span>drink alone leaves <b style={{ color: INK }}>−{plan.sodium_gap_mg_hr}Na/h</b></span>
           </div>
         ) : (
           <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
             <span>
-              ☀ heat ({cfg.fluid_ml_hr_heat}mL/h) · ☾ night: {cfg.phases[cfg.phases.length - 1].supplement} · <b style={{ color: WORST }}>4F = add 4th flask</b> (4F+ still short — sip creek/ration)
+              ☀ heat ({cfg.fluid_ml_hr_heat}mL/h) · ☾ night: {cfg.phases[cfg.phases.length - 1].supplement} · <b style={{ color: WORST }}>4F = 4th flask OF MIX</b> (counted; 4F+ still short — ration)
             </span>
-            <span>race total ≈ <b style={{ color: INK }}>{plan.total_gels} gels · {plan.total_tabs} tabs</b></span>
+            <span>total ≈ <b style={{ color: INK }}>{plan.total_gels} gel · {plan.total_bloks} blk · {plan.total_tabs} tab · {plan.total_hcf_scoops} HCF</b></span>
           </div>
         )}
       </div>
@@ -163,8 +173,8 @@ export function FuelCard({ plan, cfg, onClose }: {
       <div style={{ maxWidth: 620, margin: "0 auto", padding: "28px 32px 48px" }}>
         <div className="no-print" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 16 }}>
           <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.5 }}>
-            <b style={{ color: INK }}>3×5 fuel card</b> — each row is what you carry <b>out</b> of that station;
-            print side 1, re-feed the card flipped, print side 2.
+            <b style={{ color: INK }}>3×5 fuel card</b> — no-crew plan: each row is a carry between true refill
+            points (crew-only stations offer nothing); print side 1, re-feed flipped, print side 2.
           </div>
           <div style={{ display: "flex", gap: 10, flexShrink: 0 }}>
             <button

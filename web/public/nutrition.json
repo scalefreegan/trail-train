@@ -1,5 +1,5 @@
 {
-  "comment": "Fueling constants for the fuel card + planner column. Edit freely — the app falls back to built-in defaults if this file is missing or invalid.",
+  "comment": "Fueling constants for the fuel card + planner column. Edit freely — the app falls back to built-in defaults if this file is missing or invalid. bloks_frac = share of a phase's carried units taken as Clif Bloks instead of gels. On 4F segments the 4th flask is assumed filled with Tailwind mix (counted), not water.",
   "flask_ml": 500,
   "tailwind_flasks": 2,
   "flask_carb_g": 55,
@@ -11,11 +11,13 @@
   "bloks": { "carb_g": 24, "sodium_mg": 50, "label": "3 Clif Bloks" },
   "salt_tab_mg": 250,
   "phases": [
-    { "until_h": 12, "carb_g_hr": 80, "supplement": "gel hourly" },
-    { "until_h": 24, "carb_g_hr": 75, "supplement": "gel or bloks" },
-    { "until_h": 48, "carb_g_hr": 62, "supplement": "coke + broth at aid" }
+    { "until_h": 12, "carb_g_hr": 75, "bloks_frac": 0, "supplement": "gel hourly" },
+    { "until_h": 24, "carb_g_hr": 70, "bloks_frac": 0.5, "supplement": "gel or bloks" },
+    { "until_h": 48, "carb_g_hr": 62, "bloks_frac": 0.5, "supplement": "coke + broth at aid" }
   ],
-  "sodium_mg_hr": 700,
+  "carb_cap_over_h": 3,
+  "carb_cap_g_hr": 70,
+  "sodium_mg_hr": 650,
   "fluid_ml_hr": 500,
   "fluid_ml_hr_heat": 650,
   "heat_window": { "start": "10:00", "end": "17:00" },
