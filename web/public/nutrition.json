@@ -22,5 +22,11 @@
   "fluid_ml_hr": 500,
   "fluid_ml_hr_heat": 650,
   "heat_window": { "start": "10:00", "end": "17:00" },
-  "long_carry_h": 2.5
+  "long_carry_h": 2.5,
+  "drop_bag_gear": {
+    "Start": ["sunscreen + hat", "arm sleeves (am chill)"],
+    "Fish Hatchery": ["headlamp + spare batteries", "long-sleeve for night", "anti-chafe"],
+    "Buck Springs": ["beanie + gloves", "warm midlayer", "caffeine starts here"],
+    "Geronimo": ["fresh socks + blister kit", "spare headlamp batteries", "sunscreen for day 2"]
+  }
 }

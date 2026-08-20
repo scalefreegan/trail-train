@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import React, { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useBlockConfig } from "../data";
 import { fmtRaceClock } from "./pacing";
@@ -104,25 +104,34 @@ export function DropBagCard({ plan, cfg, onClose }: {
                 </thead>
                 <tbody>
                   {plan.drop_bags.map((bag) => (
-                    <tr key={bag.station}>
-                      <td style={{ ...cell, textAlign: "left", fontWeight: 700 }}>{bag.station}</td>
-                      <td style={{ ...cell, fontSize: "8.5px", color: MUTED }}>
-                        {bag.atH > 0 ? fmtRaceClock(race.date, bag.atH) : "—"}
-                      </td>
-                      <td style={{ ...cell, textAlign: "left", fontSize: "8.5px", color: MUTED }}>{bag.covers}</td>
-                      <td style={{ ...cell, fontWeight: 700 }}>{bag.gels}</td>
-                      <td style={{ ...cell, fontWeight: bag.bloks > 0 ? 700 : 400, color: bag.bloks > 0 ? INK : MUTED }}>
-                        {bag.bloks > 0 ? bag.bloks : "·"}
-                      </td>
-                      <td style={{ ...cell, fontWeight: 700 }}>{bag.hcf_scoops}</td>
-                      <td style={{ ...cell, fontWeight: bag.salt_tabs > 0 ? 700 : 400, color: bag.salt_tabs > 0 ? INK : MUTED }}>
-                        {bag.salt_tabs > 0 ? bag.salt_tabs : "·"}
-                      </td>
-                      <td style={{ ...cell, textAlign: "left", fontSize: "8px" }}>
-                        {bag.night && <span style={{ color: NIGHT, fontWeight: 700 }}>☾ night ahead </span>}
-                        {bag.station === "Start" ? "5 flasks: 2 mix · 1 water · 2 empty" : ""}
-                      </td>
-                    </tr>
+                    <React.Fragment key={bag.station}>
+                      <tr>
+                        <td style={{ ...cell, textAlign: "left", fontWeight: 700, borderBottom: "none" }}>{bag.station}</td>
+                        <td style={{ ...cell, fontSize: "8.5px", color: MUTED, borderBottom: "none" }}>
+                          {bag.atH > 0 ? fmtRaceClock(race.date, bag.atH) : "—"}
+                        </td>
+                        <td style={{ ...cell, textAlign: "left", fontSize: "8.5px", color: MUTED, borderBottom: "none" }}>{bag.covers}</td>
+                        <td style={{ ...cell, fontWeight: 700, borderBottom: "none" }}>{bag.gels}</td>
+                        <td style={{ ...cell, fontWeight: bag.bloks > 0 ? 700 : 400, color: bag.bloks > 0 ? INK : MUTED, borderBottom: "none" }}>
+                          {bag.bloks > 0 ? bag.bloks : "·"}
+                        </td>
+                        <td style={{ ...cell, fontWeight: 700, borderBottom: "none" }}>{bag.hcf_scoops}</td>
+                        <td style={{ ...cell, fontWeight: bag.salt_tabs > 0 ? 700 : 400, color: bag.salt_tabs > 0 ? INK : MUTED, borderBottom: "none" }}>
+                          {bag.salt_tabs > 0 ? bag.salt_tabs : "·"}
+                        </td>
+                        <td style={{ ...cell, textAlign: "left", fontSize: "8px", borderBottom: "none" }}>
+                          {bag.night && <span style={{ color: NIGHT, fontWeight: 700 }}>☾ night ahead </span>}
+                          {bag.station === "Start" ? "5 flasks: 2 mix · 1 water · 2 empty" : ""}
+                        </td>
+                      </tr>
+                      {bag.gear.length > 0 && (
+                        <tr>
+                          <td colSpan={8} style={{ ...cell, textAlign: "left", fontSize: "7px", color: MUTED, paddingTop: 0 }}>
+                            <b style={{ color: INK }}>gear:</b> {bag.gear.join(" · ")}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   ))}
                   <tr>
                     <td style={{ ...cell, textAlign: "left", fontWeight: 700, borderBottom: "none" }} colSpan={3}>race total</td>
@@ -137,7 +146,7 @@ export function DropBagCard({ plan, cfg, onClose }: {
 
               <div style={{ fontSize: "6px", color: MUTED, paddingTop: 1.5 }}>
                 add <b>+1 gel · +1 tab spare per bag</b> · hcf = High Carb scoops (1 per flask fill; aid supplies base Tailwind)
-                · ☾ bags feeding night carries: pack headlamp/batteries + warm layer per gear list · gel {cfg.gel.carb_g}g · blk pack {cfg.bloks.carb_g}g
+                · gel {cfg.gel.carb_g}g · blk pack {cfg.bloks.carb_g}g · edit gear + constants in nutrition.json
               </div>
             </div>
           </div>

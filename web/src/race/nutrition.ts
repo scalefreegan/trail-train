@@ -38,6 +38,8 @@ export type NutritionConfig = {
   fluid_ml_hr_heat: number;
   heat_window: { start: string; end: string };
   long_carry_h: number;
+  /** non-food gear per drop bag, keyed by station name ("Start" = the vest) */
+  drop_bag_gear: Record<string, string[]>;
 };
 
 export const DEFAULT_NUTRITION: NutritionConfig = {
@@ -64,6 +66,12 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   fluid_ml_hr_heat: 650,
   heat_window: { start: "10:00", end: "17:00" },
   long_carry_h: 2.5,
+  drop_bag_gear: {
+    "Start": ["sunscreen + hat", "arm sleeves (am chill)"],
+    "Fish Hatchery": ["headlamp + spare batteries", "long-sleeve for night", "anti-chafe"],
+    "Buck Springs": ["beanie + gloves", "warm midlayer", "caffeine starts here"],
+    "Geronimo": ["fresh socks + blister kit", "spare headlamp batteries", "sunscreen for day 2"],
+  },
 };
 
 /** Same failure semantics as the useRaceData hooks, except a 404 silently
@@ -150,6 +158,8 @@ export type DropBag = {
   salt_tabs: number;
   covers: string;
   night: boolean;
+  /** non-food items for this bag, from cfg.drop_bag_gear */
+  gear: string[];
 };
 
 export type FuelPlan = {
@@ -323,6 +333,7 @@ export function planFuel(
       salt_tabs: legs.reduce((a, s) => a + s.salt_tabs, 0),
       covers: `→ ${proj.stations[untilIdx].station.name}`,
       night: legs.some((s) => s.night),
+      gear: cfg.drop_bag_gear[fromIdx >= 0 ? proj.stations[fromIdx].station.name : "Start"] ?? [],
     });
   }
 
