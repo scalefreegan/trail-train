@@ -149,7 +149,7 @@ function FuelFace({ side, pages, segments, plan, cfg }: {
           <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
             <span>
               fill: <b>M</b> = {cfg.flask_ml}mL Tailwind+HCF · <b>W</b> = spare flask plain water · water flask always carried ·
-              <b style={{ color: WORST }}> +drink @ aid</b> = swallow before leaving · ☀ heat · ☾ night: {cfg.phases[cfg.phases.length - 1].supplement}
+              <b style={{ color: WORST }}> +drink @ aid</b> = water at the table before leaving · ☀ heat · ☾ night: {cfg.phases[cfg.phases.length - 1].supplement}
             </span>
             <span>total ≈ <b style={{ color: INK }}>{plan.total_gels} gel · {plan.total_bloks} blk · {plan.total_tabs} tab · {plan.total_hcf_scoops} HCF</b></span>
           </div>
