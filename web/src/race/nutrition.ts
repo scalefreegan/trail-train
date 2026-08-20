@@ -208,13 +208,12 @@ export type FuelSegment = {
   water_flasks: number;
   /** anything filled beyond the standard 2 mix flasks — the heavy-leg marker */
   extra_fill: boolean;
-  /** what to swallow before entering the binding stretch — demand beyond
-      every owned flask (mL, 0 when the carried fluid suffices, capped 800) */
-  preload_ml: number;
-  /** where to drink the preload: null = the departure aid; otherwise the
-      water-only station preceding the binding stretch (drinking at departure
-      cannot help a shortfall that lives after a mid-leg water point) */
-  preload_at: string | null;
+  /** one drink instruction per stretch whose demand exceeds the carried
+      capacity — every stretch starts somewhere with drinkable water (the
+      departure aid for the first, a water-only station after), so each
+      shortfall is swallowed right before the stretch it covers. at: null =
+      the departure aid. ml capped at 800 per stop (ration beyond). */
+  preloads: { at: string | null; ml: number }[];
   /** demand exceeds flasks + a realistic pre-load — ration deliberately */
   ration: boolean;
   /** departure fill code counting EVERY flask you leave with — "2M",
@@ -347,31 +346,38 @@ export function planFuel(
     // the demand that must be CARRIED is the worst stretch between water
     // points, not the whole leg
     const waterPoints = [departH, ...waterStops.map((s) => s.eta_h.avg), arriveH];
-    let fluid_ml = 0, bindingStretch = 0;
+    let fluid_ml = 0;
     for (let w = 0; w + 1 < waterPoints.length; w++) {
-      const stretch = heatFluid(waterPoints[w], waterPoints[w + 1]);
-      if (stretch > fluid_ml) { fluid_ml = stretch; bindingStretch = w; }
+      fluid_ml = Math.max(fluid_ml, heatFluid(waterPoints[w], waterPoints[w + 1]));
     }
     // demand-driven fill from the 2 standard mix flasks: at most ONE extra
     // flask takes mix (carbs ride along), further spares take plain water —
     // each added only when the shortfall beats the drink-at-aid threshold
+    // EPS guards ceil/threshold arithmetic against float dust — heatFluid's
+    // sum can land 1e-13 mL above an exact value, which Math.ceil would
+    // otherwise inflate into a whole extra 50 mL instruction
+    const EPS = 1e-6;
     const thr = cfg.preload_over_flask_ml;
     let extraMix = 0, water_flasks = 0;
     let capacity = cfg.tailwind_flasks * cfg.flask_ml;
-    if (cfg.spare_flasks > 0 && fluid_ml - capacity > thr) { extraMix = 1; capacity += cfg.flask_ml; }
-    while (water_flasks < cfg.spare_flasks - extraMix && fluid_ml - capacity > thr) {
+    if (cfg.spare_flasks > 0 && fluid_ml - capacity > thr + EPS) { extraMix = 1; capacity += cfg.flask_ml; }
+    while (water_flasks < cfg.spare_flasks - extraMix && fluid_ml - capacity > thr + EPS) {
       water_flasks++; capacity += cfg.flask_ml;
     }
-    const rawPreload = Math.max(0, Math.ceil((fluid_ml - capacity) / 50) * 50);
-    // nobody can pre-load more than ~800 mL at an aid table — beyond that the
-    // honest instruction is "ration", not a bigger number
-    const preload_ml = Math.min(rawPreload, 800);
-    const ration = rawPreload > 800;
-    // a preload only helps if drunk immediately before the binding stretch —
-    // at departure normally, at the preceding water stop when the max
-    // stretch sits after a mid-leg water point
-    const preload_at = preload_ml > 0 && bindingStretch > 0
-      ? waterStops[bindingStretch - 1].station.name : null;
+    // EVERY stretch that exceeds the carried capacity gets its own drink
+    // instruction, placed where that stretch begins (a single preload at the
+    // binding stretch left same-sized sibling stretches silently uncovered).
+    // Nobody can pre-load more than ~800 mL at one stop — beyond that the
+    // honest instruction is "ration", not a bigger number.
+    const preloads: { at: string | null; ml: number }[] = [];
+    let ration = false;
+    for (let w = 0; w + 1 < waterPoints.length; w++) {
+      const short = Math.ceil((Math.max(0, heatFluid(waterPoints[w], waterPoints[w + 1]) - capacity) - EPS) / 50) * 50;
+      if (short <= 0) continue;
+      preloads.push({ at: w === 0 ? null : waterStops[w - 1].station.name, ml: Math.min(short, 800) });
+      if (short > 800) ration = true;
+    }
+    const preloadTotal = preloads.reduce((a, p) => a + p.ml, 0);
     const flasks = cfg.tailwind_flasks + extraMix;
     const extra_fill = extraMix > 0 || water_flasks > 0;
     const fill = `${flasks}M${water_flasks > 0 ? `+${water_flasks}W` : ""}`;
@@ -389,7 +395,7 @@ export function planFuel(
     // (refill water dilutes the forcing, conservatively).
     const forcedMix_g = waterStops.length > 0 ? 0 :
       (Math.max(0, Math.min(flasks * cfg.flask_ml,
-        heatFluid(departH, arriveH) - preload_ml - water_flasks * cfg.flask_ml)) / cfg.flask_ml) * cfg.flask_carb_g;
+        heatFluid(departH, arriveH) - preloadTotal - water_flasks * cfg.flask_ml)) / cfg.flask_ml) * cfg.flask_carb_g;
     const liquid_carb_g = Math.min(flasks * cfg.flask_carb_g,
       Math.max(cfg.liquid_carb_rate_g_hr * carryH, forcedMix_g));
     const suppCarb = Math.max(0, carb_g - liquid_carb_g);
@@ -422,7 +428,7 @@ export function planFuel(
       // nearest 10, not 50 — coarser rounding displayed a demand above the
       // fill it actually fits inside (1237 → "1.3L" vs a 1.25L carry)
       fluid_ml: Math.round(fluid_ml / 10) * 10,
-      water_flasks, extra_fill, preload_ml, preload_at, ration, fill,
+      water_flasks, extra_fill, preloads, ration, fill,
       heat: heatH > 0.25,
       night: nightH > 0.25,
       long_carry: carryH > cfg.long_carry_h,

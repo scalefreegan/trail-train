@@ -116,11 +116,11 @@ function FuelFace({ side, pages, segments, plan, cfg }: {
                 </td>
                 <td style={{ ...cell, textAlign: "left", fontWeight: seg.extra_fill ? 700 : 400, color: seg.extra_fill ? WORST : MUTED }}>
                   {seg.fill}
-                  {seg.preload_ml > 0 && (
-                    <span style={{ display: "block", fontSize: "5.5px", color: WORST, fontWeight: 700 }}>
-                      +drink {seg.preload_ml}mL @ {seg.preload_at ? seg.preload_at.slice(0, 9) : "aid"}{seg.ration ? " · RATION" : ""}
+                  {seg.preloads.map((p, pi) => (
+                    <span key={p.at ?? "aid"} style={{ display: "block", fontSize: "5.5px", color: WORST, fontWeight: 700 }}>
+                      +drink {p.ml}mL @ {p.at ? p.at.slice(0, 9) : "aid"}{seg.ration && pi === seg.preloads.length - 1 ? " · RATION" : ""}
                     </span>
-                  )}
+                  ))}
                 </td>
                 <td style={{ ...cell, textAlign: "left", fontWeight: 700, fontSize: "7.5px" }}>
                   {segFlags(seg).map((f) => (
