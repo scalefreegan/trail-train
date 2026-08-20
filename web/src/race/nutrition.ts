@@ -54,10 +54,12 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   gel: { carb_g: 25, sodium_mg: 20, label: "Maurten 100" },
   bloks: { carb_g: 24, sodium_mg: 50, label: "3 Clif Bloks" },
   salt_tab_mg: 250,
+  // bloks front-loaded: chewing ability degrades late in a race, so solids
+  // belong in the fresh hours and gels + aid liquids take over deep
   phases: [
-    { until_h: 12, carb_g_hr: 75, bloks_frac: 0, supplement: "gel hourly" },
-    { until_h: 24, carb_g_hr: 70, bloks_frac: 0.5, supplement: "gel or bloks" },
-    { until_h: 48, carb_g_hr: 62, bloks_frac: 0.5, supplement: "coke + broth at aid" },
+    { until_h: 12, carb_g_hr: 75, bloks_frac: 0.5, supplement: "gel or bloks hourly — chew while fresh" },
+    { until_h: 24, carb_g_hr: 70, bloks_frac: 0.35, supplement: "mostly gels as chewing fades" },
+    { until_h: 48, carb_g_hr: 62, bloks_frac: 0, supplement: "gels + coke/broth at aid" },
   ],
   carb_cap_over_h: 3,
   carb_cap_g_hr: 70,
@@ -68,9 +70,9 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   long_carry_h: 2.5,
   drop_bag_gear: {
     "Start": ["sunscreen + hat", "arm sleeves (am chill)"],
-    "Fish Hatchery": ["headlamp + spare batteries", "long-sleeve for night", "anti-chafe"],
-    "Buck Springs": ["beanie + gloves", "warm midlayer", "caffeine starts here"],
-    "Geronimo": ["fresh socks + blister kit", "spare headlamp batteries", "sunscreen for day 2"],
+    "Fish Hatchery": ["small headlamp (dusk cover → Buck Springs)", "long-sleeve for night", "anti-chafe"],
+    "Buck Springs": ["main headlamp + spare battery", "beanie + gloves", "warm midlayer", "caffeine starts here"],
+    "Geronimo": ["fresh socks + blister kit", "sunscreen for day 2"],
   },
 };
 
