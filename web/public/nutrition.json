@@ -1,0 +1,23 @@
+{
+  "comment": "Fueling constants for the fuel card + planner column. Edit freely — the app falls back to built-in defaults if this file is missing or invalid.",
+  "flask_ml": 500,
+  "tailwind_flasks": 2,
+  "flask_carb_g": 55,
+  "flask_sodium_mg": 537,
+  "water_flask_ml": 500,
+  "water_reserve_ml": 250,
+  "liquid_carb_rate_g_hr": 55,
+  "gel": { "carb_g": 25, "sodium_mg": 20, "label": "Maurten 100" },
+  "bloks": { "carb_g": 24, "sodium_mg": 50, "label": "3 Clif Bloks" },
+  "salt_tab_mg": 250,
+  "phases": [
+    { "until_h": 12, "carb_g_hr": 80, "supplement": "gel hourly" },
+    { "until_h": 24, "carb_g_hr": 75, "supplement": "gel or bloks" },
+    { "until_h": 48, "carb_g_hr": 62, "supplement": "coke + broth at aid" }
+  ],
+  "sodium_mg_hr": 700,
+  "fluid_ml_hr": 500,
+  "fluid_ml_hr_heat": 650,
+  "heat_window": { "start": "10:00", "end": "17:00" },
+  "long_carry_h": 2.5
+}

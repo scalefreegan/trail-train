@@ -6,6 +6,8 @@ import { useCourse, useCrewBase, usePaceGrade } from "./useRaceData";
 import { gmapsDirectionsUrl } from "./links";
 import { CrewSheet } from "./CrewSheet";
 import { RunnerCard } from "./RunnerCard";
+import { FuelCard } from "./FuelCard";
+import { fmtCarry, planFuel, useNutrition } from "./nutrition";
 import {
   fitPacing, projectRace, nightIntervals,
   fmtRaceClock, fmtElapsed,
@@ -455,8 +457,9 @@ export function RacePlanner() {
   const [aidStopMin, setAidStopMin] = usePersistedNumber("race.aid_stop_min", 5);
   const [crewStopMin, setCrewStopMin] = usePersistedNumber("race.crew_stop_min", 10);
   const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops("race.stop_overrides");
-  const [sheetOpen, setSheetOpen] = useState(false);
-  const [cardOpen, setCardOpen] = useState(false);
+  // one printable document at a time — the print-isolation body classes
+  // (crew-printing / card-printing) must never coexist
+  const [openDoc, setOpenDoc] = useState<null | "crew" | "card" | "fuel">(null);
 
   const { paceGrade, error: paceGradeError } = usePaceGrade();
   const fit = useMemo(() => fitPacing(activities), [activities]);
@@ -469,6 +472,12 @@ export function RacePlanner() {
       goalH: goalH > 0 ? goalH : null, aidStopMin, crewStopMin, stopOverridesMin: stopOverrides,
     }) : null),
     [course, fit, paceGrade, fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides],
+  );
+
+  const { nutrition } = useNutrition();
+  const fuelPlan = useMemo(
+    () => (course && proj ? planFuel(proj, course, race.date, nutrition) : null),
+    [course, proj, race.date, nutrition],
   );
 
   if (missing || !course) {
@@ -616,6 +625,10 @@ export function RacePlanner() {
               <span style={{ textAlign: "right" }}>cutoff</span>
               <span>margin</span>
             </span>
+            <span className="eyebrow col-fuel" style={{ fontSize: 8.5, textAlign: "right" }}
+              title="fuel carried OUT of the previous station for this split — carbs needed, gels/tabs beyond the drink mix, heat-adjusted fluid (4F = take a 4th flask); constants in nutrition.json">
+              fuel in-seg
+            </span>
             <span className="eyebrow col-flags" style={{ fontSize: 8.5 }}>access</span>
           </div>
           {proj.stations.map((sp, i) => {
@@ -697,6 +710,25 @@ export function RacePlanner() {
                       : ""}
                   </span>
                 </span>
+                <span className="numerals col-fuel" style={{ fontSize: 10.5, textAlign: "right" }}
+                  title={fuelPlan ? (() => {
+                    const f = fuelPlan.segments[i];
+                    return `${f.from} → ${f.to} · ${fmtCarry(f.carryH)} carry: ${f.carb_g}g carb target (drink supplies ~${f.liquid_carb_g}g), ${f.gels} gel${f.gels === 1 ? "" : "s"}, ${f.salt_tabs} salt tab${f.salt_tabs === 1 ? "" : "s"}, ${(f.fluid_ml / 1000).toFixed(1)}L fluid${f.heat ? " (heat-adjusted)" : ""}${f.night ? " · overnight" : ""}${f.fourth_flask ? " · NEEDS 4TH FLASK" : ""} · ${f.supplement}`;
+                  })() : undefined}>
+                  {fuelPlan && (() => {
+                    const f = fuelPlan.segments[i];
+                    return (
+                      <>
+                        <span style={{ display: "block", fontWeight: 600 }}>
+                          {f.carb_g}g{f.gels > 0 ? ` · ${f.gels}gel` : ""}
+                        </span>
+                        <span style={{ display: "block", fontSize: 9, color: f.fourth_flask ? "var(--ember)" : "var(--mist-dim)", fontWeight: f.fourth_flask ? 700 : 400 }}>
+                          {(f.fluid_ml / 1000).toFixed(1)}L{f.fourth_flask ? " 4F" : ""}{f.salt_tabs > 0 ? ` · ${f.salt_tabs}tab` : ""}
+                        </span>
+                      </>
+                    );
+                  })()}
+                </span>
                 <span className="col-flags" style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-start" }}>
                   <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
                     {stationFlags(s).map((f) => <FlagChip key={f.label} label={f.label} color={f.color} />)}
@@ -768,6 +800,15 @@ export function RacePlanner() {
                 ) : <span />;
               })()}
             </span>
+            <span className="numerals col-fuel" style={{ fontSize: 10.5, textAlign: "right" }}
+              title="race totals from the fuel plan — gels/tabs to distribute across drop bags and crew stops">
+              {fuelPlan && (
+                <>
+                  <span style={{ display: "block", fontWeight: 600 }}>{fuelPlan.total_gels} gels</span>
+                  <span style={{ display: "block", fontSize: 9, color: "var(--mist-dim)" }}>{fuelPlan.total_tabs} tabs</span>
+                </>
+              )}
+            </span>
             <span className="col-flags" />
           </div>
 
@@ -835,14 +876,21 @@ export function RacePlanner() {
               <button
                 className="chip"
                 style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
-                onClick={() => { setSheetOpen(false); setCardOpen(true); }}
+                onClick={() => setOpenDoc("card")}
               >
                 ⎙ runner card 3×5
               </button>
               <button
                 className="chip"
                 style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
-                onClick={() => { setCardOpen(false); setSheetOpen(true); }}
+                onClick={() => setOpenDoc("fuel")}
+              >
+                ⎙ fuel card 3×5
+              </button>
+              <button
+                className="chip"
+                style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
+                onClick={() => setOpenDoc("crew")}
               >
                 ⎙ crew sheet pdf
               </button>
@@ -851,11 +899,14 @@ export function RacePlanner() {
         </div>
       )}
 
-      {sheetOpen && proj && (
-        <CrewSheet course={course} proj={proj} crewBase={crewBase} onClose={() => setSheetOpen(false)} />
+      {openDoc === "crew" && proj && (
+        <CrewSheet course={course} proj={proj} crewBase={crewBase} onClose={() => setOpenDoc(null)} />
       )}
-      {cardOpen && proj && (
-        <RunnerCard course={course} proj={proj} onClose={() => setCardOpen(false)} />
+      {openDoc === "card" && proj && (
+        <RunnerCard course={course} proj={proj} onClose={() => setOpenDoc(null)} />
+      )}
+      {openDoc === "fuel" && fuelPlan && (
+        <FuelCard plan={fuelPlan} cfg={nutrition} onClose={() => setOpenDoc(null)} />
       )}
     </section>
   );
