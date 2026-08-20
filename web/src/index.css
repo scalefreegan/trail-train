@@ -212,7 +212,9 @@ a { color: inherit; }
 /* station table: when the viewport can't fit the columns' true widths, the
    panel scrolls horizontally — never squeeze, never spill into the rail */
 .race-table { overflow-x: auto; }
-.race-table > .race-grid { min-width: 1010px; }
+/* ≥ every row's intrinsic minimum (station rows carry a 2px borderLeft the
+   header lacks) so all rows share one width while the panel scrolls */
+.race-table > .race-grid { min-width: 1015px; }
 
 .climb-grid {
   display: grid;
