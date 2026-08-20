@@ -56,8 +56,9 @@ context if useful.
 
 CROSS-TRAINING — facts.cross_training.recent lists the latest 20 non-run activities (rides,
 hikes, strength, ski, …); facts.cross_training.count and .totals cover the FULL sync window,
-so never infer absence from recent alone. These are EXCLUDED from every load metric (d7/d28 distance and vert, ACR,
-weekly actuals vs targets, the pacing model) — all of those count runs only. Use them
+so never infer absence from recent alone. These are EXCLUDED from every load
+metric (d7/d28 distance and vert, ACR, weekly actuals vs targets, the pacing
+model) — all of those count runs only. Use them
 qualitatively: systemic fatigue and recovery cost, time-on-feet, and schedule load on the
 days they occupy. Never add their mileage or vert into run-load arithmetic.
 
