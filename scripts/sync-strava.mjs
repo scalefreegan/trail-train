@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Pulls Strava activities for a date range and writes web/public/strava.json
-// for the TrailTrain dashboard. Refreshes the access token if expired.
+// (runs only) plus web/public/cross-train.json (everything else — rides,
+// hikes, strength, …) for the TrailTrain dashboard. Refreshes the access
+// token if expired.
 //
 // Usage:  node scripts/sync-strava.mjs [--start 2026-01-06] [--end 2026-05-27]
 //
@@ -12,7 +14,13 @@ import { loadState } from "./state.mjs";
 import { arg, writeJsonAtomic } from "./lib.mjs";
 import { loadConfig, ensureToken } from "./strava-auth.mjs";
 
-const OUT_PATH = path.join(process.cwd(), "web", "public", "strava.json");
+// resolve from the script location, not cwd — `npm run sync:strava` runs
+// from web/ and would otherwise write to a stray web/web/public/
+const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const OUT_PATH = path.join(ROOT, "web", "public", "strava.json");
+const CROSS_OUT_PATH = path.join(ROOT, "web", "public", "cross-train.json");
+
+const isRun = (a) => a.type === "Run" || a.sport_type === "TrailRun";
 
 const START = arg("start", "2026-01-06");
 const END   = arg("end",   new Date().toISOString().slice(0, 10));
@@ -63,14 +71,14 @@ function estRpe(a) {
 async function main() {
   // Touch state.json so it gets bootstrapped on first sync (dashboard can
   // read it even before the first coach run).
-  const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
   await loadState(ROOT);
 
   const cfg = await loadConfig();
   const token = await ensureToken(cfg);
   console.log(`• fetching activities ${START} → ${END}…`);
   const raw = await fetchActivities(token, START, END);
-  const runs = raw.filter((a) => a.type === "Run" || a.sport_type === "TrailRun");
+  const runs = raw.filter(isRun);
+  const others = raw.filter((a) => !isRun(a));
 
   const activities = runs.map((a) => {
     const startLatLng = Array.isArray(a.start_latlng) && a.start_latlng.length === 2 ? a.start_latlng : null;
@@ -141,6 +149,45 @@ async function main() {
   await writeJsonAtomic(OUT_PATH, payload);
   console.log(`✓ wrote ${activities.length} activities → ${OUT_PATH}`);
   console.log(`  total: ${totals.distance_km.toFixed(1)} km · ${Math.round(totals.elevation_m).toLocaleString()} m vert · ${(totals.moving_s / 3600).toFixed(1)} h`);
+
+  // Non-run activities land in their own snapshot so every run-only consumer
+  // of strava.json (weekly buckets, ACR, pacing model, climbs) stays pure.
+  // No classify/rpe/weather — these are context for the coach, not load.
+  const cross = others.map((a) => {
+    const startLocal = a.start_date_local || a.start_date;
+    return {
+      id: String(a.id),
+      date: startLocal,
+      start_utc: a.start_date,
+      start_time_local: startLocal ? startLocal.slice(11, 16) : null,
+      title: a.name,
+      sport: a.sport_type || a.type,
+      distance_m: a.distance,
+      elevation_m: a.total_elevation_gain,
+      moving_s: a.moving_time,
+      elapsed_s: a.elapsed_time,
+      avg_hr: a.average_heartrate ?? null,
+      max_hr: a.max_heartrate ?? null,
+      strava_url: `https://www.strava.com/activities/${a.id}`,
+    };
+  }).sort((x, y) => y.date.localeCompare(x.date));
+
+  const crossTotals = cross.reduce(
+    (s, a) => ({
+      distance_km: s.distance_km + a.distance_m / 1000,
+      elevation_m: s.elevation_m + a.elevation_m,
+      moving_s:    s.moving_s    + a.moving_s,
+      count:       s.count + 1,
+    }),
+    { distance_km: 0, elevation_m: 0, moving_s: 0, count: 0 }
+  );
+  await writeJsonAtomic(CROSS_OUT_PATH, {
+    fetched_at: new Date().toISOString(),
+    window: { start: START, end: END },
+    totals: crossTotals,
+    activities: cross,
+  });
+  console.log(`✓ wrote ${cross.length} cross-training activities → ${CROSS_OUT_PATH}`);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

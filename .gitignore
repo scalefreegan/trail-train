@@ -12,6 +12,7 @@ web/.vite/
 # These contain Strava activity history, Oura sleep/HRV/RHR/tags, and the
 # agent's per-snapshot readout. Do NOT commit to a public repo.
 web/public/strava.json
+web/public/cross-train.json
 web/public/oura.json
 web/public/coach.json
 web/public/state.json

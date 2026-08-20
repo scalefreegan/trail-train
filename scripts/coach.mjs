@@ -50,8 +50,15 @@ data, weather conditions during each run, Google Calendar events (next 14 days u
 facts.calendar.upcoming_14d; schedule-shaping events over the full ~30-day window — trips,
 races, recurring family commitments like weekend kid sports — under
 facts.calendar.upcoming_notable), and their planned 20-week training block. You may also read
-the underlying snapshots at web/public/strava.json, web/public/oura.json,
-web/public/google-cal.json, and web/public/state.json for additional context if useful.
+the underlying snapshots at web/public/strava.json, web/public/cross-train.json,
+web/public/oura.json, web/public/google-cal.json, and web/public/state.json for additional
+context if useful.
+
+CROSS-TRAINING — facts.cross_training.recent lists non-run activities (rides, hikes,
+strength, ski, …). These are EXCLUDED from every load metric (d7/d28 distance and vert, ACR,
+weekly actuals vs targets, the pacing model) — all of those count runs only. Use them
+qualitatively: systemic fatigue and recovery cost, time-on-feet, and schedule load on the
+days they occupy. Never add their mileage or vert into run-load arithmetic.
 
 WEATHER FIELDS — every temperature is averaged (or maxed) across the run's actual duration,
 not a daily figure. Per run (recent_runs): temp_avg_f = average air temp, temp_max_f = peak

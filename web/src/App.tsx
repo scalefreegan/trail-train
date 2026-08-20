@@ -1244,39 +1244,108 @@ const TYPE_META: Record<Activity["type"], { label: string; color: string }> = {
   workout: { label: "WRK", color: "var(--ember)" },
 };
 
+// Compact badge for the raw Strava sport of a non-run activity.
+const SPORT_ABBREV: Record<string, string> = {
+  Ride: "RIDE", VirtualRide: "VRIDE", GravelRide: "GRVL", MountainBikeRide: "MTB", EBikeRide: "EBIKE",
+  Hike: "HIKE", Walk: "WALK", WeightTraining: "WTS", Workout: "GYM", Yoga: "YOGA",
+  Swim: "SWIM", Rowing: "ROW", RockClimbing: "CLMB",
+  AlpineSki: "SKI", BackcountrySki: "BC SKI", NordicSki: "XC SKI", Snowboard: "BOARD", Snowshoe: "SHOE",
+};
+const sportLabel = (sport: string) => SPORT_ABBREV[sport] ?? sport.slice(0, 5).toUpperCase();
+
+const durFmt = (s: number) => {
+  const h = Math.floor(s / 3600);
+  const m = Math.round((s - h * 3600) / 60);
+  return h > 0 ? `${h}:${m.toString().padStart(2, "0")}h` : `${m}m`;
+};
+
 function LogTable() {
   const [limit, setLimit] = useState(12);
-  const { activities, loading, error } = useStrava();
+  // "other" lists non-run activities (cross-train.json) — coach context only,
+  // never part of vitals/trajectory/pacing, which stay runs-only
+  const [tab, setTab] = useState<"runs" | "other">("runs");
+  const { activities, cross, loading, error } = useStrava();
   const { syncing } = useRefresh();
   const u = useUnits();
+  const runsTab = tab === "runs";
   const visible = activities.slice(0, limit);
+  const visibleCross = cross.slice(0, limit);
+  const shownCount = runsTab ? activities.length : cross.length;
 
   return (
     <section>
-      <SectionTag right={<span className="eyebrow">{syncing ? "pulling strava…" : `${activities.length} activities`}</span>}>
+      <SectionTag right={
+        <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+          <button className={`chip${runsTab ? " active" : ""}`} onClick={() => { setTab("runs"); setLimit(12); }}>runs</button>
+          <button className={`chip${runsTab ? "" : " active"}`} onClick={() => { setTab("other"); setLimit(12); }}>other · {cross.length}</button>
+          <span className="eyebrow">{syncing ? "pulling strava…" : `${shownCount} activities`}</span>
+        </span>
+      }>
         the log
       </SectionTag>
       <div className="panel">
         <div className="log-grid" style={{ padding: "10px 18px", borderBottom: "1px solid var(--edge-bright)" }}>
           <span className="eyebrow" style={{ fontSize: 8.5 }}>date</span>
           <span className="eyebrow" style={{ fontSize: 8.5 }}>activity</span>
-          <span className="eyebrow col-type" style={{ fontSize: 8.5 }}>type</span>
+          <span className="eyebrow col-type" style={{ fontSize: 8.5 }}>{runsTab ? "type" : "sport"}</span>
           <span className="eyebrow" style={{ fontSize: 8.5, textAlign: "right" }}>{u.distUnit}</span>
           <span className="eyebrow" style={{ fontSize: 8.5, textAlign: "right" }}>{u.elevUnit}↑</span>
-          <span className="eyebrow col-pace" style={{ fontSize: 8.5, textAlign: "right" }}>pace{u.paceUnit}</span>
-          <span className="eyebrow col-rpe" style={{ fontSize: 8.5 }}>rpe</span>
+          <span className="eyebrow col-pace" style={{ fontSize: 8.5, textAlign: "right" }}>{runsTab ? `pace${u.paceUnit}` : "time"}</span>
+          <span className="eyebrow col-rpe" style={{ fontSize: 8.5 }}>{runsTab ? "rpe" : "hr"}</span>
         </div>
 
         {loading && activities.length === 0 && (
           <div style={{ padding: "28px 0", textAlign: "center" }}><span className="eyebrow">loading strava snapshot…</span></div>
         )}
-        {error && (
+        {runsTab && error && (
           <div style={{ padding: "28px 0", textAlign: "center" }}>
             <span className="eyebrow" style={{ color: "var(--ember)" }}>couldn't load strava.json — run `node scripts/sync-strava.mjs`</span>
           </div>
         )}
+        {!runsTab && !loading && cross.length === 0 && (
+          <div style={{ padding: "28px 0", textAlign: "center" }}>
+            <span className="eyebrow">no non-run activities yet — resync strava to pull them</span>
+          </div>
+        )}
 
-        {visible.map((a, i) => (
+        {!runsTab && visibleCross.map((a, i) => (
+          <motion.div
+            key={a.id}
+            className="log-grid"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3, delay: Math.min(i * 0.025, 0.4) }}
+            style={{ padding: "11px 18px", borderTop: i > 0 ? "1px solid var(--edge)" : "none" }}
+            onMouseEnter={(e) => ((e.currentTarget as HTMLDivElement).style.background = "var(--panel-raise)")}
+            onMouseLeave={(e) => ((e.currentTarget as HTMLDivElement).style.background = "transparent")}
+          >
+            <span className="numerals" style={{ fontSize: 11.5, color: "var(--mist-mute)" }}>
+              {new Date(a.date).toLocaleDateString("en-US", { month: "short", day: "2-digit" }).toLowerCase()}
+            </span>
+            <div style={{ minWidth: 0 }}>
+              {a.strava_url ? (
+                <a href={a.strava_url} target="_blank" rel="noopener noreferrer"
+                  style={{ fontSize: 13.5, fontWeight: 500, color: "var(--mist)", textDecoration: "none", display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {a.title} <span style={{ color: "var(--mist-mute)", fontSize: 10 }}>↗</span>
+                </a>
+              ) : (
+                <span style={{ fontSize: 13.5, fontWeight: 500 }}>{a.title}</span>
+              )}
+              {a.start_time_local && (
+                <span className="numerals" style={{ fontSize: 9.5, color: "var(--mist-mute)", display: "block", marginTop: 2 }}>{a.start_time_local}</span>
+              )}
+            </div>
+            <span className="col-type">
+              <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--mist-dim)", border: "1px solid var(--mist-dim)", padding: "2px 5px" }}>
+                {sportLabel(a.sport)}
+              </span>
+            </span>
+            <span className="numerals" style={{ fontSize: 14, fontWeight: 600, textAlign: "right" }}>{a.distance_mi >= 0.05 ? u.dist(a.distance_mi) : "—"}</span>
+            <span className="numerals" style={{ fontSize: 14, fontWeight: 600, textAlign: "right", color: "var(--mist-dim)" }}>{a.elevation_ft >= 1 ? u.elev(a.elevation_ft) : "—"}</span>
+            <span className="numerals col-pace" style={{ fontSize: 11.5, color: "var(--mist-mute)", textAlign: "right" }}>{durFmt(a.moving_s)}</span>
+            <span className="numerals col-rpe" style={{ fontSize: 11.5, color: "var(--mist-mute)" }}>{a.avg_hr != null ? Math.round(a.avg_hr) : "—"}</span>
+          </motion.div>
+        ))}
+
+        {runsTab && visible.map((a, i) => (
           <motion.div
             key={a.id}
             className="log-grid"
@@ -1331,10 +1400,10 @@ function LogTable() {
           </motion.div>
         ))}
 
-        {activities.length > limit && (
+        {shownCount > limit && (
           <div style={{ textAlign: "center", padding: 12, borderTop: "1px solid var(--edge)" }}>
             <button className="chip" onClick={() => setLimit((l) => l + 20)}>
-              show {Math.min(20, activities.length - limit)} more · {activities.length - limit} hidden
+              show {Math.min(20, shownCount - limit)} more · {shownCount - limit} hidden
             </button>
           </div>
         )}
