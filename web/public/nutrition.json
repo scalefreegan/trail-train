@@ -23,19 +23,19 @@
     {
       "until_h": 12,
       "carb_g_hr": 75,
-      "bloks_frac": 0.5,
-      "supplement": "gel or bloks hourly — chew while fresh"
+      "bloks_frac": 0.4,
+      "supplement": "gels lead; bloks while chewing is easy"
     },
     {
       "until_h": 24,
       "carb_g_hr": 70,
-      "bloks_frac": 0.35,
-      "supplement": "mostly gels as chewing fades"
+      "bloks_frac": 0.3,
+      "supplement": "gels + occasional bloks"
     },
     {
       "until_h": 48,
       "carb_g_hr": 62,
-      "bloks_frac": 0,
+      "bloks_frac": 0.2,
       "supplement": "gels + coke/broth at aid"
     }
   ],

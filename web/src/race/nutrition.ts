@@ -54,12 +54,12 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   gel: { carb_g: 25, sodium_mg: 20, label: "Maurten 100" },
   bloks: { carb_g: 24, sodium_mg: 50, label: "3 Clif Bloks" },
   salt_tab_mg: 250,
-  // bloks front-loaded: chewing ability degrades late in a race, so solids
-  // belong in the fresh hours and gels + aid liquids take over deep
+  // gels stay the majority throughout; bloks are a steady minority that
+  // tapers as chewing gets harder, rather than clustering in one phase
   phases: [
-    { until_h: 12, carb_g_hr: 75, bloks_frac: 0.5, supplement: "gel or bloks hourly — chew while fresh" },
-    { until_h: 24, carb_g_hr: 70, bloks_frac: 0.35, supplement: "mostly gels as chewing fades" },
-    { until_h: 48, carb_g_hr: 62, bloks_frac: 0, supplement: "gels + coke/broth at aid" },
+    { until_h: 12, carb_g_hr: 75, bloks_frac: 0.4, supplement: "gels lead; bloks while chewing is easy" },
+    { until_h: 24, carb_g_hr: 70, bloks_frac: 0.3, supplement: "gels + occasional bloks" },
+    { until_h: 48, carb_g_hr: 62, bloks_frac: 0.2, supplement: "gels + coke/broth at aid" },
   ],
   carb_cap_over_h: 3,
   carb_cap_g_hr: 70,
