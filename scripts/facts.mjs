@@ -366,15 +366,16 @@ export async function loadFactsFromRoot(projectRoot) {
     // Emitted even when empty: "snapshot present, athlete did no cross-training"
     // is a different coaching signal from "no snapshot".
     const crossActs = cross.activities || [];
-    const crossTotals = cross.totals || {};
     base.cross_training = {
       fetched_at: cross.fetched_at,
       note: "Non-run activities. EXCLUDED from every load metric (d7/d28 distance, ACR, weekly actuals, pacing model) — those count runs only. Use qualitatively: systemic fatigue, time-on-feet, schedule load. `recent` lists only the latest 20; `count` and `totals` cover the full sync window.",
       count: crossActs.length,
+      // derived from the activities, not the file's totals key — a snapshot
+      // missing `totals` must not become confident zeros
       totals: {
-        distance_mi: +(((crossTotals.distance_km || 0) * 1000) / M_PER_MI).toFixed(1),
-        elevation_ft: Math.round((crossTotals.elevation_m || 0) / M_PER_FT),
-        moving_h: +((crossTotals.moving_s || 0) / 3600).toFixed(1),
+        distance_mi: +(sumNum(crossActs.map((a) => a.distance_m)) / M_PER_MI).toFixed(1),
+        elevation_ft: Math.round(sumNum(crossActs.map((a) => a.elevation_m)) / M_PER_FT),
+        moving_h: +(sumNum(crossActs.map((a) => a.moving_s)) / 3600).toFixed(1),
       },
       recent: crossActs.slice(0, 20).map((a) => ({
         date: (a.date || "").slice(0, 10),

@@ -1399,8 +1399,8 @@ function LogTable() {
                 {TYPE_META[a.type].label}
               </span>
             </span>
-            <span className="numerals" style={{ fontSize: 14, fontWeight: 600, textAlign: "right" }}>{u.dist(a.distance_mi)}</span>
-            <span className="numerals" style={{ fontSize: 14, fontWeight: 600, textAlign: "right", color: "var(--mist-dim)" }}>{u.elev(a.elevation_ft)}</span>
+            <span className="numerals col-dist" style={{ fontSize: 14, fontWeight: 600, textAlign: "right" }}>{u.dist(a.distance_mi)}</span>
+            <span className="numerals col-elev" style={{ fontSize: 14, fontWeight: 600, textAlign: "right", color: "var(--mist-dim)" }}>{u.elev(a.elevation_ft)}</span>
             <span className="numerals col-pace" style={{ fontSize: 11.5, color: "var(--mist-mute)", textAlign: "right" }}>{u.paceFmt(a.moving_s, a.distance_mi)}</span>
             <span className="col-rpe" style={{ display: "inline-flex", gap: 3 }}>
               {Array.from({ length: 5 }).map((_, j) => (
