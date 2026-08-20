@@ -74,6 +74,53 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   },
 };
 
+const isHM = (v: unknown): v is string => typeof v === "string" && /^\d{1,2}:\d{2}$/.test(v);
+
+/** Validate a fetched nutrition.json and merge it over the defaults. Nested
+    objects are deep-merged or fall back wholesale — a partial heat_window or
+    a malformed gear map must never reach planFuel (no ErrorBoundary exists;
+    a throw in the planner's render blanks the whole app). Returns null when
+    the payload is structurally unusable. */
+export function normalizeNutrition(d: unknown): NutritionConfig | null {
+  if (!d || typeof d !== "object" || Array.isArray(d)) return null;
+  const raw = d as Record<string, unknown>;
+  type RawPhase = { until_h: unknown; carb_g_hr: unknown; supplement?: unknown; bloks_frac?: unknown };
+  const phasesOk = Array.isArray(raw.phases) && raw.phases.length > 0 &&
+    (raw.phases as RawPhase[]).every((p) => p && typeof p === "object" &&
+      Number.isFinite(p.until_h) && Number.isFinite(p.carb_g_hr) && (p.carb_g_hr as number) > 0 &&
+      (p.supplement === undefined || typeof p.supplement === "string") &&
+      (p.bloks_frac === undefined || Number.isFinite(p.bloks_frac)));
+  if (!phasesOk || !Number.isFinite(raw.flask_carb_g) || (raw.flask_carb_g as number) <= 0) return null;
+
+  // carbOver/phaseAt assume ascending until_h — sort rather than mis-integrate
+  const phases = (raw.phases as NutritionConfig["phases"])
+    .map((p) => ({ ...p, supplement: p.supplement ?? "" }))
+    .sort((a, b) => a.until_h - b.until_h);
+
+  const hw = raw.heat_window as { start?: unknown; end?: unknown } | undefined;
+  const heat_window = hw && isHM(hw.start) && isHM(hw.end)
+    ? { start: hw.start, end: hw.end }
+    : DEFAULT_NUTRITION.heat_window;
+
+  let drop_bag_gear = DEFAULT_NUTRITION.drop_bag_gear;
+  if (raw.drop_bag_gear !== undefined) {
+    drop_bag_gear = {};
+    if (raw.drop_bag_gear && typeof raw.drop_bag_gear === "object" && !Array.isArray(raw.drop_bag_gear)) {
+      for (const [k, v] of Object.entries(raw.drop_bag_gear as Record<string, unknown>)) {
+        if (Array.isArray(v)) drop_bag_gear[k] = v.filter((x): x is string => typeof x === "string");
+      }
+    }
+  }
+
+  return {
+    ...DEFAULT_NUTRITION,
+    ...(raw as Partial<NutritionConfig>),
+    gel: { ...DEFAULT_NUTRITION.gel, ...(raw.gel as Partial<NutritionConfig["gel"]> | undefined) },
+    bloks: { ...DEFAULT_NUTRITION.bloks, ...(raw.bloks as Partial<NutritionConfig["bloks"]> | undefined) },
+    phases, heat_window, drop_bag_gear,
+  };
+}
+
 /** Same failure semantics as the useRaceData hooks, except a 404 silently
     falls back to DEFAULT_NUTRITION — the file is optional tuning, not data. */
 export function useNutrition() {
@@ -88,11 +135,10 @@ export function useNutrition() {
         if (r.status === 404) { setCfg(DEFAULT_NUTRITION); setError(null); return; }
         if (!r.ok) { setError(`nutrition.json failed to load (HTTP ${r.status})`); return; }
         const d = await r.json().catch(() => { throw new Error("parse"); });
-        const valid = d && Number.isFinite(d.flask_carb_g) && Array.isArray(d.phases) && d.phases.length > 0 &&
-          d.phases.every((p: { until_h: unknown; carb_g_hr: unknown }) => Number.isFinite(p.until_h) && Number.isFinite(p.carb_g_hr));
-        if (!valid) { if (!stale) setError("nutrition.json invalid — using previous config or defaults"); return; }
+        const norm = normalizeNutrition(d);
+        if (!norm) { if (!stale) setError("nutrition.json invalid — using previous config or defaults"); return; }
         if (stale) return;
-        setCfg({ ...DEFAULT_NUTRITION, ...d, gel: { ...DEFAULT_NUTRITION.gel, ...d.gel }, bloks: { ...DEFAULT_NUTRITION.bloks, ...d.bloks } });
+        setCfg(norm);
         setError(null);
       })
       .catch(() => { if (!stale) setError("nutrition.json corrupt or unreadable"); });
@@ -321,8 +367,12 @@ export function planFuel(
   const dropBounds = [-1, ...dropIdxs];
   for (let d = 0; d < dropBounds.length; d++) {
     const fromIdx = dropBounds[d];
-    const untilIdx = d + 1 < dropBounds.length ? dropBounds[d + 1] : last;
-    const legs = segments.filter((s) => s.fromIdx >= fromIdx && s.toIdx <= untilIdx);
+    const nextBound = d + 1 < dropBounds.length ? dropBounds[d + 1] : Infinity;
+    // partition by DEPARTURE index: every leg lands in exactly one bag even
+    // when a drop-bag station is not a mix-refill boundary (a leg spanning
+    // the drop point is packed from the earlier bag — conservative), so the
+    // per-bag sums always reconcile with the race totals
+    const legs = segments.filter((s) => s.fromIdx >= fromIdx && s.fromIdx < nextBound);
     if (!legs.length) continue;
     drop_bags.push({
       station: fromIdx >= 0 ? proj.stations[fromIdx].station.name : "Start",
@@ -331,7 +381,7 @@ export function planFuel(
       bloks: legs.reduce((a, s) => a + s.bloks, 0),
       hcf_scoops: legs.reduce((a, s) => a + s.flasks, 0),
       salt_tabs: legs.reduce((a, s) => a + s.salt_tabs, 0),
-      covers: `→ ${proj.stations[untilIdx].station.name}`,
+      covers: `→ ${legs[legs.length - 1].to}`,
       night: legs.some((s) => s.night),
       gear: cfg.drop_bag_gear[fromIdx >= 0 ? proj.stations[fromIdx].station.name : "Start"] ?? [],
     });

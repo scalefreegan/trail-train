@@ -475,7 +475,7 @@ export function RacePlanner() {
     [course, fit, paceGrade, fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides],
   );
 
-  const { nutrition } = useNutrition();
+  const { nutrition, error: nutritionError } = useNutrition();
   const fuelPlan = useMemo(
     () => (course && proj ? planFuel(proj, course, race.date, nutrition) : null),
     [course, proj, race.date, nutrition],
@@ -846,6 +846,7 @@ export function RacePlanner() {
                     fit: {fit.basis} (eff. n={fit.effN}) · ±{u.paceFmt(fit.residStd, 1)}{u.paceUnit} band · grade: {proj?.grade_basis ?? "—"}
                     {paceGrade?.fitted_at && ` (fitted ${relativeAgo(new Date(paceGrade.fitted_at).getTime())}${paceGrade.runs_pending_time ? `, ${paceGrade.runs_pending_time} runs awaiting time streams` : ""})`}
                     {paceGradeError && <span style={{ color: "var(--ember)" }}> · {paceGradeError}</span>}
+                    {nutritionError && <span style={{ color: "var(--ember)" }}> · {nutritionError}</span>}
                     {" "}· tech: {course.aid_stations.filter((s) => (s.tech_pct ?? 0) > 0).map((s) => `${s.name.toLowerCase()} +${s.tech_pct}%`).join(", ") || "none"} · race-cal +{calibration}% all paces · restraint +{restraint}% thru mi {RESTRAINT_FULL_MI} (fades by {RESTRAINT_END_MI}, restrained miles age ×{(1 - RESTRAINT_FATIGUE_PAYOFF * restraint / 100).toFixed(2)} on the fatigue clock) · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}/{crewStopMin}m fresh
                   </span>
                 </>
