@@ -4,9 +4,6 @@
   "tailwind_flasks": 2,
   "flask_carb_g": 55,
   "flask_sodium_mg": 537,
-  "water_flask_ml": 500,
-  "water_reserve_ml": 250,
-  "spare_flask_ml": 500,
   "liquid_carb_rate_g_hr": 55,
   "gel": {
     "carb_g": 25,
@@ -64,12 +61,13 @@
       "beanie + gloves",
       "warm midlayer",
       "caffeine starts here",
-      "stash empty 5th flask here — never fills again"
+      "stash 1 spare flask here — max fill ahead is 3M+1W"
     ],
     "Geronimo": [
       "fresh socks + blister kit",
       "sunscreen for day 2"
     ]
   },
-  "preload_over_flask_ml": 300
+  "preload_over_flask_ml": 350,
+  "spare_flasks": 3
 }

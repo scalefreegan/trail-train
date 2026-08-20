@@ -28,9 +28,9 @@ export function DropBagCard({ plan, cfg, onClose }: {
   // card (a long opening carry can demand the 4th/5th flask at the gun),
   // not restate the default doctrine
   const first = plan.segments[0];
-  const flasksOwned = cfg.tailwind_flasks + 1 + 1 + (cfg.spare_flask_ml > 0 ? 1 : 0);
+  const flasksOwned = cfg.tailwind_flasks + cfg.spare_flasks;
   const gunMix = first ? first.flasks : cfg.tailwind_flasks;
-  const gunWater = 1 + (first?.fifth_flask ? 1 : 0);
+  const gunWater = first ? first.water_flasks : 0;
   const gunEmpty = Math.max(0, flasksOwned - gunMix - gunWater);
   const gunNote = `${flasksOwned} flasks @ gun: ${gunMix} mix · ${gunWater} water${gunEmpty > 0 ? ` · ${gunEmpty} empty` : ""}`;
 

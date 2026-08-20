@@ -17,11 +17,9 @@ export type NutritionConfig = {
   /** carbs per filled Tailwind flask (base mix + high-carb scoop), grams */
   flask_carb_g: number;
   flask_sodium_mg: number;
-  water_flask_ml: number;
-  /** plain water the runner always keeps in hand — never budgeted as intake */
-  water_reserve_ml: number;
-  /** 5th flask carried empty; filled with PLAIN WATER on 5F legs (no scoop) */
-  spare_flask_ml: number;
+  /** empty flasks in the vest beyond the 2 mix flasks; filled per leg (at
+      most one extra takes mix — the rest take plain water when demand asks) */
+  spare_flasks: number;
   /** shortfalls up to this are covered by drinking at the aid before leaving
       instead of carrying another 500g flask for a 50mL overage */
   preload_over_flask_ml: number;
@@ -50,10 +48,8 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   tailwind_flasks: 2,
   flask_carb_g: 55,
   flask_sodium_mg: 537,
-  water_flask_ml: 500,
-  water_reserve_ml: 250,
-  spare_flask_ml: 500,
-  preload_over_flask_ml: 300,
+  spare_flasks: 3,
+  preload_over_flask_ml: 350,
   liquid_carb_rate_g_hr: 55,
   gel: { carb_g: 25, sodium_mg: 20, label: "Maurten 100" },
   bloks: { carb_g: 24, sodium_mg: 50, label: "3 Clif Bloks" },
@@ -75,7 +71,7 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   drop_bag_gear: {
     "Start": ["sunscreen + hat", "arm sleeves (am chill)"],
     "Fish Hatchery": ["small headlamp (dusk cover → Buck Springs)", "long-sleeve for night", "anti-chafe"],
-    "Buck Springs": ["main headlamp + spare battery", "beanie + gloves", "warm midlayer", "caffeine starts here", "stash empty 5th flask here — never fills again"],
+    "Buck Springs": ["main headlamp + spare battery", "beanie + gloves", "warm midlayer", "caffeine starts here", "stash 1 spare flask here — max fill ahead is 3M+1W"],
     "Geronimo": ["fresh socks + blister kit", "sunscreen for day 2"],
   },
 };
@@ -137,7 +133,7 @@ export function normalizeNutrition(d: unknown): NutritionConfig | null {
   // usable number — a hand-edited "2" (string) survives the spread and turns
   // `flasks + 1` into concatenation; a 0 turns the sodium gap into NaN
   const positive = [
-    "flask_ml", "flask_carb_g", "flask_sodium_mg", "water_flask_ml",
+    "flask_ml", "flask_carb_g", "flask_sodium_mg",
     "liquid_carb_rate_g_hr", "salt_tab_mg", "sodium_mg_hr",
     "fluid_ml_hr", "fluid_ml_hr_heat", "carb_cap_over_h", "carb_cap_g_hr", "long_carry_h",
     "preload_over_flask_ml",
@@ -145,12 +141,9 @@ export function normalizeNutrition(d: unknown): NutritionConfig | null {
   for (const k of positive) merged[k] = posOr(merged[k], DEFAULT_NUTRITION[k]);
   merged.tailwind_flasks = Number.isFinite(merged.tailwind_flasks) && merged.tailwind_flasks >= 1
     ? Math.round(merged.tailwind_flasks) : DEFAULT_NUTRITION.tailwind_flasks;
-  // spare_flask_ml: 0 is a legitimate "I carry no 5th flask" — clamp only negatives/NaN
-  merged.spare_flask_ml = Number.isFinite(merged.spare_flask_ml) && merged.spare_flask_ml >= 0
-    ? merged.spare_flask_ml : DEFAULT_NUTRITION.spare_flask_ml;
-  // the always-in-hand reserve can't exceed the flask that holds it
-  merged.water_reserve_ml = Number.isFinite(merged.water_reserve_ml) && merged.water_reserve_ml >= 0
-    ? Math.min(merged.water_reserve_ml, merged.water_flask_ml) : DEFAULT_NUTRITION.water_reserve_ml;
+  // spare_flasks: 0 is a legitimate "just the 2 mix flasks" — clamp negatives/NaN
+  merged.spare_flasks = Number.isFinite(merged.spare_flasks) && merged.spare_flasks >= 0
+    ? Math.round(merged.spare_flasks) : DEFAULT_NUTRITION.spare_flasks;
   return merged;
 }
 
@@ -208,17 +201,17 @@ export type FuelSegment = {
   salt_tabs: number;
   /** fluid the carry demands, mL (heat-adjusted) */
   fluid_ml: number;
-  /** demand exceeds 2 Tailwind flasks + drinkable water → fill the 4th (MIX) */
-  fourth_flask: boolean;
-  /** demand exceeds the 4-flask setup → also fill the 5th spare (WATER) */
-  fifth_flask: boolean;
-  /** what to swallow AT the aid station before leaving — demand beyond even
-      five flasks (mL, 0 when the carried fluid suffices, capped at 800) */
+  /** plain-water flasks filled for this leg (demand-driven, 0 most legs) */
+  water_flasks: number;
+  /** anything filled beyond the standard 2 mix flasks — the heavy-leg marker */
+  extra_fill: boolean;
+  /** what to swallow AT the aid station before leaving — demand beyond every
+      owned flask (mL, 0 when the carried fluid suffices, capped at 800) */
   preload_ml: number;
   /** demand exceeds flasks + a realistic pre-load — ration deliberately */
   ration: boolean;
-  /** departure fill code: "2M" | "3M" | "3M+W" (M = mix flask, W = spare
-      flask of plain water; the always-carried water flask is implied) */
+  /** departure fill code counting EVERY flask you leave with — "2M",
+      "3M+1W", "3M+2W" (M = mix, W = plain water; total flasks = M + W) */
   fill: string;
   heat: boolean;
   night: boolean;
@@ -310,7 +303,6 @@ export function planFuel(
   };
 
   const baseDrinkCap = cfg.tailwind_flasks * cfg.flask_carb_g;
-  const fluidCap = cfg.tailwind_flasks * cfg.flask_ml + (cfg.water_flask_ml - cfg.water_reserve_ml);
   const heatFluid = (h0: number, h1: number): number => {
     const span = Math.max(0, h1 - h0);
     const heatH = dailyOverlap(h0, h1, heat0, heat1);
@@ -352,21 +344,24 @@ export function planFuel(
     for (let w = 0; w + 1 < waterPoints.length; w++) {
       fluid_ml = Math.max(fluid_ml, heatFluid(waterPoints[w], waterPoints[w + 1]));
     }
-    // a flask is only added when the shortfall is genuinely flask-sized —
-    // small gaps are cheaper swallowed at the aid than carried as 500g
-    const fourth_flask = fluid_ml - fluidCap > cfg.preload_over_flask_ml;
-    // the 5th flask only exists when configured; without it the shortfall
-    // rolls into the pre-load instruction instead
-    const fifth_flask = cfg.spare_flask_ml > 0 && fourth_flask &&
-      fluid_ml - (fluidCap + cfg.flask_ml) > cfg.preload_over_flask_ml;
-    const capacity = fluidCap + (fourth_flask ? cfg.flask_ml : 0) + (fifth_flask ? cfg.spare_flask_ml : 0);
+    // demand-driven fill from the 2 standard mix flasks: at most ONE extra
+    // flask takes mix (carbs ride along), further spares take plain water —
+    // each added only when the shortfall beats the drink-at-aid threshold
+    const thr = cfg.preload_over_flask_ml;
+    let extraMix = 0, water_flasks = 0;
+    let capacity = cfg.tailwind_flasks * cfg.flask_ml;
+    if (cfg.spare_flasks > 0 && fluid_ml - capacity > thr) { extraMix = 1; capacity += cfg.flask_ml; }
+    while (water_flasks < cfg.spare_flasks - extraMix && fluid_ml - capacity > thr) {
+      water_flasks++; capacity += cfg.flask_ml;
+    }
     const rawPreload = Math.max(0, Math.ceil((fluid_ml - capacity) / 50) * 50);
     // nobody can pre-load more than ~800 mL at an aid table — beyond that the
     // honest instruction is "ration", not a bigger number
     const preload_ml = Math.min(rawPreload, 800);
     const ration = rawPreload > 800;
-    const flasks = cfg.tailwind_flasks + (fourth_flask ? 1 : 0);
-    const fill = fourth_flask ? (fifth_flask ? "3M+W" : "3M") : "2M";
+    const flasks = cfg.tailwind_flasks + extraMix;
+    const extra_fill = extraMix > 0 || water_flasks > 0;
+    const fill = `${flasks}M${water_flasks > 0 ? `+${water_flasks}W` : ""}`;
 
     // realized-intake cap on long carries — the paper target is unholdable
     // through a 4-hour climb, so don't plan pockets full of gels for it
@@ -402,8 +397,10 @@ export function planFuel(
       liquid_carb_g: Math.round(liquid_carb_g),
       gels, bloks, salt_tabs,
       flasks,
-      fluid_ml: Math.round(fluid_ml / 50) * 50,
-      fourth_flask, fifth_flask, preload_ml, ration, fill,
+      // nearest 10, not 50 — coarser rounding displayed a demand above the
+      // fill it actually fits inside (1237 → "1.3L" vs a 1.25L carry)
+      fluid_ml: Math.round(fluid_ml / 10) * 10,
+      water_flasks, extra_fill, preload_ml, ration, fill,
       heat: heatH > 0.25,
       night: nightH > 0.25,
       long_carry: carryH > cfg.long_carry_h,

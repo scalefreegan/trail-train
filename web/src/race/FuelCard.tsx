@@ -75,7 +75,7 @@ function FuelFace({ side, pages, segments, plan, cfg }: {
             <th style={th}>gel</th>
             <th style={th}>blk</th>
             <th style={th}>tab</th>
-            <th style={th}>fluid L</th>
+            <th style={th}>need L</th>
             <th style={{ ...th, textAlign: "left" }}>fill</th>
             <th style={{ ...th, textAlign: "left" }}>·</th>
           </tr>
@@ -84,7 +84,7 @@ function FuelFace({ side, pages, segments, plan, cfg }: {
           {segments.map((seg) => {
             const longest = plan.segments[plan.longest_idx] === seg;
             return (
-              <tr key={seg.to} style={seg.fourth_flask ? { background: "#f6e4dc" } : undefined}>
+              <tr key={seg.to} style={seg.extra_fill ? { background: "#f6e4dc" } : undefined}>
                 <td style={{ ...cell, textAlign: "left", fontWeight: 600 }}>
                   {seg.from.length > 14 ? `${seg.from.slice(0, 13)}…` : seg.from}
                   <span style={{ color: MUTED, fontWeight: 400 }}> →{seg.to.length > 10 ? `${seg.to.slice(0, 9)}…` : seg.to}</span>
@@ -111,10 +111,10 @@ function FuelFace({ side, pages, segments, plan, cfg }: {
                 <td style={{ ...cell, color: seg.salt_tabs > 0 ? INK : MUTED, fontWeight: seg.salt_tabs > 0 ? 700 : 400 }}>
                   {seg.salt_tabs > 0 ? seg.salt_tabs : "·"}
                 </td>
-                <td style={{ ...cell, fontWeight: seg.fourth_flask ? 700 : 400, color: seg.fourth_flask ? WORST : INK }}>
+                <td style={{ ...cell, fontWeight: seg.extra_fill ? 700 : 400, color: seg.extra_fill ? WORST : INK }}>
                   {(seg.fluid_ml / 1000).toFixed(1)}
                 </td>
-                <td style={{ ...cell, textAlign: "left", fontWeight: seg.fourth_flask ? 700 : 400, color: seg.fourth_flask ? WORST : MUTED }}>
+                <td style={{ ...cell, textAlign: "left", fontWeight: seg.extra_fill ? 700 : 400, color: seg.extra_fill ? WORST : MUTED }}>
                   {seg.fill}
                   {seg.preload_ml > 0 && (
                     <span style={{ display: "block", fontSize: "5.5px", color: WORST, fontWeight: 700 }}>
@@ -139,8 +139,8 @@ function FuelFace({ side, pages, segments, plan, cfg }: {
         {side === 1 && (
           <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
             <span>
-              fill every aid: {cfg.tailwind_flasks}×{cfg.flask_ml}mL TW + 1 HCF scoop each = <b>{cfg.tailwind_flasks * cfg.flask_carb_g}g · {cfg.tailwind_flasks * cfg.flask_sodium_mg}Na</b> ·
-              keep ≥{cfg.water_reserve_ml}mL plain water · gel {cfg.gel.carb_g}g · blk {cfg.bloks.carb_g}g · tab {cfg.salt_tab_mg}mg
+              base fill: {cfg.tailwind_flasks}×{cfg.flask_ml}mL TW + 1 HCF scoop each = <b>{cfg.tailwind_flasks * cfg.flask_carb_g}g · {cfg.tailwind_flasks * cfg.flask_sodium_mg}Na</b> ·
+              water flasks only when the fill says W · gel {cfg.gel.carb_g}g · blk {cfg.bloks.carb_g}g · tab {cfg.salt_tab_mg}mg
             </span>
             <span>drink alone leaves <b style={{ color: INK }}>−{plan.sodium_gap_mg_hr}Na/h</b></span>
           </div>
@@ -148,7 +148,7 @@ function FuelFace({ side, pages, segments, plan, cfg }: {
         {side === pages && (
           <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
             <span>
-              fill: <b>M</b> = {cfg.flask_ml}mL Tailwind+HCF · <b>W</b> = spare flask plain water · water flask always carried ·
+              fill = every flask you leave with: <b>M</b> = {cfg.flask_ml}mL Tailwind+HCF · <b>W</b> = plain water ·
               <b style={{ color: WORST }}> +drink @ aid</b> = water at the table before leaving · ☀ heat · ☾ night: {cfg.phases[cfg.phases.length - 1].supplement}
             </span>
             <span>total ≈ <b style={{ color: INK }}>{plan.total_gels} gel · {plan.total_bloks} blk · {plan.total_tabs} tab · {plan.total_hcf_scoops} HCF</b></span>

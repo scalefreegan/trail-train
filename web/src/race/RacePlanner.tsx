@@ -715,7 +715,7 @@ export function RacePlanner() {
                   title={(() => {
                     const f = fuelPlan?.segments.find((seg) => seg.toIdx === i);
                     if (!f) return "no resupply here (no-crew plan) — this station is covered by the carry from the previous refill point";
-                    return `${f.from} → ${f.to}${f.via.length ? ` (thru ${f.via.join(", ")} — no resupply)` : ""} · ${fmtCarry(f.carryH)} carry: ${f.carb_g}g carb target (drink ~${f.liquid_carb_g}g), ${f.gels} gel + ${f.bloks} blok pk, ${f.salt_tabs} tab, ${(f.fluid_ml / 1000).toFixed(1)}L fluid${f.water_note ? ` (${f.water_note})` : ""}${f.heat ? " · heat-adjusted" : ""}${f.night ? " · overnight" : ""} · FILL ${f.fill} (M = mix flask, W = spare of plain water)${f.preload_ml > 0 ? ` · DRINK ${f.preload_ml}mL AT THE AID BEFORE LEAVING` : ""}${f.ration ? " · RATION: demand exceeds flasks + pre-load" : ""} · ${f.supplement}`;
+                    return `${f.from} → ${f.to}${f.via.length ? ` (thru ${f.via.join(", ")} — no resupply)` : ""} · ${fmtCarry(f.carryH)} carry: ${f.carb_g}g carb target (drink ~${f.liquid_carb_g}g), ${f.gels} gel + ${f.bloks} blok pk, ${f.salt_tabs} tab, ${(f.fluid_ml / 1000).toFixed(1)}L fluid${f.water_note ? ` (${f.water_note})` : ""}${f.heat ? " · heat-adjusted" : ""}${f.night ? " · overnight" : ""} · FILL ${f.fill} — every flask you leave with (M = mix, W = plain water)${f.preload_ml > 0 ? ` · DRINK ${f.preload_ml}mL AT THE AID BEFORE LEAVING` : ""}${f.ration ? " · RATION: demand exceeds flasks + pre-load" : ""} · ${f.supplement}`;
                   })()}>
                   {(() => {
                     const f = fuelPlan?.segments.find((seg) => seg.toIdx === i);
@@ -726,7 +726,7 @@ export function RacePlanner() {
                         <span style={{ display: "block", fontWeight: 600, whiteSpace: "nowrap" }}>
                           {f.carb_g}g{units ? ` · ${units}` : ""}{f.salt_tabs > 0 ? ` ${f.salt_tabs}t` : ""}
                         </span>
-                        <span style={{ display: "block", fontSize: 9, whiteSpace: "nowrap", color: f.fourth_flask ? "var(--ember)" : "var(--mist-dim)", fontWeight: f.fourth_flask ? 700 : 400 }}>
+                        <span style={{ display: "block", fontSize: 9, whiteSpace: "nowrap", color: f.extra_fill ? "var(--ember)" : "var(--mist-dim)", fontWeight: f.extra_fill ? 700 : 400 }}>
                           {(f.fluid_ml / 1000).toFixed(1)}L {f.fill}{f.preload_ml > 0 ? "↑" : ""}
                         </span>
                       </>
