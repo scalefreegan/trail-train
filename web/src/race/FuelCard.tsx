@@ -25,8 +25,9 @@ function segFlags(seg: FuelSegment): { text: string; color: string }[] {
   return f;
 }
 
-function FuelFace({ side, segments, plan, cfg }: {
-  side: 1 | 2;
+function FuelFace({ side, pages, segments, plan, cfg }: {
+  side: number;
+  pages: number;
   segments: FuelSegment[];
   plan: FuelPlan;
   cfg: NutritionConfig;
@@ -57,7 +58,7 @@ function FuelFace({ side, segments, plan, cfg }: {
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", borderBottom: `1.5px solid ${INK}`, paddingBottom: 1 }}>
         <span style={{ fontSize: "8px", fontWeight: 700, letterSpacing: "0.04em" }}>
-          {race.short} FUEL · {side}/2
+          {race.short} FUEL · {side}/{pages}
         </span>
         <span style={{ fontSize: "7px", color: MUTED, fontVariantNumeric: "tabular-nums" }}>
           {phaseSummary} · Na {cfg.sodium_mg_hr}mg/h
@@ -132,8 +133,10 @@ function FuelFace({ side, segments, plan, cfg }: {
         </tbody>
       </table>
 
+      {/* first face carries the fill math, last face the legend + totals — a
+          single-face plan stacks both rather than losing either */}
       <div style={{ fontSize: "6px", color: MUTED, paddingTop: 1.5, whiteSpace: "nowrap" }}>
-        {side === 1 ? (
+        {side === 1 && (
           <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
             <span>
               fill every aid: {cfg.tailwind_flasks}×{cfg.flask_ml}mL TW + 1 HCF scoop each = <b>{cfg.tailwind_flasks * cfg.flask_carb_g}g · {cfg.tailwind_flasks * cfg.flask_sodium_mg}Na</b> ·
@@ -141,10 +144,11 @@ function FuelFace({ side, segments, plan, cfg }: {
             </span>
             <span>drink alone leaves <b style={{ color: INK }}>−{plan.sodium_gap_mg_hr}Na/h</b></span>
           </div>
-        ) : (
+        )}
+        {side === pages && (
           <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
             <span>
-              fill: <b>M</b> = 500mL Tailwind+HCF · <b>W</b> = spare flask plain water · water flask always carried ·
+              fill: <b>M</b> = {cfg.flask_ml}mL Tailwind+HCF · <b>W</b> = spare flask plain water · water flask always carried ·
               <b style={{ color: WORST }}> +drink @ aid</b> = swallow before leaving · ☀ heat · ☾ night: {cfg.phases[cfg.phases.length - 1].supplement}
             </span>
             <span>total ≈ <b style={{ color: INK }}>{plan.total_gels} gel · {plan.total_bloks} blk · {plan.total_tabs} tab · {plan.total_hcf_scoops} HCF</b></span>
@@ -207,7 +211,7 @@ export function FuelCard({ plan, cfg, onClose }: {
               side {i + 1} — leaving {segments[0].from} → {segments[segments.length - 1].to}
             </div>
             <div style={{ border: `1px solid ${RULE}`, boxShadow: "0 1px 4px rgba(0,0,0,0.12)", width: "fit-content" }}>
-              <FuelFace side={(i + 1) as 1 | 2} segments={segments} plan={plan} cfg={cfg} />
+              <FuelFace side={i + 1} pages={halves.length} segments={segments} plan={plan} cfg={cfg} />
             </div>
           </div>
         ))}

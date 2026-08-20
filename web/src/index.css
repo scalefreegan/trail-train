@@ -283,6 +283,9 @@ a { color: inherit; }
     gap: 10px;
   }
   .race-grid > .col-seg, .race-grid > .col-stop, .race-grid > .col-pace, .race-grid > .col-goal, .race-grid > .col-fuel, .race-grid > .col-flags { display: none; }
+  /* the desktop min-width floor would force the collapsed 4-column layout
+     to scroll on every phone — the narrow template fits natively */
+  .race-table > .race-grid { min-width: 0; }
   .climb-grid { grid-template-columns: repeat(2, 1fr); }
 }
 

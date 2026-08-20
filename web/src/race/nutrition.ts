@@ -74,7 +74,7 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   },
 };
 
-const isHM = (v: unknown): v is string => typeof v === "string" && /^\d{1,2}:\d{2}$/.test(v);
+const isHM = (v: unknown): v is string => typeof v === "string" && /^([01]?\d|2[0-3]):[0-5]\d$/.test(v);
 
 /** Validate a fetched nutrition.json and merge it over the defaults. Nested
     objects are deep-merged or fall back wholesale — a partial heat_window or
@@ -103,8 +103,10 @@ export function normalizeNutrition(d: unknown): NutritionConfig | null {
     .map((p) => ({ ...p, supplement: p.supplement ?? "", bloks_frac: Math.min(1, Math.max(0, p.bloks_frac ?? 0)) }))
     .sort((a, b) => a.until_h - b.until_h);
 
+  // dailyOverlap cannot represent a midnight-wrapping window (start > end
+  // would silently disable heat race-wide), so require start < end
   const hw = raw.heat_window as { start?: unknown; end?: unknown } | undefined;
-  const heat_window = hw && isHM(hw.start) && isHM(hw.end)
+  const heat_window = hw && isHM(hw.start) && isHM(hw.end) && parseHM(hw.start) < parseHM(hw.end)
     ? { start: hw.start, end: hw.end }
     : DEFAULT_NUTRITION.heat_window;
 
@@ -125,11 +127,23 @@ export function normalizeNutrition(d: unknown): NutritionConfig | null {
     bloks: blokSpec,
     phases, heat_window, drop_bag_gear,
   };
-  merged.salt_tab_mg = posOr(merged.salt_tab_mg, DEFAULT_NUTRITION.salt_tab_mg);
-  merged.flask_ml = posOr(merged.flask_ml, DEFAULT_NUTRITION.flask_ml);
+  // numeric hygiene: every top-level number that reaches arithmetic must be a
+  // usable number — a hand-edited "2" (string) survives the spread and turns
+  // `flasks + 1` into concatenation; a 0 turns the sodium gap into NaN
+  const positive = [
+    "flask_ml", "flask_carb_g", "flask_sodium_mg", "water_flask_ml",
+    "liquid_carb_rate_g_hr", "salt_tab_mg", "sodium_mg_hr",
+    "fluid_ml_hr", "fluid_ml_hr_heat", "carb_cap_over_h", "carb_cap_g_hr", "long_carry_h",
+  ] as const;
+  for (const k of positive) merged[k] = posOr(merged[k], DEFAULT_NUTRITION[k]);
+  merged.tailwind_flasks = Number.isFinite(merged.tailwind_flasks) && merged.tailwind_flasks >= 1
+    ? Math.round(merged.tailwind_flasks) : DEFAULT_NUTRITION.tailwind_flasks;
   // spare_flask_ml: 0 is a legitimate "I carry no 5th flask" — clamp only negatives/NaN
   merged.spare_flask_ml = Number.isFinite(merged.spare_flask_ml) && merged.spare_flask_ml >= 0
     ? merged.spare_flask_ml : DEFAULT_NUTRITION.spare_flask_ml;
+  // the always-in-hand reserve can't exceed the flask that holds it
+  merged.water_reserve_ml = Number.isFinite(merged.water_reserve_ml) && merged.water_reserve_ml >= 0
+    ? Math.min(merged.water_reserve_ml, merged.water_flask_ml) : DEFAULT_NUTRITION.water_reserve_ml;
   return merged;
 }
 

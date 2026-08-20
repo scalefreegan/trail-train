@@ -103,23 +103,27 @@ export function DropBagCard({ plan, cfg, onClose }: {
                   </tr>
                 </thead>
                 <tbody>
-                  {plan.drop_bags.map((bag) => (
+                  {plan.drop_bags.map((bag) => {
+                    // the group separator lives on the LAST row of each bag —
+                    // a gear-less bag must not visually merge into the next
+                    const bagCell = { ...cell, ...(bag.gear.length > 0 ? { borderBottom: "none" } : null) };
+                    return (
                     <React.Fragment key={bag.station}>
                       <tr>
-                        <td style={{ ...cell, textAlign: "left", fontWeight: 700, borderBottom: "none" }}>{bag.station}</td>
-                        <td style={{ ...cell, fontSize: "8.5px", color: MUTED, borderBottom: "none" }}>
+                        <td style={{ ...bagCell, textAlign: "left", fontWeight: 700 }}>{bag.station}</td>
+                        <td style={{ ...bagCell, fontSize: "8.5px", color: MUTED }}>
                           {bag.atH > 0 ? fmtRaceClock(race.date, bag.atH) : "—"}
                         </td>
-                        <td style={{ ...cell, textAlign: "left", fontSize: "8.5px", color: MUTED, borderBottom: "none" }}>{bag.covers}</td>
-                        <td style={{ ...cell, fontWeight: 700, borderBottom: "none" }}>{bag.gels}</td>
-                        <td style={{ ...cell, fontWeight: bag.bloks > 0 ? 700 : 400, color: bag.bloks > 0 ? INK : MUTED, borderBottom: "none" }}>
+                        <td style={{ ...bagCell, textAlign: "left", fontSize: "8.5px", color: MUTED }}>{bag.covers}</td>
+                        <td style={{ ...bagCell, fontWeight: 700 }}>{bag.gels}</td>
+                        <td style={{ ...bagCell, fontWeight: bag.bloks > 0 ? 700 : 400, color: bag.bloks > 0 ? INK : MUTED }}>
                           {bag.bloks > 0 ? bag.bloks : "·"}
                         </td>
-                        <td style={{ ...cell, fontWeight: 700, borderBottom: "none" }}>{bag.hcf_scoops}</td>
-                        <td style={{ ...cell, fontWeight: bag.salt_tabs > 0 ? 700 : 400, color: bag.salt_tabs > 0 ? INK : MUTED, borderBottom: "none" }}>
+                        <td style={{ ...bagCell, fontWeight: 700 }}>{bag.hcf_scoops}</td>
+                        <td style={{ ...bagCell, fontWeight: bag.salt_tabs > 0 ? 700 : 400, color: bag.salt_tabs > 0 ? INK : MUTED }}>
                           {bag.salt_tabs > 0 ? bag.salt_tabs : "·"}
                         </td>
-                        <td style={{ ...cell, textAlign: "left", fontSize: "8px", borderBottom: "none" }}>
+                        <td style={{ ...bagCell, textAlign: "left", fontSize: "8px" }}>
                           {bag.night && <span style={{ color: NIGHT, fontWeight: 700 }}>☾ night ahead </span>}
                           {bag.station === "Start" ? `${cfg.tailwind_flasks + (cfg.spare_flask_ml > 0 ? 3 : 2)} flasks: ${cfg.tailwind_flasks} mix · 1 water · ${cfg.spare_flask_ml > 0 ? 2 : 1} empty` : ""}
                         </td>
@@ -132,7 +136,8 @@ export function DropBagCard({ plan, cfg, onClose }: {
                         </tr>
                       )}
                     </React.Fragment>
-                  ))}
+                    );
+                  })}
                   <tr>
                     <td style={{ ...cell, textAlign: "left", fontWeight: 700, borderBottom: "none" }} colSpan={3}>race total</td>
                     <td style={{ ...cell, fontWeight: 700, borderBottom: "none" }}>{plan.total_gels}</td>
