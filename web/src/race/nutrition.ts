@@ -141,9 +141,11 @@ export function normalizeNutrition(d: unknown): NutritionConfig | null {
   for (const k of positive) merged[k] = posOr(merged[k], DEFAULT_NUTRITION[k]);
   merged.tailwind_flasks = Number.isFinite(merged.tailwind_flasks) && merged.tailwind_flasks >= 1
     ? Math.round(merged.tailwind_flasks) : DEFAULT_NUTRITION.tailwind_flasks;
-  // spare_flasks: 0 is a legitimate "just the 2 mix flasks" — clamp negatives/NaN
+  // spare_flasks: 0 is a legitimate "just the 2 mix flasks"; cap at 8 —
+  // nobody carries nine flasks, and the cap bounds planFuel's fill loop
+  // against a hostile flask_ml × spare_flasks product (render-path freeze)
   merged.spare_flasks = Number.isFinite(merged.spare_flasks) && merged.spare_flasks >= 0
-    ? Math.round(merged.spare_flasks) : DEFAULT_NUTRITION.spare_flasks;
+    ? Math.min(8, Math.round(merged.spare_flasks)) : DEFAULT_NUTRITION.spare_flasks;
   return merged;
 }
 
@@ -206,9 +208,13 @@ export type FuelSegment = {
   water_flasks: number;
   /** anything filled beyond the standard 2 mix flasks — the heavy-leg marker */
   extra_fill: boolean;
-  /** what to swallow AT the aid station before leaving — demand beyond every
-      owned flask (mL, 0 when the carried fluid suffices, capped at 800) */
+  /** what to swallow before entering the binding stretch — demand beyond
+      every owned flask (mL, 0 when the carried fluid suffices, capped 800) */
   preload_ml: number;
+  /** where to drink the preload: null = the departure aid; otherwise the
+      water-only station preceding the binding stretch (drinking at departure
+      cannot help a shortfall that lives after a mid-leg water point) */
+  preload_at: string | null;
   /** demand exceeds flasks + a realistic pre-load — ration deliberately */
   ration: boolean;
   /** departure fill code counting EVERY flask you leave with — "2M",
@@ -341,9 +347,10 @@ export function planFuel(
     // the demand that must be CARRIED is the worst stretch between water
     // points, not the whole leg
     const waterPoints = [departH, ...waterStops.map((s) => s.eta_h.avg), arriveH];
-    let fluid_ml = 0;
+    let fluid_ml = 0, bindingStretch = 0;
     for (let w = 0; w + 1 < waterPoints.length; w++) {
-      fluid_ml = Math.max(fluid_ml, heatFluid(waterPoints[w], waterPoints[w + 1]));
+      const stretch = heatFluid(waterPoints[w], waterPoints[w + 1]);
+      if (stretch > fluid_ml) { fluid_ml = stretch; bindingStretch = w; }
     }
     // demand-driven fill from the 2 standard mix flasks: at most ONE extra
     // flask takes mix (carbs ride along), further spares take plain water —
@@ -360,6 +367,11 @@ export function planFuel(
     // honest instruction is "ration", not a bigger number
     const preload_ml = Math.min(rawPreload, 800);
     const ration = rawPreload > 800;
+    // a preload only helps if drunk immediately before the binding stretch —
+    // at departure normally, at the preceding water stop when the max
+    // stretch sits after a mid-leg water point
+    const preload_at = preload_ml > 0 && bindingStretch > 0
+      ? waterStops[bindingStretch - 1].station.name : null;
     const flasks = cfg.tailwind_flasks + extraMix;
     const extra_fill = extraMix > 0 || water_flasks > 0;
     const fill = `${flasks}M${water_flasks > 0 ? `+${water_flasks}W` : ""}`;
@@ -370,7 +382,16 @@ export function planFuel(
     const carb_g = carryH > cfg.carb_cap_over_h
       ? Math.min(rawCarb, cfg.carb_cap_g_hr * carryH)
       : rawCarb;
-    const liquid_carb_g = Math.min(flasks * cfg.flask_carb_g, cfg.liquid_carb_rate_g_hr * carryH);
+    // credit what the runner is FORCED to drink: with no water flask, every
+    // mL of a hot leg's demand is mix, which can exceed the sipping-rate
+    // credit — without this floor those carbs get prescribed a second time
+    // as gels. Legs with a mid-leg water stop fall back to the rate credit
+    // (refill water dilutes the forcing, conservatively).
+    const forcedMix_g = waterStops.length > 0 ? 0 :
+      (Math.max(0, Math.min(flasks * cfg.flask_ml,
+        heatFluid(departH, arriveH) - preload_ml - water_flasks * cfg.flask_ml)) / cfg.flask_ml) * cfg.flask_carb_g;
+    const liquid_carb_g = Math.min(flasks * cfg.flask_carb_g,
+      Math.max(cfg.liquid_carb_rate_g_hr * carryH, forcedMix_g));
     const suppCarb = Math.max(0, carb_g - liquid_carb_g);
 
     // split carried units between gels and bloks by the phase's preference
@@ -401,7 +422,7 @@ export function planFuel(
       // nearest 10, not 50 — coarser rounding displayed a demand above the
       // fill it actually fits inside (1237 → "1.3L" vs a 1.25L carry)
       fluid_ml: Math.round(fluid_ml / 10) * 10,
-      water_flasks, extra_fill, preload_ml, ration, fill,
+      water_flasks, extra_fill, preload_ml, preload_at, ration, fill,
       heat: heatH > 0.25,
       night: nightH > 0.25,
       long_carry: carryH > cfg.long_carry_h,

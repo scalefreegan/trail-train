@@ -174,7 +174,8 @@ export function DropBagCard({ plan, cfg, onClose }: {
 
               <div style={{ fontSize: "6px", color: MUTED, paddingTop: 1.5 }}>
                 add <b>+1 gel · +1 tab spare per bag</b> · hcf = High Carb scoops (1 per MIX flask; W flasks are plain water, no scoop)
-                · gel {cfg.gel.carb_g}g · blk pack {cfg.bloks.carb_g}g · edit gear + constants in nutrition.json
+                · gel {cfg.gel.carb_g}g · blk pack {cfg.bloks.carb_g}g · flask notes assume the printed projection — running well behind? keep the spare
+                · edit gear + constants in nutrition.json
               </div>
             </div>
           </div>
