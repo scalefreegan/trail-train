@@ -22,7 +22,6 @@ function segFlags(seg: FuelSegment): { text: string; color: string }[] {
   const f: { text: string; color: string }[] = [];
   if (seg.heat) f.push({ text: "☀", color: ACCENT });
   if (seg.night) f.push({ text: "☾", color: NIGHT });
-  if (seg.fourth_flask) f.push({ text: seg.beyond_four ? "4F+" : "4F", color: WORST });
   return f;
 }
 
@@ -76,6 +75,7 @@ function FuelFace({ side, segments, plan, cfg }: {
             <th style={th}>blk</th>
             <th style={th}>tab</th>
             <th style={th}>fluid L</th>
+            <th style={{ ...th, textAlign: "left" }}>fill</th>
             <th style={{ ...th, textAlign: "left" }}>·</th>
           </tr>
         </thead>
@@ -113,6 +113,14 @@ function FuelFace({ side, segments, plan, cfg }: {
                 <td style={{ ...cell, fontWeight: seg.fourth_flask ? 700 : 400, color: seg.fourth_flask ? WORST : INK }}>
                   {(seg.fluid_ml / 1000).toFixed(1)}
                 </td>
+                <td style={{ ...cell, textAlign: "left", fontWeight: seg.fourth_flask ? 700 : 400, color: seg.fourth_flask ? WORST : MUTED }}>
+                  {seg.fill}
+                  {seg.preload_ml > 0 && (
+                    <span style={{ display: "block", fontSize: "5.5px", color: WORST, fontWeight: 700 }}>
+                      +drink {seg.preload_ml}mL @ aid
+                    </span>
+                  )}
+                </td>
                 <td style={{ ...cell, textAlign: "left", fontWeight: 700, fontSize: "7.5px" }}>
                   {segFlags(seg).map((f) => (
                     <span key={f.text} style={{ color: f.color, marginRight: 2 }}>{f.text}</span>
@@ -136,7 +144,8 @@ function FuelFace({ side, segments, plan, cfg }: {
         ) : (
           <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
             <span>
-              ☀ heat ({cfg.fluid_ml_hr_heat}mL/h) · ☾ night: {cfg.phases[cfg.phases.length - 1].supplement} · <b style={{ color: WORST }}>4F = 4th flask OF MIX</b> (counted; 4F+ still short — ration)
+              fill: <b>M</b> = 500mL Tailwind+HCF · <b>W</b> = spare flask plain water · water flask always carried ·
+              <b style={{ color: WORST }}> +drink @ aid</b> = swallow before leaving · ☀ heat · ☾ night: {cfg.phases[cfg.phases.length - 1].supplement}
             </span>
             <span>total ≈ <b style={{ color: INK }}>{plan.total_gels} gel · {plan.total_bloks} blk · {plan.total_tabs} tab · {plan.total_hcf_scoops} HCF</b></span>
           </div>

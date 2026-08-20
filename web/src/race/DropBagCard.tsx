@@ -120,7 +120,7 @@ export function DropBagCard({ plan, cfg, onClose }: {
                       </td>
                       <td style={{ ...cell, textAlign: "left", fontSize: "8px" }}>
                         {bag.night && <span style={{ color: NIGHT, fontWeight: 700 }}>☾ night ahead </span>}
-                        {bag.station === "Start" ? "3 flasks + 4th empty" : ""}
+                        {bag.station === "Start" ? "5 flasks: 2 mix · 1 water · 2 empty" : ""}
                       </td>
                     </tr>
                   ))}

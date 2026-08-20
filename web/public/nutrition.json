@@ -6,6 +6,7 @@
   "flask_sodium_mg": 537,
   "water_flask_ml": 500,
   "water_reserve_ml": 250,
+  "spare_flask_ml": 500,
   "liquid_carb_rate_g_hr": 55,
   "gel": { "carb_g": 25, "sodium_mg": 20, "label": "Maurten 100" },
   "bloks": { "carb_g": 24, "sodium_mg": 50, "label": "3 Clif Bloks" },

@@ -20,6 +20,8 @@ export type NutritionConfig = {
   water_flask_ml: number;
   /** plain water the runner always keeps in hand — never budgeted as intake */
   water_reserve_ml: number;
+  /** 5th flask carried empty; filled with PLAIN WATER on 5F legs (no scoop) */
+  spare_flask_ml: number;
   /** how fast the drink mix is actually consumed, g carb per hour */
   liquid_carb_rate_g_hr: number;
   gel: { carb_g: number; sodium_mg: number; label: string };
@@ -45,6 +47,7 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   flask_sodium_mg: 537,
   water_flask_ml: 500,
   water_reserve_ml: 250,
+  spare_flask_ml: 500,
   liquid_carb_rate_g_hr: 55,
   gel: { carb_g: 25, sodium_mg: 20, label: "Maurten 100" },
   bloks: { carb_g: 24, sodium_mg: 50, label: "3 Clif Bloks" },
@@ -118,10 +121,16 @@ export type FuelSegment = {
   salt_tabs: number;
   /** fluid the carry demands, mL (heat-adjusted) */
   fluid_ml: number;
-  /** demand exceeds 2 Tailwind flasks + drinkable water → carry a 4th flask */
+  /** demand exceeds 2 Tailwind flasks + drinkable water → fill the 4th (MIX) */
   fourth_flask: boolean;
-  /** demand exceeds even the 4-flask setup — refill on trail or accept the gap */
-  beyond_four: boolean;
+  /** demand exceeds the 4-flask setup → also fill the 5th spare (WATER) */
+  fifth_flask: boolean;
+  /** what to swallow AT the aid station before leaving — demand beyond even
+      five flasks (mL, 0 when the carried fluid suffices) */
+  preload_ml: number;
+  /** departure fill code: "2M" | "3M" | "3M+W" (M = mix flask, W = spare
+      flask of plain water; the always-carried water flask is implied) */
+  fill: string;
   heat: boolean;
   night: boolean;
   long_carry: boolean;
@@ -244,7 +253,11 @@ export function planFuel(
       fluid_ml = Math.max(fluid_ml, heatFluid(waterPoints[w], waterPoints[w + 1]));
     }
     const fourth_flask = fluid_ml > fluidCap;
+    const fifth_flask = fluid_ml > fluidCap + cfg.flask_ml;
+    const preload_ml = Math.max(0,
+      Math.ceil((fluid_ml - (fluidCap + cfg.flask_ml + cfg.spare_flask_ml)) / 50) * 50);
     const flasks = cfg.tailwind_flasks + (fourth_flask ? 1 : 0);
+    const fill = fourth_flask ? (fifth_flask ? "3M+W" : "3M") : "2M";
 
     // realized-intake cap on long carries — the paper target is unholdable
     // through a 4-hour climb, so don't plan pockets full of gels for it
@@ -281,8 +294,7 @@ export function planFuel(
       gels, bloks, salt_tabs,
       flasks,
       fluid_ml: Math.round(fluid_ml / 50) * 50,
-      fourth_flask,
-      beyond_four: fluid_ml > fluidCap + cfg.flask_ml,
+      fourth_flask, fifth_flask, preload_ml, fill,
       heat: heatH > 0.25,
       night: nightH > 0.25,
       long_carry: carryH > cfg.long_carry_h,

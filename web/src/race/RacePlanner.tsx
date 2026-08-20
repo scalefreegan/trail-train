@@ -715,7 +715,7 @@ export function RacePlanner() {
                   title={(() => {
                     const f = fuelPlan?.segments.find((seg) => seg.toIdx === i);
                     if (!f) return "no resupply here (no-crew plan) — this station is covered by the carry from the previous refill point";
-                    return `${f.from} → ${f.to}${f.via.length ? ` (thru ${f.via.join(", ")} — no resupply)` : ""} · ${fmtCarry(f.carryH)} carry: ${f.carb_g}g carb target (drink ~${f.liquid_carb_g}g), ${f.gels} gel + ${f.bloks} blok pk, ${f.salt_tabs} tab, ${(f.fluid_ml / 1000).toFixed(1)}L fluid${f.water_note ? ` (${f.water_note})` : ""}${f.heat ? " · heat-adjusted" : ""}${f.night ? " · overnight" : ""}${f.fourth_flask ? " · NEEDS 4TH FLASK (of mix)" : ""} · ${f.supplement}`;
+                    return `${f.from} → ${f.to}${f.via.length ? ` (thru ${f.via.join(", ")} — no resupply)` : ""} · ${fmtCarry(f.carryH)} carry: ${f.carb_g}g carb target (drink ~${f.liquid_carb_g}g), ${f.gels} gel + ${f.bloks} blok pk, ${f.salt_tabs} tab, ${(f.fluid_ml / 1000).toFixed(1)}L fluid${f.water_note ? ` (${f.water_note})` : ""}${f.heat ? " · heat-adjusted" : ""}${f.night ? " · overnight" : ""} · FILL ${f.fill} (M = mix flask, W = spare of plain water)${f.preload_ml > 0 ? ` · DRINK ${f.preload_ml}mL AT THE AID BEFORE LEAVING` : ""} · ${f.supplement}`;
                   })()}>
                   {(() => {
                     const f = fuelPlan?.segments.find((seg) => seg.toIdx === i);
@@ -727,7 +727,7 @@ export function RacePlanner() {
                           {f.carb_g}g{units ? ` · ${units}` : ""}
                         </span>
                         <span style={{ display: "block", fontSize: 9, color: f.fourth_flask ? "var(--ember)" : "var(--mist-dim)", fontWeight: f.fourth_flask ? 700 : 400 }}>
-                          {(f.fluid_ml / 1000).toFixed(1)}L{f.fourth_flask ? " 4F" : ""}{f.salt_tabs > 0 ? ` · ${f.salt_tabs}tab` : ""}
+                          {(f.fluid_ml / 1000).toFixed(1)}L {f.fill}{f.preload_ml > 0 ? " +drink" : ""}{f.salt_tabs > 0 ? ` · ${f.salt_tabs}tab` : ""}
                         </span>
                       </>
                     );
