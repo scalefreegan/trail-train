@@ -201,15 +201,18 @@ a { color: inherit; }
 
 .race-grid {
   display: grid;
-  grid-template-columns: minmax(110px, 1.3fr) 44px 58px 50px 58px minmax(158px, 1.4fr) 60px minmax(112px, 1fr) 76px minmax(90px, 0.9fr);
+  /* every fixed/min width fits its widest real content (day-suffixed clocks
+     like "12:25p+1", fuel cells like "245g · 2G+2B 2t") — squeezing tracks
+     below content just bleeds nowrap text into the neighboring column */
+  grid-template-columns: minmax(110px, 1.3fr) 44px 58px 50px 58px minmax(184px, 1.4fr) 62px minmax(124px, 1fr) 96px minmax(90px, 0.9fr);
   gap: 11px;
   align-items: center;
 }
 
-/* station table: scroll inside the panel rather than overflow into the
-   coach rail when the viewport squeezes below the columns' minimums */
+/* station table: when the viewport can't fit the columns' true widths, the
+   panel scrolls horizontally — never squeeze, never spill into the rail */
 .race-table { overflow-x: auto; }
-.race-table > .race-grid { min-width: 930px; }
+.race-table > .race-grid { min-width: 1010px; }
 
 .climb-grid {
   display: grid;
