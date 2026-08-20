@@ -95,7 +95,7 @@ export function DropBagCard({ plan, cfg, onClose }: {
                   {race.short} DROP BAGS · no crew
                 </span>
                 <span style={{ fontSize: "7px", color: MUTED }}>
-                  bags are the only restock — pack these + spares
+                  row 1 = in the vest at the gun · bags are the only restock — pack these + spares
                 </span>
               </div>
 
@@ -120,7 +120,9 @@ export function DropBagCard({ plan, cfg, onClose }: {
                     return (
                     <React.Fragment key={bag.station}>
                       <tr>
-                        <td style={{ ...bagCell, textAlign: "left", fontWeight: 700 }}>{bag.station}</td>
+                        <td style={{ ...bagCell, textAlign: "left", fontWeight: 700 }}>
+                          {bag.station === "Start" ? "Vest @ start" : bag.station}
+                        </td>
                         <td style={{ ...bagCell, fontSize: "8.5px", color: MUTED }}>
                           {bag.atH > 0 ? fmtRaceClock(race.date, bag.atH) : "—"}
                         </td>
