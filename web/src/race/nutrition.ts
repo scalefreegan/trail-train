@@ -91,10 +91,16 @@ export function normalizeNutrition(d: unknown): NutritionConfig | null {
       (p.supplement === undefined || typeof p.supplement === "string") &&
       (p.bloks_frac === undefined || Number.isFinite(p.bloks_frac)));
   if (!phasesOk || !Number.isFinite(raw.flask_carb_g) || (raw.flask_carb_g as number) <= 0) return null;
+  // unit specs divide the carb/sodium math — a zero renders Infinity/NaN gels
+  // on a card carried into a race
+  const posOr = (v: unknown, dflt: number): number => (Number.isFinite(v) && (v as number) > 0 ? (v as number) : dflt);
+  const gelSpec = { ...DEFAULT_NUTRITION.gel, ...(raw.gel as Partial<NutritionConfig["gel"]> | undefined) };
+  const blokSpec = { ...DEFAULT_NUTRITION.bloks, ...(raw.bloks as Partial<NutritionConfig["bloks"]> | undefined) };
+  if (gelSpec.carb_g <= 0 || blokSpec.carb_g <= 0) return null;
 
   // carbOver/phaseAt assume ascending until_h — sort rather than mis-integrate
   const phases = (raw.phases as NutritionConfig["phases"])
-    .map((p) => ({ ...p, supplement: p.supplement ?? "" }))
+    .map((p) => ({ ...p, supplement: p.supplement ?? "", bloks_frac: Math.min(1, Math.max(0, p.bloks_frac ?? 0)) }))
     .sort((a, b) => a.until_h - b.until_h);
 
   const hw = raw.heat_window as { start?: unknown; end?: unknown } | undefined;
@@ -112,13 +118,19 @@ export function normalizeNutrition(d: unknown): NutritionConfig | null {
     }
   }
 
-  return {
+  const merged: NutritionConfig = {
     ...DEFAULT_NUTRITION,
     ...(raw as Partial<NutritionConfig>),
-    gel: { ...DEFAULT_NUTRITION.gel, ...(raw.gel as Partial<NutritionConfig["gel"]> | undefined) },
-    bloks: { ...DEFAULT_NUTRITION.bloks, ...(raw.bloks as Partial<NutritionConfig["bloks"]> | undefined) },
+    gel: gelSpec,
+    bloks: blokSpec,
     phases, heat_window, drop_bag_gear,
   };
+  merged.salt_tab_mg = posOr(merged.salt_tab_mg, DEFAULT_NUTRITION.salt_tab_mg);
+  merged.flask_ml = posOr(merged.flask_ml, DEFAULT_NUTRITION.flask_ml);
+  // spare_flask_ml: 0 is a legitimate "I carry no 5th flask" — clamp only negatives/NaN
+  merged.spare_flask_ml = Number.isFinite(merged.spare_flask_ml) && merged.spare_flask_ml >= 0
+    ? merged.spare_flask_ml : DEFAULT_NUTRITION.spare_flask_ml;
+  return merged;
 }
 
 /** Same failure semantics as the useRaceData hooks, except a 404 silently
@@ -180,8 +192,10 @@ export type FuelSegment = {
   /** demand exceeds the 4-flask setup → also fill the 5th spare (WATER) */
   fifth_flask: boolean;
   /** what to swallow AT the aid station before leaving — demand beyond even
-      five flasks (mL, 0 when the carried fluid suffices) */
+      five flasks (mL, 0 when the carried fluid suffices, capped at 800) */
   preload_ml: number;
+  /** demand exceeds flasks + a realistic pre-load — ration deliberately */
+  ration: boolean;
   /** departure fill code: "2M" | "3M" | "3M+W" (M = mix flask, W = spare
       flask of plain water; the always-carried water flask is implied) */
   fill: string;
@@ -227,10 +241,13 @@ const parseHM = (hm: string): number => {
   return h + (m || 0) / 60;
 };
 
-/** total overlap (hours) of [a0,a1] with window [w0,w1] repeated every 24h */
+/** total overlap (hours) of [a0,a1] with window [w0,w1] repeated every 24h.
+    Bounds are derived from the window edges themselves — a start bound of
+    floor(a0/24)-1 silently skipped the last repeat whenever w0 < 0 (e.g. an
+    evening race start putting the heat window at negative elapsed hours). */
 function dailyOverlap(a0: number, a1: number, w0: number, w1: number): number {
   let total = 0;
-  for (let day = Math.floor(a0 / 24) - 1; day * 24 < a1; day++) {
+  for (let day = Math.floor((a0 - w1) / 24); day * 24 + w0 < a1; day++) {
     const s = Math.max(a0, day * 24 + w0);
     const e = Math.min(a1, day * 24 + w1);
     if (e > s) total += e - s;
@@ -263,7 +280,11 @@ export function planFuel(
       if (e > s) total += (e - s) * p.carb_g_hr;
       prev = p.until_h;
     }
-    if (h1 > prev) total += (h1 - prev) * cfg.phases[cfg.phases.length - 1].carb_g_hr;
+    // tail past the last boundary starts at the LATER of departure and the
+    // boundary — charging from the boundary over-fueled any leg departing
+    // after it (a 2h carry at hour 60 priced as 12h of carbs)
+    const tail = Math.max(h0, prev);
+    if (h1 > tail) total += (h1 - tail) * cfg.phases[cfg.phases.length - 1].carb_g_hr;
     return total;
   };
 
@@ -297,8 +318,10 @@ export function planFuel(
     const arriveH = proj.stations[toIdx].eta_h.avg;
     const carryH = Math.max(0, arriveH - departH);
     const between = proj.stations.slice(fromIdx + 1, toIdx);
-    const via = between.map((s) => s.station.name);
     const waterStops = between.filter((s) => s.station.water_only);
+    // water-only stations live in water_note, not the "no resupply" list —
+    // listing them in both printed contradictory guidance on the card
+    const via = between.filter((s) => !s.station.water_only).map((s) => s.station.name);
 
     // fluid: plain water is refillable mid-leg at a water-only station, so
     // the demand that must be CARRIED is the worst stretch between water
@@ -309,9 +332,15 @@ export function planFuel(
       fluid_ml = Math.max(fluid_ml, heatFluid(waterPoints[w], waterPoints[w + 1]));
     }
     const fourth_flask = fluid_ml > fluidCap;
-    const fifth_flask = fluid_ml > fluidCap + cfg.flask_ml;
-    const preload_ml = Math.max(0,
+    // the 5th flask only exists when configured; without it the shortfall
+    // rolls into the pre-load instruction instead
+    const fifth_flask = cfg.spare_flask_ml > 0 && fluid_ml > fluidCap + cfg.flask_ml;
+    const rawPreload = Math.max(0,
       Math.ceil((fluid_ml - (fluidCap + cfg.flask_ml + cfg.spare_flask_ml)) / 50) * 50);
+    // nobody can pre-load more than ~800 mL at an aid table — beyond that the
+    // honest instruction is "ration", not a bigger number
+    const preload_ml = Math.min(rawPreload, 800);
+    const ration = rawPreload > 800;
     const flasks = cfg.tailwind_flasks + (fourth_flask ? 1 : 0);
     const fill = fourth_flask ? (fifth_flask ? "3M+W" : "3M") : "2M";
 
@@ -350,7 +379,7 @@ export function planFuel(
       gels, bloks, salt_tabs,
       flasks,
       fluid_ml: Math.round(fluid_ml / 50) * 50,
-      fourth_flask, fifth_flask, preload_ml, fill,
+      fourth_flask, fifth_flask, preload_ml, ration, fill,
       heat: heatH > 0.25,
       night: nightH > 0.25,
       long_carry: carryH > cfg.long_carry_h,

@@ -117,7 +117,7 @@ function FuelFace({ side, segments, plan, cfg }: {
                   {seg.fill}
                   {seg.preload_ml > 0 && (
                     <span style={{ display: "block", fontSize: "5.5px", color: WORST, fontWeight: 700 }}>
-                      +drink {seg.preload_ml}mL @ aid
+                      +drink {seg.preload_ml}mL @ aid{seg.ration ? " · RATION" : ""}
                     </span>
                   )}
                 </td>
