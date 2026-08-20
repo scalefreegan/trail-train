@@ -112,6 +112,22 @@ export type Activity = {
   humidity_avg?: number | null;
 };
 
+// Non-run Strava activity (ride, hike, strength, …). Shown in the log's
+// "other" tab and surfaced to the coach agent only — never included in
+// weekly buckets, vitals, ACR, or the pacing model.
+export type CrossActivity = {
+  id: string;
+  date: string;
+  start_time_local?: string | null;
+  title: string;
+  sport: string;
+  distance_mi: number;
+  elevation_ft: number;
+  moving_s: number;
+  avg_hr?: number | null;
+  strava_url?: string;
+};
+
 /* ---- 20-week training block targets (race = week 20 = Sept 12) ---- */
 /*  Block start = Monday April 27, 2026 (race week begins Mon Sept 7)   */
 
@@ -208,7 +224,12 @@ export type StravaCtx = {
   error: string | null;
   fetchedAt: Date | null;
   activities: Activity[];
-  // weekly buckets by training block week (1..totalWeeks)
+  // non-run activities — display + agent context only, never in metrics
+  cross: CrossActivity[];
+  crossError: string | null;   // fetch/parse failure (a missing file is not an error)
+  crossLoading: boolean;       // cross-train.json fetch not yet settled
+  crossSynced: boolean;        // cross-train.json loaded, even if empty
+  // weekly buckets by training block week (1..totalWeeks) — runs only
   weekly: { wk: number; dist_mi: number; elev_ft: number; sessions: number }[];
   currentWeek: number; // 1..totalWeeks
 };

@@ -28,6 +28,7 @@ const stamp = () => {
 
 const SOURCES = [
   { from: path.join(ROOT, "web/public/strava.json"),                 to: "snapshots/strava.json",       optional: true },
+  { from: path.join(ROOT, "web/public/cross-train.json"),            to: "snapshots/cross-train.json",  optional: true },
   { from: path.join(ROOT, "web/public/oura.json"),                   to: "snapshots/oura.json",         optional: true },
   { from: path.join(ROOT, "web/public/coach.json"),                  to: "snapshots/coach.json",        optional: true },
   { from: path.join(ROOT, "web/public/state.json"),                  to: "snapshots/state.json",        optional: true },

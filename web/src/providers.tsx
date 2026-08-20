@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   RefreshContext, useRefresh, type RefreshStep, type StepStatus, type RefreshCtx,
   UnitsContext, useUnits, type System, type UnitsCtx,
-  StravaContext, type StravaCtx, type Activity,
+  StravaContext, type StravaCtx, type Activity, type CrossActivity,
   OuraContext, type OuraCtx, type OuraRaw,
   PersistentStateContext, type PersistentState,
   useBlockConfig,
@@ -194,6 +194,22 @@ type StravaRaw = {
   }>;
 };
 
+type CrossRaw = {
+  fetched_at: string;
+  activities: Array<{
+    id: string;
+    date: string;
+    start_time_local?: string | null;
+    title: string;
+    sport: string;
+    distance_m: number;
+    elevation_m: number;
+    moving_s: number;
+    avg_hr: number | null;
+    strava_url: string;
+  }>;
+};
+
 function weekIndex(date: string, blockStart: string) {
   const d = new Date(date).getTime();
   const s = new Date(blockStart + "T00:00:00").getTime();
@@ -207,6 +223,9 @@ export function StravaProvider({ children }: { children: React.ReactNode }) {
   const { key: refreshKey } = useRefresh();
   const { blockStart, totalWeeks } = useBlockConfig();
   const [fetchState, setFetchState] = useState<StravaFetch>({ loading: true, error: null, data: null });
+  const [crossData, setCrossData] = useState<CrossRaw | null>(null);
+  const [crossError, setCrossError] = useState<string | null>(null);
+  const [crossLoading, setCrossLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -219,6 +238,21 @@ export function StravaProvider({ children }: { children: React.ReactNode }) {
       .catch((e) => {
         if (!cancelled) setFetchState((s) => ({ loading: false, error: String(e.message || e), data: s.data }));
       });
+    // optional snapshot — absent until the next sync:strava writes it. Only a
+    // 404 is the soft "not synced yet" path; anything else (5xx, network,
+    // malformed JSON) is a real error the UI must be able to distinguish.
+    fetch(`/cross-train.json?t=${Date.now()}`)
+      .then(async (r) => {
+        if (r.status === 404) {
+          if (!cancelled) { setCrossData(null); setCrossError(null); }
+          return;
+        }
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d = (await r.json()) as CrossRaw;
+        if (!cancelled) { setCrossData(d); setCrossError(null); }
+      })
+      .catch((e) => { if (!cancelled) setCrossError(String((e as Error).message || e)); })
+      .finally(() => { if (!cancelled) setCrossLoading(false); });
     return () => { cancelled = true; };
   }, [refreshKey]);
 
@@ -258,12 +292,27 @@ export function StravaProvider({ children }: { children: React.ReactNode }) {
     const today = new Date();
     const cw = Math.max(1, Math.min(totalWeeks, weekIndex(today.toISOString(), blockStart)));
 
+    // deliberately NOT folded into activities/weekly — metrics stay run-only
+    const cross: CrossActivity[] = (crossData?.activities ?? []).map((a) => ({
+      id: a.id,
+      date: a.date,
+      start_time_local: a.start_time_local ?? null,
+      title: a.title,
+      sport: a.sport,
+      distance_mi: a.distance_m / M_PER_MI,
+      elevation_ft: a.elevation_m / M_PER_FT,
+      moving_s: a.moving_s,
+      avg_hr: a.avg_hr ?? null,
+      strava_url: a.strava_url,
+    }));
+
     return {
       loading, error,
       fetchedAt: data ? new Date(data.fetched_at) : null,
-      activities, weekly, currentWeek: cw,
+      activities, cross, crossError, crossLoading, crossSynced: crossData !== null,
+      weekly, currentWeek: cw,
     };
-  }, [fetchState, blockStart, totalWeeks]);
+  }, [fetchState, crossData, crossError, crossLoading, blockStart, totalWeeks]);
 
   return <StravaContext.Provider value={value}>{children}</StravaContext.Provider>;
 }

@@ -337,10 +337,16 @@ export function computeFacts(strava, oura, state) {
 
 export async function loadFactsFromRoot(projectRoot) {
   const stravaPath  = path.join(projectRoot, "web", "public", "strava.json");
+  const crossPath   = path.join(projectRoot, "web", "public", "cross-train.json");
   const ouraPath    = path.join(projectRoot, "web", "public", "oura.json");
   const calPath     = path.join(projectRoot, "web", "public", "google-cal.json");
-  const [strava, oura, cal, profile, state] = await Promise.all([
+  const [strava, cross, oura, cal, profile, state] = await Promise.all([
     fs.readFile(stravaPath, "utf8").then(JSON.parse).catch(() => null),
+    fs.readFile(crossPath,  "utf8").then(JSON.parse).catch((e) => {
+      // absent is expected (pre-first-sync); anything else deserves a trace
+      if (e.code !== "ENOENT") console.warn(`cross-train.json unreadable: ${e.message}`);
+      return null;
+    }),
     fs.readFile(ouraPath,   "utf8").then(JSON.parse).catch(() => null),
     fs.readFile(calPath,    "utf8").then(JSON.parse).catch(() => null),
     loadProfile(projectRoot),
@@ -354,6 +360,35 @@ export async function loadFactsFromRoot(projectRoot) {
     state: { ...state, preferences: activeContext(state?.preferences ?? {}, isoDate(new Date())) },
     ...computeFacts(strava, oura, state),
   };
+  if (cross) {
+    // Non-run activities (rides, hikes, strength, …) — context only. None of
+    // the load metrics above (d7/d28, ACR, weekly, pacing) include these.
+    // Emitted even when empty: "snapshot present, athlete did no cross-training"
+    // is a different coaching signal from "no snapshot".
+    const crossActs = cross.activities || [];
+    base.cross_training = {
+      fetched_at: cross.fetched_at,
+      note: "Non-run activities. EXCLUDED from every load metric (d7/d28 distance, ACR, weekly actuals, pacing model) — those count runs only. Use qualitatively: systemic fatigue, time-on-feet, schedule load. `recent` lists only the latest 20; `count` and `totals` cover the full sync window.",
+      count: crossActs.length,
+      // derived from the activities, not the file's totals key — a snapshot
+      // missing `totals` must not become confident zeros
+      totals: {
+        distance_mi: +(sumNum(crossActs.map((a) => a.distance_m)) / M_PER_MI).toFixed(1),
+        elevation_ft: Math.round(sumNum(crossActs.map((a) => a.elevation_m)) / M_PER_FT),
+        moving_h: +(sumNum(crossActs.map((a) => a.moving_s)) / 3600).toFixed(1),
+      },
+      recent: crossActs.slice(0, 20).map((a) => ({
+        date: (a.date || "").slice(0, 10),
+        start_time_local: a.start_time_local || null,
+        title: a.title,
+        sport: a.sport,
+        distance_mi: +((a.distance_m || 0) / M_PER_MI).toFixed(1),
+        elevation_ft: Math.round((a.elevation_m || 0) / M_PER_FT),
+        moving_h: +((a.moving_s || 0) / 3600).toFixed(2),
+        avg_hr: a.avg_hr ?? null,
+      })),
+    };
+  }
   if (cal) {
     base.calendar = {
       fetched_at: cal.fetched_at,

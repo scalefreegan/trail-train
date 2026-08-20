@@ -25,7 +25,10 @@ amber accent — instead of a sectioned scroll:
   projection, expected/actual/delta stats embedded in the panel.
 - **The road ahead** — next 14 calendar days (Google Calendar, classified)
   fused with the agent's next-6-weeks `plan_blocks` and key sessions.
-- **The log** — every Strava run, clickable, paginated.
+- **The log** — every Strava run, clickable, paginated. A second **other**
+  tab lists non-run activities (rides, hikes, strength, …) — visible to you
+  and the coach agent, but never counted in vitals, trajectory, or pacing,
+  which stay runs-only.
 - **The coach** — a persistent sticky rail: deterministic flags
   (acute:chronic load, HRV trend, RHR drift, sleep debt, block delta), the
   structured readout from a headless `claude -p` session, and the chat —
@@ -64,7 +67,10 @@ strava-mcp client there:
 npm run sync:strava
 ```
 
-Writes `web/public/strava.json` for the dashboard to read.
+Writes `web/public/strava.json` (runs) and `web/public/cross-train.json`
+(everything else) for the dashboard to read. Only runs feed the metrics;
+non-run activities surface in the log's "other" tab and in the coach
+agent's context.
 
 ### Oura
 

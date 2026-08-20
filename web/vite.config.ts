@@ -126,7 +126,8 @@ You have full read access to:
   - ${factsPath}      (deterministic facts: block week, ACR, HRV trend, RHR drift, sleep, heat exposure, recent runs w/ temps, plan_blocks, agent_notes from prior sessions)
   - ${coachPath}      (most recent structured agent readout)
   - web/public/state.json   (persistent state — race meta, block targets, plan_blocks, agent_notes, preferences)
-  - web/public/strava.json  (raw Strava snapshot — distance/elev/HR/dates/titles/start_latlng/weather, with strava_url)
+  - web/public/strava.json  (raw Strava snapshot, runs only — distance/elev/HR/dates/titles/start_latlng/weather, with strava_url)
+  - web/public/cross-train.json  (non-run Strava activities — rides, hikes, strength, … EXCLUDED from all load metrics, which count runs only; use qualitatively for fatigue/time-on-feet)
   - web/public/oura.json    (Oura snapshot — sleep, readiness, HRV, RHR, tags)
   - web/public/google-cal.json  (Google Calendar — past 7 + next 30 days of events, classified by training relevance)
 

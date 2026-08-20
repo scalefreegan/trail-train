@@ -280,6 +280,11 @@ a { color: inherit; }
     gap: 10px;
   }
   .log-grid > .col-type, .log-grid > .col-pace { display: none; }
+  /* cross rows: sport + duration are the load-bearing cells (a strength
+     session has no distance/elev), so keep those and drop elev + hr */
+  .log-grid.cross { grid-template-columns: 56px 1fr 56px 64px 70px; }
+  .log-grid.cross > .col-type, .log-grid.cross > .col-pace { display: block; }
+  .log-grid.cross > .col-elev, .log-grid.cross > .col-rpe { display: none; }
   .race-grid {
     grid-template-columns: minmax(100px, 1.2fr) 40px minmax(150px, 1.3fr) minmax(110px, 1fr);
     gap: 10px;
@@ -300,4 +305,6 @@ a { color: inherit; }
     font-size: 12px;
   }
   .log-grid > .col-rpe { display: none; }
+  .log-grid.cross { grid-template-columns: 48px 1fr 52px 56px; }
+  .log-grid.cross > .col-dist { display: none; }
 }

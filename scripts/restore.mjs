@@ -65,6 +65,7 @@ async function main() {
   console.log(`• restoring from ${src}`);
   const mapping = [
     { from: "snapshots/strava.json",    to: path.join(ROOT, "web/public/strava.json") },
+    { from: "snapshots/cross-train.json", to: path.join(ROOT, "web/public/cross-train.json") },
     { from: "snapshots/oura.json",      to: path.join(ROOT, "web/public/oura.json") },
     { from: "snapshots/coach.json",     to: path.join(ROOT, "web/public/coach.json") },
     { from: "snapshots/state.json",     to: path.join(ROOT, "web/public/state.json") },
