@@ -105,14 +105,25 @@ function refreshApi(): Plugin {
   }
 }
 
-// Recognize headless-CLI auth failures so the UI can say "sign in again"
-// instead of surfacing a cryptic exit code. Matches the CLI's known phrasings
-// (API-key auth and OAuth/subscription auth).
-const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in again|oauth token.{0,40}(expired|revoked|invalid)|authentication[_ ]?error|credentials?.{0,20}(expired|invalid|missing)|unauthorized/i
-const authHint = (text: string): string | null =>
-  AUTH_ERROR_RE.test(text)
-    ? 'Claude Code sign-in has expired — open a terminal, run `claude`, type `/login` and finish the browser sign-in, then retry here.'
-    : null
+// Recognize known headless-CLI failures so the UI can say what to actually do
+// ("sign in again", "wait for the limit to reset") instead of surfacing a
+// cryptic exit code. Matches the CLI's known phrasings (API-key auth and
+// OAuth/subscription auth, usage limits, API overload).
+const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in again|login expired|oauth token.{0,40}(expired|revoked|invalid)|authentication[_ ]?error|credentials?.{0,20}(expired|invalid|missing)|unauthorized|re-?authenticate/i
+const LIMIT_ERROR_RE = /usage limit reached|limit will reset|out of (extra )?usage|rate.?limit(ed|_error)?|429/i
+const OVERLOAD_ERROR_RE = /overloaded_error|overloaded|529|api.{0,20}(unavailable|internal server error)/i
+const AUTH_FIX = 'open a terminal, run `claude`, type `/login` and finish the browser sign-in, then retry here.'
+const failureHint = (text: string): string | null => {
+  if (AUTH_ERROR_RE.test(text)) return `Claude Code sign-in has expired — ${AUTH_FIX}`
+  if (LIMIT_ERROR_RE.test(text)) {
+    // the CLI phrases it "Claude AI usage limit reached|<epoch-seconds>"
+    const m = text.match(/limit reached\|(\d{9,13})/)
+    const reset = m ? new Date(Number(m[1]) * (m[1].length <= 10 ? 1000 : 1)).toLocaleString() : null
+    return `Claude usage limit reached — not an auth problem. Wait for the limit to reset${reset ? ` (~${reset})` : ''} and retry.`
+  }
+  if (OVERLOAD_ERROR_RE.test(text)) return 'Claude API is overloaded right now — transient; retry in a minute.'
+  return null
+}
 
 const CHAT_SYSTEM = (
   factsPath: string,
@@ -336,8 +347,23 @@ function chatApi(): Plugin {
           // stream open forever with no timeout. finish() runs it last.
           const finish = () => { cleanup(); if (!res.writableEnded) res.end() }
           if (code !== 0) {
-            const hint = authHint(`${stderrLast}\n${stdout}`)
-            send('error', { message: hint ?? `claude exited ${code}: ${stderrLast.slice(0, 240)}` })
+            // The CLI often exits nonzero with an empty stderr and the real
+            // message inside the stdout JSON wrapper's `result` — surface
+            // whichever detail exists instead of a bare "claude exited 1:".
+            let resultText = ''
+            try {
+              const w = JSON.parse(stdout)
+              if (w && typeof w === 'object' && w.result) resultText = String(w.result)
+            } catch { /* stdout wasn't the JSON wrapper */ }
+            console.error(`[chat] claude exited ${code}\nstderr: ${stderrLast.slice(0, 800)}\nstdout: ${stdout.slice(0, 800)}`)
+            const hint = failureHint(`${stderrLast}\n${stdout}`)
+            const detail = stderrLast || resultText || stdout.trim().slice(0, 240)
+            send('error', {
+              message: hint
+                ?? (detail
+                  ? `claude exited ${code}: ${detail.slice(0, 240)}`
+                  : `claude exited ${code} with no error output — this is most often an expired sign-in: ${AUTH_FIX}`),
+            })
             send('done', { ok: false })
             finish()
             return
@@ -346,10 +372,13 @@ function chatApi(): Plugin {
             const wrapper = JSON.parse(stdout)
             const text = (wrapper && typeof wrapper === 'object' && wrapper.result)
               ? wrapper.result : stdout
-            // Some CLI versions exit 0 with is_error + the auth message in result
-            const hint = wrapper?.is_error ? authHint(String(text)) : null
-            if (hint) {
-              send('error', { message: hint })
+            // Some CLI versions exit 0 with is_error + the real message
+            // (auth expiry, usage limit, …) in result — render those as an
+            // error bubble, not as a coach reply.
+            if (wrapper?.is_error) {
+              const hint = failureHint(String(text))
+              console.error(`[chat] claude reported is_error: ${String(text).slice(0, 800)}`)
+              send('error', { message: hint ?? `coach failed: ${String(text).trim().slice(0, 240) || 'no detail from claude'}` })
               send('done', { ok: false })
               finish()
               return
