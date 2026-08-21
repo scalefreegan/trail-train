@@ -34,11 +34,23 @@ const UNITS = String(arg("units", process.env.TRAIL_UNITS || "metric")) === "imp
 
 /* -------- Claude Code CLI subprocess (pattern from agent-trade) -------- */
 
-// Recognize headless-CLI auth failures (API-key and OAuth/subscription
-// phrasings) so the resync panel tells the athlete to sign in again instead
-// of dumping a raw exit code.
-const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in again|oauth token.{0,40}(expired|revoked|invalid)|authentication[_ ]?error|credentials?.{0,20}(expired|invalid|missing)|unauthorized/i;
+// Recognize known headless-CLI failures (API-key and OAuth/subscription auth
+// phrasings, usage limits, API overload) so the resync panel says what to do
+// instead of dumping a raw exit code.
+const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in again|login expired|oauth token.{0,40}(expired|revoked|invalid)|authentication[_ ]?error|credentials?.{0,20}(expired|invalid|missing)|unauthorized|re-?authenticate/i;
+const LIMIT_ERROR_RE = /usage limit reached|limit will reset|out of (extra )?usage|rate.?limit(ed|_error)?|429/i;
+const OVERLOAD_ERROR_RE = /overloaded_error|overloaded|529|api.{0,20}(unavailable|internal server error)/i;
 const AUTH_HINT = "Claude Code sign-in has expired — open a terminal, run `claude`, type `/login` and finish the browser sign-in, then resync.";
+function failureHint(text) {
+  if (AUTH_ERROR_RE.test(text)) return AUTH_HINT;
+  if (LIMIT_ERROR_RE.test(text)) {
+    const m = text.match(/limit reached\|(\d{9,13})/);
+    const reset = m ? new Date(Number(m[1]) * (m[1].length <= 10 ? 1000 : 1)).toLocaleString() : null;
+    return `Claude usage limit reached — not an auth problem. Wait for the limit to reset${reset ? ` (~${reset})` : ""} and resync.`;
+  }
+  if (OVERLOAD_ERROR_RE.test(text)) return "Claude API is overloaded right now — transient; resync again in a minute.";
+  return null;
+}
 
 const SYSTEM_PROMPT_TEMPLATE = (profile, hasPacing) => `You are the coach inside Trail Almanac, a personal ultra-training dashboard.
 
@@ -268,10 +280,19 @@ function runClaude({ prompt, systemPrompt, maxTurns, timeoutSec, cwd, allowedToo
     proc.on("close", (code) => {
       clearTimeout(timer);
       if (code !== 0) {
-        if (AUTH_ERROR_RE.test(`${stderr}\n${stdout}`)) {
-          return reject(new Error(AUTH_HINT));
-        }
-        return reject(new Error(`claude exited ${code}\nstderr: ${stderr.slice(0, 800)}`));
+        const hint = failureHint(`${stderr}\n${stdout}`);
+        if (hint) return reject(new Error(hint));
+        // stderr is often empty — the real message tends to land in the
+        // stdout JSON wrapper's `result`, so surface whichever detail exists
+        let resultText = "";
+        try {
+          const w = JSON.parse(stdout);
+          if (w && typeof w === "object" && w.result) resultText = String(w.result);
+        } catch { /* stdout wasn't the JSON wrapper */ }
+        const detail = stderr.trim() || resultText || stdout.trim();
+        return reject(new Error(detail
+          ? `claude exited ${code}: ${detail.slice(0, 800)}`
+          : `claude exited ${code} with no error output — this is most often an expired sign-in: open a terminal, run \`claude\`, type \`/login\` and finish the browser sign-in, then resync.`));
       }
       resolve({ stdout, stderr });
     });
@@ -338,9 +359,11 @@ in real numbers from the data.`;
     throw new Error(`malformed wrapper from claude: ${stdout.slice(0, 240)}`);
   }
   const agentText = (wrapper && wrapper.result) ? wrapper.result : stdout;
-  // Some CLI versions exit 0 with is_error + the auth message in result
-  if (wrapper?.is_error && AUTH_ERROR_RE.test(String(agentText))) {
-    throw new Error(AUTH_HINT);
+  // Some CLI versions exit 0 with is_error + the real message (auth expiry,
+  // usage limit, …) in result
+  if (wrapper?.is_error) {
+    const hint = failureHint(String(agentText));
+    throw new Error(hint ?? `coach failed: ${String(agentText).trim().slice(0, 800) || "no detail from claude"}`);
   }
   const numTurns = wrapper?.num_turns ?? null;
   const cost = wrapper?.total_cost_usd ?? null;
