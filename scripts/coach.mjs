@@ -283,19 +283,29 @@ function runClaude({ prompt, systemPrompt, maxTurns, timeoutSec, cwd, allowedToo
     proc.on("close", (code) => {
       clearTimeout(timer);
       if (code !== 0) {
-        const hint = failureHint(`${stderr}\n${stdout}`);
-        if (hint) return reject(new Error(hint));
         // stderr is often empty — the real message tends to land in the
         // stdout JSON wrapper's `result`, so surface whichever detail exists
         let resultText = "";
+        let wrapperIsError = null;
         try {
           const w = JSON.parse(stdout);
-          if (w && typeof w === "object" && w.result) resultText = String(w.result);
+          if (w && typeof w === "object") {
+            wrapperIsError = w.is_error === true;
+            if (typeof w.result === "string") resultText = w.result.trim();
+          }
         } catch { /* stdout wasn't the JSON wrapper */ }
-        const detail = stderr.trim() || resultText || stdout.trim();
+        // A parsed NON-error wrapper holds coaching prose, not an error
+        // message — keep it away from the classifier ("overloaded",
+        // "hit your … limit" are normal coach vocabulary) and out of the
+        // surfaced detail.
+        const hint = failureHint(wrapperIsError === false ? stderr : `${stderr}\n${stdout}`);
+        if (hint) return reject(new Error(hint));
+        const detail = stderr.trim() || (wrapperIsError === false ? "" : resultText || stdout.trim());
         return reject(new Error(detail
           ? `claude exited ${code}: ${detail.slice(0, 800)}`
-          : `claude exited ${code} with no error output — this is most often an expired sign-in: open a terminal, run \`claude\`, type \`/login\` and finish the browser sign-in, then resync.`));
+          : wrapperIsError === false
+            ? `claude exited ${code} after producing a normal readout (likely a teardown error) — re-run.`
+            : `claude exited ${code} with no error output — this is most often an expired sign-in: open a terminal, run \`claude\`, type \`/login\` and finish the browser sign-in, then resync.`));
       }
       resolve({ stdout, stderr });
     });
@@ -363,10 +373,12 @@ in real numbers from the data.`;
   }
   const agentText = (wrapper && wrapper.result) ? wrapper.result : stdout;
   // Some CLI versions exit 0 with is_error + the real message (auth expiry,
-  // usage limit, …) in result
+  // usage limit, …) in result. `result` can be empty on some error subtypes;
+  // fall back to the subtype, never the raw wrapper JSON.
   if (wrapper?.is_error) {
-    const hint = failureHint(String(agentText));
-    throw new Error(hint ?? `coach failed: ${String(agentText).trim().slice(0, 800) || "no detail from claude"}`);
+    const errText = typeof wrapper.result === "string" ? wrapper.result.trim() : "";
+    const hint = failureHint(errText || stdout);
+    throw new Error(hint ?? `coach failed: ${errText.slice(0, 800) || wrapper.subtype || "no detail from claude"}`);
   }
   const numTurns = wrapper?.num_turns ?? null;
   const cost = wrapper?.total_cost_usd ?? null;

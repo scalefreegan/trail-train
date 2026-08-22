@@ -354,18 +354,28 @@ function chatApi(): Plugin {
             // message inside the stdout JSON wrapper's `result` — surface
             // whichever detail exists instead of a bare "claude exited 1:".
             let resultText = ''
+            let wrapperIsError: boolean | null = null
             try {
               const w = JSON.parse(stdout)
-              if (w && typeof w === 'object' && w.result) resultText = String(w.result)
+              if (w && typeof w === 'object') {
+                wrapperIsError = w.is_error === true
+                if (typeof w.result === 'string') resultText = w.result.trim()
+              }
             } catch { /* stdout wasn't the JSON wrapper */ }
             console.error(`[chat] claude exited ${code}\nstderr: ${stderrLast.slice(0, 800)}\nstdout: ${stdout.slice(0, 800)}`)
-            const hint = failureHint(`${stderrLast}\n${stdout}`)
-            const detail = stderrLast || resultText || stdout.trim().slice(0, 240)
+            // A parsed NON-error wrapper holds coaching prose, not an error
+            // message — keep it away from the classifier ("overloaded",
+            // "hit your … limit" are normal coach vocabulary) and out of the
+            // surfaced detail.
+            const hint = failureHint(wrapperIsError === false ? stderrLast : `${stderrLast}\n${stdout}`)
+            const detail = stderrLast || (wrapperIsError === false ? '' : resultText || stdout.trim())
             send('error', {
               message: hint
                 ?? (detail
-                  ? `claude exited ${code}: ${detail.slice(0, 240)}`
-                  : `claude exited ${code} with no error output — this is most often an expired sign-in: ${AUTH_FIX}`),
+                  ? `claude exited ${code}: ${detail.slice(0, 800)}`
+                  : wrapperIsError === false
+                    ? `claude exited ${code} after producing a normal reply (likely a teardown error) — try again.`
+                    : `claude exited ${code} with no error output — this is most often an expired sign-in: ${AUTH_FIX}`),
             })
             send('done', { ok: false })
             finish()
@@ -377,11 +387,14 @@ function chatApi(): Plugin {
               ? wrapper.result : stdout
             // Some CLI versions exit 0 with is_error + the real message
             // (auth expiry, usage limit, …) in result — render those as an
-            // error bubble, not as a coach reply.
+            // error bubble, not as a coach reply. `result` can be empty on
+            // some error subtypes; fall back to the subtype, never the raw
+            // wrapper JSON.
             if (wrapper?.is_error) {
-              const hint = failureHint(String(text))
-              console.error(`[chat] claude reported is_error: ${String(text).slice(0, 800)}`)
-              send('error', { message: hint ?? `coach failed: ${String(text).trim().slice(0, 240) || 'no detail from claude'}` })
+              const errText = typeof wrapper.result === 'string' ? wrapper.result.trim() : ''
+              const hint = failureHint(errText || stdout)
+              console.error(`[chat] claude reported is_error: ${(errText || stdout).slice(0, 800)}`)
+              send('error', { message: hint ?? `coach failed: ${errText.slice(0, 800) || (typeof wrapper.subtype === 'string' ? wrapper.subtype : '') || 'no detail from claude'}` })
               send('done', { ok: false })
               finish()
               return
