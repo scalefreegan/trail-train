@@ -38,8 +38,11 @@ const UNITS = String(arg("units", process.env.TRAIL_UNITS || "metric")) === "imp
 // phrasings, usage limits, API overload) so the resync panel says what to do
 // instead of dumping a raw exit code.
 const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in again|login expired|oauth token.{0,40}(expired|revoked|invalid)|authentication[_ ]?error|credentials?.{0,20}(expired|invalid|missing)|unauthorized|re-?authenticate/i;
-const LIMIT_ERROR_RE = /usage limit reached|limit will reset|out of (extra )?usage|rate.?limit(ed|_error)?|429/i;
-const OVERLOAD_ERROR_RE = /overloaded_error|overloaded|529|api.{0,20}(unavailable|internal server error)/i;
+// No bare status codes (429/529) here: on failure paths the classified text
+// includes the full stdout JSON wrapper, whose numeric fields (durations,
+// token counts) can contain them as substrings.
+const LIMIT_ERROR_RE = /usage limit reached|session limit|hit your .{0,20}limit|limit will reset|limit .{0,15}resets|out of (extra )?usage|rate.?limit(ed|_error)?|too many requests/i;
+const OVERLOAD_ERROR_RE = /overloaded_error|overloaded|api.{0,20}(unavailable|internal server error)/i;
 const AUTH_HINT = "Claude Code sign-in has expired — open a terminal, run `claude`, type `/login` and finish the browser sign-in, then resync.";
 function failureHint(text) {
   if (AUTH_ERROR_RE.test(text)) return AUTH_HINT;
