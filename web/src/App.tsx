@@ -18,6 +18,7 @@ import { SectionTag, Contours } from "./atoms";
 import { RacePlanner } from "./race/RacePlanner";
 import { ClimbComparison } from "./race/ClimbComparison";
 import { NutritionPlan } from "./race/NutritionPlan";
+import { ModelCheck } from "./race/ModelCheck";
 import { useCourse } from "./race/useRaceData";
 
 /* ================================================================== */
@@ -2150,6 +2151,7 @@ function AppBody() {
               <div key={`race-${key}`}>
                 <ClimbComparison />
                 <RacePlanner />
+                <ModelCheck />
               </div>
             ) : (
               <div key={`fuel-${key}`}>
