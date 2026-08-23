@@ -17,6 +17,7 @@ import CoachSettings from "./CoachSettings";
 import { SectionTag, Contours } from "./atoms";
 import { RacePlanner } from "./race/RacePlanner";
 import { ClimbComparison } from "./race/ClimbComparison";
+import { NutritionPlan } from "./race/NutritionPlan";
 import { useCourse } from "./race/useRaceData";
 
 /* ================================================================== */
@@ -107,7 +108,9 @@ function BarStat({ label, value, accent }: { label: string; value: string; accen
   );
 }
 
-type AppView = "training" | "race";
+type AppView = "training" | "race" | "nutrition";
+const APP_VIEWS: AppView[] = ["training", "race", "nutrition"];
+const isAppView = (v: string | null): v is AppView => v != null && (APP_VIEWS as string[]).includes(v);
 
 function CommandBar({ view, setView, railOpen, toggleRail }: {
   view: AppView; setView: (v: AppView) => void;
@@ -149,6 +152,7 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
         <div style={{ display: "flex", gap: 6 }}>
           <button className={"chip" + (view === "training" ? " active" : "")} onClick={() => setView("training")}>training</button>
           <button className={"chip" + (view === "race" ? " active" : "")} onClick={() => setView("race")}>race</button>
+          <button className={"chip" + (view === "nutrition" ? " active" : "")} onClick={() => setView("nutrition")}>fuel</button>
         </div>
 
         {/* mid stats */}
@@ -2107,9 +2111,12 @@ function SetupDrawer() {
 
 function AppBody() {
   const { key } = useRefresh();
-  const [view, setViewState] = useState<AppView>(() =>
-    (typeof localStorage !== "undefined" && (localStorage.getItem("view") as AppView)) || "training"
-  );
+  const [view, setViewState] = useState<AppView>(() => {
+    // validate rather than cast — a stale or hand-edited key would otherwise
+    // render an empty main column with no way back except clearing storage
+    const saved = typeof localStorage === "undefined" ? null : localStorage.getItem("view");
+    return isAppView(saved) ? saved : "training";
+  });
   const setView = (v: AppView) => {
     setViewState(v);
     try { localStorage.setItem("view", v); } catch { /* private mode — preference just won't persist */ }
@@ -2139,10 +2146,14 @@ function AppBody() {
                 <div key={`log-${key}`}><LogTable /></div>
                 <SetupDrawer />
               </>
-            ) : (
+            ) : view === "race" ? (
               <div key={`race-${key}`}>
                 <ClimbComparison />
                 <RacePlanner />
+              </div>
+            ) : (
+              <div key={`fuel-${key}`}>
+                <NutritionPlan />
               </div>
             )}
           </main>
