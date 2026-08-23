@@ -91,12 +91,31 @@ export function planCaffeine(
   const finishH = proj.finish_h.avg;
   const startH = raceStart.getHours() + raceStart.getMinutes() / 60;
 
-  // nightfall in elapsed race hours; a race starting after dark gets the
-  // first sunset of the FOLLOWING evening, not a negative hour
-  let duskH = parseHM(course.sun.sunset) - startH;
-  if (duskH < 0) duskH += 24;
   const setClock = parseHM(course.sun.sunset);
   const riseClock = parseHM(course.sun.sunrise);
+
+  // Nightfall in elapsed race hours. Taking the next sunset unconditionally
+  // skips a night the runner is ALREADY in: a 20:00 start would open its
+  // window 22.6 h in — the following evening — after ten hours of darkness
+  // with nothing. So when the gun goes off in the dark, the window opens
+  // immediately.
+  //
+  // Except when that darkness is a sliver. The real race starts at 06:00
+  // against a 06:15 sunrise: technically dark, but fifteen minutes of it, and
+  // opening there would dose the fresh opening miles instead of the night 12 h
+  // later. The test is therefore whether enough darkness REMAINS to be worth
+  // dosing into — one min-spacing interval — not merely whether it is dark.
+  const startsInDark = startH >= setClock || startH < riseClock;
+  const darkRemainingH = startsInDark
+    ? (startH >= setClock ? 24 - startH + riseClock : riseClock - startH)
+    : 0;
+  let duskH: number;
+  if (startsInDark && darkRemainingH >= cfg.min_spacing_h) {
+    duskH = 0;
+  } else {
+    duskH = setClock - startH;
+    if (duskH < 0) duskH += 24;
+  }
   // darkness recurs daily, so test clock-of-day rather than elapsed hours
   const isNight = (h: number) => {
     const clock = (((startH + h) % 24) + 24) % 24;
@@ -195,7 +214,9 @@ export function planCaffeine(
     let bestD = Infinity;
     for (const ev of events) {
       if (usedEvents.has(ev)) continue;
-      if (ev.h < 0 || ev.h > toH + tol) continue;
+      // never past toH: that is the tail_h buffer before the finish, and
+      // snapping "within tolerance" past it silently spends the margin
+      if (ev.h < 0 || ev.h > toH) continue;
       if (prev != null && ev.h - prev < cfg.min_spacing_h) continue;
       const d = Math.abs(ev.h - target);
       if (d > tol || d >= bestD) continue;
