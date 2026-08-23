@@ -42,12 +42,14 @@ const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in 
 // includes the full stdout JSON wrapper, whose numeric fields (durations,
 // token counts) can contain them as substrings.
 const LIMIT_ERROR_RE = /usage limit reached|session limit|hit your .{0,20}limit|limit will reset|limit .{0,15}resets|out of (extra )?usage|rate.?limit(ed|_error)?|too many requests/i;
-const OVERLOAD_ERROR_RE = /overloaded_error|overloaded|api.{0,20}(unavailable|internal server error)/i;
+// Bare "overloaded" is normal coaching vocabulary ("legs are overloaded") —
+// require the error-token or api-context form.
+const OVERLOAD_ERROR_RE = /overloaded_error|api.{0,20}(overloaded|unavailable|internal server error)/i;
 const AUTH_HINT = "Claude Code sign-in has expired — open a terminal, run `claude`, type `/login` and finish the browser sign-in, then resync.";
 function failureHint(text) {
   if (AUTH_ERROR_RE.test(text)) return AUTH_HINT;
   if (LIMIT_ERROR_RE.test(text)) {
-    const m = text.match(/limit reached\|(\d{9,13})/);
+    const m = text.match(/limit reached\|(\d{9,13})/i);
     const reset = m ? new Date(Number(m[1]) * (m[1].length <= 10 ? 1000 : 1)).toLocaleString() : null;
     return `Claude usage limit reached — not an auth problem. Wait for the limit to reset${reset ? ` (~${reset})` : ""} and resync.`;
   }
@@ -286,21 +288,31 @@ function runClaude({ prompt, systemPrompt, maxTurns, timeoutSec, cwd, allowedToo
         // stderr is often empty — the real message tends to land in the
         // stdout JSON wrapper's `result`, so surface whichever detail exists
         let resultText = "";
+        let wrapperSubtype = "";
+        // null = stdout wasn't a wrapper (unparseable, array, or no boolean
+        // is_error field) — only an explicit is_error:false counts as a
+        // confirmed valid readout
         let wrapperIsError = null;
         try {
           const w = JSON.parse(stdout);
-          if (w && typeof w === "object") {
-            wrapperIsError = w.is_error === true;
+          if (w && typeof w === "object" && !Array.isArray(w)) {
+            if (typeof w.is_error === "boolean") wrapperIsError = w.is_error;
             if (typeof w.result === "string") resultText = w.result.trim();
+            if (typeof w.subtype === "string") wrapperSubtype = w.subtype;
           }
         } catch { /* stdout wasn't the JSON wrapper */ }
-        // A parsed NON-error wrapper holds coaching prose, not an error
+        // A confirmed NON-error wrapper holds coaching prose, not an error
         // message — keep it away from the classifier ("overloaded",
         // "hit your … limit" are normal coach vocabulary) and out of the
-        // surfaced detail.
+        // surfaced detail. A confirmed error wrapper's result outranks
+        // stderr noise; its subtype outranks the raw wrapper JSON.
         const hint = failureHint(wrapperIsError === false ? stderr : `${stderr}\n${stdout}`);
         if (hint) return reject(new Error(hint));
-        const detail = stderr.trim() || (wrapperIsError === false ? "" : resultText || stdout.trim());
+        const detail = wrapperIsError === true
+          ? (resultText || wrapperSubtype || stderr.trim())
+          : wrapperIsError === false
+            ? stderr.trim()
+            : (stderr.trim() || stdout.trim());
         return reject(new Error(detail
           ? `claude exited ${code}: ${detail.slice(0, 800)}`
           : wrapperIsError === false
