@@ -128,12 +128,12 @@ export function planCaffeine(
     note = `no dosing window: the projected finish (${finishH.toFixed(1)} h) lands before nightfall plus the ${cfg.tail_h} h tail.`;
     n = 0;
   } else {
+    // Provisional trim so the even-spacing targets start out sane. It is NOT
+    // the final count and deliberately does not write `note`: the placement
+    // loop below can stop earlier still once snapping perturbs the spacing, so
+    // the note is derived from what actually got placed.
     const spacing = n > 1 ? (toH - fromH) / (n - 1) : Infinity;
-    if (spacing < cfg.min_spacing_h) {
-      const fits = Math.floor((toH - fromH) / cfg.min_spacing_h) + 1;
-      note = `window fits ${fits} of ${n} gels at ${cfg.min_spacing_h} h spacing — carrying ${fits}.`;
-      n = fits;
-    }
+    if (spacing < cfg.min_spacing_h) n = Math.floor((toH - fromH) / cfg.min_spacing_h) + 1;
   }
 
   // ---- station events available to snap to ----
@@ -174,7 +174,18 @@ export function planCaffeine(
   for (let i = 0; i < n; i++) {
     const prev = placed.length ? placed[placed.length - 1].h : null;
     const left = n - 1 - i; // doses after this one
-    const target = prev == null ? fromH : (left > 0 ? prev + (toH - prev) / (left + 1) : toH);
+    let target = prev == null ? fromH : (left > 0 ? prev + (toH - prev) / (left + 1) : toH);
+    // The up-front trim only guarantees min spacing for the UNPERTURBED plan.
+    // Once a dose snaps later than its target the remaining window shrinks, so
+    // the re-derived even spacing can fall under the floor — and an unsnapped
+    // dose is placed at that target with no further check. Clamp it here, and
+    // stop placing when the floor no longer fits: fewer, correctly spaced doses
+    // beat a schedule that quietly breaks the interval the config asked for.
+    if (prev != null) {
+      const floor = prev + cfg.min_spacing_h;
+      if (floor > toH + 1e-9) break;
+      if (target < floor) target = floor;
+    }
     const spacing = prev == null ? (n > 1 ? (toH - fromH) / (n - 1) : 1) : target - prev;
     // snap only when a station sits close AND snapping keeps the gap to the
     // previous dose legal — packing two gels 40 min apart is worse than an
@@ -198,6 +209,11 @@ export function planCaffeine(
     }
   }
   placed.sort((a, b) => a.h - b.h);
+  // Report what is actually carried, never the pre-placement estimate — a note
+  // promising more gels than the schedule contains is worse than no note.
+  if (cfg.gels > 0 && placed.length < cfg.gels) {
+    note = `window fits ${placed.length} of ${cfg.gels} gel${cfg.gels === 1 ? "" : "s"} at ${cfg.min_spacing_h} h spacing — carrying ${placed.length}.`;
+  }
 
   // ---- attach each dose to its carrying leg and supplying bag ----
   // Legs do not tile the clock — between a leg's arriveH and the next leg's

@@ -11,13 +11,18 @@ import type { Course } from "./types";
 /*  The projection + fuel plan are consumed by more than one view (the */
 /*  planner table and the nutrition page), and both must agree to the  */
 /*  minute — a leg table that disagrees with the caffeine schedule is  */
-/*  worse than either alone. So the settings, the projectRace call and */
-/*  the planFuel call live HERE, once, rather than being copied into   */
-/*  each view where they would drift a knob at a time.                */
+/*  worse than either alone. So the projectRace call, the planFuel     */
+/*  call and the settings that feed them are DEFINED here once, rather */
+/*  than copied into each view where they would drift a knob at a time.*/
 /*                                                                    */
-/*  Settings persist in localStorage under the same `race.*` keys the  */
-/*  planner has always used, so every view reads one set of sliders    */
-/*  and a change in the planner is immediately reflected elsewhere.    */
+/*  What is shared is the DEFINITION and the `race.*` localStorage     */
+/*  keys — not a single React state instance. Each caller gets its own */
+/*  useState-backed copy, and there is no storage-event listener, so   */
+/*  two views mounted at the same time would not see each other's      */
+/*  setter calls until remount. That is unreachable today: App.tsx     */
+/*  renders the views through a mutually-exclusive switch, so only one */
+/*  is ever mounted. A layout that shows both at once would need this  */
+/*  lifted to context first.                                           */
 /* ------------------------------------------------------------------ */
 
 export function usePersistedNumber(key: string, initial: number) {

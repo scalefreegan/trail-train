@@ -119,7 +119,12 @@ function CaffeineChart({ caf, raceStart, finishH, heat, night, kg }: {
     .map((p, i) => `${i ? "L" : "M"}${px(p.h).toFixed(1)} ${py(p.mg).toFixed(1)}`)
     .join(" ");
 
-  if (width < 40) return <div ref={ref} style={{ height: CH.h }} />;
+  // Guard the PLOT area, not the container. At any width in [40, 60] the
+  // margins alone consume everything, plotW is 0, every point maps to the same
+  // x, and onMove's divide-by-plotW yields NaN — which passes the range check
+  // below (NaN comparisons are false both ways) and indexes the curve with NaN.
+  // Require enough room for the margins plus a usable plot.
+  if (width < CH.left + CH.right + 40) return <div ref={ref} style={{ height: CH.h }} />;
 
   const gridStep = yMax > 600 ? 200 : 100;
   const ticks: number[] = [];
@@ -128,10 +133,15 @@ function CaffeineChart({ caf, raceStart, finishH, heat, night, kg }: {
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     const h = x0 + ((e.clientX - r.left) / r.width * width - CH.left) / plotW * (x1 - x0);
-    if (h < x0 || h > x1) { setHover(null); return; }
+    // !(in range) rather than (out of range): a NaN h fails BOTH `<` and `>`,
+    // so the positive form would let it through into the index arithmetic
+    if (!(h >= x0 && h <= x1)) { setHover(null); return; }
     // nearest sample rather than re-integrating the dose list per mousemove
-    const i = Math.min(caf.curve.length - 1, Math.max(0, Math.round((h - x0) / (caf.curve[1].h - caf.curve[0].h))));
+    const step = caf.curve.length > 1 ? caf.curve[1].h - caf.curve[0].h : 0;
+    if (!(step > 0)) return;
+    const i = Math.min(caf.curve.length - 1, Math.max(0, Math.round((h - x0) / step)));
     const p = caf.curve[i];
+    if (!p) return;
     setHover({ h: p.h, mg: p.mg, x: px(p.h), y: py(p.mg) });
   };
 
@@ -614,8 +624,11 @@ export function NutritionPlan() {
             body: `Gut absorption degrades over a long race and your ability to hold a plan degrades faster. The taper is realism, not surrender — a paper target of ${nutrition.phases[0].carb_g_hr} g/hr at hour 28 just becomes uneaten gels in a pocket. The ${nutrition.carb_cap_over_h} h cap exists for the same reason: nobody holds target through a four-hour climb.`,
           }}
         >
+          {/* index in the key: normalizeNutrition sorts phases but never dedupes
+              them, so a hand-edited nutrition.json with two phases sharing an
+              until_h would collide on until_h alone */}
           {nutrition.phases.map((p, i) => (
-            <Li key={p.until_h}>
+            <Li key={`${p.until_h}-${i}`}>
               <N>{p.carb_g_hr} g/hr</N> {i === 0 ? "to" : "→"} hour {p.until_h}
               <span style={{ color: "var(--mist-mute)" }}> · {p.supplement}</span>
             </Li>

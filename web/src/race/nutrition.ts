@@ -191,6 +191,15 @@ export function normalizeNutrition(d: unknown): NutritionConfig | null {
   // gels/cups are counts — a fractional 2.5 would render as "2.5 gels"
   caffeine.gels = Math.min(30, Math.round(caffeine.gels));
   caffeine.cola_cups = Math.min(60, Math.round(caffeine.cola_cups));
+  // pre_race_before_h sets where the body-load curve STARTS, and that curve is
+  // sampled at a fixed step inside the render path. Left unbounded, a typo of
+  // 100000 for 1 turns a few hundred samples into millions and freezes the tab
+  // synchronously — no ErrorBoundary catches a loop that never throws. Same
+  // reasoning as the spare_flasks cap below.
+  caffeine.pre_race_before_h = Math.min(24, caffeine.pre_race_before_h);
+  // a half-life at or near zero makes the decay term collapse and the curve
+  // meaningless; keep it in a physiologically sane band
+  caffeine.half_life_h = Math.min(24, Math.max(0.5, caffeine.half_life_h));
   // an inverted band would paint the "no added benefit" line below the
   // threshold line and read as though the plan were always over the ceiling
   if (caffeine.band_hi_mg_kg <= caffeine.band_lo_mg_kg) {
