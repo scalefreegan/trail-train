@@ -218,6 +218,27 @@ export function computeFacts(strava, oura, state) {
   const sleep_total_s = sumNum(sleepNights.map((d) => d.total_sleep_s));
   const sleep_d7_h = sleep_total_s / 3600;
   const sleep_debt_h = sleepNights.length ? sleepNights.length * 8 - sleep_d7_h : null;
+  // Per-night series. The d7/d28 aggregates above answer "is the trend bad",
+  // but not "which nights, and were any of them missing" — and an agent asked
+  // to reason about sleep would otherwise open oura.json, which is ~5k lines
+  // and costs three Read calls out of a headless turn budget. One compact row
+  // per night for three weeks is a few hundred bytes and removes the reason to
+  // open the raw snapshot at all. Nights with NO record are deliberately
+  // absent rather than zero-filled: sleep_d7_h is a total over recorded nights
+  // only, so a reader has to be able to see which nights are missing to
+  // interpret it (an un-synced night is not a sleepless one).
+  const nights = ouraDays
+    .filter((d) => within(d.day, 21, now))
+    .sort((a, b) => (a.day < b.day ? 1 : -1))
+    .map((d) => ({
+      day: d.day,
+      sleep_h: typeof d.total_sleep_s === "number" ? +(d.total_sleep_s / 3600).toFixed(2) : null,
+      sleep_score: d.sleep_score ?? null,
+      readiness: d.readiness_score ?? null,
+      hrv: d.avg_hrv ?? null,
+      rhr: d.lowest_hr ?? null,
+    }));
+
   const recent_tags = ouraDays
     .filter((d) => within(d.day, 7, now))
     .flatMap((d) => (d.tags ?? []).map((t) => ({
@@ -310,6 +331,9 @@ export function computeFacts(strava, oura, state) {
       readiness_d7: readiness_d7 != null ? +readiness_d7.toFixed(0) : null,
       sleep_d7_h: +sleep_d7_h.toFixed(1),
       sleep_debt_h: sleep_debt_h != null ? +sleep_debt_h.toFixed(1) : null,
+      // nights with no Oura record are omitted, not zeroed — see above
+      nights_recorded_d7: sleepNights.length,
+      nights,
       recent_tags,
     } : null,
     recent_runs: acts.slice(0, 14).map((a) => ({
@@ -357,7 +381,16 @@ export async function loadFactsFromRoot(projectRoot) {
     profile,
     // same expiry filter on the embedded raw state, so the agent can't see
     // expired temporary items through this path either
-    state: { ...state, preferences: activeContext(state?.preferences ?? {}, isoDate(new Date())) },
+    // Identity only. Every substantive field of state.json is already broken
+    // out at the top level of this digest (race, block, plan_blocks,
+    // agent_notes, preferences), so embedding the whole blob here duplicated
+    // ~25 KB — a third of the file — into a digest whose entire purpose is to
+    // be readable in a single Read call. `agent_notes` alone was the full
+    // history against the ten recent ones at top level. Nothing consumes these
+    // contents: coach.mjs tests `facts.state` for truthiness and then reloads
+    // state fresh from disk on purpose (a snapshot minutes old would clobber a
+    // concurrent settings save), so the key stays present and truthy.
+    state: { version: state?.version ?? null, last_updated: state?.last_updated ?? null },
     ...computeFacts(strava, oura, state),
   };
   if (cross) {

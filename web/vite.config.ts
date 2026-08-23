@@ -130,6 +130,29 @@ const failureHint = (text: string): string | null => {
   return null
 }
 
+/* Turn budget for the headless coach.
+   Measured against a two-large-snapshot question (sleep trend + weekend
+   calendar) on 2026-08-23: 11 turns / 134 s to a complete answer. The old
+   ceiling of 6 could not even finish paging the files, so every such question
+   died as `error_max_turns` with a null result. Read truncates at 2000 lines
+   and oura.json alone is ~5k, so one snapshot can cost 3 turns.
+   The timeout has to move with the ceiling — at 180 s that same successful run
+   used 74% of the watchdog, so raising turns alone just trades one failure
+   message for the other. Headroom over the measurement is deliberate: question
+   complexity varies and the retry below is a fallback, not a plan. */
+const CHAT_MAX_TURNS = 16
+const CHAT_TIMEOUT_MS = 300_000
+/* One retry when the budget is what failed. The agent is told to answer from
+   what it already read, so a blown budget degrades to a partial answer instead
+   of an error the athlete can do nothing with. Only ever once. */
+const MAX_TURNS_SUBTYPE = 'error_max_turns'
+/* A no-tools answer is one model turn, but it still has to be generated —
+   measured no-tool replies land around 20-30 s. Below this much remaining
+   budget the retry would be killed mid-sentence, so we skip it and report the
+   failure honestly instead of promising an answer we cannot deliver. */
+const RETRY_MIN_RUNWAY_MS = 60_000
+const RETRY_NUDGE = '\n\nIMPORTANT: a previous attempt at this exact question ran out of tool calls before answering. Do NOT open any files this time. Answer now, directly, from what you already know, and say plainly which data you could not consult.'
+
 const CHAT_SYSTEM = (
   factsPath: string,
   coachPath: string,
@@ -146,6 +169,28 @@ You have full read access to:
   - web/public/cross-train.json  (non-run Strava activities — rides, hikes, strength, … EXCLUDED from all load metrics, which count runs only; use qualitatively for fatigue/time-on-feet)
   - web/public/oura.json    (Oura snapshot — sleep, readiness, HRV, RHR, tags)
   - web/public/google-cal.json  (Google Calendar — past 7 + next 30 days of events, classified by training relevance)
+
+READING BUDGET — you are running headless with a hard turn limit, and if you spend it
+reading you will be cut off before you answer, which is worse for the athlete than a
+slightly less thorough reply. The facts file is a digest built for exactly this, and it
+ALREADY CONTAINS, in full, everything most questions need:
+  - recovery.nights — the last 21 nights individually (sleep hours, sleep score,
+    readiness, HRV, RHR), plus the d7/d28 aggregates and the tags. Nights with no Oura
+    record are OMITTED rather than zeroed, and recovery.nights_recorded_d7 says how many
+    of the last 7 actually have sleep data — read a weekly sleep total against that
+    count, not against 7.
+  - recent_runs — the last 14 runs with distance, vert, HR, pace and weather
+  - calendar — the fetched summary plus the next 14 days and anything notable
+  - block, load, pacing, plan_blocks, agent_notes, preferences, cross_training
+Answer from the digest alone whenever it is sufficient, which is most of the time.
+Open a raw snapshot ONLY for detail the digest genuinely lacks — a run older than the
+last 14, a night older than 21 days, a calendar event beyond the next fortnight.
+oura.json, strava.json and google-cal.json are each thousands of lines and take SEVERAL
+reads to page through; when you truly need one, read the slice you need with
+offset/limit rather than paging the whole file, and stop as soon as you can answer.
+state.json is already reflected in the digest fields above — do not open it. Never open
+a file "to check" something you already have. If you find yourself several reads in,
+write the answer with what you have and say which data you did not open.
 
 Use the calendar for schedule realism — if the athlete asks about a specific day's session,
 check that day's events first. Flag conflicts (travel, races, work blocks).
@@ -276,29 +321,42 @@ function chatApi(): Plugin {
         const sysPrompt = CHAT_SYSTEM(factsPath, coachPath, profile, chatUnits, hasPacing)
         send('start', { facts_path: factsPath })
 
-        const proc = spawn('claude', [
-          '-p', prompt,
-          '--output-format', 'json',
-          '--max-turns', '6',
-          '--allowedTools', 'Read',
-          '--append-system-prompt', sysPrompt,
-        // stdin must be ignored (as in scripts/coach.mjs) — the default pipe
-        // stays open forever, and the CLI stalls 3s in -p mode waiting on it,
-        // then emits a "no stdin data received" warning that pollutes stderr.
-        ], { cwd: projectRoot, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
-
         let stdout = ''
         let stderrLast = ''
+        // `proc` is reassigned by the max-turns retry below, so kills and the
+        // watchdog must target whichever attempt is currently running.
+        let proc: ReturnType<typeof spawn> | undefined
+        let retried = false
+        // start of the whole exchange, not of the current attempt — the
+        // watchdog spans both, so the retry decision measures against this
+        const startedAt = Date.now()
         const hb = setInterval(() => send('heartbeat', { t: Date.now() }), 4000)
 
-        proc.stdout.on('data', (d) => { stdout += d })
-        proc.stderr.on('data', (d) => {
-          // Keep the last line that isn't a warning, so a fatal error (auth
-          // expiry, bad flag) isn't masked by a later/earlier warning line.
-          const lines = d.toString().split('\n').filter((l: string) => l.trim())
-          const meaningful = lines.filter((l: string) => !/^\s*Warning:/i.test(l))
-          stderrLast = meaningful.slice(-1)[0] || stderrLast || lines.slice(-1)[0] || ''
-        })
+        const startAttempt = (promptText: string, maxTurns: number) => {
+          stdout = ''
+          stderrLast = ''
+          proc = spawn('claude', [
+            '-p', promptText,
+            '--output-format', 'json',
+            '--max-turns', String(maxTurns),
+            '--allowedTools', 'Read',
+            '--append-system-prompt', sysPrompt,
+          // stdin must be ignored (as in scripts/coach.mjs) — the default pipe
+          // stays open forever, and the CLI stalls 3s in -p mode waiting on it,
+          // then emits a "no stdin data received" warning that pollutes stderr.
+          ], { cwd: projectRoot, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+
+          proc.stdout!.on('data', (d) => { stdout += d })
+          proc.stderr!.on('data', (d) => {
+            // Keep the last line that isn't a warning, so a fatal error (auth
+            // expiry, bad flag) isn't masked by a later/earlier warning line.
+            const lines = d.toString().split('\n').filter((l: string) => l.trim())
+            const meaningful = lines.filter((l: string) => !/^\s*Warning:/i.test(l))
+            stderrLast = meaningful.slice(-1)[0] || stderrLast || lines.slice(-1)[0] || ''
+          })
+          proc.on('error', onProcError)
+          proc.on('close', onProcClose)
+        }
 
         let cleanedUp = false
         const cleanup = () => {
@@ -314,12 +372,15 @@ function chatApi(): Plugin {
         // Kill the whole process group (claude spawns children); it may
         // already be dead, in which case the kill throws and that's fine.
         const killProc = () => {
-          try { process.kill(-proc.pid!, 'SIGKILL') } catch { /* already exited */ }
+          const pid = proc?.pid
+          if (pid == null) return // never started, or already reaped
+          try { process.kill(-pid, 'SIGKILL') } catch { /* already exited */ }
         }
 
         // Watchdog: a hung claude process would otherwise hold the SSE
-        // stream (and the temp facts file) open forever.
-        const CHAT_TIMEOUT_MS = 180_000
+        // stream (and the temp facts file) open forever. It covers the WHOLE
+        // exchange rather than restarting per attempt, so the retry runs
+        // inside the remaining budget instead of doubling the worst case.
         const watchdog = setTimeout(() => {
           console.warn(`[chat] claude timed out after ${CHAT_TIMEOUT_MS / 1000}s — killing`)
           send('error', { message: `coach timed out after ${CHAT_TIMEOUT_MS / 1000}s — try again` })
@@ -334,7 +395,7 @@ function chatApi(): Plugin {
           cleanup()
         })
 
-        proc.on('error', (err) => {
+        function onProcError(err: Error) {
           const msg = (err as NodeJS.ErrnoException).code === 'ENOENT'
             ? '`claude` CLI not found in PATH — install Claude Code (https://claude.com/claude-code) and restart the dev server'
             : `failed to start claude: ${err.message}`
@@ -343,9 +404,42 @@ function chatApi(): Plugin {
           send('done', { ok: false })
           cleanup()
           res.end()
-        })
+        }
 
-        proc.on('close', async (code) => {
+        /* Running out of tool calls is the one failure the athlete can do
+           nothing about and we can. Returns true when a retry was started, in
+           which case the caller must return immediately and leave the stream
+           open — the watchdog and heartbeat keep running across attempts.
+
+           Called from BOTH close paths. The CLI reports this failure with a
+           nonzero exit on the version measured here, but the pre-existing
+           comment further down records that some versions exit 0 with an
+           is_error wrapper instead, so gating the retry on the exit code would
+           leave the whole feature inert on those builds.
+
+           Gated on the wrapper's own structured subtype — never on message
+           text, which is the athlete's coaching prose (the PR #17 trap). */
+        function maybeRetryMaxTurns(isError: boolean | null, subtype: string): boolean {
+          if (retried || isError !== true || subtype !== MAX_TURNS_SUBTYPE) return false
+          // The watchdog covers the whole exchange rather than restarting per
+          // attempt, so a first attempt that burns most of the budget can leave
+          // the retry no room to finish. Promising "answering from what was
+          // read" and then killing it mid-sentence is worse than saying plainly
+          // that we ran out — so only retry when the remaining budget can
+          // actually carry a no-tools answer.
+          const leftMs = CHAT_TIMEOUT_MS - (Date.now() - startedAt)
+          if (leftMs < RETRY_MIN_RUNWAY_MS) {
+            console.warn(`[chat] hit the turn limit but only ${Math.round(leftMs / 1000)}s left — not retrying`)
+            return false
+          }
+          retried = true
+          console.warn('[chat] hit the turn limit — retrying once, no-tools')
+          send('notice', { message: 'took too long gathering data — answering from what was read' })
+          startAttempt(prompt + RETRY_NUDGE, 3)
+          return true
+        }
+
+        async function onProcClose(code: number | null) {
           if (res.writableEnded) { cleanup(); return }
           // cleanup() clears the watchdog, so it must NOT run before the
           // awaits below — a stalled fs op would otherwise hold the SSE
@@ -370,6 +464,7 @@ function chatApi(): Plugin {
               }
             } catch { /* stdout wasn't the JSON wrapper */ }
             console.error(`[chat] claude exited ${code}\nstderr: ${stderrLast.slice(0, 800)}\nstdout: ${stdout.slice(0, 800)}`)
+            if (maybeRetryMaxTurns(wrapperIsError, wrapperSubtype)) return
             // A confirmed NON-error wrapper holds coaching prose, not an
             // error message — keep it away from the classifier ("overloaded",
             // "hit your … limit" are normal coach vocabulary) and out of the
@@ -384,11 +479,20 @@ function chatApi(): Plugin {
                 : (stderrTrim || stdout.trim())
             send('error', {
               message: hint
-                ?? (detail
-                  ? `claude exited ${code}: ${detail.slice(0, 800)}`
-                  : wrapperIsError === false
-                    ? `claude exited ${code} after producing a normal reply (likely a teardown error) — try again.`
-                    : `claude exited ${code} with no error output — this is most often an expired sign-in: ${AUTH_FIX}`),
+                // the raw subtype is CLI vocabulary, not something to hand a
+                // reader — say what happened and what actually helps. `retried`
+                // distinguishes "tried twice and still ran out" from "ran out
+                // with too little time left to try again", which are different
+                // situations and would be a lie to describe identically.
+                ?? (wrapperSubtype === MAX_TURNS_SUBTYPE
+                  ? (retried
+                    ? 'The coach ran out of tool calls before it could answer, twice. Try a narrower question, or one that leans on the readout rather than the raw snapshots.'
+                    : 'The coach ran out of tool calls before it could answer, with too little time left to try again. Try a narrower question, or one that leans on the readout rather than the raw snapshots.')
+                  : detail
+                    ? `claude exited ${code}: ${detail.slice(0, 800)}`
+                    : wrapperIsError === false
+                      ? `claude exited ${code} after producing a normal reply (likely a teardown error) — try again.`
+                      : `claude exited ${code} with no error output — this is most often an expired sign-in: ${AUTH_FIX}`),
             })
             send('done', { ok: false })
             finish()
@@ -404,6 +508,9 @@ function chatApi(): Plugin {
             // some error subtypes; fall back to the subtype, never the raw
             // wrapper JSON.
             if (wrapper?.is_error) {
+              // same max-turns retry as the nonzero-exit path — this branch
+              // exists precisely because some CLI versions exit 0 on failure
+              if (maybeRetryMaxTurns(true, typeof wrapper.subtype === 'string' ? wrapper.subtype : '')) return
               const errText = typeof wrapper.result === 'string' ? wrapper.result.trim() : ''
               const hint = failureHint(errText || stdout)
               console.error(`[chat] claude reported is_error: ${(errText || stdout).slice(0, 800)}`)
@@ -515,7 +622,9 @@ function chatApi(): Plugin {
             send('done', { ok: false })
           }
           finish()
-        })
+        }
+
+        startAttempt(prompt, CHAT_MAX_TURNS)
       })
     },
   }

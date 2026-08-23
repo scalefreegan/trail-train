@@ -1531,10 +1531,17 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
       const decoder = new TextDecoder();
       let buf = "";
 
+      // A `notice` means the server is still working but something changed —
+      // today only the max-turns retry. It rides along in the status line
+      // instead of arriving as a message, so the retry isn't a silent stall.
+      let noticeLine = "";
       const handleEvent = (event: string, payload: { content?: string; meta?: ChatMessage["meta"]; message?: string }) => {
         if (event === "heartbeat") {
           const sec = Math.floor((Date.now() - t0) / 1000);
-          setStatusLine(`thinking… ${sec}s`);
+          setStatusLine(`${noticeLine || "thinking…"} ${sec}s`);
+        } else if (event === "notice") {
+          noticeLine = payload.message ?? "";
+          setStatusLine(`${noticeLine} ${Math.floor((Date.now() - t0) / 1000)}s`);
         } else if (event === "message") {
           setMessages((prev) => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: payload.content ?? "", meta: payload.meta }]);
         } else if (event === "error") {
