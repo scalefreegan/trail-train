@@ -24,8 +24,16 @@ import { arg, writeJsonAtomic } from "./lib.mjs";
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const OUT_PATH = path.join(ROOT, "web", "public", "coach.json");
 
-const MAX_TURNS = Number(arg("max-turns", 8));
-const TIMEOUT   = Number(arg("timeout",  240));
+// Turn budget. The agent runs Read-only against snapshots far larger than one
+// Read returns (oura.json ~5k lines, strava.json ~4.5k, google-cal.json ~2.2k;
+// Read truncates at 2000), so a single file can cost three turns and a budget
+// below ~12 gets spent paging before the readout is written — the CLI then
+// exits nonzero with subtype `error_max_turns` and no result at all.
+// Measured 2026-08-23 on the chat path against the same snapshots: 11 turns
+// and 134 s for a two-file question. The timeout has to scale with the turns
+// or one failure mode simply replaces the other.
+const MAX_TURNS = Number(arg("max-turns", 16));
+const TIMEOUT   = Number(arg("timeout",  300));
 // Narrative units for the readout — "metric" (default) or "imperial".
 // Passed by the dashboard's resync endpoint from the live UI toggle, or
 // set manually: `node scripts/coach.mjs --units imperial`.
@@ -358,7 +366,11 @@ async function main() {
   ${factsPath}
 
 You may also Read web/public/strava.json and web/public/oura.json for raw detail if a number
-in the facts file needs verifying or you want to look at specific recent sessions.
+in the facts file needs verifying or you want to look at specific recent sessions. Do so
+sparingly: you have a hard turn limit, those snapshots run to thousands of lines and take
+several reads to page through, and being cut off before you write the readout is worse
+than a readout built from the facts digest alone. Read the slice you need with
+offset/limit rather than the whole file, and stop as soon as you can write.
 
 Produce the JSON coach readout per the schema in the system prompt. Be specific about the
 next 14 days for ${facts.race.name} (${facts.race.days_until} days out). Anchor every claim
