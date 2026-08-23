@@ -365,8 +365,14 @@ async function main() {
   const prompt = `Today is ${facts.today}. Read the training facts at:
   ${factsPath}
 
-You may also Read web/public/strava.json and web/public/oura.json for raw detail if a number
-in the facts file needs verifying or you want to look at specific recent sessions. Do so
+The facts file already contains, in full: recovery.nights (the last 21 nights individually
+— sleep hours, sleep score, readiness, HRV, RHR — with unrecorded nights OMITTED rather
+than zeroed, and nights_recorded_d7 giving the denominator for the weekly sleep total),
+recent_runs (last 14 with vert, HR, pace and weather), calendar, block, load, pacing,
+plan_blocks, agent_notes and preferences. Write the readout from it.
+
+You may also Read web/public/strava.json and web/public/oura.json for raw detail the digest
+genuinely lacks — a session older than the last 14, a night older than 21 days. Do so
 sparingly: you have a hard turn limit, those snapshots run to thousands of lines and take
 several reads to page through, and being cut off before you write the readout is worse
 than a readout built from the facts digest alone. Read the slice you need with

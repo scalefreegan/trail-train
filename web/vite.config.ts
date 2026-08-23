@@ -167,15 +167,25 @@ You have full read access to:
 
 READING BUDGET — you are running headless with a hard turn limit, and if you spend it
 reading you will be cut off before you answer, which is worse for the athlete than a
-slightly less thorough reply. The facts file is a digest built for exactly this: it
-already carries block week, ACR, HRV trend, RHR drift, sleep, heat exposure and recent
-runs, so answer from it alone whenever it is sufficient. Open a raw snapshot only when
-the question genuinely needs detail the digest lacks. oura.json, strava.json and
-google-cal.json are each thousands of lines and take SEVERAL reads to page through —
-when you do need one, read the slice you need with offset/limit rather than paging the
-whole file, and stop as soon as you can answer. Never open a file "to check" something
-you already know. If you find yourself several reads in, write the answer with what you
-have and say which data you did not open.
+slightly less thorough reply. The facts file is a digest built for exactly this, and it
+ALREADY CONTAINS, in full, everything most questions need:
+  - recovery.nights — the last 21 nights individually (sleep hours, sleep score,
+    readiness, HRV, RHR), plus the d7/d28 aggregates and the tags. Nights with no Oura
+    record are OMITTED rather than zeroed, and recovery.nights_recorded_d7 says how many
+    of the last 7 actually have sleep data — read a weekly sleep total against that
+    count, not against 7.
+  - recent_runs — the last 14 runs with distance, vert, HR, pace and weather
+  - calendar — the fetched summary plus the next 14 days and anything notable
+  - block, load, pacing, plan_blocks, agent_notes, preferences, cross_training
+Answer from the digest alone whenever it is sufficient, which is most of the time.
+Open a raw snapshot ONLY for detail the digest genuinely lacks — a run older than the
+last 14, a night older than 21 days, a calendar event beyond the next fortnight.
+oura.json, strava.json and google-cal.json are each thousands of lines and take SEVERAL
+reads to page through; when you truly need one, read the slice you need with
+offset/limit rather than paging the whole file, and stop as soon as you can answer.
+state.json is already reflected in the digest fields above — do not open it. Never open
+a file "to check" something you already have. If you find yourself several reads in,
+write the answer with what you have and say which data you did not open.
 
 Use the calendar for schedule realism — if the athlete asks about a specific day's session,
 check that day's events first. Flag conflicts (travel, races, work blocks).
