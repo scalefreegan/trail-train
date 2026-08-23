@@ -1,16 +1,17 @@
 import { useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
-import { useUnits, useStrava, useBlockConfig, useMeasuredWidth, relativeAgo } from "../data";
+import { useUnits, useBlockConfig, useMeasuredWidth, relativeAgo } from "../data";
 import { SectionTag, Contours } from "../atoms";
-import { useCourse, useCrewBase, usePaceGrade } from "./useRaceData";
+import { useCrewBase } from "./useRaceData";
+import { useRacePlan } from "./useRacePlan";
 import { gmapsDirectionsUrl } from "./links";
 import { CrewSheet } from "./CrewSheet";
 import { RunnerCard } from "./RunnerCard";
 import { FuelCard } from "./FuelCard";
 import { DropBagCard } from "./DropBagCard";
-import { fmtCarry, planFuel, useNutrition } from "./nutrition";
+import { fmtCarry } from "./nutrition";
 import {
-  fitPacing, projectRace, nightIntervals,
+  projectRace, nightIntervals,
   fmtRaceClock, fmtElapsed,
   RESTRAINT_FULL_MI, RESTRAINT_END_MI, RESTRAINT_FATIGUE_PAYOFF,
   type StationProjection,
@@ -29,41 +30,6 @@ const fmtPaceS = (s: number) => {
 /*  profile, aid stations, night, cutoffs, and arrival windows         */
 /*  projected from the athlete's own pacing fit.                       */
 /* ------------------------------------------------------------------ */
-
-function usePersistedStops(key: string) {
-  const [v, setV] = useState<Record<string, number>>(() => {
-    if (typeof localStorage === "undefined") return {};
-    try { return JSON.parse(localStorage.getItem(key) || "{}"); } catch { return {}; }
-  });
-  const set = (name: string, min: number | null) => {
-    setV((prev) => {
-      const next = { ...prev };
-      if (min == null || !Number.isFinite(min)) delete next[name];
-      else next[name] = Math.max(0, min);
-      try { localStorage.setItem(key, JSON.stringify(next)); } catch { /* private mode */ }
-      return next;
-    });
-  };
-  const clear = () => {
-    setV({});
-    try { localStorage.removeItem(key); } catch { /* private mode */ }
-  };
-  return [v, set, clear] as const;
-}
-
-function usePersistedNumber(key: string, initial: number) {
-  const [v, setV] = useState<number>(() => {
-    if (typeof localStorage === "undefined") return initial;
-    const raw = localStorage.getItem(key);
-    const n = raw == null ? NaN : Number(raw);
-    return Number.isFinite(n) ? n : initial;
-  });
-  const set = (n: number) => {
-    setV(n);
-    try { localStorage.setItem(key, String(n)); } catch { /* private mode */ }
-  };
-  return [v, set] as const;
-}
 
 function fmtDrive(min: number): string {
   return min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, "0")}m`;
@@ -444,42 +410,19 @@ function ProfileChart({ course, proj }: {
 export function RacePlanner() {
   const u = useUnits();
   const { race } = useBlockConfig();
-  const { activities } = useStrava();
-  const { course, missing, error } = useCourse();
   const { crewBase } = useCrewBase();
-  const [fatigue, setFatigue] = usePersistedNumber("race.fatigue_pct_v2", 5);
-  // training runs are stronger efforts than race-sustainable pace — slow every
-  // projected pace by this much (athlete-requested honesty correction)
-  const [calibration, setCalibration] = usePersistedNumber("race.calibration_pct", 6);
-  // deliberate hold-back through mile 50 (taper to 60); restrained miles also
-  // age the fatigue clock less — bank energy for the second 50
-  const [restraint, setRestraint] = usePersistedNumber("race.restraint_pct", 8);
-  const [goalH, setGoalH] = usePersistedNumber("race.goal_h", 32);
-  const [aidStopMin, setAidStopMin] = usePersistedNumber("race.aid_stop_min", 5);
-  const [crewStopMin, setCrewStopMin] = usePersistedNumber("race.crew_stop_min", 10);
-  const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops("race.stop_overrides");
+  // projection + fuel wiring is shared with the nutrition view — see
+  // useRacePlan.ts. Both views must agree to the minute, so there is exactly
+  // one projectRace/planFuel call and one set of persisted sliders.
+  const { course, missing, error, fit, proj, nutrition, fuelPlan, settings, set,
+    paceGrade, paceGradeError, nutritionError } = useRacePlan();
+  const { fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides } = settings;
+  const { fatigue: setFatigue, calibration: setCalibration, restraint: setRestraint,
+    goalH: setGoalH, aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
+    stopOverride: setStopOverride, clearStopOverrides } = set;
   // one printable document at a time — the print-isolation body classes
   // (crew-printing / card-printing) must never coexist
   const [openDoc, setOpenDoc] = useState<null | "crew" | "card" | "fuel" | "drops">(null);
-
-  const { paceGrade, error: paceGradeError } = usePaceGrade();
-  const fit = useMemo(() => fitPacing(activities), [activities]);
-  const proj = useMemo(
-    () => (course && fit ? projectRace(course, fit, {
-      // a cleared/zeroed goal field (Number("")=0) means "no goal" — coerce to
-      // null so the header ("—") and the table agree instead of collapsing ETAs
-      fatiguePctPer10mi: fatigue, calibrationPct: calibration, restraintPct: restraint,
-      gradeCurve: paceGrade,
-      goalH: goalH > 0 ? goalH : null, aidStopMin, crewStopMin, stopOverridesMin: stopOverrides,
-    }) : null),
-    [course, fit, paceGrade, fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides],
-  );
-
-  const { nutrition, error: nutritionError } = useNutrition();
-  const fuelPlan = useMemo(
-    () => (course && proj ? planFuel(proj, course, race.date, nutrition) : null),
-    [course, proj, race.date, nutrition],
-  );
 
   if (missing || !course) {
     return (
