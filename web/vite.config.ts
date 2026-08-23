@@ -146,6 +146,11 @@ const CHAT_TIMEOUT_MS = 300_000
    what it already read, so a blown budget degrades to a partial answer instead
    of an error the athlete can do nothing with. Only ever once. */
 const MAX_TURNS_SUBTYPE = 'error_max_turns'
+/* A no-tools answer is one model turn, but it still has to be generated —
+   measured no-tool replies land around 20-30 s. Below this much remaining
+   budget the retry would be killed mid-sentence, so we skip it and report the
+   failure honestly instead of promising an answer we cannot deliver. */
+const RETRY_MIN_RUNWAY_MS = 60_000
 const RETRY_NUDGE = '\n\nIMPORTANT: a previous attempt at this exact question ran out of tool calls before answering. Do NOT open any files this time. Answer now, directly, from what you already know, and say plainly which data you could not consult.'
 
 const CHAT_SYSTEM = (
@@ -322,6 +327,9 @@ function chatApi(): Plugin {
         // watchdog must target whichever attempt is currently running.
         let proc: ReturnType<typeof spawn> | undefined
         let retried = false
+        // start of the whole exchange, not of the current attempt — the
+        // watchdog spans both, so the retry decision measures against this
+        const startedAt = Date.now()
         const hb = setInterval(() => send('heartbeat', { t: Date.now() }), 4000)
 
         const startAttempt = (promptText: string, maxTurns: number) => {
@@ -398,6 +406,39 @@ function chatApi(): Plugin {
           res.end()
         }
 
+        /* Running out of tool calls is the one failure the athlete can do
+           nothing about and we can. Returns true when a retry was started, in
+           which case the caller must return immediately and leave the stream
+           open — the watchdog and heartbeat keep running across attempts.
+
+           Called from BOTH close paths. The CLI reports this failure with a
+           nonzero exit on the version measured here, but the pre-existing
+           comment further down records that some versions exit 0 with an
+           is_error wrapper instead, so gating the retry on the exit code would
+           leave the whole feature inert on those builds.
+
+           Gated on the wrapper's own structured subtype — never on message
+           text, which is the athlete's coaching prose (the PR #17 trap). */
+        function maybeRetryMaxTurns(isError: boolean | null, subtype: string): boolean {
+          if (retried || isError !== true || subtype !== MAX_TURNS_SUBTYPE) return false
+          // The watchdog covers the whole exchange rather than restarting per
+          // attempt, so a first attempt that burns most of the budget can leave
+          // the retry no room to finish. Promising "answering from what was
+          // read" and then killing it mid-sentence is worse than saying plainly
+          // that we ran out — so only retry when the remaining budget can
+          // actually carry a no-tools answer.
+          const leftMs = CHAT_TIMEOUT_MS - (Date.now() - startedAt)
+          if (leftMs < RETRY_MIN_RUNWAY_MS) {
+            console.warn(`[chat] hit the turn limit but only ${Math.round(leftMs / 1000)}s left — not retrying`)
+            return false
+          }
+          retried = true
+          console.warn('[chat] hit the turn limit — retrying once, no-tools')
+          send('notice', { message: 'took too long gathering data — answering from what was read' })
+          startAttempt(prompt + RETRY_NUDGE, 3)
+          return true
+        }
+
         async function onProcClose(code: number | null) {
           if (res.writableEnded) { cleanup(); return }
           // cleanup() clears the watchdog, so it must NOT run before the
@@ -423,17 +464,7 @@ function chatApi(): Plugin {
               }
             } catch { /* stdout wasn't the JSON wrapper */ }
             console.error(`[chat] claude exited ${code}\nstderr: ${stderrLast.slice(0, 800)}\nstdout: ${stdout.slice(0, 800)}`)
-            // Running out of tool calls is the one failure the athlete can do
-            // nothing about and we can: retry once telling the agent to answer
-            // from what it already read. Gated on the wrapper's own subtype —
-            // never on message text, which is the athlete's coaching prose.
-            if (!retried && wrapperIsError === true && wrapperSubtype === MAX_TURNS_SUBTYPE) {
-              retried = true
-              console.warn('[chat] hit the turn limit — retrying once, no-tools')
-              send('notice', { message: 'took too long gathering data — answering from what was read' })
-              startAttempt(prompt + RETRY_NUDGE, 3)
-              return // watchdog and heartbeat keep running across the retry
-            }
+            if (maybeRetryMaxTurns(wrapperIsError, wrapperSubtype)) return
             // A confirmed NON-error wrapper holds coaching prose, not an
             // error message — keep it away from the classifier ("overloaded",
             // "hit your … limit" are normal coach vocabulary) and out of the
@@ -449,9 +480,14 @@ function chatApi(): Plugin {
             send('error', {
               message: hint
                 // the raw subtype is CLI vocabulary, not something to hand a
-                // reader — say what happened and what actually helps
+                // reader — say what happened and what actually helps. `retried`
+                // distinguishes "tried twice and still ran out" from "ran out
+                // with too little time left to try again", which are different
+                // situations and would be a lie to describe identically.
                 ?? (wrapperSubtype === MAX_TURNS_SUBTYPE
-                  ? 'The coach ran out of tool calls before it could answer, twice. Try a narrower question, or one that leans on the readout rather than the raw snapshots.'
+                  ? (retried
+                    ? 'The coach ran out of tool calls before it could answer, twice. Try a narrower question, or one that leans on the readout rather than the raw snapshots.'
+                    : 'The coach ran out of tool calls before it could answer, with too little time left to try again. Try a narrower question, or one that leans on the readout rather than the raw snapshots.')
                   : detail
                     ? `claude exited ${code}: ${detail.slice(0, 800)}`
                     : wrapperIsError === false
@@ -472,6 +508,9 @@ function chatApi(): Plugin {
             // some error subtypes; fall back to the subtype, never the raw
             // wrapper JSON.
             if (wrapper?.is_error) {
+              // same max-turns retry as the nonzero-exit path — this branch
+              // exists precisely because some CLI versions exit 0 on failure
+              if (maybeRetryMaxTurns(true, typeof wrapper.subtype === 'string' ? wrapper.subtype : '')) return
               const errText = typeof wrapper.result === 'string' ? wrapper.result.trim() : ''
               const hint = failureHint(errText || stdout)
               console.error(`[chat] claude reported is_error: ${(errText || stdout).slice(0, 800)}`)

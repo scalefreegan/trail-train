@@ -234,7 +234,7 @@ For plan_blocks:
 - Start at the CURRENT week (current_week) and emit exactly 6 blocks (or fewer if fewer
   remain before race week 20). The current week's block reflects the plan for the REST of
   this week: keep what already happened fixed, plan the remaining days.
-- The base targets are in block.weekly_target. Prior agent decisions are in state.plan_blocks.
+- The base targets are in block.weekly_target. Prior agent decisions are in plan_blocks (top level).
   PREFER continuity — keep prior blocks if they still hold up; revise only what new data
   justifies. State your reason in summary or new_notes when you change something.
 - Reflect Mogollon-specific prep: heat block in the build-out, course rec near peak, taper
