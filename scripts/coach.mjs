@@ -34,11 +34,28 @@ const UNITS = String(arg("units", process.env.TRAIL_UNITS || "metric")) === "imp
 
 /* -------- Claude Code CLI subprocess (pattern from agent-trade) -------- */
 
-// Recognize headless-CLI auth failures (API-key and OAuth/subscription
-// phrasings) so the resync panel tells the athlete to sign in again instead
-// of dumping a raw exit code.
-const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in again|oauth token.{0,40}(expired|revoked|invalid)|authentication[_ ]?error|credentials?.{0,20}(expired|invalid|missing)|unauthorized/i;
+// Recognize known headless-CLI failures (API-key and OAuth/subscription auth
+// phrasings, usage limits, API overload) so the resync panel says what to do
+// instead of dumping a raw exit code.
+const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in again|login expired|oauth token.{0,40}(expired|revoked|invalid)|authentication[_ ]?error|credentials?.{0,20}(expired|invalid|missing)|unauthorized|re-?authenticate/i;
+// No bare status codes (429/529) here: on failure paths the classified text
+// includes the full stdout JSON wrapper, whose numeric fields (durations,
+// token counts) can contain them as substrings.
+const LIMIT_ERROR_RE = /usage limit reached|session limit|hit your .{0,20}limit|limit will reset|limit .{0,15}resets|out of (extra )?usage|rate.?limit(ed|_error)?|too many requests/i;
+// Bare "overloaded" is normal coaching vocabulary ("legs are overloaded") —
+// require the error-token or api-context form.
+const OVERLOAD_ERROR_RE = /overloaded_error|api.{0,20}(overloaded|unavailable|internal server error)/i;
 const AUTH_HINT = "Claude Code sign-in has expired — open a terminal, run `claude`, type `/login` and finish the browser sign-in, then resync.";
+function failureHint(text) {
+  if (AUTH_ERROR_RE.test(text)) return AUTH_HINT;
+  if (LIMIT_ERROR_RE.test(text)) {
+    const m = text.match(/limit reached\|(\d{9,13})/i);
+    const reset = m ? new Date(Number(m[1]) * (m[1].length <= 10 ? 1000 : 1)).toLocaleString() : null;
+    return `Claude usage limit reached — not an auth problem. Wait for the limit to reset${reset ? ` (~${reset})` : ""} and resync.`;
+  }
+  if (OVERLOAD_ERROR_RE.test(text)) return "Claude API is overloaded right now — transient; resync again in a minute.";
+  return null;
+}
 
 const SYSTEM_PROMPT_TEMPLATE = (profile, hasPacing) => `You are the coach inside Trail Almanac, a personal ultra-training dashboard.
 
@@ -268,10 +285,39 @@ function runClaude({ prompt, systemPrompt, maxTurns, timeoutSec, cwd, allowedToo
     proc.on("close", (code) => {
       clearTimeout(timer);
       if (code !== 0) {
-        if (AUTH_ERROR_RE.test(`${stderr}\n${stdout}`)) {
-          return reject(new Error(AUTH_HINT));
-        }
-        return reject(new Error(`claude exited ${code}\nstderr: ${stderr.slice(0, 800)}`));
+        // stderr is often empty — the real message tends to land in the
+        // stdout JSON wrapper's `result`, so surface whichever detail exists
+        let resultText = "";
+        let wrapperSubtype = "";
+        // null = stdout wasn't a wrapper (unparseable, array, or no boolean
+        // is_error field) — only an explicit is_error:false counts as a
+        // confirmed valid readout
+        let wrapperIsError = null;
+        try {
+          const w = JSON.parse(stdout);
+          if (w && typeof w === "object" && !Array.isArray(w)) {
+            if (typeof w.is_error === "boolean") wrapperIsError = w.is_error;
+            if (typeof w.result === "string") resultText = w.result.trim();
+            if (typeof w.subtype === "string") wrapperSubtype = w.subtype;
+          }
+        } catch { /* stdout wasn't the JSON wrapper */ }
+        // A confirmed NON-error wrapper holds coaching prose, not an error
+        // message — keep it away from the classifier ("overloaded",
+        // "hit your … limit" are normal coach vocabulary) and out of the
+        // surfaced detail. A confirmed error wrapper's result outranks
+        // stderr noise; its subtype outranks the raw wrapper JSON.
+        const hint = failureHint(wrapperIsError === false ? stderr : `${stderr}\n${stdout}`);
+        if (hint) return reject(new Error(hint));
+        const detail = wrapperIsError === true
+          ? (resultText || wrapperSubtype || stderr.trim())
+          : wrapperIsError === false
+            ? stderr.trim()
+            : (stderr.trim() || stdout.trim());
+        return reject(new Error(detail
+          ? `claude exited ${code}: ${detail.slice(0, 800)}`
+          : wrapperIsError === false
+            ? `claude exited ${code} after producing a normal readout (likely a teardown error) — re-run.`
+            : `claude exited ${code} with no error output — this is most often an expired sign-in: open a terminal, run \`claude\`, type \`/login\` and finish the browser sign-in, then resync.`));
       }
       resolve({ stdout, stderr });
     });
@@ -338,9 +384,13 @@ in real numbers from the data.`;
     throw new Error(`malformed wrapper from claude: ${stdout.slice(0, 240)}`);
   }
   const agentText = (wrapper && wrapper.result) ? wrapper.result : stdout;
-  // Some CLI versions exit 0 with is_error + the auth message in result
-  if (wrapper?.is_error && AUTH_ERROR_RE.test(String(agentText))) {
-    throw new Error(AUTH_HINT);
+  // Some CLI versions exit 0 with is_error + the real message (auth expiry,
+  // usage limit, …) in result. `result` can be empty on some error subtypes;
+  // fall back to the subtype, never the raw wrapper JSON.
+  if (wrapper?.is_error) {
+    const errText = typeof wrapper.result === "string" ? wrapper.result.trim() : "";
+    const hint = failureHint(errText || stdout);
+    throw new Error(hint ?? `coach failed: ${errText.slice(0, 800) || wrapper.subtype || "no detail from claude"}`);
   }
   const numTurns = wrapper?.num_turns ?? null;
   const cost = wrapper?.total_cost_usd ?? null;

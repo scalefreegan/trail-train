@@ -105,14 +105,30 @@ function refreshApi(): Plugin {
   }
 }
 
-// Recognize headless-CLI auth failures so the UI can say "sign in again"
-// instead of surfacing a cryptic exit code. Matches the CLI's known phrasings
-// (API-key auth and OAuth/subscription auth).
-const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in again|oauth token.{0,40}(expired|revoked|invalid)|authentication[_ ]?error|credentials?.{0,20}(expired|invalid|missing)|unauthorized/i
-const authHint = (text: string): string | null =>
-  AUTH_ERROR_RE.test(text)
-    ? 'Claude Code sign-in has expired — open a terminal, run `claude`, type `/login` and finish the browser sign-in, then retry here.'
-    : null
+// Recognize known headless-CLI failures so the UI can say what to actually do
+// ("sign in again", "wait for the limit to reset") instead of surfacing a
+// cryptic exit code. Matches the CLI's known phrasings (API-key auth and
+// OAuth/subscription auth, usage limits, API overload).
+const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in again|login expired|oauth token.{0,40}(expired|revoked|invalid)|authentication[_ ]?error|credentials?.{0,20}(expired|invalid|missing)|unauthorized|re-?authenticate/i
+// No bare status codes (429/529) here: on failure paths the classified text
+// includes the full stdout JSON wrapper, whose numeric fields (durations,
+// token counts) can contain them as substrings.
+const LIMIT_ERROR_RE = /usage limit reached|session limit|hit your .{0,20}limit|limit will reset|limit .{0,15}resets|out of (extra )?usage|rate.?limit(ed|_error)?|too many requests/i
+// Bare "overloaded" is normal coaching vocabulary ("legs are overloaded") —
+// require the error-token or api-context form.
+const OVERLOAD_ERROR_RE = /overloaded_error|api.{0,20}(overloaded|unavailable|internal server error)/i
+const AUTH_FIX = 'open a terminal, run `claude`, type `/login` and finish the browser sign-in, then retry here.'
+const failureHint = (text: string): string | null => {
+  if (AUTH_ERROR_RE.test(text)) return `Claude Code sign-in has expired — ${AUTH_FIX}`
+  if (LIMIT_ERROR_RE.test(text)) {
+    // the CLI phrases it "Claude AI usage limit reached|<epoch-seconds>"
+    const m = text.match(/limit reached\|(\d{9,13})/i)
+    const reset = m ? new Date(Number(m[1]) * (m[1].length <= 10 ? 1000 : 1)).toLocaleString() : null
+    return `Claude usage limit reached — not an auth problem. Wait for the limit to reset${reset ? ` (~${reset})` : ''} and retry.`
+  }
+  if (OVERLOAD_ERROR_RE.test(text)) return 'Claude API is overloaded right now — transient; retry in a minute.'
+  return null
+}
 
 const CHAT_SYSTEM = (
   factsPath: string,
@@ -336,8 +352,44 @@ function chatApi(): Plugin {
           // stream open forever with no timeout. finish() runs it last.
           const finish = () => { cleanup(); if (!res.writableEnded) res.end() }
           if (code !== 0) {
-            const hint = authHint(`${stderrLast}\n${stdout}`)
-            send('error', { message: hint ?? `claude exited ${code}: ${stderrLast.slice(0, 240)}` })
+            // The CLI often exits nonzero with an empty stderr and the real
+            // message inside the stdout JSON wrapper's `result` — surface
+            // whichever detail exists instead of a bare "claude exited 1:".
+            let resultText = ''
+            let wrapperSubtype = ''
+            // null = stdout wasn't a wrapper (unparseable, array, or no
+            // boolean is_error field) — only an explicit is_error:false
+            // counts as a confirmed valid reply
+            let wrapperIsError: boolean | null = null
+            try {
+              const w = JSON.parse(stdout)
+              if (w && typeof w === 'object' && !Array.isArray(w)) {
+                if (typeof w.is_error === 'boolean') wrapperIsError = w.is_error
+                if (typeof w.result === 'string') resultText = w.result.trim()
+                if (typeof w.subtype === 'string') wrapperSubtype = w.subtype
+              }
+            } catch { /* stdout wasn't the JSON wrapper */ }
+            console.error(`[chat] claude exited ${code}\nstderr: ${stderrLast.slice(0, 800)}\nstdout: ${stdout.slice(0, 800)}`)
+            // A confirmed NON-error wrapper holds coaching prose, not an
+            // error message — keep it away from the classifier ("overloaded",
+            // "hit your … limit" are normal coach vocabulary) and out of the
+            // surfaced detail. A confirmed error wrapper's result outranks
+            // stderr noise; its subtype outranks the raw wrapper JSON.
+            const hint = failureHint(wrapperIsError === false ? stderrLast : `${stderrLast}\n${stdout}`)
+            const stderrTrim = stderrLast.trim()
+            const detail = wrapperIsError === true
+              ? (resultText || wrapperSubtype || stderrTrim)
+              : wrapperIsError === false
+                ? stderrTrim
+                : (stderrTrim || stdout.trim())
+            send('error', {
+              message: hint
+                ?? (detail
+                  ? `claude exited ${code}: ${detail.slice(0, 800)}`
+                  : wrapperIsError === false
+                    ? `claude exited ${code} after producing a normal reply (likely a teardown error) — try again.`
+                    : `claude exited ${code} with no error output — this is most often an expired sign-in: ${AUTH_FIX}`),
+            })
             send('done', { ok: false })
             finish()
             return
@@ -346,10 +398,16 @@ function chatApi(): Plugin {
             const wrapper = JSON.parse(stdout)
             const text = (wrapper && typeof wrapper === 'object' && wrapper.result)
               ? wrapper.result : stdout
-            // Some CLI versions exit 0 with is_error + the auth message in result
-            const hint = wrapper?.is_error ? authHint(String(text)) : null
-            if (hint) {
-              send('error', { message: hint })
+            // Some CLI versions exit 0 with is_error + the real message
+            // (auth expiry, usage limit, …) in result — render those as an
+            // error bubble, not as a coach reply. `result` can be empty on
+            // some error subtypes; fall back to the subtype, never the raw
+            // wrapper JSON.
+            if (wrapper?.is_error) {
+              const errText = typeof wrapper.result === 'string' ? wrapper.result.trim() : ''
+              const hint = failureHint(errText || stdout)
+              console.error(`[chat] claude reported is_error: ${(errText || stdout).slice(0, 800)}`)
+              send('error', { message: hint ?? `coach failed: ${errText.slice(0, 800) || (typeof wrapper.subtype === 'string' ? wrapper.subtype : '') || 'no detail from claude'}` })
               send('done', { ok: false })
               finish()
               return
