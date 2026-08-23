@@ -211,7 +211,11 @@ export function planCaffeine(
   placed.sort((a, b) => a.h - b.h);
   // Report what is actually carried, never the pre-placement estimate — a note
   // promising more gels than the schedule contains is worse than no note.
-  if (cfg.gels > 0 && placed.length < cfg.gels) {
+  // Only when a window existed at all: `gels: 0` and "the race finishes before
+  // dark" already carry a note that says something this one cannot, and both
+  // would otherwise be overwritten with a spacing explanation that is not the
+  // actual reason nothing was placed.
+  if (n > 0 && cfg.gels > 0 && placed.length < cfg.gels) {
     note = `window fits ${placed.length} of ${cfg.gels} gel${cfg.gels === 1 ? "" : "s"} at ${cfg.min_spacing_h} h spacing — carrying ${placed.length}.`;
   }
 
