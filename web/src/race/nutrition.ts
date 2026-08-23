@@ -41,6 +41,39 @@ export type NutritionConfig = {
   long_carry_h: number;
   /** non-food gear per drop bag, keyed by station name ("Start" = the vest) */
   drop_bag_gear: Record<string, string[]>;
+  caffeine: CaffeineConfig;
+};
+
+/** Caffeine is planned separately from carbs: the dose SCHEDULE is driven by
+    darkness and the circadian low rather than by carb demand, so it can't be
+    folded into the phase model. Everything here is per-athlete tuning. */
+export type CaffeineConfig = {
+  /** athlete mass, kg — every mg/kg figure on the page depends on this, and
+      no other config file carries a body weight. Wrong here = wrong dose. */
+  body_kg: number;
+  /** caffeine in one caffeinated gel, mg (Maurten CAF 100 = 100) */
+  gel_mg: number;
+  /** how many caffeinated gels to place across the race */
+  gels: number;
+  /** never pack doses tighter than this, hours — if the dosing window can't
+      fit `gels` at this spacing, the plan carries fewer and says so */
+  min_spacing_h: number;
+  /** elimination half-life, hours (4–6 typical; habitual users clear faster) */
+  half_life_h: number;
+  /** race-morning coffee, mg — dose zero, and it counts */
+  pre_race_mg: number;
+  /** how long before the gun the pre-race dose is taken, hours */
+  pre_race_before_h: number;
+  /** caffeine per cup of aid-station cola, mg */
+  cola_mg: number;
+  /** cups of cola assumed across the back half — small, but real */
+  cola_cups: number;
+  /** stop dosing this many hours before the projected finish */
+  tail_h: number;
+  /** ergogenic band in mg/kg — below lo does nothing, above hi buys only
+      side effects (the dose–response curve is flat past it) */
+  band_lo_mg_kg: number;
+  band_hi_mg_kg: number;
 };
 
 export const DEFAULT_NUTRITION: NutritionConfig = {
@@ -75,6 +108,20 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
     "Fish Hatchery": ["small headlamp (dusk cover → Buck Springs)", "long-sleeve for night", "anti-chafe"],
     "Buck Springs": ["main headlamp + spare battery", "beanie + gloves", "warm midlayer", "caffeine starts here"],
     "Geronimo": ["fresh socks + blister kit", "sunscreen for day 2"],
+  },
+  caffeine: {
+    body_kg: 79.4,
+    gel_mg: 100,
+    gels: 9,
+    min_spacing_h: 1.75,
+    half_life_h: 5,
+    pre_race_mg: 175,
+    pre_race_before_h: 1,
+    cola_mg: 12,
+    cola_cups: 6,
+    tail_h: 3,
+    band_lo_mg_kg: 3,
+    band_hi_mg_kg: 6,
   },
 };
 
@@ -124,12 +171,39 @@ export function normalizeNutrition(d: unknown): NutritionConfig | null {
     }
   }
 
+  // caffeine: every field reaches either mg/kg arithmetic or the dose-placement
+  // loop, so a hand-edited string or a zero body mass must not survive. A
+  // partial block merges over the defaults rather than falling back wholesale.
+  const rawCaf = (raw.caffeine ?? {}) as Partial<CaffeineConfig>;
+  const caffeine: CaffeineConfig = { ...DEFAULT_NUTRITION.caffeine, ...rawCaf };
+  const cafPositive = [
+    "body_kg", "gel_mg", "min_spacing_h", "half_life_h",
+    "cola_mg", "band_lo_mg_kg", "band_hi_mg_kg",
+  ] as const;
+  for (const k of cafPositive) caffeine[k] = posOr(caffeine[k], DEFAULT_NUTRITION.caffeine[k]);
+  // these may legitimately be 0 ("no caffeine at all", "no coffee", "dose to
+  // the line") but must still be finite and non-negative
+  const cafNonNeg = ["gels", "pre_race_mg", "pre_race_before_h", "cola_cups", "tail_h"] as const;
+  for (const k of cafNonNeg) {
+    caffeine[k] = Number.isFinite(caffeine[k]) && caffeine[k] >= 0
+      ? caffeine[k] : DEFAULT_NUTRITION.caffeine[k];
+  }
+  // gels/cups are counts — a fractional 2.5 would render as "2.5 gels"
+  caffeine.gels = Math.min(30, Math.round(caffeine.gels));
+  caffeine.cola_cups = Math.min(60, Math.round(caffeine.cola_cups));
+  // an inverted band would paint the "no added benefit" line below the
+  // threshold line and read as though the plan were always over the ceiling
+  if (caffeine.band_hi_mg_kg <= caffeine.band_lo_mg_kg) {
+    caffeine.band_lo_mg_kg = DEFAULT_NUTRITION.caffeine.band_lo_mg_kg;
+    caffeine.band_hi_mg_kg = DEFAULT_NUTRITION.caffeine.band_hi_mg_kg;
+  }
+
   const merged: NutritionConfig = {
     ...DEFAULT_NUTRITION,
     ...(raw as Partial<NutritionConfig>),
     gel: gelSpec,
     bloks: blokSpec,
-    phases, heat_window, drop_bag_gear,
+    phases, heat_window, drop_bag_gear, caffeine,
   };
   // numeric hygiene: every top-level number that reaches arithmetic must be a
   // usable number — a hand-edited "2" (string) survives the spread and turns

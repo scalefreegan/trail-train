@@ -68,5 +68,20 @@
     ]
   },
   "preload_over_flask_ml": 350,
-  "spare_flasks": 3
+  "spare_flasks": 3,
+  "caffeine_comment": "Caffeinated-gel schedule. Doses are placed from nightfall to tail_h before the projected finish, never tighter than min_spacing_h, and snapped to aid stations where one is close — so the schedule moves with the goal time instead of being hand-written. body_kg drives every mg/kg figure and is the one number here with no other source in the repo (Strava's profile weight is stale). Set gels to 0 to plan the race caffeine-free.",
+  "caffeine": {
+    "body_kg": 79.4,
+    "gel_mg": 100,
+    "gels": 9,
+    "min_spacing_h": 1.75,
+    "half_life_h": 5,
+    "pre_race_mg": 175,
+    "pre_race_before_h": 1,
+    "cola_mg": 12,
+    "cola_cups": 6,
+    "tail_h": 3,
+    "band_lo_mg_kg": 3,
+    "band_hi_mg_kg": 6
+  }
 }
