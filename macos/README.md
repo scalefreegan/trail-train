@@ -1,6 +1,6 @@
 # Basecamp.app — the dashboard as a launchable Mac app
 
-Two bundles, built and installed to `~/Applications` by `./build-app.sh`:
+Two bundles, built and installed to `/Applications` by `./build-app.sh`:
 
 - **Basecamp.app** — the Dock face. Launch it: the server starts and the
   dashboard opens at **http://localhost:38100** (fixed port — 38 h cutoff ·

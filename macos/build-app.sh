@@ -1,6 +1,7 @@
 #!/bin/zsh
 # Build Basecamp.app from the AppleScript launcher + icon and install it to
-# ~/Applications (user-writable; Launchpad and Spotlight pick it up).
+# /Applications (admin-group writable, no sudo; Launchpad and Spotlight pick
+# it up, and it appears in Finder's Applications favorite).
 #
 #   ./macos/build-app.sh
 #
@@ -42,7 +43,10 @@ iconutil -c icns "$ICONSET" -o "$BUILD_DIR/$APP_NAME.app/Contents/Resources/appl
 # 3. identity in the bundle plist (osacompile leaves generic applet values)
 PLIST="$BUILD_DIR/$APP_NAME.app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$PLIST"
-/usr/libexec/PlistBuddy -c "Add :NSAppleEventsUsageDescription string Basecamp starts and stops its dashboard server in an iTerm window." "$PLIST" 2>/dev/null || true
+# the applet sends no Apple Events (only do shell script / curl / pkill), so
+# strip osacompile's generic "controls other applications" usage string rather
+# than leave a misleading permission-prompt description in the bundle
+/usr/libexec/PlistBuddy -c "Delete :NSAppleEventsUsageDescription" "$PLIST" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string $APP_NAME" "$PLIST" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$PLIST"
 /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.scalefreegan.basecamp" "$PLIST" 2>/dev/null \

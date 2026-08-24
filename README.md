@@ -46,7 +46,7 @@ npm run dev          # http://localhost:38100 (fixed port, strictPort)
 ```
 
 Or launch it as a Mac app — `./macos/build-app.sh` installs **Basecamp.app**
-to `~/Applications`: the Dock icon starts the server and opens the dashboard,
+to `/Applications`: the Dock icon starts the server and opens the dashboard,
 and quitting it stops the server. See `macos/README.md`.
 
 ### Athlete profile

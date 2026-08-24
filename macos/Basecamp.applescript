@@ -22,13 +22,23 @@
 -- Built and installed by macos/build-app.sh (osacompile -s for stay-open).
 
 property dashUrl : "http://localhost:38100"
-property killPattern : "trail-train/web/node_modules/.bin/vite"
+-- absolute, not a bare "trail-train/..." substring: pkill -f matches the
+-- whole command line, so an unanchored pattern would also catch a second
+-- clone of this repo elsewhere, or an editor whose argv held the path. The
+-- vite process argv carries this absolute path. (It still, by design, stops a
+-- server for THIS repo you started by hand — one repo, one server.)
+property killPattern : "/Users/brooks/Documents/git/trail-train/web/node_modules/.bin/vite"
 property wasUp : false
 
 on serverUp()
+	-- Match a string only the dashboard serves, not a bare 200. strictPort
+	-- means a foreign process already on 38100 makes OUR vite fail to start,
+	-- and a bare status check would then treat the impostor as "up" and open
+	-- the browser to it. The whole reason 38100 was chosen was to make a
+	-- collision detectable — so detect it.
 	try
-		do shell script "curl -s --max-time 2 -o /dev/null -w '%{http_code}' " & dashUrl
-		return result is "200"
+		set body to do shell script "curl -s --max-time 2 " & dashUrl
+		return body contains "Mogollon Monster"
 	on error
 		return false
 	end try
@@ -37,7 +47,7 @@ end serverUp
 on startServer()
 	-- -g: launch in the background, never stealing focus. The helper nests
 	-- inside THIS bundle (Contents/Helpers/), so resolve it from path to me —
-	-- one visible app in ~/Applications, and the pair can never split up.
+	-- one visible app in /Applications, and the pair can never split up.
 	set helperPath to POSIX path of (path to me) & "Contents/Helpers/Basecamp Server.app"
 	do shell script "open -g " & quoted form of helperPath
 	-- cold node_modules can take a while; poll rather than hope
