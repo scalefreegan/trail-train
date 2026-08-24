@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { createContext, useContext, useMemo, useState } from "react";
 import { useStrava, useBlockConfig } from "../data";
 import { useCourse, usePaceGrade } from "./useRaceData";
 import { planFuel, useNutrition, type FuelPlan, type NutritionConfig } from "./nutrition";
@@ -15,14 +15,15 @@ import type { Course } from "./types";
 /*  call and the settings that feed them are DEFINED here once, rather */
 /*  than copied into each view where they would drift a knob at a time.*/
 /*                                                                    */
-/*  What is shared is the DEFINITION and the `race.*` localStorage     */
-/*  keys — not a single React state instance. Each caller gets its own */
-/*  useState-backed copy, and there is no storage-event listener, so   */
-/*  two views mounted at the same time would not see each other's      */
-/*  setter calls until remount. That is unreachable today: App.tsx     */
-/*  renders the views through a mutually-exclusive switch, so only one */
-/*  is ever mounted. A layout that shows both at once would need this  */
-/*  lifted to context first.                                           */
+/*  Sharing is via CONTEXT: the race view renders a RacePlanProvider   */
+/*  and every consumer reads the same instance through useRacePlan().  */
+/*  This became load-bearing the moment two consumers (RacePlanner and */
+/*  ModelCheck) mounted at the same time — as independent hook copies, */
+/*  a goal typed into the planner updated its own state + localStorage */
+/*  while the other copy kept rendering the stale value until remount, */
+/*  a live contradiction on one screen. useRacePlan() falls back to a  */
+/*  private instance when no provider is above it, so a solo consumer  */
+/*  (the fuel view) still works unwrapped.                             */
 /* ------------------------------------------------------------------ */
 
 export function usePersistedNumber(key: string, initial: number) {
@@ -91,7 +92,23 @@ export type RacePlan = {
   };
 };
 
+/** Context carrying the subtree's ONE shared plan instance. Exported for
+    RacePlanProvider (its own .tsx file — this file stays JSX-free so hooks
+    and the provider component don't share a module, per house react-refresh
+    convention). */
+export const RacePlanContext = createContext<RacePlan | null>(null);
+
+/** Read the shared plan when a provider is present; otherwise build a
+    private instance (fine for a view with exactly one consumer). The
+    instance hook still runs unconditionally — rules of hooks — but its
+    memos are cheap and the shared value wins. */
 export function useRacePlan(): RacePlan {
+  const shared = useContext(RacePlanContext);
+  const fallback = useRacePlanInstance();
+  return shared ?? fallback;
+}
+
+export function useRacePlanInstance(): RacePlan {
   const { race } = useBlockConfig();
   const { activities } = useStrava();
   const { course, missing, error: courseError } = useCourse();
