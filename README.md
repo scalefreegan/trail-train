@@ -42,8 +42,12 @@ progress; set in Bricolage Grotesque, Archivo, and Spline Sans Mono.
 ```bash
 cd web
 npm install
-npm run dev          # http://localhost:5173
+npm run dev          # http://localhost:38100 (fixed port, strictPort)
 ```
+
+Or launch it as a Mac app — `./macos/build-app.sh` installs **Basecamp.app**
+to `~/Applications`: the Dock icon starts the server and opens the dashboard,
+and quitting it stops the server. See `macos/README.md`.
 
 ### Athlete profile
 
