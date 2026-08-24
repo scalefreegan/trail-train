@@ -2160,7 +2160,11 @@ function AppBody() {
               </div>
             ) : (
               <div key={`fuel-${key}`}>
-                <NutritionPlan />
+                {/* single consumer, but useRacePlan requires the provider —
+                    a fallback instance was the divergence footgun */}
+                <RacePlanProvider>
+                  <NutritionPlan />
+                </RacePlanProvider>
               </div>
             )}
           </main>

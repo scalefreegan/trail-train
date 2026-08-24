@@ -98,14 +98,19 @@ export type RacePlan = {
     convention). */
 export const RacePlanContext = createContext<RacePlan | null>(null);
 
-/** Read the shared plan when a provider is present; otherwise build a
-    private instance (fine for a view with exactly one consumer). The
-    instance hook still runs unconditionally — rules of hooks — but its
-    memos are cheap and the shared value wins. */
+/** Read the subtree's shared plan. Requires a RacePlanProvider above —
+    there is deliberately NO private-instance fallback: a fallback is a
+    second copy of the settings state, and a second copy is exactly the
+    divergence bug this context exists to prevent (two views of the same
+    plan disagreeing on one screen). It also made every consumer pay for
+    its own fetches and projection memos even when the shared value won.
+    Failing loudly in dev beats degrading quietly in prod. */
 export function useRacePlan(): RacePlan {
   const shared = useContext(RacePlanContext);
-  const fallback = useRacePlanInstance();
-  return shared ?? fallback;
+  if (shared == null) {
+    throw new Error("useRacePlan requires a <RacePlanProvider> above it — wrap the view in one (see App.tsx's race view)");
+  }
+  return shared;
 }
 
 export function useRacePlanInstance(): RacePlan {
