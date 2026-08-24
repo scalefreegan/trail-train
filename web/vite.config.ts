@@ -898,4 +898,12 @@ function settingsApi(): Plugin {
 
 export default defineConfig({
   plugins: [react(), refreshApi(), chatApi(), settingsApi()],
+  // Fixed, memorable, deliberately unusual port (38 h cutoff · 100 miles).
+  // The 5173 default collides with every other Vite project on the machine,
+  // and a colliding neighbor silently claims the port so this app hops to
+  // 5174+ — which breaks the Basecamp.app launcher's health check and any
+  // bookmark. strictPort makes a genuine conflict fail LOUDLY instead of
+  // hopping; if 38100 is ever taken, something is actually wrong.
+  server: { port: 38100, strictPort: true },
+  preview: { port: 38100, strictPort: true },
 })
