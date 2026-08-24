@@ -4,6 +4,39 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+
+// Cross-site request guard for the state-changing dev endpoints. These
+// middlewares spawn subprocesses (the `claude` CLI, the sync scripts) and
+// write files, with no auth — fine for a localhost tool, EXCEPT that a
+// browser will happily send a cross-origin "simple" POST (Content-Type
+// text/plain needs no preflight) from any page the user has open, so a
+// hostile tab could blind-fire /api/chat or /api/refresh at us. The Basecamp
+// launcher sharpens this: a fixed, README-published port that is up all day.
+// So reject any request whose Origin is not this same loopback server. A
+// missing Origin is allowed — that is a non-browser caller (curl, an internal
+// call), which is not the CSRF threat model (a local process needs no CSRF).
+// The Host is also pinned to loopback as cheap defense against DNS-rebinding.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
+function crossSiteBlocked(req: IncomingMessage, res: ServerResponse): boolean {
+  const origin = req.headers.origin
+  if (origin) {
+    let ok: boolean
+    try { ok = LOOPBACK_HOSTS.has(new URL(origin).hostname) } catch { ok = false }
+    if (!ok) {
+      res.statusCode = 403
+      res.end('cross-origin request refused')
+      return true
+    }
+  }
+  const host = (req.headers.host ?? '').replace(/:\d+$/, '')
+  if (host && !LOOPBACK_HOSTS.has(host)) {
+    res.statusCode = 403
+    res.end('non-loopback host refused')
+    return true
+  }
+  return false
+}
 
 // Dev-only middleware: POST /api/refresh runs the three sync scripts in
 // sequence and streams progress lines back as Server-Sent Events.
@@ -20,6 +53,7 @@ function refreshApi(): Plugin {
           res.end('POST required')
           return
         }
+        if (crossSiteBlocked(req, res)) return
         // Optional JSON body: { units: "imperial" | "metric" } — forwarded to
         // the coach step so the readout speaks the dashboard's unit system.
         const bodyChunks: Buffer[] = []
@@ -261,6 +295,7 @@ function chatApi(): Plugin {
     configureServer(server) {
       server.middlewares.use('/api/chat', async (req, res) => {
         if (req.method !== 'POST') { res.statusCode = 405; res.end(); return }
+        if (crossSiteBlocked(req, res)) return
 
         // Read JSON body
         const chunks: Buffer[] = []
@@ -814,6 +849,7 @@ function settingsApi(): Plugin {
             return
           }
           if (req.method !== 'PUT') { res.statusCode = 405; res.end('GET or PUT required'); return }
+          if (crossSiteBlocked(req, res)) return
           const chunks: Buffer[] = []
           for await (const c of req) chunks.push(c as Buffer)
           let body: Record<string, unknown>
@@ -898,4 +934,12 @@ function settingsApi(): Plugin {
 
 export default defineConfig({
   plugins: [react(), refreshApi(), chatApi(), settingsApi()],
+  // Fixed, memorable, deliberately unusual port (38 h cutoff · 100 miles).
+  // The 5173 default collides with every other Vite project on the machine,
+  // and a colliding neighbor silently claims the port so this app hops to
+  // 5174+ — which breaks the Basecamp.app launcher's health check and any
+  // bookmark. strictPort makes a genuine conflict fail LOUDLY instead of
+  // hopping; if 38100 is ever taken, something is actually wrong.
+  server: { port: 38100, strictPort: true },
+  preview: { port: 38100, strictPort: true },
 })

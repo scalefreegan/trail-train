@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- Source for the app icon. Rendered to icon-1024.png (transparent corners)
+     by a headless-browser screenshot at 1024x1024; build-app.sh derives the
+     .icns from that PNG. The mark is web/public/favicon.svg scaled up, with
+     the margin macOS expects around a Big Sur-style rounded square. -->
+<html><head><meta charset="utf-8"><style>
+  html, body { margin: 0; background: transparent; }
+  #icon { width: 1024px; height: 1024px; }
+</style></head><body>
+<svg id="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- 824x824 tile centered per the macOS icon grid; radius ≈ 185 -->
+  <defs>
+    <linearGradient id="night" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16201a"/>
+      <stop offset="1" stop-color="#090d0b"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#night)" stroke="#35453a" stroke-width="10"/>
+  <!-- ridgeline, favicon path scaled x11.5 into the tile (origin 144,140) -->
+  <g transform="translate(144,140) scale(11.5)">
+    <path d="M6 50 L23 20 L32 35 L41 13 L58 50 Z" fill="#ffb454"/>
+    <path d="M32 35 L41 13 L58 50 L37 50 Z" fill="#cc7a1f"/>
+    <circle cx="44" cy="9" r="4" fill="#ffb454"/>
+  </g>
+</svg>
+</body></html>
