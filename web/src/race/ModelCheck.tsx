@@ -145,7 +145,11 @@ function Band3({ best, avg, worst, goal }: { best: number; avg: number; worst: n
             // inside the band, but WHICH side of expected changes the whole
             // sentence — fmtElapsed(avg - goal) on a goal slower than expected
             // rendered a garbled negative ("-2h 44m faster than expected")
-            ? goal <= avg
+            ? Math.abs(goal - avg) < 1 / 120
+              // within 30s of expected — "0h 00m faster, not the expected
+              // case" would contradict itself
+              ? <>sits <strong style={{ color: "var(--mist)" }}>on</strong> the expected case — the model's median outcome is your target.</>
+              : goal < avg
               ? <>sits <strong style={{ color: "var(--mist)" }}>inside</strong> the band, {fmtElapsed(avg - goal)} faster than expected — reachable, but it is not the expected case. An expected time slower than your goal is the model disagreeing with your target, not an error.</>
               : <>sits <strong style={{ color: "var(--mist)" }}>inside</strong> the band, {fmtElapsed(goal - avg)} <strong style={{ color: "var(--pine)" }}>slower than expected</strong> — the model thinks you beat it in the median case.</>
             : goal < best
