@@ -2,8 +2,8 @@ import { useMemo } from "react";
 import { useStrava, useMeasuredWidth } from "../data";
 import { SectionTag } from "../atoms";
 import { useRacePlan } from "./useRacePlan";
-import { calibrate, type Band, type Flag } from "./calibration";
-import { fmtElapsed } from "./pacing";
+import { ANCHOR_HI_MI, ANCHOR_LO_MI, BIAS_WORTH_ACTING_ON, calibrate, type Band, type Flag } from "./calibration";
+import { D_REF, fmtElapsed } from "./pacing";
 
 /* ------------------------------------------------------------------ */
 /*  Model check — how much to trust the number above.                  */
@@ -226,19 +226,19 @@ export function ModelCheck() {
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: "var(--mist)" }}>
                 Anchor-band bias{" "}
-                <span className="numerals" style={{ color: Math.abs(anchor) >= 3 ? "var(--lamp)" : "var(--pine)" }}>
+                <span className="numerals" style={{ color: Math.abs(anchor) >= BIAS_WORTH_ACTING_ON ? "var(--lamp)" : "var(--pine)" }}>
                   {anchor >= 0 ? "+" : ""}{anchor.toFixed(1)}%
                 </span>
               </span>
-              <span className="eyebrow numerals" style={{ fontSize: 9, color: cal.anchor_n < 8 ? "var(--lamp)" : undefined }}>
-                n{cal.anchor_n} · 15–25 mi{cal.anchor_n < 8 ? " · thin sample" : ""}
+              <span className="eyebrow numerals" style={{ fontSize: 9, color: cal.anchor_n < THIN_BAND_N ? "var(--lamp)" : undefined }}>
+                n{cal.anchor_n} · {ANCHOR_LO_MI}–{ANCHOR_HI_MI} mi{cal.anchor_n < THIN_BAND_N ? " · thin sample" : ""}
               </span>
             </div>
             <p style={{ fontSize: 11.5, color: "var(--mist-dim)", lineHeight: 1.6, margin: "6px 0 0", maxWidth: "72ch" }}>
-              The projection evaluates its fitness pace at a single 20-mile reference point and lets the fatigue
-              curve carry everything past it — this band is the held-out check on how the model behaves around
-              that point, so error here scales into the race time.{" "}
-              {Math.abs(anchor) < 3
+              The projection evaluates its fitness pace at a single {D_REF}-mile reference point; past it the
+              slowdown comes from the fatigue curve and your restraint setting. This band is the held-out check
+              on how the model behaves around that point, so error here scales into the race time.{" "}
+              {Math.abs(anchor) < BIAS_WORTH_ACTING_ON
                 ? <>At {anchor >= 0 ? "+" : ""}{anchor.toFixed(1)}% it is inside the noise of {cal.anchor_n} held-out runs — the fit is
                     tracking you here, and your {settings.calibration}% calibration sits on top of it as a deliberate
                     race-day margin rather than a correction for anything measured.</>

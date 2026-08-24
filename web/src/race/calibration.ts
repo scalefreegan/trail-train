@@ -100,12 +100,12 @@ const MIN_BACKTEST_MI = 8;
     far above D_REF sweeps in tapered race efforts (30k-50k events), which
     run faster than training and drag the bias estimate optimistic. Derived
     from the exported constant so the two cannot drift apart. */
-const ANCHOR_LO_MI = D_REF - 5;
-const ANCHOR_HI_MI = D_REF + 5;
+export const ANCHOR_LO_MI = D_REF - 5;
+export const ANCHOR_HI_MI = D_REF + 5;
 const MIN_ANCHOR = 4;
 /** Below this the measured bias is inside the noise of a handful of runs and
     is not worth moving a deliberate margin for. */
-const BIAS_WORTH_ACTING_ON = 3;
+export const BIAS_WORTH_ACTING_ON = 3;
 
 export type CalibrationInput = {
   fit: PacingFit | null;
@@ -141,7 +141,14 @@ export function calibrate(input: CalibrationInput): Calibration | null {
       // coefficients are the fitted model; this does NOT reproduce the full
       // projection pipeline (grade curve, D_REF anchoring, fatigue) — it
       // validates the coefficients the pipeline is built on, no more.
-      const looFit = fitPacing(activities.filter((_, j) => j !== idx), nowMs) ?? fit;
+      //
+      // When the refit is impossible (a history so thin that removing one run
+      // drops fitPacing below its floor), the row is NOT back-tested — a
+      // silent in-sample substitute would make the panel's "every run is
+      // held out" claim false exactly for the sparse histories where honesty
+      // matters most. Untestable is reported as untested, not as tested.
+      const looFit = fitPacing(activities.filter((_, j) => j !== idx), nowMs);
+      if (!looFit) return null;
       const predicted = looFit.base + looFit.kVert * vfpm + looFit.kDist * a.distance_mi;
       const actual = a.moving_s / a.distance_mi;
       return {
@@ -155,9 +162,10 @@ export function calibrate(input: CalibrationInput): Calibration | null {
         err_pct: predicted > 0 ? ((actual - predicted) / predicted) * 100 : NaN,
       };
     })
-    // a non-positive predicted pace is a degenerate fit, not a perfect one —
-    // reporting it as 0% error would mask the failure it represents
-    .filter((r) => Number.isFinite(r.err_pct))
+    // drops both the rows whose LOO refit was impossible (null) and any
+    // degenerate non-positive prediction — reporting either as a clean 0%
+    // would mask exactly the failure it represents
+    .filter((r): r is BackTestRun => r != null && Number.isFinite(r.err_pct))
     .sort((a, b) => (a.date < b.date ? 1 : -1));
 
   const inRange = (r: BackTestRun, lo: number, hi: number) => r.distance_mi >= lo && r.distance_mi < hi;
@@ -234,7 +242,7 @@ export function calibrate(input: CalibrationInput): Calibration | null {
   // "the fatigue curve alone" is only literally true past max(longest, D_REF):
   // below D_REF the OLS distance term still applies, whatever the athlete has
   // run — so the detail names both boundaries instead of conflating them.
-  const uncovered = `No run in the data covers the remaining ${Math.max(0, race_mi - longest_mi).toFixed(0)} mi; past the ${Math.max(longest_mi, D_REF).toFixed(0)} mi mark the projected slowdown is the fatigue curve alone.`;
+  const uncovered = `No run in the data covers the remaining ${Math.max(0, race_mi - longest_mi).toFixed(0)} mi; past the ${Math.max(longest_mi, D_REF).toFixed(0)} mi mark the projected slowdown comes from the fatigue curve (plus any restraint you have set), not from anything you have run.`;
   flags.push(
     longest_mi <= 0
       ? { id: "extrapolation", severity: "warn", label: `no runs of ${MIN_BACKTEST_MI} mi or more to back-test`, detail: "Nothing in the history is long enough to check the projection against. Every number above is extrapolation." }
