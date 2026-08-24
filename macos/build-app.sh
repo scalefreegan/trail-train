@@ -44,7 +44,7 @@ PLIST="$BUILD_DIR/$APP_NAME.app/Contents/Info.plist"
 # only helper shape whose Documents access survives on this machine (a
 # compiled-applet variant of the same bundle id was silently denied).
 HELPER="Basecamp Server"
-HELPER_APP="$BUILD_DIR/$HELPER.app"
+HELPER_APP="$BUILD_DIR/$APP_NAME.app/Contents/Helpers/$HELPER.app"
 mkdir -p "$HELPER_APP/Contents/MacOS" "$HELPER_APP/Contents/Resources"
 cp server-runner.sh "$HELPER_APP/Contents/MacOS/BasecampServer"
 chmod +x "$HELPER_APP/Contents/MacOS/BasecampServer"
@@ -64,11 +64,16 @@ cat > "$HELPER_APP/Contents/Info.plist" <<PLIST_EOF
 PLIST_EOF
 
 # 4. install (replace wholesale — a half-old bundle confuses LaunchServices)
+# Re-sign AFTER every modification: swapping the icns and editing the plist
+# breaks osacompile's seal, and Finder shows a broken-seal bundle with the
+# generic icon instead of its own.
+codesign --force --deep --sign - "$BUILD_DIR/$APP_NAME.app"
+
 mkdir -p "$HOME/Applications"
 rm -rf "$DEST" "$HOME/Applications/$HELPER.app"
 cp -R "$BUILD_DIR/$APP_NAME.app" "$DEST"
-cp -R "$HELPER_APP" "$HOME/Applications/$HELPER.app"
-# nudge LaunchServices/Finder to notice the fresh icon
+# refresh the LaunchServices registration so the icon updates immediately
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$DEST" 2>/dev/null || true
 touch "$DEST"
 
 echo "installed $DEST"

@@ -35,9 +35,11 @@ on serverUp()
 end serverUp
 
 on startServer()
-	-- -g: launch in the background, never stealing focus; by full path
-	-- because LaunchServices may not know a freshly built bundle by name
-	do shell script "open -g \"$HOME/Applications/Basecamp Server.app\""
+	-- -g: launch in the background, never stealing focus. The helper nests
+	-- inside THIS bundle (Contents/Helpers/), so resolve it from path to me —
+	-- one visible app in ~/Applications, and the pair can never split up.
+	set helperPath to POSIX path of (path to me) & "Contents/Helpers/Basecamp Server.app"
+	do shell script "open -g " & quoted form of helperPath
 	-- cold node_modules can take a while; poll rather than hope
 	repeat 60 times
 		if serverUp() then exit repeat
