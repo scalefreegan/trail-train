@@ -1,4 +1,4 @@
-import type { PacingFit, PaceGradeCurve } from "./pacing";
+import { D_REF, fitPacing, type PacingFit, type PaceGradeCurve } from "./pacing";
 import type { Course } from "./types";
 
 /* ------------------------------------------------------------------ */
@@ -6,16 +6,19 @@ import type { Course } from "./types";
 /*  athlete, and are its inputs still current?                        */
 /*                                                                    */
 /*  projectRace turns a fit into a race time; nothing until now asked  */
-/*  whether that fit is any good. The fit is unbiased across its own   */
-/*  training set by construction (it is least squares), so a headline  */
-/*  residual says nothing useful. Bias lives in the SUBGROUPS: if the  */
-/*  model is optimistic on long days and pessimistic on short ones,    */
-/*  the overall residual still averages to zero while every number the */
-/*  race planner prints is wrong in the same direction.               */
+/*  whether that fit is any good. In-sample residuals cannot answer    */
+/*  that: the fit is weighted least squares, and runs at or beyond the */
+/*  full-weight distance are exactly the points it is pulled hardest   */
+/*  to match — testing on them flatters the model most precisely in    */
+/*  the band we care most about. So every prediction here is           */
+/*  LEAVE-ONE-OUT: the run being tested is excluded, the fit is        */
+/*  re-solved on everything else, and THAT fit predicts it. 50-odd     */
+/*  3x3 refits is microseconds; honesty is cheap here.                 */
 /*                                                                    */
-/*  So: back-test per band, report signed error, and derive the        */
-/*  calibration knob from the bands that resemble race day instead of  */
-/*  leaving it a hand-set guess. Suggest only — never auto-apply.     */
+/*  Bias is then read per band (a fit can be clean overall and wrong   */
+/*  in the one regime the projection reads from), and the calibration  */
+/*  knob gets a data-grounded suggestion. Suggest only — never         */
+/*  auto-apply.                                                        */
 /* ------------------------------------------------------------------ */
 
 export type BackTestRun = {
@@ -55,10 +58,11 @@ export type Calibration = {
   long_cohort: BackTestRun[];
   /** median signed error over the long cohort, or null when too few */
   long_bias_pct: number | null;
-  /** Median signed error in the band around D_REF, the distance at which
-      projectRace evaluates fitness pace. This is the bias that actually
-      propagates into the race time — a model can be unbiased overall and
-      still be wrong exactly where the projection reads it. */
+  /** Median signed LEAVE-ONE-OUT error in the symmetric band around D_REF,
+      the single point at which projectRace evaluates fitness pace (the fit
+      uses every qualifying run — this band is the diagnostic proxy for bias
+      near that point, not the set of runs the pace is "read from"). Error
+      here scales into the race time; error at 10 mi does not. */
   anchor_bias_pct: number | null;
   anchor_n: number;
   /** Calibration is NOT a bias correction — it is a deliberate race-day
@@ -91,11 +95,13 @@ const MIN_COHORT = 5;
 /** Runs shorter than this say nothing about a hundred-miler. Matches the
     floor fitPacing prefers for its own weighted fit. */
 const MIN_BACKTEST_MI = 8;
-/** Window around pacing.ts's D_REF (20 mi) — the distance regime the race
-    projection reads its fitness pace from. Wide enough to hold a useful
-    number of long runs, narrow enough that it is still that regime. */
-const ANCHOR_LO_MI = 16;
-const ANCHOR_HI_MI = 30;
+/** Symmetric window around pacing.ts's D_REF — the point the projection
+    evaluates its fitness pace at. Symmetric on purpose: a band reaching
+    far above D_REF sweeps in tapered race efforts (30k-50k events), which
+    run faster than training and drag the bias estimate optimistic. Derived
+    from the exported constant so the two cannot drift apart. */
+const ANCHOR_LO_MI = D_REF - 5;
+const ANCHOR_HI_MI = D_REF + 5;
 const MIN_ANCHOR = 4;
 /** Below this the measured bias is inside the noise of a handful of runs and
     is not worth moving a deliberate margin for. */
@@ -125,12 +131,18 @@ export function calibrate(input: CalibrationInput): Calibration | null {
   if (!fit || !course) return null;
 
   const rows: BackTestRun[] = activities
-    .filter((a) => a.distance_mi >= MIN_BACKTEST_MI && a.moving_s > 0 && a.elevation_ft != null)
-    .map((a) => {
+    .map((a, idx) => ({ a, idx }))
+    .filter(({ a }) => a.distance_mi >= MIN_BACKTEST_MI && a.moving_s > 0 && a.elevation_ft != null)
+    .map(({ a, idx }) => {
       const vfpm = a.elevation_ft / a.distance_mi;
-      // the fit's own prediction for this run — same three terms projectRace
-      // is built on, evaluated at the run's real distance rather than D_REF
-      const predicted = fit.base + fit.kVert * vfpm + fit.kDist * a.distance_mi;
+      // LEAVE-ONE-OUT: refit without this run, then predict it. Predicting a
+      // run with a fit that was trained on it flatters the model exactly in
+      // the full-weight band this panel treats as its headline. The three
+      // coefficients are the fitted model; this does NOT reproduce the full
+      // projection pipeline (grade curve, D_REF anchoring, fatigue) — it
+      // validates the coefficients the pipeline is built on, no more.
+      const looFit = fitPacing(activities.filter((_, j) => j !== idx), nowMs) ?? fit;
+      const predicted = looFit.base + looFit.kVert * vfpm + looFit.kDist * a.distance_mi;
       const actual = a.moving_s / a.distance_mi;
       return {
         date: (a.date ?? "").slice(0, 10),
@@ -140,9 +152,12 @@ export function calibrate(input: CalibrationInput): Calibration | null {
         vert_ft_per_mi: vfpm,
         predicted_s_per_mi: predicted,
         actual_s_per_mi: actual,
-        err_pct: predicted > 0 ? ((actual - predicted) / predicted) * 100 : 0,
+        err_pct: predicted > 0 ? ((actual - predicted) / predicted) * 100 : NaN,
       };
     })
+    // a non-positive predicted pace is a degenerate fit, not a perfect one —
+    // reporting it as 0% error would mask the failure it represents
+    .filter((r) => Number.isFinite(r.err_pct))
     .sort((a, b) => (a.date < b.date ? 1 : -1));
 
   const inRange = (r: BackTestRun, lo: number, hi: number) => r.distance_mi >= lo && r.distance_mi < hi;
@@ -171,10 +186,10 @@ export function calibrate(input: CalibrationInput): Calibration | null {
   // both real, and both are outliers that a mean would let set policy.
   const long_bias_pct = long_cohort.length >= MIN_COHORT ? median(long_cohort.map((r) => r.err_pct)) : null;
 
-  // The band the projection actually reads from. projectRace evaluates the
-  // fitted fitness pace at D_REF and lets the fatigue multiplier carry
-  // everything past it, so error HERE is what scales into the race time —
-  // error at 10 mi does not.
+  // Diagnostic band around D_REF. projectRace evaluates the fitted fitness
+  // pace at that single point and lets the fatigue multiplier carry
+  // everything past it, so held-out error NEAR that point is what scales
+  // into the race time — error at 10 mi does not.
   const anchorRuns = rows.filter((r) => r.distance_mi >= ANCHOR_LO_MI && r.distance_mi <= ANCHOR_HI_MI);
   const anchor_bias_pct = anchorRuns.length >= MIN_ANCHOR ? median(anchorRuns.map((r) => r.err_pct)) : null;
 
@@ -182,8 +197,11 @@ export function calibrate(input: CalibrationInput): Calibration | null {
   // judgement margin, not a residual — quietly nudging it by a fraction of a
   // percent every resync would turn the athlete's deliberate hedge into noise.
   const biasForSuggestion = anchor_bias_pct ?? long_bias_pct;
+  // Calibration multiplies pace by (1 + pct/100), so stacking a bias
+  // correction on top composes MULTIPLICATIVELY — the cross term is sub-
+  // rounding at single digits but flips whole points once both are large.
   const suggested_calibration_pct = biasForSuggestion != null && Math.abs(biasForSuggestion) >= BIAS_WORTH_ACTING_ON
-    ? Math.round(currentCalibrationPct + biasForSuggestion)
+    ? Math.round(((1 + currentCalibrationPct / 100) * (1 + biasForSuggestion / 100) - 1) * 100)
     : null;
 
   const longest_mi = rows.reduce((m, r) => Math.max(m, r.distance_mi), 0);
@@ -213,11 +231,17 @@ export function calibrate(input: CalibrationInput): Calibration | null {
       : { id: "sample", severity: "ok", label: `effective sample n ${fit.effN.toFixed(0)} of ${fit.n}`, detail: "" },
   );
 
+  // "the fatigue curve alone" is only literally true past max(longest, D_REF):
+  // below D_REF the OLS distance term still applies, whatever the athlete has
+  // run — so the detail names both boundaries instead of conflating them.
+  const uncovered = `No run in the data covers the remaining ${Math.max(0, race_mi - longest_mi).toFixed(0)} mi; past the ${Math.max(longest_mi, D_REF).toFixed(0)} mi mark the projected slowdown is the fatigue curve alone.`;
   flags.push(
-    extrapolation.factor > 3
-      ? { id: "extrapolation", severity: "warn", label: `race is ${extrapolation.factor.toFixed(1)}× your longest run`, detail: `Everything past ${longest_mi.toFixed(0)} mi is the fatigue multiplier alone — no run in the data covers it.` }
+    longest_mi <= 0
+      ? { id: "extrapolation", severity: "warn", label: `no runs of ${MIN_BACKTEST_MI} mi or more to back-test`, detail: "Nothing in the history is long enough to check the projection against. Every number above is extrapolation." }
+      : extrapolation.factor > 3
+      ? { id: "extrapolation", severity: "warn", label: `race is ${extrapolation.factor.toFixed(1)}× your longest run (${longest_mi.toFixed(0)} mi)`, detail: uncovered }
       : extrapolation.factor > 1.8
-      ? { id: "extrapolation", severity: "watch", label: `race is ${extrapolation.factor.toFixed(1)}× your longest run (${longest_mi.toFixed(0)} mi)`, detail: "Beyond that distance the projection rests on the fatigue curve rather than on anything you have run." }
+      ? { id: "extrapolation", severity: "watch", label: `race is ${extrapolation.factor.toFixed(1)}× your longest run (${longest_mi.toFixed(0)} mi)`, detail: uncovered }
       : { id: "extrapolation", severity: "ok", label: `longest run ${longest_mi.toFixed(0)} mi covers ${(100 / extrapolation.factor).toFixed(0)}% of the race`, detail: "" },
   );
 
@@ -227,8 +251,8 @@ export function calibrate(input: CalibrationInput): Calibration | null {
       severity: Math.abs(anchor_bias_pct) >= 6 ? "warn" : "watch",
       label: `${Math.abs(anchor_bias_pct).toFixed(1)}% ${anchor_bias_pct > 0 ? "optimistic" : "pessimistic"} at the anchor distance`,
       detail: anchor_bias_pct > 0
-        ? `On ${ANCHOR_LO_MI}–${ANCHOR_HI_MI} mi runs you finish slower than the fit predicts, and that is the band the race projection reads its pace from — so before calibration the projected time runs fast.`
-        : `On ${ANCHOR_LO_MI}–${ANCHOR_HI_MI} mi runs you finish faster than the fit predicts, and that is the band the race projection reads its pace from — so before calibration the projected time runs slow.`,
+        ? `On held-out ${ANCHOR_LO_MI}–${ANCHOR_HI_MI} mi runs you finish slower than the refit model predicts. The projection evaluates its fitness pace at the ${D_REF} mi reference inside this band, so before calibration the projected time runs fast.`
+        : `On held-out ${ANCHOR_LO_MI}–${ANCHOR_HI_MI} mi runs you finish faster than the refit model predicts. The projection evaluates its fitness pace at the ${D_REF} mi reference inside this band, so before calibration the projected time runs slow.`,
     });
   } else if (anchor_bias_pct != null) {
     flags.push({ id: "bias", severity: "ok", label: `anchor-band bias ${anchor_bias_pct >= 0 ? "+" : ""}${anchor_bias_pct.toFixed(1)}%`, detail: "" });

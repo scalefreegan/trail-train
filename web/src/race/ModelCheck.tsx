@@ -50,11 +50,17 @@ function ErrBar({ pct, max }: { pct: number; max: number }) {
   );
 }
 
+/** Below this many runs a median is an anecdote; the row renders dimmed so a
+    band of 3 cannot carry the same visual authority as a band of 37. */
+const THIN_BAND_N = 8;
+
 function BandRow({ b, max }: { b: Band; max: number }) {
+  const thin = b.n < THIN_BAND_N;
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "88px 30px 1fr 52px", gap: 8, alignItems: "center", padding: "3px 0" }}>
+    <div style={{ display: "grid", gridTemplateColumns: "88px 30px 1fr 52px", gap: 8, alignItems: "center", padding: "3px 0", opacity: thin ? 0.55 : 1 }}
+      title={thin ? `${b.n} runs — too few to weigh heavily` : undefined}>
       <span style={{ fontSize: 11.5, color: "var(--mist-dim)" }}>{b.label}</span>
-      <span className="numerals" style={{ fontSize: 10, color: "var(--mist-mute)" }}>n{b.n}</span>
+      <span className="numerals" style={{ fontSize: 10, color: thin ? "var(--lamp)" : "var(--mist-mute)" }}>n{b.n}</span>
       <ErrBar pct={b.median_err_pct} max={max} />
       <span className="numerals" style={{ fontSize: 11, textAlign: "right", color: Math.abs(b.median_err_pct) >= 3 ? "var(--lamp)" : "var(--mist-dim)" }}>
         {b.median_err_pct >= 0 ? "+" : ""}{b.median_err_pct.toFixed(1)}%
@@ -78,38 +84,61 @@ function Band3({ best, avg, worst, goal }: { best: number; avg: number; worst: n
       <svg viewBox={`0 0 100 ${H}`} preserveAspectRatio="none" style={{ display: "block", width: "100%", height: H }}>
         <rect x={x(best)} y={20} width={Math.max(0.4, x(worst) - x(best))} height={8} fill="var(--lamp)" opacity={0.18} />
         <rect x={x(best)} y={20} width={Math.max(0.4, x(avg) - x(best))} height={8} fill="var(--lamp)" opacity={0.28} />
-        {[["best", best, "var(--pine)"], ["expected", avg, "var(--lamp)"], ["worst", worst, "var(--ember)"]].map(([, h, c], i) => (
-          <rect key={i} x={x(h as number) - 0.15} y={16} width={0.3} height={16} fill={c as string} />
+        {([["best", best, "var(--pine)"], ["expected", avg, "var(--lamp)"], ["worst", worst, "var(--ember)"]] as const).map(([, h, c], i) => (
+          <rect key={i} x={x(h) - 0.15} y={16} width={0.3} height={16} fill={c} />
         ))}
         {goal != null && (
           <rect x={x(goal) - 0.15} y={10} width={0.3} height={28} fill="var(--creek)" strokeDasharray="2 2" />
         )}
       </svg>
       {/* Labels are pinned to the same scale as the ticks, not spread with
-          space-between. Those coincide only while `expected` is the midpoint
-          of best/worst — which stops being true the moment a goal outside the
-          band widens the scale, and then every label points at the wrong mark. */}
+          space-between — those only coincide while `expected` happens to be
+          the band midpoint. Anchors then get a one-pass separation sweep: a
+          tight fit (small residStd) puts best and expected a fraction of a
+          percent apart, where tick-exact anchors overlap the text. Ticks stay
+          exact; only the words move. */}
       <div style={{ position: "relative", height: 14, marginTop: -6, fontSize: 10 }}>
-        {([["best", best, "var(--pine)"], ["expected", avg, "var(--lamp)"], ["worst", worst, "var(--ember)"]] as const).map(([label, h, c], i) => (
-          <span
-            key={label}
-            className="numerals"
-            style={{
-              position: "absolute", top: 0, color: c, whiteSpace: "nowrap",
-              left: `${x(h)}%`,
-              // clamp the end labels inward so neither runs off the panel
-              transform: i === 0 ? "translateX(0)" : i === 2 ? "translateX(-100%)" : "translateX(-50%)",
-            }}
-          >
-            {label} {fmtElapsed(h)}
-          </span>
-        ))}
+        {(() => {
+          const items = ([["best", best, "var(--pine)"], ["expected", avg, "var(--lamp)"], ["worst", worst, "var(--ember)"]] as const)
+            .map(([label, h, c]) => ({ label, h, c, anchor: x(h) }));
+          // minimum horizontal separation between label anchors, in % of width
+          const MIN_GAP = 20;
+          // sweep left→right pushing labels right, then clamp the tail back
+          // inside and sweep right→left so the whole cluster stays on-panel
+          for (let i = 1; i < items.length; i++) {
+            items[i].anchor = Math.max(items[i].anchor, items[i - 1].anchor + MIN_GAP);
+          }
+          items[items.length - 1].anchor = Math.min(items[items.length - 1].anchor, 100);
+          for (let i = items.length - 2; i >= 0; i--) {
+            items[i].anchor = Math.min(items[i].anchor, items[i + 1].anchor - MIN_GAP);
+          }
+          items[0].anchor = Math.max(items[0].anchor, 0);
+          return items.map(({ label, h, c, anchor }, i) => (
+            <span
+              key={label}
+              className="numerals"
+              style={{
+                position: "absolute", top: 0, color: c, whiteSpace: "nowrap",
+                left: `${anchor}%`,
+                // clamp the end labels inward so neither runs off the panel
+                transform: i === 0 ? "translateX(0)" : i === items.length - 1 ? "translateX(-100%)" : "translateX(-50%)",
+              }}
+            >
+              {label} {fmtElapsed(h)}
+            </span>
+          ));
+        })()}
       </div>
       {goal != null && (
         <div style={{ fontSize: 11.5, color: "var(--mist-dim)", lineHeight: 1.6, marginTop: 8 }}>
           Your goal of <span className="numerals" style={{ color: "var(--creek)" }}>{fmtElapsed(goal)}</span>{" "}
           {goalInside
-            ? <>sits <strong style={{ color: "var(--mist)" }}>inside</strong> the band, {fmtElapsed(avg - goal)} faster than expected — reachable, but it is not the expected case. An expected time slower than your goal is the model disagreeing with your target, not an error.</>
+            // inside the band, but WHICH side of expected changes the whole
+            // sentence — fmtElapsed(avg - goal) on a goal slower than expected
+            // rendered a garbled negative ("-2h 44m faster than expected")
+            ? goal <= avg
+              ? <>sits <strong style={{ color: "var(--mist)" }}>inside</strong> the band, {fmtElapsed(avg - goal)} faster than expected — reachable, but it is not the expected case. An expected time slower than your goal is the model disagreeing with your target, not an error.</>
+              : <>sits <strong style={{ color: "var(--mist)" }}>inside</strong> the band, {fmtElapsed(goal - avg)} <strong style={{ color: "var(--pine)" }}>slower than expected</strong> — the model thinks you beat it in the median case.</>
             : goal < best
             ? <>is <strong style={{ color: "var(--ember)" }}>faster than the best case</strong> this model can produce. Nothing in your training data supports it.</>
             : <>is <strong style={{ color: "var(--mist)" }}>slower than the worst case</strong> — you have it comfortably.</>}
@@ -164,10 +193,11 @@ export function ModelCheck() {
             back-test · median error by distance
           </span>
           <p style={{ fontSize: 11.5, color: "var(--mist-mute)", lineHeight: 1.55, margin: "0 0 8px", maxWidth: "72ch" }}>
-            Each band compares what the fit predicted for your own runs against what you actually ran.{" "}
-            <span style={{ color: "var(--ember)" }}>Positive = you ran slower</span> than the model expected;{" "}
-            <span style={{ color: "var(--creek)" }}>negative = faster</span>. A least-squares fit is unbiased
-            overall by construction, so the structure between bands is the part that means anything.
+            Each run is predicted by a model refit <em>without</em> that run (leave-one-out), then compared to
+            what you actually ran — an in-sample test would flatter the fit most exactly in the long-run band
+            it weights hardest.{" "}
+            <span style={{ color: "var(--ember)" }}>Positive = you ran slower</span> than predicted;{" "}
+            <span style={{ color: "var(--creek)" }}>negative = faster</span>. Dimmed rows are too thin to weigh heavily.
           </p>
           {cal.by_distance.map((b) => <BandRow key={b.label} b={b} max={maxErr} />)}
         </div>
@@ -187,13 +217,16 @@ export function ModelCheck() {
                   {anchor >= 0 ? "+" : ""}{anchor.toFixed(1)}%
                 </span>
               </span>
-              <span className="eyebrow numerals" style={{ fontSize: 9 }}>n{cal.anchor_n} · 16–30 mi</span>
+              <span className="eyebrow numerals" style={{ fontSize: 9, color: cal.anchor_n < 8 ? "var(--lamp)" : undefined }}>
+                n{cal.anchor_n} · 15–25 mi{cal.anchor_n < 8 ? " · thin sample" : ""}
+              </span>
             </div>
             <p style={{ fontSize: 11.5, color: "var(--mist-dim)", lineHeight: 1.6, margin: "6px 0 0", maxWidth: "72ch" }}>
-              The projection reads its fitness pace at a 20-mile reference and lets the fatigue curve carry
-              everything past it, so this is the band whose error actually scales into the race time.{" "}
+              The projection evaluates its fitness pace at a single 20-mile reference point and lets the fatigue
+              curve carry everything past it — this band is the held-out check on how the model behaves around
+              that point, so error here scales into the race time.{" "}
               {Math.abs(anchor) < 3
-                ? <>At {anchor >= 0 ? "+" : ""}{anchor.toFixed(1)}% it is inside the noise of {cal.anchor_n} runs — the fit is
+                ? <>At {anchor >= 0 ? "+" : ""}{anchor.toFixed(1)}% it is inside the noise of {cal.anchor_n} held-out runs — the fit is
                     tracking you here, and your {settings.calibration}% calibration sits on top of it as a deliberate
                     race-day margin rather than a correction for anything measured.</>
                 : <>That is large enough to matter. {cal.suggested_calibration_pct != null
@@ -230,8 +263,10 @@ export function ModelCheck() {
             </span>
             <div style={{ overflowX: "auto" }}>
               <div style={{ minWidth: 460 }}>
-                {[...cal.long_cohort].sort((a, b) => b.distance_mi - a.distance_mi).slice(0, 6).map((r) => (
-                  <div key={r.date + r.title} style={{ display: "grid", gridTemplateColumns: "74px 56px 62px 1fr 52px", gap: 8, alignItems: "baseline", padding: "3px 0", borderBottom: "1px dotted var(--edge)" }}>
+                {/* date+title alone collides on a double-run day with Strava's
+                    default titles; distance disambiguates the realistic cases */}
+                {[...cal.long_cohort].sort((a, b) => b.distance_mi - a.distance_mi).slice(0, 6).map((r, i) => (
+                  <div key={`${r.date}-${r.title}-${r.distance_mi}-${i}`} style={{ display: "grid", gridTemplateColumns: "74px 56px 62px 1fr 52px", gap: 8, alignItems: "baseline", padding: "3px 0", borderBottom: "1px dotted var(--edge)" }}>
                     <span className="numerals" style={{ fontSize: 10.5, color: "var(--mist-mute)" }}>{r.date}</span>
                     <span className="numerals" style={{ fontSize: 11.5, color: "var(--mist)" }}>{r.distance_mi.toFixed(1)} mi</span>
                     <span className="numerals" style={{ fontSize: 10.5, color: "var(--mist-mute)" }}>{Math.round(r.vert_ft_per_mi)} ft/mi</span>

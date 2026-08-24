@@ -270,8 +270,9 @@ function gainBetween(profile: CourseProfilePoint[], fromMi: number, toMi: number
 
 /** Reference distance (mi) at which the fitted fitness pace is evaluated — the
     athlete's long-run regime. See projectRace's note on why kDist isn't
-    extrapolated to total_mi. */
-const D_REF = 20;
+    extrapolated to total_mi. Exported so calibration.ts derives its anchor
+    band from the SAME constant instead of a hand-typed copy that drifts. */
+export const D_REF = 20;
 
 /** First-half restraint window: full hold-back through mile 50, tapering
     linearly to zero by mile 60 (no pace cliff at an aid station boundary).
