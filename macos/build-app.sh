@@ -10,7 +10,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 APP_NAME="Basecamp"
-DEST="$HOME/Applications/$APP_NAME.app"
+# /Applications so the app shows up where every other app lives (Finder's
+# sidebar favorite, Launchpad, Spotlight); admin-group writable, no sudo
+DEST="/Applications/$APP_NAME.app"
 ICON_PNG="icon-1024.png"
 
 [ -f "$ICON_PNG" ] || { echo "missing $ICON_PNG — render macos/icon.html at 1024x1024 first"; exit 1; }
@@ -19,6 +21,13 @@ ICON_PNG="icon-1024.png"
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
 osacompile -s -o "$BUILD_DIR/$APP_NAME.app" Basecamp.applescript
+
+# 1b. kill osacompile's baked-in icon pipeline: modern macOS resolves the
+# icon via CFBundleIconName -> Assets.car (which ships the generic scroll
+# applet icon) and IGNORES CFBundleIconFile while they exist. Removing both
+# makes the system fall back to our icns.
+rm -f "$BUILD_DIR/$APP_NAME.app/Contents/Resources/Assets.car"
+/usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$BUILD_DIR/$APP_NAME.app/Contents/Info.plist" 2>/dev/null || true
 
 # 2. icns from the 1024 master (iconutil wants the full size ladder)
 ICONSET="$BUILD_DIR/icon.iconset"
@@ -69,12 +78,16 @@ PLIST_EOF
 # generic icon instead of its own.
 codesign --force --deep --sign - "$BUILD_DIR/$APP_NAME.app"
 
-mkdir -p "$HOME/Applications"
-rm -rf "$DEST" "$HOME/Applications/$HELPER.app"
+# clean up every previous install location, including the old ~/Applications
+# era and the briefly flat-installed helper
+rm -rf "$DEST" "$HOME/Applications/$APP_NAME.app" "$HOME/Applications/$HELPER.app"
 cp -R "$BUILD_DIR/$APP_NAME.app" "$DEST"
 # refresh the LaunchServices registration so the icon updates immediately
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$DEST" 2>/dev/null || true
 touch "$DEST"
+# the Dock caches app icons aggressively; restart it (instant) so the fresh
+# icon shows without a logout
+killall Dock 2>/dev/null || true
 
 echo "installed $DEST"
 echo "launch:  open -a $APP_NAME     quit: right-click the Dock icon → Quit (stops the server)"
