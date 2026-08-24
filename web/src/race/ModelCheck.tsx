@@ -100,17 +100,26 @@ function Band3({ best, avg, worst, goal }: { best: number; avg: number; worst: n
       <div style={{ position: "relative", height: 14, marginTop: -6, fontSize: 10 }}>
         {(() => {
           const items = ([["best", best, "var(--pine)"], ["expected", avg, "var(--lamp)"], ["worst", worst, "var(--ember)"]] as const)
-            .map(([label, h, c]) => ({ label, h, c, anchor: x(h) }));
-          // minimum horizontal separation between label anchors, in % of width
-          const MIN_GAP = 20;
+            .map(([label, h, c]) => ({ label, h, c, anchor: x(h), text: `${label} ${fmtElapsed(h)}` }));
+          // Required separation is between text EDGES, not anchors: the first
+          // label extends right of its anchor, the middle both ways, the last
+          // left — so each adjacent pair needs (right-extent of the left one +
+          // left-extent of the right one), estimated from character count
+          // (10px monospace ≈ 6.1 px/char) and converted to % of the measured
+          // width. A uniform anchor gap overlapped by exactly the anchoring
+          // asymmetry on narrow panels.
+          const pxW = (t: string) => t.length * 6.1;
+          const rightExtent = (i: number) => (i === 0 ? pxW(items[i].text) : i === items.length - 1 ? 0 : pxW(items[i].text) / 2);
+          const leftExtent = (i: number) => (i === 0 ? 0 : i === items.length - 1 ? pxW(items[i].text) : pxW(items[i].text) / 2);
+          const gapPct = (i: number) => ((rightExtent(i) + leftExtent(i + 1) + 6) / Math.max(1, width)) * 100;
           // sweep left→right pushing labels right, then clamp the tail back
           // inside and sweep right→left so the whole cluster stays on-panel
           for (let i = 1; i < items.length; i++) {
-            items[i].anchor = Math.max(items[i].anchor, items[i - 1].anchor + MIN_GAP);
+            items[i].anchor = Math.max(items[i].anchor, items[i - 1].anchor + gapPct(i - 1));
           }
           items[items.length - 1].anchor = Math.min(items[items.length - 1].anchor, 100);
           for (let i = items.length - 2; i >= 0; i--) {
-            items[i].anchor = Math.min(items[i].anchor, items[i + 1].anchor - MIN_GAP);
+            items[i].anchor = Math.min(items[i].anchor, items[i + 1].anchor - gapPct(i));
           }
           items[0].anchor = Math.max(items[0].anchor, 0);
           return items.map(({ label, h, c, anchor }, i) => (
