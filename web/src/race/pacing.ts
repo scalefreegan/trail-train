@@ -270,8 +270,9 @@ function gainBetween(profile: CourseProfilePoint[], fromMi: number, toMi: number
 
 /** Reference distance (mi) at which the fitted fitness pace is evaluated — the
     athlete's long-run regime. See projectRace's note on why kDist isn't
-    extrapolated to total_mi. */
-const D_REF = 20;
+    extrapolated to total_mi. Exported so calibration.ts derives its anchor
+    band from the SAME constant instead of a hand-typed copy that drifts. */
+export const D_REF = 20;
 
 /** First-half restraint window: full hold-back through mile 50, tapering
     linearly to zero by mile 60 (no pace cliff at an aid station boundary).
@@ -315,11 +316,16 @@ function restraintWeightIntegral(mi: number): number {
  *   fatigue/restraint at that mile and the segment's technicality factor.
  *   Station splits are the integrals between station boundaries — reported
  *   split paces are true terrain-weighted averages.
- * - kDist was fitted on training runs ≤ ~26 mi. Linearly extrapolating it to
- *   mile 100 double-counts fatigue and explodes, so the fitness pace is
- *   evaluated at a fixed reference distance (D_REF = 20 mi, the athlete's
- *   long-run regime) and ALL ultra-distance slowdown comes from the explicit
- *   fatigue multiplier. Don't "fix" this back to kDist·total_mi.
+ * - kDist is fitted on training runs, which are a fraction of race distance
+ *   however long they get. Linearly extrapolating it to mile 100
+ *   double-counts fatigue and explodes, so the fitness pace is evaluated at a
+ *   fixed reference distance (D_REF = 20 mi, the athlete's long-run regime)
+ *   and ALL ultra-distance slowdown comes from the explicit fatigue
+ *   multiplier. Don't "fix" this back to kDist·total_mi.
+ *   How far that extrapolation actually reaches is not a constant to assert
+ *   in a comment — it moves every time a longer run lands. calibration.ts
+ *   computes it from the data and the model-check panel flags it, along with
+ *   whether the fit is biased in the band D_REF reads from.
  * - Fatigue COMPOUNDS: mult(mi) = (1 + f)^(fatigueMiles(mi)/10). Ultra fade is
  *   nonlinear — mild through 50, heavy after 80 (at 5%: ×1.28 @50mi, ×1.63
  *   @100mi). With restraint, fatigue-miles accrue slower than course miles

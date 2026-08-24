@@ -18,6 +18,8 @@ import { SectionTag, Contours } from "./atoms";
 import { RacePlanner } from "./race/RacePlanner";
 import { ClimbComparison } from "./race/ClimbComparison";
 import { NutritionPlan } from "./race/NutritionPlan";
+import { ModelCheck } from "./race/ModelCheck";
+import { RacePlanProvider } from "./race/RacePlanProvider";
 import { useCourse } from "./race/useRaceData";
 
 /* ================================================================== */
@@ -2149,11 +2151,20 @@ function AppBody() {
             ) : view === "race" ? (
               <div key={`race-${key}`}>
                 <ClimbComparison />
-                <RacePlanner />
+                {/* one shared plan instance — planner sliders and the model
+                    check must never disagree on the same screen */}
+                <RacePlanProvider>
+                  <RacePlanner />
+                  <ModelCheck />
+                </RacePlanProvider>
               </div>
             ) : (
               <div key={`fuel-${key}`}>
-                <NutritionPlan />
+                {/* single consumer, but useRacePlan requires the provider —
+                    a fallback instance was the divergence footgun */}
+                <RacePlanProvider>
+                  <NutritionPlan />
+                </RacePlanProvider>
               </div>
             )}
           </main>
