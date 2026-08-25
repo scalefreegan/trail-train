@@ -34,6 +34,12 @@ const START = arg("start", "2026-04-27");
 const END   = arg("end",   new Date().toISOString().slice(0, 10));
 const AUTH  = !!arg("auth", false);
 
+function plusDay(isoDate) {
+  const d = new Date(isoDate + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 async function loadConfig() {
   let cfg;
   try {
@@ -212,12 +218,18 @@ async function main() {
   console.log(`• fetching oura ${START} → ${END}…`);
 
   const params = { start_date: START, end_date: END };
+  // The session routes (sleep, enhanced_tag) EXCLUDE records whose day equals
+  // end_date, while the daily_* routes include it — verified empirically
+  // 2026-08-25. Without the +1, the newest night always arrives score-only
+  // (no duration/HRV/RHR). Records past END are filtered back out below so a
+  // historical --end window stays honest.
+  const sessionParams = { start_date: START, end_date: plusDay(END) };
   const [dailySleep, sleeps, dailyReadiness, dailyActivity, tags] = await Promise.all([
     ouraGet("daily_sleep",      token, params),
-    ouraGet("sleep",            token, params),
+    ouraGet("sleep",            token, sessionParams),
     ouraGet("daily_readiness",  token, params),
     ouraGet("daily_activity",   token, params),
-    ouraGet("enhanced_tag",     token, params).catch(() => []),
+    ouraGet("enhanced_tag",     token, sessionParams).catch(() => []),
   ]);
 
   const byDay = new Map();
@@ -238,7 +250,7 @@ async function main() {
   // would blur the main-night reading.
   const sleepsByDay = new Map();
   for (const sl of sleeps) {
-    if (!sl.day) continue;
+    if (!sl.day || sl.day > END) continue;
     const arr = sleepsByDay.get(sl.day) ?? [];
     arr.push(sl);
     sleepsByDay.set(sl.day, arr);
@@ -254,15 +266,17 @@ async function main() {
       (m, s) => (!m || (s.total_sleep_duration ?? 0) > (m.total_sleep_duration ?? 0) ? s : m),
       null,
     );
-    if (!main) continue; // nap-only day: no night to report
+    const napSum = sumOrNull(naps, "total_sleep_duration");
+    if (!main && napSum == null) continue; // nothing reportable (e.g. "rest" sessions only)
     const r = ensure(day);
+    r.nap_s = napSum;
+    if (!main) continue; // nap-only day: no night vitals, but keep the nap visible
     r.total_sleep_s    = sumOrNull(nights, "total_sleep_duration");
     r.time_in_bed_s    = sumOrNull(nights, "time_in_bed");
     r.rem_sleep_s      = sumOrNull(nights, "rem_sleep_duration");
     r.deep_sleep_s     = sumOrNull(nights, "deep_sleep_duration");
     r.light_sleep_s    = sumOrNull(nights, "light_sleep_duration");
     r.awake_s          = sumOrNull(nights, "awake_time");
-    r.nap_s            = sumOrNull(naps, "total_sleep_duration");
     r.avg_hrv          = main.average_hrv ?? null;
     r.avg_hr           = main.average_heart_rate ?? null;
     r.lowest_hr        = main.lowest_heart_rate ?? null;
@@ -290,7 +304,7 @@ async function main() {
 
   const tagsByDay = new Map();
   for (const t of tags) {
-    if (!t.start_day) continue;
+    if (!t.start_day || t.start_day > END) continue;
     const arr = tagsByDay.get(t.start_day) ?? [];
     arr.push({
       tag_type_code: t.tag_type_code ?? null,
