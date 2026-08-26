@@ -41,16 +41,26 @@ const START = arg("start", "2026-04-27");
 const END   = arg("end",   new Date().toISOString().slice(0, 10));
 const AUTH  = !!arg("auth", false);
 
+// Validate a --start/--end value. Two traps, both silent without this:
+// arg() returns boolean `true` for a valueless flag (`--end`, or `--end
+// --auth`), and JS's ISO parser accepts any DD from 01-31 regardless of the
+// month, rolling 2026-02-30 over to March 2. The rollover is the nastier one:
+// it never throws, so the session routes would silently be fetched over a
+// wider window than the daily_* routes. Round-tripping the date back to a
+// string is what catches it — Number.isNaN alone does not.
+function assertIsoDate(value, flag) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`${flag} must be YYYY-MM-DD (got ${JSON.stringify(value)})`);
+  }
+  const d = new Date(value + "T00:00:00Z");
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== value) {
+    throw new Error(`${flag} is not a real calendar date (got ${JSON.stringify(value)})`);
+  }
+  return d;
+}
+
 function plusDay(isoDate) {
-  // Guard first: a malformed --start/--end otherwise surfaces as a bare
-  // "Invalid time value" with no hint about which argument was wrong.
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
-    throw new Error(`bad date ${JSON.stringify(isoDate)} — use YYYY-MM-DD (e.g. --end 2026-08-25)`);
-  }
-  const d = new Date(isoDate + "T00:00:00Z");
-  if (Number.isNaN(d.getTime())) {
-    throw new Error(`bad date ${JSON.stringify(isoDate)} — not a real calendar date`);
-  }
+  const d = assertIsoDate(isoDate, "--end");
   d.setUTCDate(d.getUTCDate() + 1);
   return d.toISOString().slice(0, 10);
 }
@@ -223,6 +233,12 @@ async function ouraGet(endpoint, token, params = {}) {
 }
 
 async function main() {
+  // Validate both window ends up front. START is never passed through
+  // plusDay(), so without this a bad --start reaches the API as the literal
+  // "true" and comes back as an opaque Oura-side error.
+  assertIsoDate(START, "--start");
+  assertIsoDate(END, "--end");
+  if (START > END) throw new Error(`--start ${START} is after --end ${END}`);
   let cfg = await loadConfig();
   if (AUTH) {
     cfg = await authFlow(cfg);
