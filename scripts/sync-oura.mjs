@@ -24,7 +24,14 @@ import { exec } from "node:child_process";
 import { arg, writeJsonAtomic } from "./lib.mjs";
 
 const CONFIG_PATH = path.join(os.homedir(), ".config", "oura", "config.json");
-const OUT_PATH = path.join(process.cwd(), "web", "public", "oura.json");
+// Resolve the output relative to this file, not the cwd. The documented way to
+// run this is `npm run sync:oura`, whose script lives in web/package.json — npm
+// runs it with cwd=web/, so a cwd-relative path wrote to web/web/public/ and
+// the dashboard (which reads web/public/) silently never saw the new data.
+// sync-strava.mjs and coach.mjs already use this pattern; this file was the
+// last holdout.
+const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const OUT_PATH = path.join(ROOT, "web", "public", "oura.json");
 const API = "https://api.ouraring.com/v2/usercollection";
 const AUTHORIZE_URL = "https://cloud.ouraring.com/oauth/authorize";
 const TOKEN_URL = "https://api.ouraring.com/oauth/token";
@@ -33,6 +40,30 @@ const SCOPES = ["daily", "heartrate", "tag", "personal"];
 const START = arg("start", "2026-04-27");
 const END   = arg("end",   new Date().toISOString().slice(0, 10));
 const AUTH  = !!arg("auth", false);
+
+// Validate a --start/--end value. Two traps, both silent without this:
+// arg() returns boolean `true` for a valueless flag (`--end`, or `--end
+// --auth`), and JS's ISO parser accepts any DD from 01-31 regardless of the
+// month, rolling 2026-02-30 over to March 2. The rollover is the nastier one:
+// it never throws, so the session routes would silently be fetched over a
+// wider window than the daily_* routes. Round-tripping the date back to a
+// string is what catches it — Number.isNaN alone does not.
+function assertIsoDate(value, flag) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`${flag} must be YYYY-MM-DD (got ${JSON.stringify(value)})`);
+  }
+  const d = new Date(value + "T00:00:00Z");
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== value) {
+    throw new Error(`${flag} is not a real calendar date (got ${JSON.stringify(value)})`);
+  }
+  return d;
+}
+
+function plusDay(isoDate) {
+  const d = assertIsoDate(isoDate, "--end");
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
 
 async function loadConfig() {
   let cfg;
@@ -202,6 +233,12 @@ async function ouraGet(endpoint, token, params = {}) {
 }
 
 async function main() {
+  // Validate both window ends up front. START is never passed through
+  // plusDay(), so without this a bad --start reaches the API as the literal
+  // "true" and comes back as an opaque Oura-side error.
+  assertIsoDate(START, "--start");
+  assertIsoDate(END, "--end");
+  if (START > END) throw new Error(`--start ${START} is after --end ${END}`);
   let cfg = await loadConfig();
   if (AUTH) {
     cfg = await authFlow(cfg);
@@ -212,12 +249,18 @@ async function main() {
   console.log(`• fetching oura ${START} → ${END}…`);
 
   const params = { start_date: START, end_date: END };
+  // The session routes (sleep, enhanced_tag) EXCLUDE records whose day equals
+  // end_date, while the daily_* routes include it — verified empirically
+  // 2026-08-25. Without the +1, the newest night always arrives score-only
+  // (no duration/HRV/RHR). Records past END are filtered back out below so a
+  // historical --end window stays honest.
+  const sessionParams = { start_date: START, end_date: plusDay(END) };
   const [dailySleep, sleeps, dailyReadiness, dailyActivity, tags] = await Promise.all([
     ouraGet("daily_sleep",      token, params),
-    ouraGet("sleep",            token, params),
+    ouraGet("sleep",            token, sessionParams),
     ouraGet("daily_readiness",  token, params),
     ouraGet("daily_activity",   token, params),
-    ouraGet("enhanced_tag",     token, params).catch(() => []),
+    ouraGet("enhanced_tag",     token, sessionParams).catch(() => []),
   ]);
 
   const byDay = new Map();
@@ -238,7 +281,7 @@ async function main() {
   // would blur the main-night reading.
   const sleepsByDay = new Map();
   for (const sl of sleeps) {
-    if (!sl.day) continue;
+    if (!sl.day || sl.day > END) continue;
     const arr = sleepsByDay.get(sl.day) ?? [];
     arr.push(sl);
     sleepsByDay.set(sl.day, arr);
@@ -254,15 +297,17 @@ async function main() {
       (m, s) => (!m || (s.total_sleep_duration ?? 0) > (m.total_sleep_duration ?? 0) ? s : m),
       null,
     );
-    if (!main) continue; // nap-only day: no night to report
+    const napSum = sumOrNull(naps, "total_sleep_duration");
+    if (!main && napSum == null) continue; // nothing reportable (e.g. "rest" sessions only)
     const r = ensure(day);
+    r.nap_s = napSum;
+    if (!main) continue; // nap-only day: no night vitals, but keep the nap visible
     r.total_sleep_s    = sumOrNull(nights, "total_sleep_duration");
     r.time_in_bed_s    = sumOrNull(nights, "time_in_bed");
     r.rem_sleep_s      = sumOrNull(nights, "rem_sleep_duration");
     r.deep_sleep_s     = sumOrNull(nights, "deep_sleep_duration");
     r.light_sleep_s    = sumOrNull(nights, "light_sleep_duration");
     r.awake_s          = sumOrNull(nights, "awake_time");
-    r.nap_s            = sumOrNull(naps, "total_sleep_duration");
     r.avg_hrv          = main.average_hrv ?? null;
     r.avg_hr           = main.average_heart_rate ?? null;
     r.lowest_hr        = main.lowest_heart_rate ?? null;
@@ -290,7 +335,7 @@ async function main() {
 
   const tagsByDay = new Map();
   for (const t of tags) {
-    if (!t.start_day) continue;
+    if (!t.start_day || t.start_day > END) continue;
     const arr = tagsByDay.get(t.start_day) ?? [];
     arr.push({
       tag_type_code: t.tag_type_code ?? null,

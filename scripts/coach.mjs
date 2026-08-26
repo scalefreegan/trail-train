@@ -34,6 +34,20 @@ const OUT_PATH = path.join(ROOT, "web", "public", "coach.json");
 // or one failure mode simply replaces the other.
 const MAX_TURNS = Number(arg("max-turns", 16));
 const TIMEOUT   = Number(arg("timeout",  300));
+// Model for the headless CLI. Pinned rather than inherited: without --model
+// the CLI silently uses whatever ~/.claude/settings.json happens to say, so
+// the readout's provenance depends on an unrelated global setting.
+// KEEP IN SYNC with COACH_MODEL in web/vite.config.ts (the chat endpoint) —
+// vite.config.ts can't import from scripts/ (its tsconfig has no allowJs).
+// arg() returns boolean true for a valueless flag (`--model`, or `--model
+// --timeout 5`), which String()'d to "true" and got spawned as an unknown
+// model. Fall back rather than pass a value the CLI is guaranteed to reject.
+// The env-var half must resolve identically to COACH_MODEL in vite.config.ts —
+// hence the same trim-then-default. Only this file also honours --model; the
+// chat endpoint has no CLI to read one from.
+const MODEL_DEFAULT = (process.env.TRAIL_COACH_MODEL || "").trim() || "claude-opus-5";
+const MODEL_ARG = arg("model", null);
+const MODEL = typeof MODEL_ARG === "string" && MODEL_ARG.trim() ? MODEL_ARG.trim() : MODEL_DEFAULT;
 // Narrative units for the readout — "metric" (default) or "imperial".
 // Passed by the dashboard's resync endpoint from the live UI toggle, or
 // set manually: `node scripts/coach.mjs --units imperial`.
@@ -262,6 +276,7 @@ function runClaude({ prompt, systemPrompt, maxTurns, timeoutSec, cwd, allowedToo
     const args = [
       "-p", prompt,
       "--output-format", "json",
+      "--model", MODEL,
       "--max-turns", String(maxTurns),
     ];
     for (const t of allowedTools) args.push("--allowedTools", t);
@@ -382,7 +397,7 @@ Produce the JSON coach readout per the schema in the system prompt. Be specific 
 next 14 days for ${facts.race.name} (${facts.race.days_until} days out). Anchor every claim
 in real numbers from the data.`;
 
-  console.log(`• spawning claude -p (max-turns ${MAX_TURNS}, timeout ${TIMEOUT}s)…`);
+  console.log(`• spawning claude -p (model ${MODEL}, max-turns ${MAX_TURNS}, timeout ${TIMEOUT}s)…`);
   const t0 = Date.now();
   if (!facts.pacing) console.warn("• facts.pacing null (< 8 usable runs) — agent will estimate durations without a pacing model");
   const { stdout } = await runClaude({
@@ -417,7 +432,7 @@ in real numbers from the data.`;
 
   const payload = {
     generated_at: new Date().toISOString(),
-    model: "claude-code · headless",
+    model: `${MODEL} · claude-code headless`,
     elapsed_s: +elapsed,
     num_turns: numTurns,
     cost_usd: cost,
