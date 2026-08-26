@@ -176,6 +176,12 @@ const failureHint = (text: string): string | null => {
    complexity varies and the retry below is a fallback, not a plan. */
 const CHAT_MAX_TURNS = 16
 const CHAT_TIMEOUT_MS = 300_000
+/* Model for the headless CLI. Pinned rather than inherited: without --model the
+   CLI silently uses whatever ~/.claude/settings.json happens to say, so the
+   coach's model would depend on an unrelated global setting.
+   KEEP IN SYNC with MODEL in scripts/coach.mjs (the resync readout) — this file
+   can't import from scripts/ (tsconfig.node.json has no allowJs). */
+const COACH_MODEL = (process.env.TRAIL_COACH_MODEL || '').trim() || 'claude-opus-5'
 /* One retry when the budget is what failed. The agent is told to answer from
    what it already read, so a blown budget degrades to a partial answer instead
    of an error the athlete can do nothing with. Only ever once. */
@@ -373,6 +379,7 @@ function chatApi(): Plugin {
           proc = spawn('claude', [
             '-p', promptText,
             '--output-format', 'json',
+            '--model', COACH_MODEL,
             '--max-turns', String(maxTurns),
             '--allowedTools', 'Read',
             '--append-system-prompt', sysPrompt,

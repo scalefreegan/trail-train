@@ -24,7 +24,14 @@ import { exec } from "node:child_process";
 import { arg, writeJsonAtomic } from "./lib.mjs";
 
 const CONFIG_PATH = path.join(os.homedir(), ".config", "oura", "config.json");
-const OUT_PATH = path.join(process.cwd(), "web", "public", "oura.json");
+// Resolve the output relative to this file, not the cwd. The documented way to
+// run this is `npm run sync:oura`, whose script lives in web/package.json — npm
+// runs it with cwd=web/, so a cwd-relative path wrote to web/web/public/ and
+// the dashboard (which reads web/public/) silently never saw the new data.
+// sync-strava.mjs and coach.mjs already use this pattern; this file was the
+// last holdout.
+const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const OUT_PATH = path.join(ROOT, "web", "public", "oura.json");
 const API = "https://api.ouraring.com/v2/usercollection";
 const AUTHORIZE_URL = "https://cloud.ouraring.com/oauth/authorize";
 const TOKEN_URL = "https://api.ouraring.com/oauth/token";
@@ -35,7 +42,15 @@ const END   = arg("end",   new Date().toISOString().slice(0, 10));
 const AUTH  = !!arg("auth", false);
 
 function plusDay(isoDate) {
+  // Guard first: a malformed --start/--end otherwise surfaces as a bare
+  // "Invalid time value" with no hint about which argument was wrong.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
+    throw new Error(`bad date ${JSON.stringify(isoDate)} — use YYYY-MM-DD (e.g. --end 2026-08-25)`);
+  }
   const d = new Date(isoDate + "T00:00:00Z");
+  if (Number.isNaN(d.getTime())) {
+    throw new Error(`bad date ${JSON.stringify(isoDate)} — not a real calendar date`);
+  }
   d.setUTCDate(d.getUTCDate() + 1);
   return d.toISOString().slice(0, 10);
 }
