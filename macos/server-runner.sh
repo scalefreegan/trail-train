@@ -1,8 +1,11 @@
 #!/bin/zsh
-# Executable of "Basecamp Server.app" (LSUIElement — faceless). Runs the dev
-# server with this process as its parent. This exact shape is the one that
-# empirically survives macOS's ~/Documents privacy layer for this repo —
-# a compiled-applet variant of the same bundle was silently denied.
+# The real work of "Basecamp Server.app" (LSUIElement — faceless). Runs the
+# dev server with this process as its parent. Since macOS 26.6.2 this script
+# is NOT the bundle's executable — a compiled shim (server-shim.c) execs it,
+# because tccd stopped attributing TCC to script-executable bundles (the
+# process is /bin/zsh, a platform binary: silently denied, no prompt, and
+# Full Disk Access rows never match). The shim carries the bundle identity;
+# this script keeps the TCC-safe-cwd and blocking-child behavior.
 # cd / first: the inherited cwd can be an unreadable Documents path, which
 # makes every login-shell init (brew shellenv) and npm getcwd explode before
 # the real work starts.
