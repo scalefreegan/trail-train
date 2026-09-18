@@ -20,7 +20,8 @@ const HOT_THRESHOLD_C = 24;
 // shared with the settings API, and a module that only reads config/ is a
 // cheaper import for vite.config.ts than all of facts.mjs. Re-exported here
 // so every existing `import { loadProfile } from "./facts.mjs"` still works.
-export { loadProfile } from "./profile.mjs";
+import { loadProfile } from "./profile.mjs";
+export { loadProfile };
 
 // Generic mode's window length. Re-exported because this module was its
 // original home and coach.mjs/the tests import it from here; the definition
