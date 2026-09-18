@@ -53,6 +53,16 @@ export const RENAME_NEAR_MI = 1.5;
  */
 const NEVER_MERGED = new Set(["schema_version", "slug", "status", "provenance", "unresolved"]);
 
+/**
+ * Fields whose EMPTY incoming value says nothing rather than "clear it".
+ *
+ * `sources` is the cache manifest, and a refresh whose fetches all failed
+ * (a dead site, no network) produces an empty one. Taking that literally would
+ * erase the record of where the race was read from — the very thing the next
+ * refresh diffs against — on the strength of a failed fetch.
+ */
+const NO_STATEMENT_WHEN_EMPTY = new Set(["sources"]);
+
 /** Which top-level arrays have an identity, and what it is. */
 const ARRAY_KEYS = {
   "race.json": { aid_stations: { key: "name", near: "total_mi", within: RENAME_NEAR_MI } },
@@ -164,6 +174,7 @@ export function mergeFile(current, incoming, { file = "race.json", at = new Date
       const from = isObj(cur) ? cur[key] : undefined;
       const has = isObj(cur) && key in cur;
       const arrayCfg = !prefix ? arrays[key] : null;
+      if (!prefix && NO_STATEMENT_WHEN_EMPTY.has(key) && Array.isArray(to) && to.length === 0) continue;
 
       if (arrayCfg && Array.isArray(to) && Array.isArray(from)) {
         mergeKeyedArray({ path, cfg: arrayCfg, from, to, topField });

@@ -394,6 +394,55 @@ test("re-intaking the same sources yields an empty diff", async (t) => {
   assert.equal(race.status, "active");
 });
 
+test("re-intaking the archived MM100 against its own race.json yields an empty diff", async (t) => {
+  // The bead's determinism check (PRD §8): the pipeline run twice over the
+  // same sources must produce the same folder, provenance timestamps aside.
+  // The canned agent reply IS the folder's own agent-owned fields, so what is
+  // under test is everything between them and the merge — buildRaceJson's
+  // shaping, the provenance stamps, and the merge's idea of "changed".
+  const live = await fs.readFile(path.join(ROOT, "races", MM100, "race.json"), "utf8").catch(() => null);
+  if (!live) return t.skip(`races/${MM100}/ not in this checkout`);
+  const race = JSON.parse(live);
+
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-refresh-mm100-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const dir = path.join(tmp, "races", MM100);
+  await fs.mkdir(dir, { recursive: true });
+  // Every URL points at the dead port: the refresh follows the race's own
+  // links AND its recorded sources, and a unit test must not go to the network
+  // to find the 2026 manual. The source LIST is kept — it is what the "a
+  // failed fetch says nothing" rule has to protect.
+  const staged = {
+    ...race,
+    links: { site: DEAD_SITE },
+    sources: (race.sources ?? []).map((s) => ({ ...s, ref: DEAD_SITE })),
+  };
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(staged, null, 2));
+
+  // Everything the intake agent is allowed to write, straight back at it.
+  const echo = {
+    name: race.name, short: race.short, edition_year: race.edition_year, date: race.date,
+    start_time: race.start_time, timezone: race.timezone, location: race.location,
+    format: race.format, distance_mi: race.distance_mi, gain_ft: race.gain_ft,
+    elevation: race.elevation, cutoff_h: race.cutoff_h, features: race.features,
+    aid_stations: race.aid_stations, crew_info: race.crew_info,
+    coach_notes: race.coach_notes, links: { site: DEAD_SITE }, visual: race.visual,
+  };
+
+  const { diff } = await runRefresh({
+    root: tmp,
+    slug: MM100,
+    skipPlan: true,
+    runAgent: cannedIntake(echo),
+  });
+  assert.deepEqual(diff.diff, [], diff.diff.map((d) => `${d.path}:${d.kind}`).join(" | "));
+  assert.deepEqual(diff.conflicts, []);
+
+  // …and the provenance timestamps DID move, which is exactly what must not count
+  const shadow = JSON.parse(await fs.readFile(path.join(dir, SHADOW, "race.json"), "utf8"));
+  assert.notEqual(shadow.provenance.aid_stations.at, race.provenance.aid_stations.at);
+});
+
 test("sourceStamp is sortable and minute-resolution", () => {
   assert.equal(sourceStamp(new Date("2027-08-13T14:05:09Z")), "2027-08-13-1405");
 });

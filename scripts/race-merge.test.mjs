@@ -287,6 +287,22 @@ test("a user-owned aid_stations array is kept whole", () => {
   assert.equal(conflicts[0].to.length, 5, "the whole proposed chart is the suggestion");
 });
 
+test("a refresh that fetched nothing does not erase the source list", () => {
+  const race = baseRace();
+  race.sources = [{ kind: "pdf", ref: "manual-2026.pdf", file: "manual-2026.pdf" }];
+  const incoming = structuredClone(race);
+  incoming.sources = [];
+
+  const { merged, diff } = mergeRace(race, incoming);
+  assert.deepEqual(merged.sources, race.sources);
+  assert.deepEqual(diff, [], "a failed fetch is not a statement about where the race came from");
+
+  // …but a cache that DID fetch something replaces it
+  const fetched = structuredClone(race);
+  fetched.sources = [{ kind: "pdf", ref: "manual-2027.pdf", file: "manual-2027.pdf" }];
+  assert.deepEqual(mergeRace(race, fetched).merged.sources, fetched.sources);
+});
+
 /* ------------------------- unresolved recompute --------------------------- */
 
 test("unresolved is recomputed from the merged race, not carried over", () => {
