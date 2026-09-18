@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import fsSync from "node:fs";
 import { fileURLToPath } from "node:url";
 import { loadRaceFolder } from "./race-config.mjs";
 import {
@@ -86,9 +87,12 @@ test("MM100 as the active race: the readout prompt carries it and race-block wk 
   assert.match(sys, /the goal is\narriving at the start line ready for 102\.6 mi \/ 15,900 ft/);
   assert.match(sys, /races\/mogollon-monster-100-2026\//);
   // the race folder's own config is readable; build/course.json is generated
-  // output this checkout does not have, so it must NOT be advertised
+  // output (gitignored) that is advertised only when it exists on disk — so
+  // the expectation follows the checkout instead of assuming a fresh clone.
   assert.match(sys, /races\/mogollon-monster-100-2026\/race\.json/);
-  assert.doesNotMatch(sys, /build\/course\.json/);
+  const built = fsSync.existsSync(path.join(ROOT, "races/mogollon-monster-100-2026/build/course.json"));
+  if (built) assert.match(sys, /build\/course\.json/);
+  else assert.doesNotMatch(sys, /build\/course\.json/);
 });
 
 /* -------- (b) the crewless fixture -------- */
