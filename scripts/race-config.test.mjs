@@ -10,9 +10,15 @@ import os from "node:os";
 import path from "node:path";
 import {
   getActiveRace,
+  getTrainingSlug,
   listRaces,
   loadActiveRace,
+  loadActiveRaceFolder,
   loadRaceFolder,
+  readActivePointer,
+  resolveViewedRace,
+  setActivePointer,
+  validateActivation,
   validateRaceJson,
   validateSingleActive,
 } from "./race-config.mjs";
@@ -180,7 +186,7 @@ test("getActiveRace bootstraps the pointer to null, never to a race", async (t) 
 
   assert.equal(await getActiveRace(root), null);
   const written = JSON.parse(await fs.readFile(path.join(root, "config", "active-race.json"), "utf8"));
-  assert.deepEqual(written, { slug: null });
+  assert.deepEqual(written, { slug: null, mode: "train" });
   assert.deepEqual(await loadActiveRace(root), { active: null });
 
   // a pointer that names a race is read back verbatim
@@ -199,6 +205,100 @@ test("getActiveRace rejects a malformed pointer", async (t) => {
   await assert.rejects(() => getActiveRace(root), /slug/);
   await fs.writeFile(p, JSON.stringify({ slug: "" }));
   await assert.rejects(() => getActiveRace(root), /non-empty string or null/);
+  await fs.writeFile(p, JSON.stringify({ slug: "san-juan", mode: "edit" }));
+  await assert.rejects(() => getActiveRace(root), /mode must be one of/);
+});
+
+/* --------------------- the pointer's train/view mode -------------------- */
+
+test("a pointer written before modes existed reads as train mode", async (t) => {
+  const root = await tempRoot(t);
+  await writeRaceFolder(root, "san-juan-softie-100-2027", { "race.json": validRace({ status: "active" }) });
+  await fs.mkdir(path.join(root, "config"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, "config", "active-race.json"),
+    JSON.stringify({ slug: "san-juan-softie-100-2027" }),
+  );
+
+  assert.deepEqual(await readActivePointer(root), { slug: "san-juan-softie-100-2027", mode: "train" });
+  assert.equal(await getTrainingSlug(root), "san-juan-softie-100-2027");
+  assert.equal((await loadActiveRaceFolder(root))?.slug, "san-juan-softie-100-2027");
+});
+
+test("view mode is on screen but is not the training target", async (t) => {
+  const root = await tempRoot(t);
+  await writeRaceFolder(root, "mogollon-monster-100-2026", {
+    "race.json": validRace({ slug: "mogollon-monster-100-2026", status: "archived" }),
+  });
+  await setActivePointer(root, { slug: "mogollon-monster-100-2026", mode: "view" });
+
+  const viewed = await resolveViewedRace(root);
+  assert.equal(viewed.slug, "mogollon-monster-100-2026");
+  assert.equal(viewed.mode, "view");
+  assert.equal(viewed.training, false);
+  assert.equal(viewed.folder.race.status, "archived");
+  // the coach's two questions both answer "generic mode"
+  assert.equal(await loadActiveRaceFolder(root), null);
+  assert.equal(await getTrainingSlug(root), null);
+  // but the pointer still names the folder on screen
+  assert.equal(await getActiveRace(root), "mogollon-monster-100-2026");
+});
+
+test("validateActivation: train needs an active folder, view does not", async (t) => {
+  const root = await tempRoot(t);
+  await writeRaceFolder(root, "one-100-2026", { "race.json": validRace({ slug: "one-100-2026", status: "archived" }) });
+  await writeRaceFolder(root, "two-100-2027", { "race.json": validRace({ slug: "two-100-2027", status: "active" }) });
+  await writeRaceFolder(root, "three-50k-2028", { "race.json": validRace({ slug: "three-50k-2028", status: "draft" }) });
+  const races = await listRaces(root);
+
+  // the one race that may be trained for
+  assert.deepEqual(validateActivation({ slug: "two-100-2027", mode: "train" }, races).pointer,
+    { slug: "two-100-2027", mode: "train" });
+  // ...and the two that may not
+  for (const slug of ["one-100-2026", "three-50k-2028"]) {
+    const bad = validateActivation({ slug, mode: "train" }, races);
+    assert.equal(bad.ok, false);
+    assert.equal(bad.code, "bad_request");
+    assert.match(bad.errors[0], /only an "active" race can be trained for/);
+    // the same folder in view mode is fine
+    assert.equal(validateActivation({ slug, mode: "view" }, races).ok, true);
+  }
+
+  // generic mode: mode is meaningless without a race, so it normalizes away
+  assert.deepEqual(validateActivation({ slug: null, mode: "view" }, races).pointer, { slug: null, mode: "train" });
+  assert.deepEqual(validateActivation({ slug: null }, races).pointer, { slug: null, mode: "train" });
+
+  // and the refusals the endpoint turns into 404 / 400
+  assert.equal(validateActivation({ slug: "nope-100-2029", mode: "view" }, races).code, "not_found");
+  assert.equal(validateActivation({ slug: "two-100-2027", mode: "sideways" }, races).code, "bad_request");
+  assert.equal(validateActivation({ slug: 7 }, races).code, "bad_request");
+  assert.equal(validateActivation({}, races).code, "bad_request");
+  assert.equal(validateActivation(null, races).code, "bad_request");
+  assert.equal(validateActivation([], races).code, "bad_request");
+});
+
+test("setActivePointer writes only what validateActivation allows", async (t) => {
+  const root = await tempRoot(t);
+  await writeRaceFolder(root, "one-100-2026", { "race.json": validRace({ slug: "one-100-2026", status: "archived" }) });
+  const pointerFile = path.join(root, "config", "active-race.json");
+
+  assert.deepEqual(await setActivePointer(root, { slug: "one-100-2026", mode: "view" }),
+    { slug: "one-100-2026", mode: "view" });
+  assert.deepEqual(JSON.parse(await fs.readFile(pointerFile, "utf8")), { slug: "one-100-2026", mode: "view" });
+
+  await assert.rejects(
+    () => setActivePointer(root, { slug: "one-100-2026", mode: "train" }),
+    (e) => e.code === "bad_request" && /only an "active" race/.test(e.message),
+  );
+  await assert.rejects(
+    () => setActivePointer(root, { slug: "ghost-100-2030", mode: "view" }),
+    (e) => e.code === "not_found",
+  );
+  // a refused activation leaves the pointer exactly as it was
+  assert.deepEqual(JSON.parse(await fs.readFile(pointerFile, "utf8")), { slug: "one-100-2026", mode: "view" });
+
+  assert.deepEqual(await setActivePointer(root, { slug: null }), { slug: null, mode: "train" });
+  assert.equal(await getActiveRace(root), null);
 });
 
 test("loadRaceFolder round-trips a folder, optional files as null", async (t) => {
