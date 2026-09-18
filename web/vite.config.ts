@@ -1032,6 +1032,100 @@ function settingsApi(): Plugin {
   }
 }
 
+// Dev-only middleware: GET /api/races/:slug/asset/:name — one file out of a
+// race folder, for the hero image behind the elevation ribbon (PRD §7).
+//
+// This is a path-traversal endpoint by construction, so it owns none of the
+// decisions: scripts/race-asset.mjs says whether a request may be served and
+// from which absolute path (four gates, node --test covers them), and this
+// middleware only opens what it was handed. The race's own visual.hero is the
+// allow-list — the folder is not a static mount, and race.json, course.gpx and
+// the plan are not reachable through here.
+//
+// It shares the /api/races mount with the race LIST, so it must be registered
+// BEFORE raceSwitchApi and hand anything that is not an asset path to next().
+function raceAssetApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  type AssetMod = {
+    parseAssetUrl: (rest: string) => { slug: string; name: string } | null
+    checkAssetRequest: (root: string, slug: string, name: string) =>
+      | { ok: true; slug: string; name: string; file: string; contentType: string }
+      | { ok: false; status: number; error: string }
+    resolveRaceAsset: (root: string, slug: string, name: string, hero: unknown) =>
+      | { ok: true; slug: string; name: string; file: string; contentType: string }
+      | { ok: false; status: number; error: string }
+    ASSET_MAX_BYTES: number
+  }
+  return {
+    name: 'trail-train-race-asset-api',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/api/races', async (req, res, next) => {
+        // vite.config.ts can't statically import from scripts/ (it is ESM JS
+        // outside the TS project), so the loader is imported per request.
+        const asset = await import(path.join(projectRoot, 'scripts/race-asset.mjs')) as AssetMod
+        const parsed = asset.parseAssetUrl(req.url ?? '')
+        // not an asset path — that is the race list's request, not ours
+        if (!parsed) { next(); return }
+
+        const json = (code: number, body: unknown) => {
+          res.statusCode = code
+          res.setHeader('Content-Type', 'application/json')
+          res.setHeader('Cache-Control', 'no-store')
+          res.end(JSON.stringify(body))
+        }
+        if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+        if (crossSiteBlocked(req, res)) return
+
+        try {
+          // Gates 1/2/4 FIRST: the slug has to be proven a slug before it can
+          // be joined onto a path to read the folder's race.json.
+          const checked = asset.checkAssetRequest(projectRoot, parsed.slug, parsed.name)
+          if (!checked.ok) { json(checked.status, { error: checked.error }); return }
+
+          const { loadRaceFolder } = await import(path.join(projectRoot, 'scripts/race-config.mjs')) as {
+            loadRaceFolder: (root: string, slug: string) => Promise<{ race: { visual?: { hero?: string } } | null }>
+          }
+          let hero: string | undefined
+          try {
+            hero = (await loadRaceFolder(projectRoot, checked.slug)).race?.visual?.hero
+          } catch {
+            json(404, { error: `races/${checked.slug} has no readable race.json` })
+            return
+          }
+
+          // Gate 3: the name must be the race's OWN declared hero.
+          const allowed = asset.resolveRaceAsset(projectRoot, parsed.slug, parsed.name, hero)
+          if (!allowed.ok) { json(allowed.status, { error: allowed.error }); return }
+
+          let stat: fs.Stats
+          try {
+            stat = await fs.promises.stat(allowed.file)
+          } catch {
+            json(404, { error: `races/${allowed.slug}/${allowed.name} is declared as the hero but is not in the folder` })
+            return
+          }
+          if (!stat.isFile()) { json(404, { error: 'not a file' }); return }
+          if (stat.size > asset.ASSET_MAX_BYTES) {
+            json(413, { error: `hero image is ${(stat.size / 1048576).toFixed(1)} MB — the cap is ${asset.ASSET_MAX_BYTES / 1048576} MB` })
+            return
+          }
+
+          res.statusCode = 200
+          res.setHeader('Content-Type', allowed.contentType)
+          res.setHeader('Content-Length', String(stat.size))
+          // the file can be replaced in place while the server is up, and a
+          // hero is fetched once per page load — revalidating is cheap
+          res.setHeader('Cache-Control', 'no-cache')
+          fs.createReadStream(allowed.file).on('error', () => res.destroy()).pipe(res)
+        } catch (e) {
+          json(500, { error: (e as Error).message })
+        }
+      })
+    },
+  }
+}
+
 // Dev-only middleware: the race switcher's two endpoints (PRD §7).
 //   GET  /api/races          — every folder under races/, as the menu shows
 //                              them: slug, name, short, status, date.
@@ -1797,10 +1891,12 @@ export default defineConfig({
   // /api/race-intake/build and /api/race-intake/plan. raceSwitchApi sits
   // before raceApi for the same reason (/api/race/activate vs
   // /api/race/active) — connect's own boundary check makes that safe either
-  // way, but the order says the intent. raceResultApi before raceSwitchApi is
-  // NOT cosmetic: /api/races/<slug>/result is under /api/races, so the list
-  // endpoint would answer it if it were registered first.
-  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
+  // way, but the order says the intent. raceResultApi and raceAssetApi before
+  // raceSwitchApi is NOT cosmetic: /api/races/<slug>/result and
+  // /api/races/<slug>/asset/<name> are both under /api/races, and the list
+  // endpoint answers every GET it sees, so each has to be given the request
+  // first (both call next() for a path that is not theirs).
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceAssetApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
   // Fixed, memorable, deliberately unusual port. The 5173 default collides
   // with every other Vite project on the machine, and a colliding neighbor
   // silently claims the port so this app hops to 5174+ — which breaks the
