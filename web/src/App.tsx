@@ -14,7 +14,7 @@ import {
   daysUntil, isPast, relativeAgo, fmtDuration, isStale,
   useMeasuredWidth,
 } from "./data";
-import { RefreshProvider, UnitsProvider, StravaProvider, OuraProvider, StateProvider } from "./providers";
+import { RaceTheme, RefreshProvider, UnitsProvider, StravaProvider, OuraProvider, StateProvider } from "./providers";
 import CoachSettings from "./CoachSettings";
 import { SectionTag, Contours } from "./atoms";
 import { RacePlanner } from "./race/RacePlanner";
@@ -28,6 +28,8 @@ import { useCourse, useRaceResult } from "./race/useRaceData";
 import { ArchiveRace } from "./race/ArchiveRace";
 import type { RaceView } from "./data";
 import { raceClockHM } from "./race/pacing";
+import { ThemePreview } from "./themes/ThemePreview";
+import type { VisualInput } from "./themes/visual";
 
 /* ================================================================== */
 /*  BASECAMP — pre-dawn ops surface for ultra training                 */
@@ -145,6 +147,8 @@ type RaceListEntry = {
   short: string;
   status: "draft" | "active" | "archived" | null;
   date: string | null;
+  /** the folder's `visual` block — the menu draws each race's accent */
+  visual: VisualInput | null;
   error: string | null;
 };
 
@@ -372,6 +376,7 @@ function RaceSwitcher() {
               {...itemProps("generic")}
               label="No race (generic)"
               hint="train toward your goals"
+              swatch={<ThemePreview visual={null} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round label="basecamp palette" />}
               busy={busy === "__generic__"}
               onSelect={() => choose(null, "train")}
             />
@@ -389,6 +394,9 @@ function RaceSwitcher() {
                     hint={entry.error
                       ? "race.json unreadable"
                       : `${entry.short}${entry.date ? ` · ${entry.date}` : ""}${entry.status === "active" ? "" : " · read-only"}`}
+                    swatch={entry.error ? null : (
+                      <ThemePreview visual={entry.visual} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round />
+                    )}
                     disabled={!!entry.error}
                     busy={busy === entry.slug}
                     current={entry.slug === currentSlug}
@@ -443,9 +451,11 @@ function RaceSwitcher() {
   );
 }
 
-const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, ...rest }: {
+const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, swatch, ...rest }: {
   label: string; hint: string; onSelect: () => void;
   current?: boolean; disabled?: boolean; busy?: boolean;
+  /** the race's palette, as one dot — see SWATCH_SLOT */
+  swatch?: React.ReactNode;
 } & React.ButtonHTMLAttributes<HTMLButtonElement> & { ref?: React.Ref<HTMLButtonElement> }) => (
   <button
     {...rest}
@@ -468,7 +478,16 @@ const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, ...rest }
       e.currentTarget.style.outline = "none";
     }}
   >
-    <span aria-hidden style={{ width: 8, color: "var(--lamp)", fontSize: 10 }}>{current ? "•" : ""}</span>
+    {/* One mark, not two: the dot IS the race's palette, and the race on
+        screen is the one wearing a ring. (aria-checked on the row is what
+        actually says "current" — this is its visible half.) Fixed width
+        whether or not there is a dot, so the names stay in a column. */}
+    <span
+      aria-hidden
+      style={{ ...SWATCH_SLOT, boxShadow: current ? "inset 0 0 0 1px var(--lamp)" : undefined }}
+    >
+      {swatch}
+    </span>
     <span style={{ fontSize: 12.5, color: "var(--mist)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
       {label}
     </span>
@@ -477,6 +496,20 @@ const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, ...rest }
     </span>
   </button>
 );
+
+/** The switcher menu's left gutter: one accent dot per race, inside a slot
+    that gains a lamp ring when that race is the one on screen. Same width on
+    every row, dot or no dot, so the names stay in a column. */
+const SWATCH_DOT = 6;
+const SWATCH_SLOT: React.CSSProperties = {
+  // 11px so the gutter costs the names almost nothing against the bullet it
+  // replaces, and a 6px dot still has room for the ring
+  width: 11, height: 11, borderRadius: "50%", flex: "0 0 auto", alignSelf: "center",
+  display: "flex", alignItems: "center", justifyContent: "center",
+};
+/** The menu shows the light source and nothing else — the full seven-swatch
+    strip belongs on a screen where a palette is being CHOSEN, not listed. */
+const ACCENT_SWATCH = ["--lamp"] as const;
 
 /** Placeholder until tt-yib.14 wires the intake dialog to
     POST /api/race-intake — the endpoints behind it already exist. */
@@ -814,6 +847,13 @@ function ElevationRibbon({ race }: { race: RaceView }) {
   );
 }
 
+/* Where the hero shows through: nothing behind the title, most of it behind
+   the elevation profile, fading again under the tick row. Expressed as a mask
+   rather than a gradient overlay so it carries no colour of its own — the
+   panel underneath keeps whatever palette the race is wearing. */
+const HERO_MASK =
+  "linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.3) 38%, rgba(0,0,0,0.92) 64%, rgba(0,0,0,0.22) 100%)";
+
 /* Rendered only with a race on screen — AppBody does the gating, so the
    ribbon takes the race as a prop rather than re-deriving "is there one".
    `readOnly` is a race being BROWSED (view mode): it has no countdown, and
@@ -821,6 +861,13 @@ function ElevationRibbon({ race }: { race: RaceView }) {
    64px type. */
 function RaceRibbon({ race, readOnly }: { race: RaceView; readOnly?: boolean }) {
   const u = useUnits();
+  // The hero lives in the race FOLDER, so it comes off the payload rather
+  // than RaceView (which is the shape the forty clock/pace call sites need).
+  const { activeRace, viewing: viewingSlug } = useActiveRace();
+  const hero = activeRace?.race?.visual?.hero;
+  const heroSrc = hero && viewingSlug
+    ? `/api/races/${encodeURIComponent(viewingSlug)}/asset/${encodeURIComponent(hero)}`
+    : null;
   const dleft = daysUntil(race.date);
   const past = isPast(race.date);
   const nameWords = race.name.split(" ");
@@ -835,6 +882,27 @@ function RaceRibbon({ race, readOnly }: { race: RaceView; readOnly?: boolean }) 
       initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}
       style={{ overflow: "hidden" }}
     >
+      {/* The race's own photograph, behind everything, and only where the
+          profile is: masked out at the top so the name and countdown sit on
+          the flat field they were designed for, and faded at the foot so the
+          distance ticks stay readable. A background-image rather than an
+          <img> so a hero the endpoint refuses is simply absent — no broken
+          glyph, and the ribbon looks exactly as it does for a race with no
+          hero at all. */}
+      {heroSrc && (
+        <div
+          aria-hidden
+          style={{
+            position: "absolute", inset: 0, pointerEvents: "none",
+            backgroundImage: `url("${heroSrc}")`,
+            backgroundSize: "cover",
+            backgroundPosition: "center 45%",
+            opacity: 0.42,
+            maskImage: HERO_MASK,
+            WebkitMaskImage: HERO_MASK,
+          }}
+        />
+      )}
       <Contours seed={4} opacity={0.12} />
       <div style={{ position: "relative", padding: "22px 26px 0", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 24, flexWrap: "wrap" }}>
         <div>
@@ -2756,6 +2824,8 @@ export default function App() {
   return (
     <UnitsProvider>
       <RefreshProvider>
+        {/* renders nothing — repaints :root when the race on screen changes */}
+        <RaceTheme />
         <StateProvider>
           <StravaProvider>
             <OuraProvider>

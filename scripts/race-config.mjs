@@ -21,6 +21,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { writeJsonAtomic } from "./lib.mjs";
+// The theme sources are TypeScript and node strips the types on import; the
+// same trick scripts/race-plan.mjs already uses for THEME_PRESET_NAMES.
+import { visualErrors } from "../web/src/themes/visual.ts";
 
 /** Bump only with a migration; validateRaceJson rejects anything else. */
 export const RACE_SCHEMA_VERSION = 1;
@@ -391,7 +394,13 @@ export function validateRaceJson(obj) {
       if (typeof v !== "string") bad(`coach_notes.${k}: string required`);
     }
   }
-  if (obj.visual !== undefined && !isObj(obj.visual)) bad("visual: object required");
+  // visual: preset, accent, hero, panels and per-token overrides. The rules
+  // (and the readability floor on the accent) live in web/src/themes/visual.ts
+  // so the intake preview, the theme hook and this write path cannot drift.
+  if (obj.visual !== undefined) {
+    if (!isObj(obj.visual)) bad("visual: object required");
+    else for (const e of visualErrors(obj.visual)) bad(e);
+  }
   if (obj.provenance !== undefined) {
     if (!isObj(obj.provenance)) bad("provenance: object keyed by field name required");
     else for (const [k, v] of Object.entries(obj.provenance)) {

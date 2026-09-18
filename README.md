@@ -94,6 +94,47 @@ A race folder holds (see `docs/PRD-modular-races.md` §5):
 Folders whose name starts with `_` are templates, never races
 (`races/_fixtures/` holds the test ones).
 
+### How a race looks
+
+A race can recolour Basecamp; it cannot rebrand it. `race.json`'s `visual`
+block picks one of five presets in `web/src/themes/presets.ts` —
+`basecamp-default` (today's palette), `desert`, `alpine`, `forest`, `night` —
+each a variation on the same pre-dawn identity, same token structure and same
+three typefaces, changing only hue and temperature.
+
+```json
+"visual": {
+  "theme_preset": "desert",
+  "accent": "#e58045",
+  "hero": "rim.jpg",
+  "overrides": { "--panel": "#191310" }
+}
+```
+
+- `theme_preset` selects the palette. Generic mode (no race) is always
+  `basecamp-default`.
+- `accent` is enough on its own: the pressed and washed variants
+  (`--lamp-deep`, `--lamp-glow`) are derived from it.
+- `overrides` sets individual tokens — any of the custom properties `:root`
+  declares in `web/src/index.css` — and wins over both.
+- `hero` is an image **in the race folder** (`.jpg`/`.png`/`.webp`, 8 MB cap).
+  It renders behind the elevation profile in the ribbon, masked away from the
+  name and the countdown. Without one, the ribbon looks exactly as it always
+  has. The dev server serves it from `GET /api/races/:slug/asset/:name`, and
+  only that one nominated file — nothing else in the folder is reachable.
+
+Switching race swaps the palette in place: the resolved tokens are written
+onto `:root` with a `data-theme` attribute, no reload and no re-render of any
+data. Nothing is persisted — the pointer is the only state.
+
+`scripts/visual.test.mjs` and `scripts/theme-presets.test.mjs` hold the rules:
+every preset keeps body text at 4.5:1 and its accent at 3:1 against both the
+page field and a raised panel, and a `visual` block that names an unknown
+preset, a colour that is not a colour, a token that does not exist, or a hero
+that is a path rather than a filename is refused when the folder is written.
+The Mac app icon and the favicon are Basecamp's, not the race's, and never
+change.
+
 ### Build the course
 
 The Race views read a `course.json` derived from the folder's GPX: aid
