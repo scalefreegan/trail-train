@@ -32,9 +32,11 @@ import { fileURLToPath } from "node:url";
 import { arg, writeJsonAtomic } from "./lib.mjs";
 import { loadRaceFolder, raceDir } from "./race-config.mjs";
 import { runClaudeJson, extractJson, agentModel } from "./agent-run.mjs";
-import { loadProfile, loadFactsFromRoot } from "./facts.mjs";
+import { loadFactsFromRoot } from "./facts.mjs";
+import { loadProfileWithWarnings, normalizePhysiology } from "./profile.mjs";
 import { weekdayName } from "./clock.mjs";
 import { THEME_PRESET_NAMES } from "../web/src/themes/presets.ts";
+import { normalizeNutrition } from "../web/src/race/nutrition-config.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -76,13 +78,6 @@ const PROVENANCE_SOURCE = "race-plan";
    budget is a fraction of stage 1's. */
 const PLAN_MAX_TURNS = 12;
 const PLAN_TIMEOUT_SEC = 420;
-
-/** Body mass fallback when config/profile.json carries no physiology block
-    (tt-yib.9). Only ever feeds the prompt's mg/kg guidance. */
-const DEFAULT_BODY_KG = 75;
-
-/** Long-run reference distance fallback (today's pacing D_REF). */
-const DEFAULT_LONG_RUN_REF_MI = 20;
 
 const isObj = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 const isStr = (v) => typeof v === "string" && v.trim() !== "";
@@ -360,16 +355,17 @@ const CAFFEINE_POSITIVE = ["gel_mg", "min_spacing_h", "half_life_h", "cola_mg", 
 const CAFFEINE_NON_NEGATIVE = ["gels", "pre_race_mg", "pre_race_before_h", "cola_cups", "tail_h"];
 
 /**
- * Check the generated nutrition.json the way the app's loader will.
+ * Check the generated nutrition.json, first against this stage's own rules and
+ * then against the app's real loader.
  *
- * This mirrors `normalizeNutrition` in web/src/race/nutrition.ts rather than
- * importing it: that module pulls in React and the data layer, so it cannot be
- * loaded from a script. The difference in intent matters too — the loader
- * repairs a hand-edited file by falling back to defaults, and a silent
- * fallback is exactly what must NOT happen to agent output. Here every hole is
- * an error the agent is told to fix. scripts/race-plan.test.mjs runs the real
- * loader over this function's output whenever it is importable, so the two
- * cannot drift apart unnoticed.
+ * The two are not redundant. `normalizeNutrition` REPAIRS a hand-edited file:
+ * a missing key, a zero where a divisor belongs, a malformed heat window all
+ * fall back to a built-in default and the page renders. That is the right
+ * behaviour for a file the owner edits and exactly the wrong one for agent
+ * output — a plan that silently reverts to somebody else's carb ladder looks
+ * identical to one the agent got right. So every hole is an error here, and
+ * the loader runs afterwards as the backstop: whatever this stage writes must
+ * also be something the app will load without repairing.
  *
  * @param {unknown} n
  * @param {object} race race.json (features and the aid chart drive the rules)
@@ -454,6 +450,13 @@ export function validateNutrition(n, race = {}) {
     for (const s of bagStations) {
       if (!(s in n.drop_bag_gear)) warnings.push(`nutrition.drop_bag_gear: no gear listed for the drop bag at ${s}`);
     }
+  }
+
+  // The app's own loader, as the backstop described above. It is only ever
+  // reached when the strict checks above passed, so a rejection here means
+  // this validator has a hole rather than the agent having one — say so.
+  if (!errors.length && normalizeNutrition(n) === null) {
+    errors.push("nutrition: web/src/race/nutrition-config.ts rejected the plan outright — the dashboard would fall back to its built-in defaults");
   }
 
   /* caffeine: the schedule is placed across the race, so its size has to be a
@@ -858,8 +861,10 @@ function styleSection(style) {
  * @returns {string}
  */
 export function buildPlanPrompt({ slug, race, course = null, profile = {}, facts = null, window = null, blockReason = null, style = null }) {
-  const bodyKg = profile?.physiology?.body_kg ?? DEFAULT_BODY_KG;
-  const longRunRef = profile?.physiology?.long_run_ref_mi ?? DEFAULT_LONG_RUN_REF_MI;
+  // normalized here rather than trusted: buildPlanPrompt is called directly by
+  // tests and by the dry run with whatever profile object the caller has, and
+  // the caffeine band in the prompt must never quote an out-of-range mass.
+  const { physiology } = normalizePhysiology(profile?.physiology);
   const tz = race.timezone ?? null;
   const raceDay = race.date && tz ? `${weekdayName(race.date, tz)} ${race.date}` : (race.date ?? "unknown");
   const feat = Object.entries(race.features ?? {}).filter(([, v]) => v === true).map(([k]) => k);
@@ -901,7 +906,7 @@ ${courseSection(course)}
 THE ATHLETE:
   ${profile.athlete_name ?? "the athlete"} · ${profile.location ?? "unknown home base"}
   home trails: ${(profile.home_trails ?? []).join(", ") || "not recorded"}
-  physiology: ${bodyKg} kg body mass, ${longRunRef} mi long-run reference
+  physiology: ${physiology.body_kg} kg body mass, ${physiology.long_run_ref_mi} mi long-run reference
   (body mass is the athlete's, from their profile — it drives the mg/kg caffeine band and
    belongs nowhere in the race folder)
 
@@ -1006,7 +1011,11 @@ export async function planRace({
     warnings.push(`races/${slug}/build/course.json is not there — planning from race.json alone (run stage 2 first for course metrics)`);
     say("load", warnings[warnings.length - 1], { stream: "err" });
   }
-  const profile = await loadProfile(root);
+  const { profile, warnings: profileWarnings } = await loadProfileWithWarnings(root);
+  for (const w of profileWarnings) {
+    warnings.push(w);
+    say("load", w, { stream: "err" });
+  }
   // Probed rather than caught: loadFactsFromRoot bootstraps state.json and
   // config/goals.json on its way to throwing, and a plan run — least of all a
   // dry run — has no business creating the athlete's files as a side effect.

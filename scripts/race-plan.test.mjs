@@ -41,18 +41,12 @@ import { THEME_PRESET_NAMES } from "../web/src/themes/presets.ts";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MM100 = "mogollon-monster-100-2026";
 
-/* The app's own nutrition loader, when it can be imported from Node. It lives
-   in nutrition.ts today, which also pulls in React and the data layer and so
-   cannot load here; tt-yib.9 splits the pure half into nutrition-config.ts.
-   The moment that lands this test starts running the REAL validator over this
-   module's output, with no further change here. */
-let normalizeNutrition = null;
-for (const mod of ["../web/src/race/nutrition-config.ts", "../web/src/race/nutrition.ts"]) {
-  try {
-    ({ normalizeNutrition } = await import(mod));
-    if (normalizeNutrition) break;
-  } catch { /* not importable from Node yet — see the note above */ }
-}
+/* The app's own nutrition loader — the pure half nutrition.ts re-exports,
+   split out by tt-yib.9 so Node can load it without React. race-plan.mjs runs
+   it as a backstop; this file asserts on it directly too, so a change that
+   made the two disagree would show up as a test failure rather than as a
+   dashboard quietly rendering built-in defaults. */
+import { normalizeNutrition } from "../web/src/race/nutrition-config.ts";
 
 const readJson = async (p) => JSON.parse(await fs.readFile(p, "utf8"));
 
@@ -274,9 +268,6 @@ test("the hand-authored MM100 nutrition plan passes this stage's validator", asy
 });
 
 test("…and the app's own loader accepts it too", async (t) => {
-  if (!normalizeNutrition) {
-    return t.skip("web/src/race/nutrition.ts is not importable from Node yet (tt-yib.9 splits out nutrition-config.ts)");
-  }
   const n = await mm100Nutrition();
   if (!n) return t.skip(`races/${MM100}/ not in this checkout`);
   const merged = normalizeNutrition(n);
