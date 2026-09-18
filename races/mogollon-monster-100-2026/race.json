@@ -377,7 +377,7 @@
     "sun": {
       "by": "agent",
       "at": "2026-09-18T00:00:00Z",
-      "source": "tt-yib.2 migration from config/race-course.json sun (hand-entered 2025 values; build-course recomputes from date + coords)"
+      "source": "tt-yib.2 migration from config/race-course.json sun — hand-entered 2025 values, kept as-is. The NOAA computation in scripts/sun.mjs gives sunset 18:35 (matches) but sunrise 06:05, ten minutes earlier than the hand-authored 06:15; recomputation is tt-yib.6. (\"migration\" is not a legal provenance `by` value in the tt-yib.1 schema, so the migration signs as the agent.)"
     },
     "timezone": {
       "by": "agent",
