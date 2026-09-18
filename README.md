@@ -5,9 +5,16 @@ from Strava and Oura, plots it against a configurable training block, and
 delegates coaching to a headless Claude Code agent that has read access to
 every snapshot.
 
-Built for the [Mogollon Monster 100](https://www.aravaiparunning.com/mogollon-monster-2/)
-(102.3 mi · 15,900 ft · Sept 12, 2026). All numbers, weekly targets, race
-date, and aid stations are real.
+A **race is a folder**, not a hard-coded assumption. Everything race-specific
+— name, date, timezone, aid chart, cutoffs, climbs, crew rules, fueling —
+lives in `races/<slug>/`, and `config/active-race.json` points at the one in
+play. Point it somewhere else and the whole app follows: countdown, course
+profile, pacing model, crew sheet, fuel plan, coach prompts.
+
+With no active race the app runs in **generic mode**: the race panels hide and
+training is driven by `config/goals.json` (event class, horizon, phase, volume
+band) on a rolling block instead of a fixed countdown. Finished races are
+archived in place and stay readable.
 
 ## What's in it
 
@@ -17,11 +24,11 @@ amber accent — instead of a sectioned scroll:
 - **Command bar** — block week, race countdown, streaming resync status, and
   the imperial/metric toggle, always pinned on top.
 - **Race ribbon** — countdown plus the course elevation profile with aid
-  stations, compressed into one band.
+  stations, compressed into one band. Hidden in generic mode.
 - **Vitals** — load and recovery in one grammar: 7d distance/vert, ACR,
   block-vs-plan, readiness, HRV, RHR, sleep — each with a 30-day sparkline
   and trend delta, plus last night's sleep stages inline.
-- **Trajectory** — the 20-week cumulative actual-vs-plan chart with
+- **Trajectory** — the cumulative actual-vs-plan chart for the block with
   projection, expected/actual/delta stats embedded in the panel.
 - **The road ahead** — next 14 calendar days (Google Calendar, classified)
   fused with the agent's next-6-weeks `plan_blocks` and key sessions.
@@ -49,10 +56,71 @@ Or launch it as a Mac app — `./macos/build-app.sh` installs **Basecamp.app**
 to `/Applications`: the Dock icon starts the server and opens the dashboard,
 and quitting it stops the server. See `macos/README.md`.
 
+### Pick a race (or don't)
+
+```bash
+ls races/                       # the folders you have
+$EDITOR config/active-race.json # {"slug": "<folder name>"} — or {"slug": null}
+```
+
+`config/active-race.json` is gitignored: which race you are training for is a
+per-machine choice, and a fresh checkout starts at `{"slug": null}` rather
+than silently adopting somebody else's race.
+
+- **Race mode** (`slug` set) — the block, countdown, course views, crew sheet
+  and fuel plan all come from that folder.
+- **Generic mode** (`slug: null`) — the race panels hide, and the training
+  block is driven by `config/goals.json` (gitignored, like the pointer):
+  ```json
+  { "event_class": "100mi", "horizon_weeks": 24, "phase": "base", "volume_band": [40, 60] }
+  ```
+  Panel gating is live; the rolling-window block that reads `goals.json` is
+  still landing, so scripts currently fall back to the most recent race
+  folder when nothing is active.
+
+A race folder holds (see `docs/PRD-modular-races.md` §5):
+
+| file | what | committed? |
+|---|---|---|
+| `race.json` | name, date, timezone, distance, elevation, aid chart with cutoffs, climb windows, crew info, coach notes, sources | yes |
+| `course.gpx` | the organizer's route export | yes |
+| `block.json` | weekly mileage + vert targets for this build | yes |
+| `nutrition.json` | fueling constants + per-station drop-bag gear | yes |
+| `plan.json` | the coach agent's current 6-week plan | no |
+| `result.json` | the finish, once it happens | no |
+| `crew.private.json` | crew base address + emergency numbers | no |
+| `build/` | generated `course.json` / `crew-base.json` | no |
+
+Folders whose name starts with `_` are templates, never races
+(`races/_fixtures/` holds the test ones).
+
+### Build the course
+
+The Race views read a `course.json` derived from the folder's GPX: aid
+stations snapped to the track, climbs detected and matched to `race.json`'s
+windows, a smoothed elevation profile, and the overview-map polyline.
+
+```bash
+cd web
+npm run course:build                                # the active race
+npm run course:build -- --race <slug>               # a specific folder
+```
+
+It writes `races/<slug>/build/course.json` (and `build/crew-base.json` when a
+crew base is configured) — generated output, gitignored. The dev server serves
+them at `/course.json` and `/crew-base.json`. With no active race and no
+`--race`, the command lists the slugs it could have built rather than guessing.
+
+Aid stations are resolved to GPX waypoints by the authored `gpx_wpt` first,
+then by name, then by charted mile. A station the matcher can't place
+confidently warns and falls back to a distance snap — an unseen GPX from a
+race site never fails the build.
+
 ### Athlete profile
 
-The agent uses your name, location, and local trail names in its prompts. Copy
-the example and personalize — this file is gitignored:
+The agent uses your name, location, local trail names and the title words you
+give your long runs (`long_run_name_patterns`) in its prompts and in Strava
+classification. Copy the example and personalize — this file is gitignored:
 
 ```bash
 cp config/profile.example.json config/profile.json
@@ -159,17 +227,7 @@ lives in that race's folder under `races/<slug>/`.
   day, fueling target, heat threshold, coach context sections and dated
   temporary constraints). Agent reads them and may only APPEND context.
 
-`races/<slug>/` (see `docs/PRD-modular-races.md` §5):
-
-- **race.json** — name, date, timezone, distance, elevation, the aid chart,
-  climbs, crew info, coach notes, links. Committed.
-- **block.json** — the block's weekly mileage + vert targets. Committed.
-- **course.gpx**, **nutrition.json** — committed; `plan.json` (the agent's
-  current 6-week recommendations), `result.json` and `crew.private.json`
-  (crew base address, emergency numbers) are gitignored.
-
-`config/active-race.json` points at the folder in play (`{"slug": null}` =
-generic mode, the default in a fresh checkout).
+The race side is the folder table under **Setup → Pick a race**.
 
 `state.json` is bootstrapped from defaults the first time `sync-strava` or
 `coach` runs. A v2 file (race + block + plan_blocks inside state.json) is
@@ -180,8 +238,7 @@ After that the files are the source of truth — edit them directly to change
 block targets, preferences, etc. `coach.mjs` merges agent updates atomically
 (write-then-rename) so a malformed agent response can never corrupt state;
 plan_blocks land in the active race's `plan.json`, or `config/generic-plan.json`
-when no race is active. A fuller README pass comes with the rest of the
-modular-races work.
+when no race is active.
 
 ## Weather
 
@@ -190,8 +247,8 @@ modular-races work.
 apparent_avg_c / humidity_avg` during the run window. Cached to
 `~/.cache/trail-train/weather.json` so re-syncs don't re-hit the API. The
 agent uses these to flag heat exposure (≥24 °C / 75 °F = "hot run") and
-suggest acclimation work — important when the race is in 80 °F+ Pine, AZ
-canyons. Skip with `--no-weather` if you ever need to.
+suggest acclimation work — which matters as much as the race's own heat
+profile in `race.json`. Skip with `--no-weather` if you ever need to.
 
 ## Live resync
 
