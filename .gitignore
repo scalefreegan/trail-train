@@ -22,6 +22,16 @@ web/public/climbs.json
 # profile.json race_base) — personal, never commit.
 web/public/crew-base.json
 
+# Race folders — the configs themselves are committed; these are not.
+# *.private.json holds crew addresses and emergency numbers, sources/ caches
+# fetched pages and PDFs for re-intake diffs, build/ is generated output.
+races/*/*.private.json
+races/*/sources/
+races/*/build/
+# The active-race pointer is a per-machine choice (and may name a draft that
+# only exists locally) — never a committed one.
+config/active-race.json
+
 # Athlete profile (name, location, local trails). The committed file is the
 # example with generic placeholders; copy it to profile.json and personalize.
 config/profile.json
