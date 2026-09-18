@@ -191,7 +191,20 @@ export async function getTrainingSlug(root) {
  * @returns {Promise<{slug: string, dir: string, race: object, block: object|null, plan: object|null, nutrition: object|null}>}
  */
 export async function loadRaceFolder(root, slug) {
-  const dir = raceDir(root, slug);
+  return loadRaceFolderAt(raceDir(root, slug), slug);
+}
+
+/**
+ * The same read, against an explicit directory rather than races/<slug>/.
+ *
+ * This is the seam a re-intake runs through (scripts/race-refresh.mjs): the
+ * three intake stages are pointed at races/<slug>/.refresh/ so they produce a
+ * whole second copy of the folder without touching the one the app is reading.
+ * `slug` is carried through for the messages only — the directory decides what
+ * is read.
+ * @returns {Promise<{slug: string, dir: string, race: object, block: object|null, plan: object|null, nutrition: object|null}>}
+ */
+export async function loadRaceFolderAt(dir, slug) {
   const race = await readJson(path.join(dir, "race.json"));
   const [block, plan, nutrition] = await Promise.all([
     readJson(path.join(dir, "block.json"), { optional: true }),

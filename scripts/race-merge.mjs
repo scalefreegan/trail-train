@@ -34,7 +34,7 @@
 // timestamps) must still be an empty diff or the review dialog would ask the
 // owner to accept nothing.
 
-import { collectUnresolved } from "./race-intake.mjs";
+import { recomputeUnresolved } from "./race-edit.mjs";
 
 /**
  * How far a station may have moved and still be the same station under a new
@@ -46,10 +46,12 @@ export const RENAME_NEAR_MI = 1.5;
 
 /**
  * Ours, not the intake's. slug and schema_version are identity, status is the
- * athlete's (an active race stays active across a refresh — PRD §8), and
- * provenance is the merge's own bookkeeping rather than a value to merge.
+ * athlete's (an active race stays active across a refresh — PRD §8),
+ * provenance is the merge's own bookkeeping rather than a value to merge, and
+ * `unresolved` is derived from the merged race at the end rather than taken
+ * from either side — a hole the owner filled by hand is not a hole any more.
  */
-const NEVER_MERGED = new Set(["schema_version", "slug", "status", "provenance"]);
+const NEVER_MERGED = new Set(["schema_version", "slug", "status", "provenance", "unresolved"]);
 
 /** Which top-level arrays have an identity, and what it is. */
 const ARRAY_KEYS = {
@@ -378,13 +380,22 @@ function setAtPath(obj, path, value) {
 
 /**
  * Merge race.json. On top of mergeFile: the unresolved list is RECOMPUTED from
- * the merged race rather than carried over, because a hole the owner filled by
- * hand is not a hole any more even if the refresh left it null again.
+ * the merged race rather than taken from either side, because a hole the owner
+ * filled by hand is not a hole any more even if the refresh left it null
+ * again. That is race-edit.mjs's recomputeUnresolved — collectUnresolved plus
+ * the carry that keeps a GPX-derived hole (a station with no `gpx_wpt` at all)
+ * on the list, which a scan for nulls alone cannot see.
+ *
+ * `unresolved` is only written onto the merged race when the race already
+ * carried one or there is something to say: an empty array added to a file
+ * that never had the key would be a diff the owner did not ask for.
  * @returns {{merged: object, diff: object[], conflicts: object[], unresolved: string[]}}
  */
 export function mergeRace(current, incoming, opts = {}) {
   const out = mergeFile(current, incoming, { ...opts, file: "race.json" });
-  return { ...out, unresolved: collectUnresolved(out.merged) };
+  const unresolved = recomputeUnresolved(out.merged, current.unresolved ?? []);
+  if ("unresolved" in current || unresolved.length) out.merged.unresolved = unresolved;
+  return { ...out, unresolved };
 }
 
 /** Merge block.json — targets keyed by week number. */
@@ -424,7 +435,7 @@ export function mergeRaceFolder(current, incoming, opts = {}) {
       // new file: the whole thing is an addition, and there is nothing to keep
       files[file] = structuredClone(inc);
       diff.push({ file, path: "", kind: "added", from: undefined, to: inc, by: null });
-      if (file === "race.json") unresolved = collectUnresolved(inc);
+      if (file === "race.json") unresolved = recomputeUnresolved(inc, []);
       continue;
     }
     const out = fn(cur, inc, opts);

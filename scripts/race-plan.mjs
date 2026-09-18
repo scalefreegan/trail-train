@@ -30,7 +30,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, writeJsonAtomic } from "./lib.mjs";
-import { loadRaceFolder, raceDir } from "./race-config.mjs";
+import { loadRaceFolder, loadRaceFolderAt, raceDir } from "./race-config.mjs";
 import { runClaudeJson, extractJson, agentModel } from "./agent-run.mjs";
 import { loadFactsFromRoot } from "./facts.mjs";
 import { loadProfileWithWarnings, normalizePhysiology } from "./profile.mjs";
@@ -976,6 +976,9 @@ function nutritionFile(plan) {
  * @param {object} opts
  * @param {string} opts.root repo root
  * @param {string} opts.slug
+ * @param {string} [opts.dir] the folder to read and write, when it is not
+ *   races/<slug>/ — a re-intake plans into races/<slug>/.refresh/ so the live
+ *   block and fuel plan survive until the diff is accepted.
  * @param {(e: {step: string, status: string, label?: string, message?: string, stream?: string}) => void} [opts.onProgress]
  * @param {boolean} [opts.dryRun] assemble the prompt, print nothing to disk
  * @param {Date} [opts.today] injectable clock (the block calendar depends on it)
@@ -996,6 +999,7 @@ function nutritionFile(plan) {
 export async function planRace({
   root,
   slug,
+  dir = raceDir(root, slug),
   onProgress = () => {},
   dryRun = false,
   today = new Date(),
@@ -1011,11 +1015,10 @@ export async function planRace({
   const say = (id, message, extra = {}) => onProgress({ step: id, status: "log", message, ...extra });
   const at = new Date().toISOString();
   const warnings = [];
-  const dir = raceDir(root, slug);
 
   /* 1. everything the prompt is made of */
   step("load", "start", { label: "reading the race folder, the profile and the athlete's facts" });
-  const folder = await loadRaceFolder(root, slug);
+  const folder = await loadRaceFolderAt(dir, slug);
   const race = folder.race;
   const course = await readJsonIfPresent(path.join(dir, "build", "course.json"));
   if (!course) {
