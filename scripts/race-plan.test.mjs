@@ -673,3 +673,131 @@ test("planRace --dry-run assembles the prompt and writes nothing", async (t) => 
   // …and the race.json it read is untouched
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(tmp, "races", slug, "race.json"), "utf8")), race);
 });
+
+test("a full run writes the three files, stamps them, and keeps the owner's edits", async (t) => {
+  const mm = await mm100();
+  if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+
+  const slug = "future-race-2027";
+  const dir = path.join(tmp, "races", slug);
+  await fs.cp(path.join(ROOT, "races", MM100), dir, { recursive: true });
+  const race = {
+    ...mm.race,
+    slug,
+    status: "draft",
+    date: "2027-08-13",
+    distance_mi: 104,
+    gain_ft: 19000,
+    // the owner has already rewritten one note and pasted the official site
+    coach_notes: { ...mm.race.coach_notes, terrain: "MY words about the terrain." },
+    links: { site: "https://sanjuansoftie.example" },
+    provenance: { ...mm.race.provenance, "coach_notes.terrain": { by: "user", at: "2027-01-01T00:00:00Z" } },
+  };
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(race, null, 2));
+
+  // A canned agent reply for the 12-week window this clock produces.
+  const reply = await goodOutput();
+  reply.links = { site: "https://second-best.example", manual: "https://example.org/manual.pdf" };
+  const result = await planRace({
+    root: tmp,
+    slug,
+    today: new Date(2027, 4, 18), // Tue → week 1 is 2027-05-24, race week is 12
+    runAgent: async () => ({
+      text: JSON.stringify(reply),
+      wrapper: { numTurns: 3, costUsd: 0.12, durationMs: 4000 },
+      retried: false,
+    }),
+  });
+
+  assert.deepEqual(result.wrote, [
+    `races/${slug}/block.json`,
+    `races/${slug}/nutrition.json`,
+    `races/${slug}/race.json`,
+  ]);
+
+  const block = await readJson(path.join(dir, "block.json"));
+  assert.equal(block.start_date, "2027-05-24");
+  assert.equal(block.total_weeks, 12);
+  assert.equal(block.targets.length, 12);
+  // WeekTarget is exactly three keys — the app's Block type, nothing extra
+  for (const row of block.targets) assert.deepEqual(Object.keys(row), ["wk", "target_dist", "target_elev"]);
+
+  const nutrition = await readJson(path.join(dir, "nutrition.json"));
+  assert.notEqual(normalizeNutrition(nutrition), null, "the file the app will load must load");
+  assert.ok(!("body_kg" in nutrition.caffeine));
+  assert.match(nutrition.caffeine_comment, /Body mass comes from config\/profile\.json/);
+
+  const written = await readJson(path.join(dir, "race.json"));
+  assert.equal(written.coach_notes.terrain, "MY words about the terrain.", "a user-authored note survives");
+  assert.equal(written.provenance["coach_notes.terrain"].by, "user");
+  assert.equal(written.coach_notes.climate, OK_NOTES.climate);
+  assert.equal(written.provenance["coach_notes.climate"].source, "race-plan");
+  assert.equal(written.provenance["coach_notes.climate"].by, "agent");
+  assert.equal(written.links.site, "https://sanjuansoftie.example", "an existing link is completed around, not replaced");
+  assert.equal(written.links.manual, "https://example.org/manual.pdf");
+  assert.equal(written.visual.theme_preset, "alpine");
+  assert.deepEqual(written.visual.panels, mm.race.visual.panels, "unrelated visual keys survive");
+  assert.equal(written.review_notes, "three loading cycles, peak at week 9");
+  assert.deepEqual(result.skipped, ["coach_notes.terrain"]);
+  assert.deepEqual(result.unresolved, ["links.results"]);
+});
+
+test("a race with no date gets its nutrition and notes, but no block.json", async (t) => {
+  const mm = await mm100();
+  if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+
+  const slug = "undated-race-2027";
+  const dir = path.join(tmp, "races", slug);
+  await fs.cp(path.join(ROOT, "races", MM100), dir, { recursive: true });
+  await fs.rm(path.join(dir, "block.json"));
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify({ ...mm.race, slug, status: "draft", date: null }, null, 2));
+
+  const reply = await goodOutput();
+  delete reply.block;
+  const result = await planRace({
+    root: tmp,
+    slug,
+    today: new Date(2026, 8, 18),
+    runAgent: async () => ({ text: JSON.stringify(reply), wrapper: {}, retried: false }),
+  });
+
+  assert.deepEqual(result.wrote, [`races/${slug}/nutrition.json`, `races/${slug}/race.json`]);
+  assert.equal(result.block, null);
+  assert.ok(result.unresolved.includes("block"));
+  assert.ok(result.warnings.some((w) => /no block will be written.*no usable date/.test(w)), result.warnings.join(" | "));
+  await assert.rejects(fs.access(path.join(dir, "block.json")), /ENOENT/);
+});
+
+test("output that breaks the contract writes nothing at all", async (t) => {
+  const mm = await mm100();
+  if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+
+  const slug = "future-race-2027";
+  const dir = path.join(tmp, "races", slug);
+  await fs.cp(path.join(ROOT, "races", MM100), dir, { recursive: true });
+  const race = { ...mm.race, slug, status: "draft", date: "2027-08-13", distance_mi: 104, gain_ft: 19000 };
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(race, null, 2));
+  const before = await Promise.all(["block.json", "nutrition.json", "race.json"].map((f) => fs.readFile(path.join(dir, f), "utf8")));
+
+  const reply = await goodOutput();
+  reply.visual.theme_preset = "san-juan";
+  reply.nutrition.caffeine.body_kg = 79.4;
+  await assert.rejects(
+    planRace({
+      root: tmp,
+      slug,
+      today: new Date(2027, 4, 18),
+      runAgent: async () => ({ text: JSON.stringify(reply), wrapper: {}, retried: false }),
+    }),
+    (e) => /failed the contract/.test(e.message) && /theme_preset/.test(e.message) && /body_kg/.test(e.message),
+  );
+
+  const after = await Promise.all(["block.json", "nutrition.json", "race.json"].map((f) => fs.readFile(path.join(dir, f), "utf8")));
+  assert.deepEqual(after, before, "a rejected plan must leave the folder byte-identical");
+});

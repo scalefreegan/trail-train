@@ -959,7 +959,9 @@ async function loadStyleReference(root, slug) {
  * knows what the numbers mean.
  */
 function nutritionFile(plan) {
-  const { caffeine, ...rest } = plan;
+  // the agent's own comment keys are dropped: these two strings are this
+  // module's boilerplate and say where body mass now lives
+  const { caffeine, comment: _c, caffeine_comment: _cc, ...rest } = plan;
   return {
     comment: "Fueling constants for the fuel/drop-bag cards + planner column, written by the race-intake planner (scripts/race-plan.mjs) and free to edit. Demand-driven fills: base = tailwind_flasks of mix; when a leg's fluid shortfall exceeds preload_over_flask_ml, ONE extra flask takes mix, further spares (up to spare_flasks total) take plain water; smaller shortfalls are drunk at the aid before leaving. bloks_frac = share of a phase's carried units taken as Clif Bloks. drop_bag_gear = non-food items per bag ('Start' = the vest).",
     ...rest,
@@ -980,6 +982,10 @@ function nutritionFile(plan) {
  * @param {number} [opts.maxTurns]
  * @param {number} [opts.timeoutSec]
  * @param {string} [opts.model]
+ * @param {typeof runClaudeJson} [opts.runAgent] the headless spawn. Injectable
+ *   for one reason: the write path — three files, the provenance stamps and
+ *   the user-field merge — is the part most worth testing, and it is the part
+ *   locked behind a paid agent turn. Nothing else overrides it.
  * @returns {Promise<{slug: string, dir: string, prompt: string, dryRun: boolean,
  *   wrote: string[], unresolved: string[], warnings: string[], skipped: string[],
  *   block: object|null, nutrition: object|null, race: object|null, agent: object|null}>}
@@ -993,6 +999,7 @@ export async function planRace({
   maxTurns = PLAN_MAX_TURNS,
   timeoutSec = PLAN_TIMEOUT_SEC,
   model = agentModel(),
+  runAgent = runClaudeJson,
 }) {
   if (!root) throw new Error("planRace: root is required");
   if (!slug) throw new Error("planRace: slug is required");
@@ -1064,7 +1071,7 @@ export async function planRace({
 
   /* 3. the agent — one call, JSON only */
   step("agent", "start", { label: "planning the block with the coach model" });
-  const { text, wrapper, retried } = await runClaudeJson({
+  const { text, wrapper, retried } = await runAgent({
     prompt,
     systemPrompt: PLAN_SYSTEM_PROMPT,
     // Read only: the folder is already on disk and everything else it needs is
