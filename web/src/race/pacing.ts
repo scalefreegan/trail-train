@@ -684,7 +684,7 @@ export function fmtElapsed(h: number): string {
  * Night windows in elapsed race hours: darkness = clock time past sunset or
  * before sunrise. Returns [startH, endH] intervals clipped to [0, horizonH].
  * All three clock strings are RACE-local — `startClock` comes from
- * raceClockH() above, never from the browser's idea of the start hour.
+ * raceClockHM() above, never from the browser's idea of the start hour.
  */
 export function nightIntervals(
   startClock: string, sunset: string, sunrise: string, horizonH: number,

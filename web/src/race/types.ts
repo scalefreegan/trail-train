@@ -221,7 +221,7 @@ export type RaceConfig = {
   /** overall finish cutoff, elapsed hours; null when the race posts none */
   cutoff_h?: number | null;
   features?: RaceFeatures;
-  /** race-local, computed from date + coords by build-course.mjs */
+  /** race-local wall clock, computed from date + coords by scripts/race-sun.mjs */
   sun?: { sunset: string; sunrise: string };
   aid_stations: RaceAidStation[];
   race_climbs?: RaceClimbSpec[];

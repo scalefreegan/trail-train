@@ -118,6 +118,7 @@ window. The coach coaches toward the goals prose.
   "visual": { "theme_preset": "alpine", "accent": "#...", "hero": "hero.jpg",
               "panels": { "climb_comparison": true, "crew_sheet": true, "model_check": true } },
   "provenance": {                         // per top-level field: who last set it
+                                          // by: user | agent | computed (scripts/race-sun.mjs)
     "aid_stations": { "by": "agent", "at": "...", "source": "manual-2026.pdf p11" },
     "date": { "by": "user", "at": "..." }
   },

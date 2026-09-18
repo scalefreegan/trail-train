@@ -226,6 +226,7 @@ export function useRacePlanInstance(): RacePlan {
   const [aidStopMin, setAidStopMin] = usePersistedNumber(knob("aid_stop_min"), 5);
   const [crewStopMin, setCrewStopMin] = usePersistedNumber(knob("crew_stop_min"), 10);
   const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops(knob("stop_overrides"));
+
   const features = useMemo(() => resolveFeatures(raceConfig), [raceConfig]);
   const panels = useMemo(() => visiblePanels(raceConfig), [raceConfig]);
   const columns = useMemo(() => visibleColumns(raceConfig), [raceConfig]);
