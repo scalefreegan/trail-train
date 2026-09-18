@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "test": "node --test ../scripts/*.test.mjs",
     "preview": "vite preview",
+    "test": "node --test ../scripts/*.test.mjs",
     "sync:strava": "node ../scripts/sync-strava.mjs",
     "sync:streams": "node ../scripts/sync-streams.mjs",
     "course:build": "node ../scripts/build-course.mjs",
