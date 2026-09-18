@@ -22,6 +22,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
+import crypto from "node:crypto";
 import { promisify } from "node:util";
 import { RACE_SCHEMA_VERSION, raceDir, validateRaceJson } from "./race-config.mjs";
 import { runClaudeJson, extractJson, agentModel } from "./agent-run.mjs";
@@ -503,6 +504,11 @@ says otherwise — use them, and say so in review_notes. Edition-specific facts 
 registration, the exact cutoff clock times) do NOT carry over: take them from the site for
 the requested year, or leave them null.
 
+THE RACE NAME is what the organizer calls the event, not the page title or the tagline.
+Drop a trailing generic race-type word ("Ultramarathon", "Trail Race", "Endurance Run") when
+the name already states the distance — "San Juan Softie 100", not "San Juan Softie 100 Mile
+Ultramarathon". The folder the owner lives with is named from it.
+
 AID STATIONS ARE THE SPINE. Transcribe the aid chart station by station, in course order,
 with the mile each one sits at. Charts are often IMAGES in the PDF — you will be given
 per-page PNGs; Read the page images and transcribe the table cell by cell. Do not skip a
@@ -512,9 +518,16 @@ start) must never go backwards. When the manual gives clock times, fill cutoff_c
 derive cutoff_h from the start time; if the two disagree, keep both and say so in
 review_notes.
 
+cutoff_h IS A CUTOFF, NEVER AN ELAPSED TIME. A station with no posted cutoff — including the
+start line, which cannot have one — is null, NOT 0. Emitting 0 says "you are timed out the
+moment the gun goes off", and the schema rejects it. Include the start and the finish as
+stations (the course needs both ends); the start's cutoff_h and cutoff_clock are null unless
+the manual really does post one.
+
 WHAT YOU MUST NOT EMIT: sun times, aid-station lat/lon, and climb metrics (gain, grade,
 length). Those are computed later from the GPX by a different tool. Give race_climbs only
-as named windows: id, label, and approximate start/end mile.
+as named windows: id, label (a place name — never a number or a gain figure), and
+approximate start/end mile.
 
 FEATURES drive which panels the dashboard shows: crew (is crew access allowed anywhere),
 drop_bags, pacers, night (will mid-pack runners run in the dark), heat (is heat a real
@@ -612,6 +625,13 @@ export function validateAgentDraft(draft) {
       if (!isObj(s)) { errors.push(`aid_stations[${i}]: object required`); return; }
       if (s.lat !== undefined || s.lon !== undefined) {
         errors.push(`aid_stations[${i}]: lat/lon are snapped from the GPX by the course build — the agent must not emit them`);
+      }
+      // 0 is the one number that cannot be a cutoff: it reads as "timed out at
+      // the gun". It turns up when a chart's start row is transcribed as an
+      // elapsed time, and without this the schema rejects the whole draft
+      // several steps later with a much vaguer complaint.
+      if (s.cutoff_h === 0) {
+        errors.push(`aid_stations[${i}] (${s.name ?? "?"}): cutoff_h 0 is an elapsed time, not a cutoff — a station with no posted cutoff is null`);
       }
     });
   }
@@ -837,9 +857,20 @@ export async function runIntake({
     const pdfs = manifest.filter((m) => m.file && (m.kind === "pdf" || PDF_RE.test(m.file)));
     const images = [];
     let rendererUsed = null;
+    // The runner manual routinely arrives twice — linked from the site AND
+    // uploaded by the owner. Rendering both hands the agent two identical
+    // stacks of page images and invites it to spend turns on the copy.
+    const seenPdfs = new Map();
     for (const entry of pdfs) {
       const pdfPath = path.join(sourcesDir, entry.file);
       const buf = await fs.readFile(pdfPath);
+      const digest = crypto.createHash("sha256").update(buf).digest("hex");
+      if (seenPdfs.has(digest)) {
+        entry.duplicate_of = seenPdfs.get(digest);
+        say("render", `${path.basename(entry.file)}: byte-identical to ${seenPdfs.get(digest)} — not rendered twice`);
+        continue;
+      }
+      seenPdfs.set(digest, entry.file);
       const pageCount = pdfPageCount(buf);
       const renderer = choosePdfRenderer({ pageCount, tools });
       const outDir = path.join(sourcesDir, "pages", kebab(path.basename(entry.file, ".pdf")));

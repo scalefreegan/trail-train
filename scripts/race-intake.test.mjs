@@ -114,6 +114,20 @@ test("the contract rejects computed fields the agent must never invent", async (
   assert.match(validateAgentDraft(climbs).errors.join(" "), /climb metrics are computed/);
 });
 
+test("the contract rejects a zero cutoff — that is an elapsed time, not a cutoff", async () => {
+  const draft = await loadDraft();
+  // the shape a transcribed start row takes when the chart's first column is
+  // read as "hours elapsed": the schema would reject it much later and much
+  // more vaguely, after the agent run is already paid for
+  draft.aid_stations[0] = { ...draft.aid_stations[0], cutoff_h: 0 };
+  const { ok, errors } = validateAgentDraft(draft);
+  assert.equal(ok, false);
+  assert.match(errors.join(" "), /cutoff_h 0 is an elapsed time/);
+  // null is the right answer for a station with no posted cutoff
+  draft.aid_stations[0].cutoff_h = null;
+  assert.deepEqual(validateAgentDraft(draft).errors, []);
+});
+
 test("the contract rejects an answer with no aid stations or no name", async () => {
   assert.match(validateAgentDraft(await loadDraft({ aid_stations: [] })).errors.join(" "), /no spine/);
   assert.match(validateAgentDraft(await loadDraft({ name: "  " })).errors.join(" "), /name: non-empty/);
