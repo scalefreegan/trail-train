@@ -17,6 +17,14 @@ export const RACE_SCHEMA_VERSION = 1;
 /** At most one folder may be "active" — see validateSingleActive. */
 export const RACE_STATUSES = ["draft", "active", "archived"];
 
+/**
+ * Who last set a field. "computed" is a third party alongside the human and
+ * the intake agent: scripts/race-sun.mjs derives `sun` from the course
+ * coordinates, so neither hand-editing it nor re-running intake is what that
+ * value came from — and only "user" is protected from a re-intake merge.
+ */
+export const PROVENANCE_BY = ["user", "agent", "computed"];
+
 /** Folders whose name starts with "_" are scratch/templates, never races. */
 const SKIP_PREFIXES = ["_", "."];
 
@@ -240,7 +248,7 @@ export function validateRaceJson(obj) {
     if (!isObj(obj.provenance)) bad("provenance: object keyed by field name required");
     else for (const [k, v] of Object.entries(obj.provenance)) {
       if (!isObj(v)) { bad(`provenance.${k}: object required`); continue; }
-      if (v.by !== "user" && v.by !== "agent") bad(`provenance.${k}.by must be "user" or "agent"`);
+      if (!PROVENANCE_BY.includes(v.by)) bad(`provenance.${k}.by must be one of ${PROVENANCE_BY.join(" | ")}`);
     }
   }
   if (obj.sources !== undefined) {

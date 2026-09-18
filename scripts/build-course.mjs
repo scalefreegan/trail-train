@@ -458,6 +458,7 @@ async function main() {
     gain_ft: Math.round(measuredGain),
     official_distance_mi: officialDist,
     official_gain_ft: officialGain,
+    // TODO(tt-yib.5): recompute via scripts/race-sun.mjs when rebuilding a folder
     sun: race.sun,
     profile,
     aid_stations,

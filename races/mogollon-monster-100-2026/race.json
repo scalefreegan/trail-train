@@ -29,8 +29,8 @@
     "water_crossings": true
   },
   "sun": {
-    "sunset": "18:35",
-    "sunrise": "06:15"
+    "sunrise": "06:05",
+    "sunset": "18:35"
   },
   "aid_stations": [
     {
@@ -375,9 +375,9 @@
       "source": "tt-yib.2 migration from config/race-course.json race_climbs"
     },
     "sun": {
-      "by": "agent",
-      "at": "2026-09-18T00:00:00Z",
-      "source": "tt-yib.2 migration from config/race-course.json sun (hand-entered 2025 values; build-course recomputes from date + coords)"
+      "by": "computed",
+      "at": "2026-09-18T21:02:25.550Z",
+      "source": "scripts/race-sun.mjs"
     },
     "timezone": {
       "by": "agent",
