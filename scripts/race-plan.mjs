@@ -982,6 +982,9 @@ function nutritionFile(plan) {
  * @param {number} [opts.maxTurns]
  * @param {number} [opts.timeoutSec]
  * @param {string} [opts.model]
+ * @param {boolean} [opts.allowDateless] plan nutrition and notes for a race
+ *   with no date (no block); by default a dateless race is refused before
+ *   the agent turn is spent
  * @param {typeof runClaudeJson} [opts.runAgent] the headless spawn. Injectable
  *   for one reason: the write path — three files, the provenance stamps and
  *   the user-field merge — is the part most worth testing, and it is the part
@@ -1000,6 +1003,7 @@ export async function planRace({
   timeoutSec = PLAN_TIMEOUT_SEC,
   model = agentModel(),
   runAgent = runClaudeJson,
+  allowDateless = false,
 }) {
   if (!root) throw new Error("planRace: root is required");
   if (!slug) throw new Error("planRace: slug is required");
@@ -1050,6 +1054,14 @@ export async function planRace({
     say("load", warnings[warnings.length - 1], { stream: "err" });
   } else if (window.truncated) {
     say("load", `the race is more than ${MAX_BLOCK_WEEKS} weeks out — planning the last ${window.total_weeks} weeks, from ${window.start_date}`);
+  }
+  // A dateless race gets nutrition and notes but no block — and the caller
+  // paid a full agent turn for half a plan (the tt-yib.14 walk hit exactly
+  // this). Refuse up front unless the caller opts in; a dry run costs nothing.
+  if (race.date == null && !allowDateless && !dryRun) {
+    const msg = `races/${slug}/race.json has no date — fill it in the review screen first (or pass allowDateless to plan nutrition and notes without a block)`;
+    step("load", "error", { message: msg });
+    throw new Error(msg);
   }
   step("load", "done", { course: Boolean(course), facts: Boolean(facts), weeks: window?.total_weeks ?? null });
 
@@ -1161,10 +1173,12 @@ async function main() {
     process.exit(2);
   }
   const dryRun = arg("dry-run", false) === true;
+  const allowDateless = arg("allow-dateless", false) === true;
   const result = await planRace({
     root: ROOT,
     slug,
     dryRun,
+    allowDateless,
     onProgress: (e) => {
       // In a dry run the prompt IS the output, so it is printed whole below
       // rather than streamed as a log line.

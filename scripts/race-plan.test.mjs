@@ -652,8 +652,7 @@ test("planRace --dry-run assembles the prompt and writes nothing", async (t) => 
     slug,
     dryRun: true,
     today: new Date(2027, 5, 1),
-    onProgress: (e) => { if (e.status === "start") steps.push(e.step); },
-  });
+    onProgress: (e) => { if (e.status === "start") steps.push(e.step); }, allowDateless: true });
 
   assert.equal(result.dryRun, true);
   assert.deepEqual(result.wrote, []);
@@ -759,6 +758,7 @@ test("a race with no date gets its nutrition and notes, but no block.json", asyn
   const reply = await goodOutput();
   delete reply.block;
   const result = await planRace({
+    allowDateless: true,
     root: tmp,
     slug,
     today: new Date(2026, 8, 18),
@@ -800,4 +800,24 @@ test("output that breaks the contract writes nothing at all", async (t) => {
 
   const after = await Promise.all(["block.json", "nutrition.json", "race.json"].map((f) => fs.readFile(path.join(dir, f), "utf8")));
   assert.deepEqual(after, before, "a rejected plan must leave the folder byte-identical");
+});
+
+test("a dateless race is refused before the agent turn unless the caller opts in", async (t) => {
+  const mm = await mm100();
+  if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const slug = "undated-race-2027";
+  const dir = path.join(tmp, "races", slug);
+  await fs.cp(path.join(ROOT, "races", MM100), dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify({ ...mm.race, slug, status: "draft", date: null }, null, 2));
+
+  let calls = 0;
+  const runAgent = async () => { calls++; return { text: "{}", wrapper: {}, retried: false }; };
+  await assert.rejects(planRace({ root: tmp, slug, today: new Date(2026, 8, 18), runAgent }), /has no date/);
+  assert.equal(calls, 0, "the agent must not be spawned for a dateless race by default");
+  // a dry run never spends, so it is still allowed
+  const dry = await planRace({ root: tmp, slug, today: new Date(2026, 8, 18), runAgent, dryRun: true });
+  assert.equal(dry.dryRun, true);
+  assert.equal(calls, 0);
 });
