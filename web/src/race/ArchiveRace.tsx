@@ -26,7 +26,7 @@ function parseElapsedH(text: string): number | null {
 
 /**
  * One official split per line: the station name, then its elapsed time —
- * "Horton 6:25", "Horton = 6:25" and "Horton, 6:25" all read the same.
+ * "<station> 6:25", "<station> = 6:25" and "<station>, 6:25" all read the same.
  * Lines that do not end in a time come back in `bad` so a typo is shown
  * rather than silently dropped.
  */
@@ -264,7 +264,7 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
                     value={splitsText}
                     onChange={(e) => setSplitsText(e.target.value)}
                     rows={4}
-                    placeholder={"Horton 6:25\nMyrtle 11:42"}
+                    placeholder={"aid station 6:25\nnext station 11:42"}
                     style={{ ...field, resize: "vertical", font: "12.5px var(--font-mono, var(--font-body))" }}
                   />
                 </label>

@@ -1,6 +1,6 @@
 # PRD — Basecamp as a modular, race-pluggable training app
 
-Status: draft v1 · 2026-09-18 · author: Aaron Brooks (interview-driven, written by Claude)
+Status: implemented 2026-09-18 (branch modular-races) · author: Aaron Brooks (interview-driven, written by Claude)
 Scope owner: Aaron · Validation case: San Juan Softie 100, August 2027
 
 ## 1. Summary
@@ -304,3 +304,83 @@ with track splits, archived race view, phone race-day route, backup coverage.
 - Theme overrides can drift the Basecamp identity; presets are the guardrail.
 - Open: should generic-mode weekly targets be coach-proposed or user-set? Default: coach proposes, user accepts.
 - Open: keep `config/race-course.json` as a legacy path during Phase 1, or hard-cut? Default: hard-cut after migration.
+
+## 15. Changelog of deviations
+
+What the build did differently from §§4–12 above, and why. The sections above
+are left as written; this is the amendment list.
+
+**Schema**
+
+- `provenance.by` gained a fourth value: `user | agent | computed | matcher`.
+  §5.1 had three. `matcher` is `scripts/race-build.mjs` choosing a station's
+  `gpx_wpt` out of the GPX, and it carries `confidence` and `method` — a
+  machine's guess at a waypoint is not the same claim as a computed sun time,
+  and re-intake has to treat them differently.
+- Drafts carry `unresolved[]` (every field the agent could not establish, made
+  complete by `collectUnresolved`, not just what the agent admitted to) and
+  `unresolved_acknowledged`, the boolean the review dialog's Activate gate
+  reads (tt-yib.14).
+- `nutrition.json` lost `caffeine.body_kg`; body mass is
+  `config/profile.json` → `physiology.body_kg`, so a race folder is shareable.
+  §5.4's `physiology` block ships with **impersonal defaults** and announces
+  each substitution once per process, so the app runs for someone who has not
+  filled in a profile.
+- `sun` is computed, never transcribed (`scripts/race-sun.mjs`, a NOAA solar
+  calculation from the GPX start point + date + IANA zone). It replaced the
+  hand-entered MM100 pair, whose sunrise was a 2025 value: 06:15 → **06:05**.
+
+**Pointer and modes**
+
+- `config/active-race.json` is `{ slug, mode }`, not `{ slug }`. `mode` is
+  `train` (this race coaches) or `view` (this race is being browsed). §4 had
+  one pointer with one meaning, which could not express "look at the archived
+  race without it taking the block back".
+- Generic mode is therefore "no race is the **training target**": a pointer on
+  a draft, on an archived folder, or in `view` mode is generic mode too, not
+  just `slug: null`.
+- The rolling 12-week generic block (§6) is one definition in
+  `scripts/block.mjs`, imported by both `facts.mjs` and the `/api/race/active`
+  payload, rather than being computed twice.
+
+**Visuals and serving**
+
+- `visual` gained `overrides` (per-token, over the preset) and derives
+  `--lamp-deep` / `--lamp-glow` from `accent`, so one hex is enough. The
+  readability floors are enforced on write, in one module the intake preview,
+  the theme hook and the validator all import.
+- The hero image is served by an explicit endpoint,
+  `GET /api/races/:slug/asset/:name`, serving only the file `visual.hero`
+  names — §7 implied a static path, which would have exposed the folder.
+- The LAN opt-in for race-day mode is the environment variable
+  `TRAIL_ALLOWED_ORIGINS`, not a config key: an allowlist that ships in a
+  committed file is one a checkout can widen by accident.
+
+**Migration**
+
+- §11.3's 13-station `state.race.aid_stations` and the 15-station course list
+  reconciled to **15** (the 13 aid stations plus the two crew-only zones that
+  the course list carried and the state list had dropped), and the official
+  distance to **102.6 mi** from the manual's aid chart, over state.json's
+  102.3 from the race site.
+- `scripts/lib.mjs` `note()` went silent under `node --test`: script progress
+  on a test child's stdout interleaved with the runner's IPC stream and
+  corrupted its framing about one run in ten, as an assertion-free failure in
+  an unrelated file.
+
+**Validation (§12)**
+
+- "Re-deriving MM100 through intake and diffing against the archived folder"
+  is **infeasible and was dropped**: MM100 was migrated by hand from
+  `config/race-course.json` and a GPX, it has no `sources/`, and there is no
+  cached site or manual to re-intake from. A re-intake would also be an agent
+  run, which is not something a regression harness can assert on.
+- It is replaced by a deterministic equivalent — `npm run check:races`
+  section 3 — which strips every `gpx_wpt` and the sun from a temp-dir copy of
+  the archived folder and puts it back through stage 2: 15/15 waypoints
+  recovered from names alone, snapped miles monotone, sun within 5 minutes of
+  the committed pair, and no `user`- or `agent`-stamped field rewritten.
+- The Softie 2027 assertions are encoded against the produced **draft**
+  (`check:races` section 4), which is uncommitted, so that section SKIPs in a
+  fresh checkout. `--live` re-fetches and hashes the sources the draft cites
+  rather than re-running the agent.

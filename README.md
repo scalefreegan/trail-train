@@ -159,6 +159,57 @@ then by name, then by charted mile. A station the matcher can't place
 confidently warns and falls back to a distance snap — an unseen GPX from a
 race site never fails the build.
 
+### Checks
+
+```bash
+cd web
+npm run check:races                       # the whole harness
+TRAIL_CHECK_QUIET=1 npm run check:races   # one line per section
+npm run check:races -- --live             # + re-fetch a draft's sources
+```
+
+The regression harness for the race pipeline. Five sections, each printing
+PASS, FAIL or SKIP with a reason; any FAIL exits non-zero.
+
+1. **Race literals** — the grep gate. A race is a folder, so no race's name,
+   short code, trailhead town or aid-station name may appear in code again.
+   It scans `scripts/`, `web/src/`, `web/vite.config.ts`, `macos/`,
+   `README.md` and `web/index.html`, skipping `*.test.mjs` (the retired race
+   *is* their fixture) and the checker itself. A line whose first non-space
+   characters open or continue a comment is history, not coupling, and prints
+   as an INFO mention; every other hit fails. Two constants are listed
+   exceptions in `scripts/check-races.mjs`, each named with its reason —
+   `LEGACY_KNOB_SLUG` (the one-time localStorage migration target for pacing
+   knobs saved before knobs were per-race) and `STYLE_REFERENCE_SLUG` (the
+   hand-authored block and nutrition pair the intake planner shows its agent
+   as a style reference). Add a third only by adding it there, with a reason.
+2. **Folders** — every folder under `races/` validates. Drafts get draft
+   semantics (a hole they declared in `unresolved[]` is allowed); active and
+   archived folders must validate outright. At most one folder may be active,
+   and each `block.json` / `nutrition.json` has to pass both its writer-side
+   validator and the loader the client uses.
+3. **Reference rebuild** — the archived reference race is copied to a temp
+   dir with every `gpx_wpt` and its sun times stripped, then put back through
+   stage 2. The matcher has to recover the waypoints from names alone, the
+   snapped miles have to walk forwards, the recomputed sunrise and sunset have
+   to land within five minutes of the committed pair, and not one field
+   stamped `user` or `agent` may be rewritten. Nothing is written into
+   `races/`, and no network call is made.
+4. **Draft expectations** — the validation case in `docs/PRD-modular-races.md`
+   §12, asserted against that draft folder: the station count, timezone,
+   cutoff, feature flags, high point, first crew access, results host, and
+   that the transcription of the organizer's image-only aid chart is still
+   flagged for a human. The draft is uncommitted, so this section SKIPs with
+   a notice in a fresh checkout.
+5. **Build and tests** — `npm run build` and `npm test`, with their tails.
+
+`--live` adds one thing to section 4: each source the draft cites is
+re-fetched and hashed against the cached copy in its `sources/`, so an
+organizer who has revised the manual, the chart or the GPX since intake shows
+up as `CHANGED`. It is the only part of the harness that touches the network,
+it is off by default, and it is not a re-intake — re-running the agent is what
+"refresh from sources" does.
+
 ### Athlete profile
 
 The agent uses your name, location, local trail names and the title words you
