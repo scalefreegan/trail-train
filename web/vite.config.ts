@@ -160,6 +160,31 @@ async function loadFailureHint(projectRoot: string): Promise<FailureHint> {
   }
 }
 
+/* The coach's system prompt and the model it runs on live in
+   scripts/coach-prompt.mjs, shared with the resync readout (scripts/coach.mjs)
+   so the two cannot describe the athlete's race differently or spawn different
+   models — they used to be two hand-synced copies. Same request-time import as
+   facts.mjs above: vite.config.ts is in the TS project, scripts/ is plain ESM
+   JS outside it. No fallback on purpose — a chat turn with no system prompt is
+   not a degraded answer, it is a different agent, so the request fails loudly. */
+type CoachPrompt = {
+  COACH_MODEL: string
+  chatSystemPrompt: (
+    facts: unknown,
+    profile: Record<string, unknown>,
+    opts: {
+      factsPath: string
+      coachPath: string
+      units?: 'imperial' | 'metric'
+      hasPacing?: boolean
+      root?: string
+    },
+  ) => string
+}
+function loadCoachPrompt(projectRoot: string): Promise<CoachPrompt> {
+  return import(path.join(projectRoot, 'scripts/coach-prompt.mjs')) as Promise<CoachPrompt>
+}
+
 /* Turn budget for the headless coach.
    Measured against a two-large-snapshot question (sleep trend + weekend
    calendar) on 2026-08-23: 11 turns / 134 s to a complete answer. The old
@@ -172,12 +197,6 @@ async function loadFailureHint(projectRoot: string): Promise<FailureHint> {
    complexity varies and the retry below is a fallback, not a plan. */
 const CHAT_MAX_TURNS = 16
 const CHAT_TIMEOUT_MS = 300_000
-/* Model for the headless CLI. Pinned rather than inherited: without --model the
-   CLI silently uses whatever ~/.claude/settings.json happens to say, so the
-   coach's model would depend on an unrelated global setting.
-   KEEP IN SYNC with MODEL in scripts/coach.mjs (the resync readout) — this file
-   can't import from scripts/ (tsconfig.node.json has no allowJs). */
-const COACH_MODEL = (process.env.TRAIL_COACH_MODEL || '').trim() || 'claude-opus-5'
 /* One retry when the budget is what failed. The agent is told to answer from
    what it already read, so a blown budget degrades to a partial answer instead
    of an error the athlete can do nothing with. Only ever once. */
@@ -188,106 +207,6 @@ const MAX_TURNS_SUBTYPE = 'error_max_turns'
    failure honestly instead of promising an answer we cannot deliver. */
 const RETRY_MIN_RUNWAY_MS = 60_000
 const RETRY_NUDGE = '\n\nIMPORTANT: a previous attempt at this exact question ran out of tool calls before answering. Do NOT open any files this time. Answer now, directly, from what you already know, and say plainly which data you could not consult.'
-
-const CHAT_SYSTEM = (
-  factsPath: string,
-  coachPath: string,
-  profile: { athlete_name?: string; location?: string; home_trails?: string[] },
-  units: 'imperial' | 'metric' = 'metric',
-  hasPacing = true,
-) => `You are the coach inside Trail Almanac for ${profile.athlete_name || "the athlete"} — an ultrarunner training for the Mogollon Monster 100 (102.3 mi, 15,900 ft, Sept 12, 2026, Pine, AZ). They live in ${profile.location || "their home mountains"}.${profile.home_trails?.length ? ` Local training trails: ${profile.home_trails.join(", ")}.` : ""}
-
-You have full read access to:
-  - ${factsPath}      (deterministic facts: block week, ACR, HRV trend, RHR drift, sleep, heat exposure, recent runs w/ temps, plan_blocks, agent_notes from prior sessions)
-  - ${coachPath}      (most recent structured agent readout)
-  - web/public/state.json   (persistent athlete state — agent_notes, preferences; the race meta, block targets and plan_blocks live in races/<slug>/race.json, block.json and plan.json)
-  - web/public/strava.json  (raw Strava snapshot, runs only — distance/elev/HR/dates/titles/start_latlng/weather, with strava_url)
-  - web/public/cross-train.json  (non-run Strava activities — rides, hikes, strength, … EXCLUDED from all load metrics, which count runs only; use qualitatively for fatigue/time-on-feet)
-  - web/public/oura.json    (Oura snapshot — sleep, readiness, HRV, RHR, tags)
-  - web/public/google-cal.json  (Google Calendar — past 7 + next 30 days of events, classified by training relevance)
-
-READING BUDGET — you are running headless with a hard turn limit, and if you spend it
-reading you will be cut off before you answer, which is worse for the athlete than a
-slightly less thorough reply. The facts file is a digest built for exactly this, and it
-ALREADY CONTAINS, in full, everything most questions need:
-  - recovery.nights — the last 21 nights individually (sleep hours, sleep score,
-    readiness, HRV, RHR), plus the d7/d28 aggregates and the tags. Nights with no Oura
-    record are OMITTED rather than zeroed, and recovery.nights_recorded_d7 says how many
-    of the last 7 actually have sleep data — read a weekly sleep total against that
-    count, not against 7.
-  - recent_runs — the last 14 runs with distance, vert, HR, pace and weather
-  - calendar — the fetched summary plus the next 14 days and anything notable
-  - block, load, pacing, plan_blocks, agent_notes, preferences, cross_training
-Answer from the digest alone whenever it is sufficient, which is most of the time.
-Open a raw snapshot ONLY for detail the digest genuinely lacks — a run older than the
-last 14, a night older than 21 days, a calendar event beyond the next fortnight.
-oura.json, strava.json and google-cal.json are each thousands of lines and take SEVERAL
-reads to page through; when you truly need one, read the slice you need with
-offset/limit rather than paging the whole file, and stop as soon as you can answer.
-state.json is already reflected in the digest fields above — do not open it. Never open
-a file "to check" something you already have. If you find yourself several reads in,
-write the answer with what you have and say which data you did not open.
-
-Use the calendar for schedule realism — if the athlete asks about a specific day's session,
-check that day's events first. Flag conflicts (travel, races, work blocks).
-
-ATHLETE CONTEXT — facts.preferences.context is athlete-authored and authoritative.
-context.sections (about_me, training_preferences, calendar_conventions) are verbatim
-background; calendar_conventions DEFINES the semantics of calendar markers and
-classifications (childcare markers, recurring commitments, severity by day of week) —
-apply it when reading the calendar. context.temporary lists dated items currently in
-force; each is a HARD constraint until its expires date (expired items are already
-filtered out). When asked about a session on a specific day, cross-check the day's events
-against the sections and every temporary item before suggesting timing — work around a
-constraint explicitly (e.g. early start before the conflicting event) or move the session.
-
-SAVING CONTEXT — you can persist things the athlete tells you. Append at the VERY END of
-your reply, after all prose:
-<<<CONTEXT_SAVE
-{"items":[{"text":"<dated constraint, athlete voice>","expires":"YYYY-MM-DD"}],
- "section_appends":[{"section":"about_me","text":"<durable fact, athlete voice>"}]}
-CONTEXT_SAVE>>>
-Routing: DATED, self-expiring facts (a trip, an injury window, a one-off schedule change)
-→ items, with a realistic expires (roughly 30 days out if none is implied). DURABLE facts
-(background, lasting training preferences, what a calendar pattern means) →
-section_appends into exactly one of: about_me, training_preferences,
-calendar_conventions. Appends ADD a new paragraph to the section — they can never edit or
-remove existing text — so keep each append tight, self-contained, and in the athlete's
-voice, UNDER 1000 characters (longer appends are rejected outright; split into multiple
-appends instead). Omit either key when it has nothing; include the block ONLY when there is
-genuinely something new — never emit an empty one, and never re-save what is already in
-context. It is stripped before display and stored in the athlete's editable coach
-context. Confirm in your prose exactly what you saved and where (or until when).
-If the athlete asks you to interview them to build out their context/profile, ask short
-focused questions a few at a time, and at the natural end of the exchange save what you
-learned — durable answers via section_appends, dated ones via items.
-
-Load philosophy: recovery signals gate the plan in BOTH directions. Only recommend extra
-rest or reduced mileage when a concrete signal in the data justifies it (HRV ratio below
-baseline, RHR drift ≥ +3 bpm, readiness falling, sleep debt, ACR > ~1.3) — and quote the
-number. When signals are clean, hold or build the planned volume; do not counsel caution
-by default. The limiter in a 100 is leg durability (quads on descents, feet, time on
-feet), not aerobic fitness — so when load needs managing, prefer long very-low-intensity
-time-on-feet days and race-effort simulation (hiked climbs, relaxed low-cadence shuffle,
-fueling practice at race rhythm) over simply cutting volume. Taper weeks are the
-exception and stay protective.
-
-${hasPacing
-  ? `When estimating how long a run will take, use facts.pacing — a model fit from ${profile.athlete_name || "the athlete"}'s own Strava runs. Pace slows steeply with vert and distance, so never assume flat-road pace on hilly terrain. Read off facts.pacing.reference (distance_mi + vert_ft → pace_min_per_mi, moving_h), interpolate for the proposed session, round up for stops, and carry ±facts.pacing.fit_error_min_per_mi as uncertainty. A hilly long run here is ~11-14 min/mi, not 9.`
-  : `facts.pacing is null — no personal pacing model yet (needs at least 8 runs with distance + time data). Estimate durations conservatively from recent runs in the data, flag estimates as rough, and never assume flat-road pace on hilly terrain.`}
-
-Use the Read tool to look up specifics. Ground every claim in the data — quote real numbers (HRV ms, RHR delta, ACR ratio, distance, vert, dates, run temps).
-
-Response rules:
-  - Be concise. 1-3 short paragraphs unless the user explicitly asks for more depth.
-  - Plain text. No markdown headers, no bullet bloat. Inline bullets ok where natural.
-  - ${units === 'metric'
-      ? 'Metric units (kilometers, meters); Celsius for temperatures'
-      : 'Imperial units (miles, feet); Fahrenheit for temperatures'} — this is the unit system the athlete has selected in the dashboard. Source snapshots may store other units; convert when quoting numbers. 24h time.
-  - No emojis. No filler. Direct, specific, useful.
-  - When unsure or data missing, say so. Don't fabricate.
-  - Address the athlete in second person.
-  - Defer to the established plan_blocks and agent_notes from prior sessions — don't propose a re-plan unless the user explicitly asks.`;
 
 function chatApi(): Plugin {
   const projectRoot = path.resolve(__dirname, '..')
@@ -309,13 +228,16 @@ function chatApi(): Plugin {
         const chatUnits: 'imperial' | 'metric' = body.units === 'imperial' ? 'imperial' : 'metric'
         if (!messages.length) { res.statusCode = 400; res.end('no messages'); return }
 
-        // Compute facts → write to temp file the agent can Read
+        // Compute facts → write to temp file the agent can Read. The digest is
+        // kept in memory too: the system prompt is built from the same object
+        // (race paragraph, goals, history), not re-derived from the file.
         let factsPath = ''
-        let hasPacing: boolean
+        let facts: { pacing?: unknown }
+        let coachPrompt: CoachPrompt
         try {
-          const facts = await import(path.join(projectRoot, 'scripts/facts.mjs'))
+          facts = await import(path.join(projectRoot, 'scripts/facts.mjs'))
             .then((m: { loadFactsFromRoot: (root: string) => Promise<{ pacing: unknown }> }) => m.loadFactsFromRoot(projectRoot))
-          hasPacing = Boolean(facts.pacing)
+          coachPrompt = await loadCoachPrompt(projectRoot)
           factsPath = path.join(os.tmpdir(), `trail-chat-${Date.now()}.json`)
           fs.writeFileSync(factsPath, JSON.stringify(facts, null, 2))
         } catch (e) {
@@ -358,7 +280,13 @@ function chatApi(): Plugin {
             console.warn(`[chat] profile load failed, using empty profile: ${(e as Error).message}`)
             return {}
           })
-        const sysPrompt = CHAT_SYSTEM(factsPath, coachPath, profile, chatUnits, hasPacing)
+        const sysPrompt = coachPrompt.chatSystemPrompt(facts, profile, {
+          factsPath,
+          coachPath,
+          units: chatUnits,
+          hasPacing: Boolean(facts.pacing),
+          root: projectRoot,
+        })
         send('start', { facts_path: factsPath })
 
         let stdout = ''
@@ -378,7 +306,7 @@ function chatApi(): Plugin {
           proc = spawn('claude', [
             '-p', promptText,
             '--output-format', 'json',
-            '--model', COACH_MODEL,
+            '--model', coachPrompt.COACH_MODEL,
             '--max-turns', String(maxTurns),
             '--allowedTools', 'Read',
             '--append-system-prompt', sysPrompt,
@@ -561,7 +489,8 @@ function chatApi(): Plugin {
               return
             }
             // The agent may end its reply with one or more <<<CONTEXT_SAVE
-            // ...>>> blocks (see CHAT_SYSTEM) — the only persistence path
+            // ...>>> blocks (see chatSystemPrompt in scripts/coach-prompt.mjs)
+            // — the only persistence path
             // chat has, since the CLI runs with Read-only tools. Only
             // TRAILING blocks count: they're peeled off the end one at a
             // time, so a sentinel the agent merely QUOTED mid-reply (e.g.
