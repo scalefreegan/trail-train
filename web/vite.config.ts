@@ -1177,6 +1177,10 @@ function raceSwitchApi(): Plugin {
               short: (r.race?.short as string) ?? r.slug,
               status: (r.race?.status as string) ?? null,
               date: (r.race?.date as string) ?? null,
+              // the folder's whole `visual` block — the menu draws a swatch
+              // of each race's palette, which needs the preset and accent
+              // BEFORE the race is switched to (tt-yib.16)
+              visual: (r.race?.visual as Record<string, unknown>) ?? null,
               error: r.error,
             })),
             pointer,
