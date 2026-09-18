@@ -441,8 +441,15 @@ export function softieChecks(race) {
   const numbered = stations.filter((s) => /#\d+\s*$/.test(String(s?.name ?? "").trim()));
   const firstCrew = stations.find((s) => s?.crew === true && Number(s?.total_mi) > 0);
   const f = race.features ?? {};
+  // Three ways the image-only aid chart's transcription can still be in front
+  // of a human: holes nobody has filled, the review dialog's acknowledgement of
+  // them (tt-yib.14 — acknowledging PRUNES the key, so unresolved[] shrinks as
+  // the draft is worked), or the intake's own prose about what it could not
+  // corroborate. Any one of them is enough; requiring unresolved[] to stay
+  // non-empty would make finishing the review look like a regression.
   const flagged =
     (Array.isArray(race.unresolved) && race.unresolved.length > 0) ||
+    race.unresolved_acknowledged === true ||
     (typeof race.review_notes === "string" && race.review_notes.trim().length > 0);
   const check = (name, ok, detail) => ({ name, ok: Boolean(ok), detail });
 
@@ -461,7 +468,8 @@ export function softieChecks(race) {
     check("results on OpenSplitTime", /opensplittime/i.test(String(race.links?.results ?? "")),
       String(race.links?.results)),
     check("image-chart transcription flagged for review", flagged,
-      `unresolved ${Array.isArray(race.unresolved) ? race.unresolved.length : 0} · review_notes ${race.review_notes ? "present" : "absent"}`),
+      `unresolved ${Array.isArray(race.unresolved) ? race.unresolved.length : 0} · ` +
+      `acknowledged ${race.unresolved_acknowledged === true} · review_notes ${race.review_notes ? "present" : "absent"}`),
   ];
 }
 

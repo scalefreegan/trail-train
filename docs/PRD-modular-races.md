@@ -320,7 +320,18 @@ are left as written; this is the amendment list.
 - Drafts carry `unresolved[]` (every field the agent could not establish, made
   complete by `collectUnresolved`, not just what the agent admitted to) and
   `unresolved_acknowledged`, the boolean the review dialog's Activate gate
-  reads (tt-yib.14).
+  reads (tt-yib.14). §8's review dialog closes a hole through
+  `unresolved_fills`, a bounded path-write on `PUT /api/races/:slug`: it may
+  only name a path the folder currently lists as unresolved, never touches the
+  folder's identity, its provenance or the aid table (which has its own
+  editor), and writes a scalar the schema check then judges.
+- Acknowledging a hole **prunes the key** rather than storing a null
+  (`pruneAcknowledgedNulls`): the schema's way of saying "not known" is an
+  absent field, so a draft's `unresolved[]` shrinks as the review progresses.
+  Anything asserting on a draft therefore has to read "still under human
+  review" as `unresolved[]` non-empty **or** `unresolved_acknowledged` **or**
+  the intake's `review_notes` prose — which is what `check:races` section 4
+  does.
 - `nutrition.json` lost `caffeine.body_kg`; body mass is
   `config/profile.json` → `physiology.body_kg`, so a race folder is shareable.
   §5.4's `physiology` block ships with **impersonal defaults** and announces
