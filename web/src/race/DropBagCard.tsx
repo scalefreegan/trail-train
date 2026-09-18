@@ -121,9 +121,10 @@ export function DropBagCard({ plan, cfg, onClose }: {
                 </thead>
                 <tbody>
                   {plan.drop_bags.map((bag) => {
-                    // the group separator lives on the LAST row of each bag —
-                    // a gear-less bag must not visually merge into the next
-                    const bagCell = { ...cell, ...(bag.gear.length > 0 ? { borderBottom: "none" } : null) };
+                    // the group separator lives on the LAST row of each bag,
+                    // which is always the gear row — a bag with no gear planned
+                    // says so rather than silently dropping the line
+                    const bagCell = { ...cell, borderBottom: "none" };
                     return (
                     <React.Fragment key={bag.station}>
                       <tr>
@@ -150,13 +151,14 @@ export function DropBagCard({ plan, cfg, onClose }: {
                           })()}
                         </td>
                       </tr>
-                      {bag.gear.length > 0 && (
-                        <tr>
-                          <td colSpan={8} style={{ ...cell, textAlign: "left", fontSize: "7px", color: MUTED, paddingTop: 0 }}>
-                            <b style={{ color: INK }}>gear:</b> {bag.gear.join(" · ")}
-                          </td>
-                        </tr>
-                      )}
+                      <tr>
+                        <td colSpan={8} style={{ ...cell, textAlign: "left", fontSize: "7px", color: MUTED, paddingTop: 0 }}>
+                          <b style={{ color: INK }}>gear:</b>{" "}
+                          {bag.gear.length > 0
+                            ? bag.gear.join(" · ")
+                            : <i>unplanned — add this station to drop_bag_gear in the race folder&rsquo;s nutrition.json</i>}
+                        </td>
+                      </tr>
                     </React.Fragment>
                     );
                   })}
