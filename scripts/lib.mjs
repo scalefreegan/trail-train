@@ -26,3 +26,15 @@ export async function writeJsonAtomic(p, data) {
   await fs.writeFile(tmp, JSON.stringify(data, null, 2));
   await fs.rename(tmp, p);
 }
+
+/**
+ * Progress lines for humans running a script ("• bootstrapped …"). Silent
+ * inside `node --test` children: stdout from a test child interleaves with
+ * the runner's IPC stream and, roughly one run in ten, corrupts its framing
+ * ("Unable to deserialize cloned data") — an assertion-free failure in an
+ * unrelated test file. Warnings still go through console.warn (stderr).
+ */
+export const UNDER_TEST = Boolean(process.env.NODE_TEST_CONTEXT);
+export function note(...args) {
+  if (!UNDER_TEST) console.log(...args);
+}

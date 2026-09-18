@@ -18,7 +18,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { writeJsonAtomic } from "./lib.mjs";
+import { writeJsonAtomic, note } from "./lib.mjs";
 import { RACE_SCHEMA_VERSION, getTrainingSlug, raceDir } from "./race-config.mjs";
 
 export const STATE_VERSION = 3;
@@ -304,13 +304,13 @@ export function migrateToV2(state) {
       const end = new Date(`${m[3] ?? m[1]} ${m[4]}, ${m[5]}`);
       if (!Number.isNaN(end.getTime())) {
         temporary.push({ id: newContextId(), text, added: todayIso, expires: isoDate(end), source: "user" });
-        console.log(`• migration: "${text.slice(0, 50)}…" → temporary (expires ${isoDate(end)})`);
+        note(`• migration: "${text.slice(0, 50)}…" → temporary (expires ${isoDate(end)})`);
         continue;
       }
     }
     const dest = /childcare|calendar|marker|soccer/i.test(text) ? "calendar_conventions" : "training_preferences";
     appendTo(dest, text);
-    console.log(`• migration: "${text.slice(0, 50)}…" → ${dest}`);
+    note(`• migration: "${text.slice(0, 50)}…" → ${dest}`);
   }
   delete prefs.personal_constraints;
   prefs.context = { sections, temporary };
@@ -380,13 +380,13 @@ function raceJsonFromLegacy(race, slug, todayIso) {
 async function writeIfAbsent(p, data) {
   try {
     await fs.access(p);
-    console.log(`• ${p} already exists — keeping it`);
+    note(`• ${p} already exists — keeping it`);
     return false;
   } catch (e) {
     if (e.code !== "ENOENT") throw e;
   }
   await writeJsonAtomic(p, data);
-  console.log(`• wrote ${p}`);
+  note(`• wrote ${p}`);
   return true;
 }
 
@@ -404,7 +404,7 @@ export async function migrateToV3(projectRoot, state) {
   try {
     await fs.mkdir(path.dirname(backupPath), { recursive: true });
     await fs.writeFile(backupPath, JSON.stringify(state, null, 2) + "\n", { flag: "wx" });
-    console.log(`• backed up the v2 state to ${backupPath}`);
+    note(`• backed up the v2 state to ${backupPath}`);
   } catch (e) {
     // EEXIST is the good case — a previous run already backed the v2 file up,
     // and that first copy is the one worth keeping. Anything else (no space,
@@ -418,7 +418,7 @@ export async function migrateToV3(projectRoot, state) {
           "Nothing has been changed — fix it and re-run.",
       );
     }
-    console.log(`• ${STATE_BACKUP_NAME} already exists — kept the original backup`);
+    note(`• ${STATE_BACKUP_NAME} already exists — kept the original backup`);
   }
 
   const todayIso = isoDate(new Date());
@@ -499,14 +499,14 @@ export async function loadState(projectRoot) {
     if ((state.version ?? 0) < 2 || !state.preferences?.context) {
       state = migrateToV2(state);
       migrated = true;
-      console.log("• migrated state.json to v2 (coach context)");
+      note("• migrated state.json to v2 (coach context)");
     }
     // Key presence, not the version number alone: a file hand-edited back to
     // carrying a race must still be split rather than left half-migrated.
     if ((state.version ?? 0) < 3 || "race" in state || "block" in state || "plan_blocks" in state) {
       state = await migrateToV3(projectRoot, state);
       migrated = true;
-      console.log("• migrated state.json to v3 (race/block/plan → races/<slug>/)");
+      note("• migrated state.json to v3 (race/block/plan → races/<slug>/)");
     } else if (state.version !== STATE_VERSION) {
       console.warn(`• state.json version ${state.version} ≠ ${STATE_VERSION}; using as-is`);
     }
@@ -518,7 +518,7 @@ export async function loadState(projectRoot) {
   // bootstrap
   const fresh = { ...DEFAULT_STATE, last_updated: new Date().toISOString() };
   await writeJsonAtomic(p, fresh);
-  console.log(`• bootstrapped ${p} from defaults`);
+  note(`• bootstrapped ${p} from defaults`);
   return fresh;
 }
 
