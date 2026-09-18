@@ -21,6 +21,7 @@ import {
   loadProfile,
   loadProfileWithWarnings,
   normalizePhysiology,
+  resetProfileWarnings,
 } from "./profile.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
@@ -122,6 +123,7 @@ test("a profile written before physiology existed gets defaults AND a console wa
   const root = await tempRoot(t);
   await writeConfig(root, "profile.json", { athlete_name: "legacy", home_trails: ["a ridge"] });
 
+  resetProfileWarnings();
   const { value: profile, lines } = await captureWarn(() => loadProfile(root));
   // backward compatible: everything it did carry survives
   assert.equal(profile.athlete_name, "legacy");
@@ -133,6 +135,22 @@ test("a profile written before physiology existed gets defaults AND a console wa
   });
   assert.equal(lines.length, 2, `expected two warnings, got: ${lines.join(" | ")}`);
   assert.ok(lines.every((l) => l.includes("profile.json")));
+});
+
+test("the same warning is printed once per process, not once per read", async (t) => {
+  // loadFactsFromRoot runs many times in one process (the chat endpoint, the
+  // test suite). Repeating the substitution notice on every read is noise —
+  // and enough interleaved child-process output to destabilize node --test.
+  const root = await tempRoot(t);
+  await writeConfig(root, "profile.json", { athlete_name: "legacy" });
+
+  resetProfileWarnings();
+  const first = await captureWarn(() => loadProfile(root));
+  assert.equal(first.lines.length, 2);
+  const second = await captureWarn(() => loadProfile(root));
+  assert.deepEqual(second.lines, [], "the second read says nothing new");
+  // …but the values are still there, every time
+  assert.equal(second.value.physiology.body_kg, DEFAULT_BODY_KG);
 });
 
 test("no profile.json falls back to the example file", async (t) => {

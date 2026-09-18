@@ -108,12 +108,36 @@ export async function loadProfileWithWarnings(projectRoot) {
 }
 
 /**
- * The plain loader every script uses. Warnings go to the console once per
- * call — the scripts that read the profile are one-shot, so this is the
- * "documented default, announced" contract from the bead.
+ * Warnings already printed by this process. The scripts that read the profile
+ * are one-shot, so in normal use this changes nothing — but loadFactsFromRoot
+ * is called many times in one process (the coach's chat endpoint, and the
+ * test suite), and repeating "body_kg is not set" on every call is noise that
+ * trains the reader to skip it. Same rule as the nutrition loader's one-time
+ * note on a legacy body_kg.
+ *
+ * It is not merely cosmetic: the volume of interleaved child-process writes
+ * this produced was enough to intermittently corrupt `node --test`'s message
+ * framing ("Unable to deserialize cloned data"), failing a test file that has
+ * nothing to do with profiles.
+ */
+const warned = new Set();
+
+/** Forget what has been printed — for tests that assert on the warnings. */
+export function resetProfileWarnings() {
+  warned.clear();
+}
+
+/**
+ * The plain loader every script uses. Each distinct warning is printed once
+ * per process — the "documented default, announced" contract from the bead,
+ * announced once rather than on every read.
  */
 export async function loadProfile(projectRoot) {
   const { profile, warnings } = await loadProfileWithWarnings(projectRoot);
-  for (const w of warnings) console.warn(`⚠︎ ${w}`);
+  for (const w of warnings) {
+    if (warned.has(w)) continue;
+    warned.add(w);
+    console.warn(`⚠︎ ${w}`);
+  }
   return profile;
 }
