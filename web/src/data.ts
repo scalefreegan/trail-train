@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { isValidTimeZone, raceStart } from "./race/clock";
+import { ACTIVE_RACE_CACHE, cacheGet, cachePut } from "./race/offlineCache";
 import { fmtRaceClock } from "./race/pacing";
 import type { ActiveBlock, ActiveRaceResponse, RaceConfig as RaceJson, RaceStatus } from "./race/types";
 
@@ -418,9 +419,25 @@ export function useGoogleCal() {
  * failure; anything else KEEPS the loaded race and surfaces `error`.
  */
 type ActiveRaceResult =
-  | { kind: "ok"; data: ActiveRaceResponse }
+  /** `staleMessage` set = this came out of localStorage after the fetch
+      failed. The data is real, it is just not necessarily current, and the
+      views say so rather than quietly drawing a plan from last night. */
+  | { kind: "ok"; data: ActiveRaceResponse; staleMessage?: string }
   | { kind: "missing" }
   | { kind: "error"; message: string };
+
+/**
+ * A failed load falls back to the last payload that DID load, if there is
+ * one. Race-day mode is read on a phone that may have lost the laptop; an
+ * empty screen at mile 60 is worse than a plan stamped "offline".
+ *
+ * A 404 never reaches here — that is the endpoint being absent (a static
+ * preview build), which is an answer, not a failure.
+ */
+function activeRaceFallback(message: string): ActiveRaceResult {
+  const cached = cacheGet<ActiveRaceResponse>(ACTIVE_RACE_CACHE);
+  return cached ? { kind: "ok", data: cached, staleMessage: message } : { kind: "error", message };
+}
 
 /**
  * ONE in-flight GET per refresh pulse, shared by every useActiveRace() caller.
@@ -438,11 +455,13 @@ function requestActiveRace(key: number): Promise<ActiveRaceResult> {
       p: fetch(`/api/race/active?t=${Date.now()}`)
         .then(async (r): Promise<ActiveRaceResult> => {
           if (r.status === 404) return { kind: "missing" };
-          if (!r.ok) return { kind: "error", message: `active race failed to load (HTTP ${r.status})` };
-          return { kind: "ok", data: (await r.json()) as ActiveRaceResponse };
+          if (!r.ok) return activeRaceFallback(`active race failed to load (HTTP ${r.status})`);
+          const data = (await r.json()) as ActiveRaceResponse;
+          cachePut(ACTIVE_RACE_CACHE, data);
+          return { kind: "ok", data };
         })
         // a rejected json() lands here too: unparseable is corrupt, not absent
-        .catch(() => ({ kind: "error", message: "active race config corrupt or unreadable" })),
+        .catch(() => activeRaceFallback("active race config corrupt or unreadable")),
     };
   }
   return activeRaceRequest.p;
@@ -458,6 +477,8 @@ export type ActiveRaceState = {
   mode: "train" | "view";
   missing: boolean;
   error: string | null;
+  /** the race on screen came from the offline cache, not from the server */
+  offline: boolean;
   /** the request has settled — before that, "no active race" is not yet a fact
       (see the per-slug localStorage keys in race/useRacePlan.ts) */
   resolved: boolean;
@@ -466,14 +487,20 @@ export type ActiveRaceState = {
 export function useActiveRace(): ActiveRaceState {
   const { key: refreshKey } = useRefresh();
   const [state, setState] = useState<{
-    data: ActiveRaceResponse | null; missing: boolean; error: string | null; resolved: boolean;
-  }>({ data: null, missing: false, error: null, resolved: false });
+    data: ActiveRaceResponse | null; missing: boolean; error: string | null;
+    offline: boolean; resolved: boolean;
+  }>({ data: null, missing: false, error: null, offline: false, resolved: false });
   useEffect(() => {
     let stale = false;
     requestActiveRace(refreshKey).then((res) => {
       if (stale) return;
-      if (res.kind === "ok") setState({ data: res.data, missing: false, error: null, resolved: true });
-      else if (res.kind === "missing") setState({ data: null, missing: true, error: null, resolved: true });
+      // `staleMessage` = served from the offline cache. It is still an error
+      // condition, so it lands in `error` as well — the fetch did fail.
+      if (res.kind === "ok") setState({
+        data: res.data, missing: false,
+        error: res.staleMessage ?? null, offline: res.staleMessage != null, resolved: true,
+      });
+      else if (res.kind === "missing") setState({ data: null, missing: true, error: null, offline: false, resolved: true });
       // a failed reload KEEPS the race already on screen and surfaces the error
       else setState((prev) => ({ ...prev, missing: false, error: res.message, resolved: true }));
     });
@@ -483,7 +510,7 @@ export function useActiveRace(): ActiveRaceState {
     activeRace: state.data, slug: state.data?.active ?? null,
     viewing: state.data?.viewing ?? state.data?.active ?? null,
     mode: state.data?.mode === "view" ? "view" : "train",
-    missing: state.missing, error: state.error, resolved: state.resolved,
+    missing: state.missing, error: state.error, offline: state.offline, resolved: state.resolved,
   };
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { useRefresh } from "../data";
+import { useActiveRace, useRefresh } from "../data";
+import { cacheGet, cachePut, courseCacheKey } from "./offlineCache";
 import type { ClimbsSnapshot, Course, CrewBase } from "./types";
 import type { PaceGradeCurve } from "./pacing";
 
@@ -14,21 +15,43 @@ import type { PaceGradeCurve } from "./pacing";
    can flag stale/failed data instead of telling the user to rebuild a file
    that already exists. */
 
+/**
+ * The active race's course profile + aid chart.
+ *
+ * Gated on the active-race pointer having RESOLVED, and keyed on its slug:
+ * /course.json is served out of whichever race folder is pointed at, so the
+ * offline copy has to be filed under the race it belongs to — a 50k's
+ * profile restored under a hundred's name would be a silently wrong plan.
+ * The extra round-trip costs nothing visible: every consumer of this hook
+ * already sits inside a race gate that waits on the same pointer.
+ */
 export function useCourse() {
   const { key: refreshKey } = useRefresh();
+  const { slug, resolved } = useActiveRace();
   const [data, setData] = useState<Course | null>(null);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    if (!resolved) return;
+    const cacheKey = courseCacheKey(slug);
+    // a load failure is not an absence: fall back to the last copy that DID
+    // load (see offlineCache.ts) and label it, rather than blanking the view
+    const fallback = (message: string) => {
+      const cached = cacheGet<Course>(cacheKey);
+      setMissing(false);
+      if (cached) { setData(cached); setError(`${message} — showing the last saved copy`); }
+      else setError(message);
+    };
     fetch(`/course.json?t=${Date.now()}`)
       .then(async (r) => {
         if (r.status === 404) { setData(null); setMissing(true); setError(null); return; }
-        if (!r.ok) { setMissing(false); setError(`course.json failed to load (HTTP ${r.status})`); return; }
+        if (!r.ok) { fallback(`course.json failed to load (HTTP ${r.status})`); return; }
         const d = await r.json().catch(() => { throw new Error("parse"); });
+        cachePut(cacheKey, d);
         setData(d); setMissing(false); setError(null);
       })
-      .catch(() => { setMissing(false); setError("course.json corrupt or unreadable"); });
-  }, [refreshKey]);
+      .catch(() => fallback("course.json corrupt or unreadable"));
+  }, [refreshKey, resolved, slug]);
   return { course: data, missing, error };
 }
 
