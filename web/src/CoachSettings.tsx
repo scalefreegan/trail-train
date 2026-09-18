@@ -3,11 +3,30 @@
 //   - scalar preferences + free-text context sections + dated temporary
 //     notes  → state.json preferences (via PUT /api/settings)
 //   - childcare markers + calendar keywords → config/profile.json
+//   - generic-mode goals (event class, phase, volume band, notes)
+//     → config/goals.json
 // Dev-only like chat/resync: the endpoints live in vite dev middleware.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { usePersistentState, type CoachContext, type TemporaryContextItem } from "./data";
+
+/** PRD §5.3 — KEEP IN SYNC with GOAL_PHASES in scripts/goals.mjs. */
+const GOAL_PHASES = ["recovery", "return_to_run", "base", "build", "peak", "taper", "maintain"] as const;
+
+type Goals = {
+  event_class: string;
+  horizon: string;
+  phase: string;
+  weekly_volume_band: { dist_mi: [number, number]; vert_ft: [number, number] };
+  notes: string;
+};
+
+// "" while a band field is being retyped — the save refuses rather than
+// committing a 0 the athlete didn't mean
+type GoalsForm = Omit<Goals, "weekly_volume_band"> & {
+  weekly_volume_band: { dist_mi: (number | "")[]; vert_ft: (number | "")[] };
+};
 
 type SettingsPayload = {
   preferences: {
@@ -19,6 +38,8 @@ type SettingsPayload = {
   };
   calendar: { childcare_markers: string[]; calendar_keywords: Record<string, string[]> };
   calendar_error?: string | null;
+  goals?: Partial<Goals> | null;
+  goals_error?: string | null;
   today: string;
 };
 
@@ -33,6 +54,7 @@ type FormState = {
   temporary: TemporaryContextItem[];
   childcare_markers: string[];
   calendar_keywords: Record<string, string[]>;
+  goals: GoalsForm;
 };
 
 const SECTION_META: { key: keyof CoachContext["sections"]; label: string; hint: string }[] = [
@@ -112,6 +134,35 @@ function Block({ children }: { children: React.ReactNode }) {
   return <div style={{ marginBottom: 26 }}>{children}</div>;
 }
 
+/* One [lo, hi] row of the weekly volume band. A field cleared mid-edit stays
+   "" rather than snapping to 0 — the save refuses on a blank instead. */
+function BandRow({ label, hint, value, step, onChange }: {
+  label: string;
+  hint: string;
+  step?: number;
+  value: (number | "")[];
+  onChange: (next: (number | "")[]) => void;
+}) {
+  const set = (i: number, raw: string) => {
+    const next = [...value];
+    next[i] = raw === "" ? "" : Number(raw);
+    onChange(next);
+  };
+  return (
+    <div>
+      <Hint style={{ marginTop: 0, marginBottom: 4 }}>{label}</Hint>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input type="number" min={0} step={step} className="numerals" aria-label={`${label} low`}
+          style={{ ...inputStyle, width: 88 }} value={value[0]} onChange={(e) => set(0, e.target.value)} />
+        <span style={{ color: "var(--mist-mute)", fontSize: 12 }}>–</span>
+        <input type="number" min={0} step={step} className="numerals" aria-label={`${label} high`}
+          style={{ ...inputStyle, width: 88 }} value={value[1]} onChange={(e) => set(1, e.target.value)} />
+      </div>
+      <Hint>{hint}</Hint>
+    </div>
+  );
+}
+
 export default function CoachSettings({ onClose }: { onClose: () => void }) {
   const { reload } = usePersistentState();
   const [form, setForm] = useState<FormState | null>(null);
@@ -119,6 +170,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [calendarError, setCalendarError] = useState<string | null>(null);
+  const [goalsError, setGoalsError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [newNote, setNewNote] = useState({ text: "", expires: "" });
@@ -161,6 +213,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
         const p = d.preferences ?? {};
         setToday(d.today);
         setCalendarError(d.calendar_error ?? null);
+        setGoalsError(d.goals_error ?? null);
         setNewNote({ text: "", expires: plusDays(d.today, 30) });
         knownIdsRef.current = (p.context?.temporary ?? []).map((t) => t.id);
         sectionsBaselineRef.current = {
@@ -181,6 +234,16 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
           temporary: p.context?.temporary ?? [],
           childcare_markers: d.calendar?.childcare_markers ?? [],
           calendar_keywords: d.calendar?.calendar_keywords ?? {},
+          goals: {
+            event_class: d.goals?.event_class ?? "",
+            horizon: d.goals?.horizon ?? "",
+            phase: d.goals?.phase ?? "maintain",
+            notes: d.goals?.notes ?? "",
+            weekly_volume_band: {
+              dist_mi: d.goals?.weekly_volume_band?.dist_mi ?? [0, 0],
+              vert_ft: d.goals?.weekly_volume_band?.vert_ft ?? [0, 0],
+            },
+          },
         });
       })
       .catch((e) => setLoadError((e as Error).message));
@@ -191,8 +254,20 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
     setForm((f) => (f ? { ...f, ...p } : f));
   }, []);
 
+  /** Which band fields are blank or reversed — the save refuses on any. */
+  const goalsBandProblem = (g: GoalsForm): string | null => {
+    for (const [key, label] of [["dist_mi", "weekly miles"], ["vert_ft", "weekly vert"]] as const) {
+      const [lo, hi] = g.weekly_volume_band[key];
+      if (lo === "" || hi === "") return `${label}: the volume band needs both a low and a high number`;
+      if (lo > hi) return `${label}: the low end (${lo}) is above the high end (${hi})`;
+    }
+    return null;
+  };
+
   const save = async () => {
     if (!form || saving) return;
+    const bandProblem = goalsBandProblem(form.goals);
+    if (bandProblem) { setSaveError(bandProblem); return; }
     setSaving(true);
     setSaveError(null);
     try {
@@ -211,6 +286,13 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
               sections_baseline: sectionsBaselineRef.current ?? undefined,
               temporary: form.temporary,
               known_ids: knownIdsRef.current,
+            },
+          },
+          goals: {
+            ...form.goals,
+            weekly_volume_band: {
+              dist_mi: form.goals.weekly_volume_band.dist_mi as number[],
+              vert_ft: form.goals.weekly_volume_band.vert_ft as number[],
             },
           },
           // a corrupt profile.json makes calendar edits refusable server-side;
@@ -306,6 +388,59 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                   onChange={(e) => patch({ heat_threshold_c: e.target.value === "" ? "" : Number(e.target.value) })} />
               </label>
             </div>
+          </div>
+        </Block>
+
+        <Block>
+          <Eyebrow>goals · when no race is active</Eyebrow>
+          <Hint style={{ marginTop: 0, marginBottom: 12 }}>
+            what the coach trains you toward between races (config/goals.json) · the volume band also
+            sets the weekly targets of the rolling 12-week window, for any week the coach hasn't planned
+          </Hint>
+          {goalsError && (
+            <p style={{ fontSize: 11.5, color: "var(--ember)", marginBottom: 10 }}>{goalsError}</p>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <label style={{ gridColumn: "1 / -1" }}>
+              <Hint style={{ marginTop: 0, marginBottom: 4 }}>event class</Hint>
+              <input style={{ ...inputStyle, width: "100%" }} maxLength={200} value={form.goals.event_class}
+                placeholder="e.g. 100 mi mountain race"
+                onChange={(e) => patch({ goals: { ...form.goals, event_class: e.target.value } })} />
+            </label>
+            <label>
+              <Hint style={{ marginTop: 0, marginBottom: 4 }}>horizon</Hint>
+              <input style={{ ...inputStyle, width: "100%" }} maxLength={200} value={form.goals.horizon}
+                placeholder="e.g. next A-race ~Aug 2027"
+                onChange={(e) => patch({ goals: { ...form.goals, horizon: e.target.value } })} />
+            </label>
+            <label>
+              <Hint style={{ marginTop: 0, marginBottom: 4 }}>phase</Hint>
+              <select style={{ ...inputStyle, width: "100%" }} value={form.goals.phase}
+                onChange={(e) => patch({ goals: { ...form.goals, phase: e.target.value } })}>
+                {GOAL_PHASES.map((ph) => (
+                  <option key={ph} value={ph}>{ph.replace(/_/g, " ")}</option>
+                ))}
+              </select>
+            </label>
+            <BandRow
+              label="weekly miles" hint="low–high band the coach plans inside"
+              value={form.goals.weekly_volume_band.dist_mi}
+              onChange={(next) => patch({ goals: { ...form.goals, weekly_volume_band: { ...form.goals.weekly_volume_band, dist_mi: next } } })}
+            />
+            <BandRow
+              label="weekly vert (ft)" hint="its midpoint is the rolling window's target" step={100}
+              value={form.goals.weekly_volume_band.vert_ft}
+              onChange={(next) => patch({ goals: { ...form.goals, weekly_volume_band: { ...form.goals.weekly_volume_band, vert_ft: next } } })}
+            />
+          </div>
+          <div style={{ marginTop: 14 }}>
+            <Hint style={{ marginTop: 0, marginBottom: 4 }}>goals notes</Hint>
+            <AutoGrowArea
+              value={form.goals.notes} minHeight={64} maxLength={2000}
+              placeholder="injuries and their reassessment dates, why this phase, anything that caps the week"
+              onChange={(v) => patch({ goals: { ...form.goals, notes: v } })}
+            />
+            <Hint>sent to the coach verbatim in place of the race paragraph</Hint>
           </div>
         </Block>
 

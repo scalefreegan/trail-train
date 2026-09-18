@@ -685,6 +685,8 @@ function chatApi(): Plugin {
 //                   symmetrically re-loads before its merge)
 //     profile.json: childcare_markers + calendar_keywords only (race_base,
 //                   calendar_ids etc. are never rewritten)
+//     goals.json:   the whole generic-mode goals object (PRD §5.3) — it is
+//                   small, wholly settings-owned, and nothing else writes it
 function settingsApi(): Plugin {
   const projectRoot = path.resolve(__dirname, '..')
   const profilePath = path.join(projectRoot, 'config', 'profile.json')
@@ -712,6 +714,12 @@ function settingsApi(): Plugin {
   }
 
   const SECTION_KEYS = ['about_me', 'calendar_conventions', 'training_preferences']
+  // KEEP IN SYNC with GOAL_PHASES in scripts/goals.mjs — vite.config.ts
+  // can't statically import from scripts/ (its tsconfig has no allowJs), and
+  // an unvalidated phase would reach the coach prompt verbatim.
+  const GOAL_PHASES = ['recovery', 'return_to_run', 'base', 'build', 'peak', 'taper', 'maintain']
+  // [lo, hi] ceilings, generous enough for a 100-mile build
+  const BAND_BOUNDS: Record<string, number> = { dist_mi: 500, vert_ft: 200000 }
   const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
   // round-trip check rejects rollover dates ("2026-02-30") that Date.parse accepts
   const isValidIsoDate = (s: unknown): s is string => {
@@ -734,6 +742,7 @@ function settingsApi(): Plugin {
       knownIds: string[] | null
     }
     calendar?: { childcare_markers: string[]; calendar_keywords: Record<string, string[]> }
+    goals?: Record<string, unknown>
   } => {
     const prefs: Record<string, unknown> = {}
     if (body.preferences !== undefined && !isPlainObject(body.preferences)) return { error: 'preferences: object required' }
@@ -821,7 +830,40 @@ function settingsApi(): Plugin {
       }
       calendar = { childcare_markers: normMarkers, calendar_keywords: keywords }
     }
-    return { prefs, context, calendar }
+    let goals
+    if (body.goals !== undefined) {
+      if (!isPlainObject(body.goals)) return { error: 'goals: object required' }
+      const g = body.goals as Record<string, unknown>
+      const strings: Record<string, number> = { event_class: 200, horizon: 200, notes: 2000 }
+      const next: Record<string, unknown> = {}
+      for (const [key, max] of Object.entries(strings)) {
+        const v = g[key] ?? ''
+        if (typeof v !== 'string' || v.length > max) return { error: `goals.${key}: string ≤ ${max} chars required` }
+        next[key] = v.trim()
+      }
+      if (!next.event_class) return { error: 'goals.event_class: non-empty string required' }
+      if (!GOAL_PHASES.includes(g.phase as string)) {
+        return { error: `goals.phase must be one of ${GOAL_PHASES.join(' | ')}` }
+      }
+      next.phase = g.phase
+      if (!isPlainObject(g.weekly_volume_band)) return { error: 'goals.weekly_volume_band: object required' }
+      const band: Record<string, number[]> = {}
+      for (const [key, max] of Object.entries(BAND_BOUNDS)) {
+        const pair = (g.weekly_volume_band as Record<string, unknown>)[key]
+        if (!Array.isArray(pair) || pair.length !== 2
+          || pair.some((n) => typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > max)) {
+          return { error: `goals.weekly_volume_band.${key}: [lo, hi] numbers in [0, ${max}] required` }
+        }
+        // a reversed band would silently invert the rolling window's target
+        if ((pair[0] as number) > (pair[1] as number)) {
+          return { error: `goals.weekly_volume_band.${key}: lo ${pair[0]} is above hi ${pair[1]}` }
+        }
+        band[key] = pair as number[]
+      }
+      next.weekly_volume_band = band
+      goals = next
+    }
+    return { prefs, context, calendar, goals }
   }
 
   return {
@@ -839,11 +881,22 @@ function settingsApi(): Plugin {
             loadState: (root: string) => Promise<{ preferences?: Record<string, unknown> }>
             saveState: (root: string, s: unknown) => Promise<{ preferences?: Record<string, unknown> }>
           }
+          const goalsMod = await import(path.join(projectRoot, 'scripts/goals.mjs')) as {
+            loadGoals: (root: string) => Promise<{ goals: Record<string, unknown>; errors: string[] }>
+            saveGoals: (root: string, g: unknown) => Promise<string>
+          }
           if (req.method === 'GET') {
             const state = await stateMod.loadState(projectRoot)
             const { profile, corrupt } = readProfile()
+            // bootstraps config/goals.json from the example on first open —
+            // the dialog is the surface the athlete edits it through
+            const { goals, errors: goalsErrors } = await goalsMod.loadGoals(projectRoot)
             json(200, {
               preferences: state.preferences ?? {},
+              goals,
+              goals_error: goalsErrors.length
+                ? `config/goals.json: ${goalsErrors.join('; ')} — fix it here or by hand`
+                : null,
               calendar: {
                 childcare_markers: profile.childcare_markers ?? [],
                 calendar_keywords: profile.calendar_keywords ?? {},
@@ -863,7 +916,7 @@ function settingsApi(): Plugin {
           try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
           catch { json(400, { error: 'bad json' }); return }
 
-          const { error, prefs, context, calendar } = validate(body)
+          const { error, prefs, context, calendar, goals } = validate(body)
           if (error) { json(400, { error }); return }
 
           // refuse the whole write BEFORE touching anything if the calendar
@@ -930,7 +983,24 @@ function settingsApi(): Plugin {
               return
             }
           }
-          json(200, { preferences: saved.preferences, calendar: savedCalendar })
+          // goals last: it is a standalone file, so a failure here leaves
+          // state.json and profile.json correctly saved and says so
+          let savedGoals = null
+          if (goals) {
+            try {
+              await goalsMod.saveGoals(projectRoot, goals)
+              savedGoals = goals
+            } catch (e) {
+              console.warn(`[settings] goals.json write failed: ${(e as Error).message}`)
+              json(500, {
+                error: `preferences were saved, but writing config/goals.json failed: ${(e as Error).message}`,
+                preferences: saved.preferences,
+                calendar: savedCalendar,
+              })
+              return
+            }
+          }
+          json(200, { preferences: saved.preferences, calendar: savedCalendar, goals: savedGoals })
         } catch (e) {
           json(500, { error: (e as Error).message })
         }
