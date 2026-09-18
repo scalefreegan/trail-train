@@ -98,7 +98,7 @@ export const BASECAMP_DEFAULT: ThemeTokens = {
 };
 
 /**
- * Mogollon Rim / Pine, AZ — ponderosa duff and red rock. Warm near-black
+ * High desert rim country — ponderosa duff and red rock. Warm near-black
  * field, sandstone text, a rust accent where the amber headlamp was.
  */
 const DESERT: Partial<ThemeTokens> = {

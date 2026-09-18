@@ -1,11 +1,12 @@
 // Aid-station ↔ GPX-waypoint reconciliation. Pure functions, no I/O, no deps.
 //
 // Why this exists: organizer GPX files name their waypoints nothing like the
-// runner manual's aid chart ("See Canyon" in the chart is "See Canyon Aid" in
-// the GPX, "Pine Trailhead" is "Pine TH Water"). Today races/<slug>/race.json
-// carries a hand-authored `gpx_wpt` per station and build-course.mjs throws when
-// one doesn't name a real waypoint — fine for one hand-tuned race, fatal for the
-// modular-races intake, where the GPX arrives from a race site unseen.
+// runner manual's aid chart (a chart's "See Canyon" is the GPX's "See Canyon
+// Aid"; its "Pine Trailhead" is "Pine TH Water"). races/<slug>/race.json carries
+// a hand-authored `gpx_wpt` per station, and build-course.mjs used to THROW when
+// one didn't name a real waypoint — fine for one hand-tuned race, fatal for the
+// modular-races intake, where the GPX arrives from a race site unseen. Since
+// tt-yib.5 the builder resolves stations through this module instead.
 //
 // So: match by name first (exact, then normalized/token overlap), then fall back
 // to the waypoint nearest the station's charted mile along the track. Every
@@ -64,8 +65,8 @@ const SYNONYMS = new Map(Object.entries({
 }));
 
 // Tokens that carry no identity — they mark what a point *is*, not which point
-// it is. Dropped from both sides so "Horton" matches "Horton Aid" and
-// "Black Mesa" matches "Black Mesa Crew Zone". Kept out of SYNONYMS so a
+// it is. Dropped from both sides so "Bear Creek" matches "Bear Creek Aid"
+// and "Black Mesa" matches "Black Mesa Crew Zone". Kept out of SYNONYMS so a
 // station named only by its type still has at least its literal text to score.
 const STOP_TOKENS = new Set([
   "aid", "station", "stn", "checkpoint", "cp", "crew", "zone", "only",
