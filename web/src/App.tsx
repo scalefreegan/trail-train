@@ -21,6 +21,7 @@ import { NutritionPlan } from "./race/NutritionPlan";
 import { ModelCheck } from "./race/ModelCheck";
 import { RacePlanProvider } from "./race/RacePlanProvider";
 import { useCourse } from "./race/useRaceData";
+import { raceClockHM } from "./race/pacing";
 
 /* ================================================================== */
 /*  BASECAMP — pre-dawn ops surface for ultra training                 */
@@ -161,7 +162,7 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
         <div className="commandbar-mid" style={{ flex: 1 }}>
           <BarStat label="block week" value={`${String(currentWeek).padStart(2, "0")} / ${totalWeeks}`} />
           <BarStat label="race in" value={`${dleft} days`} accent />
-          <BarStat label="race day" value={race.date.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase()} />
+          <BarStat label="race day" value={race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, month: "short", day: "numeric" }).toLowerCase()} />
         </div>
 
         {/* sync cluster */}
@@ -370,8 +371,10 @@ function RaceRibbon() {
   const { race } = useBlockConfig();
   const dleft = daysUntil(race.date);
   const nameWords = race.name.split(" ");
-  const raceDay = race.date.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase();
-  const raceStart = `${String(race.date.getHours()).padStart(2, "0")}:${String(race.date.getMinutes()).padStart(2, "0")}`;
+  // both read in the RACE's zone: "sep 12 · 06:00" is a fact about Arizona,
+  // and on a laptop an hour ahead the browser's own zone would print 07:00
+  const raceDay = race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, month: "short", day: "numeric" }).toLowerCase();
+  const raceStart = raceClockHM(race.date, race.timeZone);
 
   return (
     <motion.section

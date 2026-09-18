@@ -4,7 +4,9 @@ import { SectionTag } from "../atoms";
 import { useRacePlan } from "./useRacePlan";
 import { planCaffeine, heatBands, sunBounds, type CaffeinePlan } from "./caffeine";
 import { fmtCarry, type FuelSegment } from "./nutrition";
-import { fmtElapsed, fmtRaceClock } from "./pacing";
+import { fmtElapsed, raceClockH } from "./pacing";
+import { raceLocalParts, raceWeekLabels } from "./clock";
+import { raceWeekProse } from "./raceWeek";
 
 /* ------------------------------------------------------------------ */
 /*  Nutrition plan — the whole intake picture in one place: race week, */
@@ -93,9 +95,9 @@ function Vital({ k, v, unit, accent }: { k: string; v: string; unit?: string; ac
 
 const CH = { h: 300, top: 18, right: 14, bottom: 40, left: 46 };
 
-function CaffeineChart({ caf, raceStart, finishH, heat, night, kg }: {
+function CaffeineChart({ caf, clock, finishH, heat, night, kg }: {
   caf: CaffeinePlan;
-  raceStart: Date;
+  clock: (elapsedH: number) => string;
   finishH: number;
   heat: Array<[number, number]>;
   night: Array<[number, number]>;
@@ -184,7 +186,7 @@ function CaffeineChart({ caf, raceStart, finishH, heat, night, kg }: {
           <g key={`x${h}`}>
             <line x1={px(h)} x2={px(h)} y1={CH.h - CH.bottom} y2={CH.h - CH.bottom + 4} stroke="var(--edge-bright)" strokeWidth={1} />
             <text x={px(h)} y={CH.h - CH.bottom + 16} textAnchor="middle" className="numerals" fontSize={9.5} fill="var(--mist-mute)">
-              {fmtRaceClock(raceStart, h)}
+              {clock(h)}
             </text>
           </g>
         ))}
@@ -222,7 +224,7 @@ function CaffeineChart({ caf, raceStart, finishH, heat, night, kg }: {
             padding: "5px 8px", fontSize: 10.5, lineHeight: 1.5, color: "var(--mist)", whiteSpace: "nowrap",
           }}
         >
-          {fmtRaceClock(raceStart, hover.h)} · {fmtElapsed(hover.h)}<br />
+          {clock(hover.h)} · {fmtElapsed(hover.h)}<br />
           {Math.round(hover.mg)} mg on board<br />
           {(hover.mg / kg).toFixed(1)} mg/kg
         </div>
@@ -247,8 +249,8 @@ function CaffeineChart({ caf, raceStart, finishH, heat, night, kg }: {
 
 /* ---- leg table ---- */
 
-function LegRow({ seg, caf, raceStart, last, show }: {
-  seg: FuelSegment; caf: number; raceStart: Date; last: boolean;
+function LegRow({ seg, caf, clock, last, show }: {
+  seg: FuelSegment; caf: number; clock: (elapsedH: number) => string; last: boolean;
   /** which of this row's optional cells the race carries */
   show: { caf: boolean; heat: boolean; night: boolean };
 }) {
@@ -265,7 +267,7 @@ function LegRow({ seg, caf, raceStart, last, show }: {
       <div style={{ ...cell, textAlign: "left", whiteSpace: "normal" }}>
         <span style={{ fontSize: 12, fontWeight: 600, color: "var(--mist)" }}>{seg.from} → {seg.to}</span>
         <span className="numerals" style={{ display: "block", fontSize: 9.5, color: "var(--mist-mute)", marginTop: 1 }}>
-          {fmtRaceClock(raceStart, seg.departH)} → {fmtRaceClock(raceStart, seg.arriveH)}
+          {clock(seg.departH)} → {clock(seg.arriveH)}
           {seg.via.length > 0 && ` · thru ${seg.via.join(", ")}`}
           {seg.water_note && ` · ${seg.water_note}`}
         </span>
@@ -315,17 +317,26 @@ function LegRow({ seg, caf, raceStart, last, show }: {
 
 export function NutritionPlan() {
   const { race } = useBlockConfig();
-  const { course, missing, error, proj, nutrition, fuelPlan, raceStart, nutritionError,
-    features, panels, raceConfig } = useRacePlan();
+  const { course, missing, error, proj, nutrition, fuelPlan, raceStart, timeZone, clock,
+    nutritionError, features, panels, raceConfig } = useRacePlan();
   const cfg = nutrition.caffeine;
 
   const caf = useMemo(
-    () => (course && proj && fuelPlan ? planCaffeine(proj, course, fuelPlan, raceStart, cfg) : null),
-    [course, proj, fuelPlan, raceStart, cfg],
+    () => (course && proj && fuelPlan ? planCaffeine(proj, course, fuelPlan, raceStart, cfg, timeZone) : null),
+    [course, proj, fuelPlan, raceStart, cfg, timeZone],
   );
 
   const finishH = proj?.finish_h.avg ?? 0;
-  const startClock = raceStart.getHours() + raceStart.getMinutes() / 60;
+  // the heat window is a race-local clock-of-day, so the start it is measured
+  // from has to be read on the race's clock too, not the browser's
+  const startClock = raceClockH(raceStart, timeZone);
+  // Every weekday in the "before" section below. Generated, not written: the
+  // protocol is relative to the gun ("nothing after noon D-1"), and spelling
+  // it "Friday" silently moves the whole taper a day on a Friday race.
+  const week = useMemo(
+    () => raceWeekProse(raceWeekLabels(raceLocalParts(raceStart, timeZone).iso, timeZone)),
+    [raceStart, timeZone],
+  );
   const heat = useMemo(
     () => (course && features.heat
       ? heatBands(startClock, nutrition.heat_window.start, nutrition.heat_window.end, finishH)
@@ -335,8 +346,8 @@ export function NutritionPlan() {
   // both band sets feed the caffeine chart only, and each is behind the flag
   // that gives it meaning — no bands for a window this race never enters
   const night = useMemo(
-    () => (course && features.night ? sunBounds(course, raceStart, finishH) : []),
-    [course, features.night, raceStart, finishH],
+    () => (course && features.night ? sunBounds(course, raceStart, finishH, timeZone) : []),
+    [course, features.night, raceStart, finishH, timeZone],
   );
 
   if (missing || !course) {
@@ -394,7 +405,7 @@ export function NutritionPlan() {
 
       <div className="panel notch" style={{ padding: "18px 20px 16px" }}>
         <div style={{ fontSize: 13, color: "var(--mist-dim)", lineHeight: 1.6, maxWidth: "68ch" }}>
-          Everything that goes in, from race week to the Monday after. The course side is derived live from the expected
+          Everything that goes in, from race week to the {week.weekEnd} after. The course side is derived live from the expected
           projection — move the pacing sliders in the planner and the legs, the drop bags and the caffeine schedule
           all follow.
         </div>
@@ -495,7 +506,7 @@ export function NutritionPlan() {
       </SectionTag>
 
       <div className="panel" style={{ padding: "14px 16px 12px" }}>
-        <CaffeineChart caf={caf} raceStart={raceStart} finishH={finishH} heat={heat} night={night} kg={kg} />
+        <CaffeineChart caf={caf} clock={clock} finishH={finishH} heat={heat} night={night} kg={kg} />
         <div style={{ fontSize: 11.5, color: "var(--mist-mute)", lineHeight: 1.55, marginTop: 10, maxWidth: "76ch" }}>
           Single-compartment decay at a {cfg.half_life_h} h half-life against {kg} kg, including the {cfg.pre_race_mg} mg
           race-morning coffee and {cfg.cola_cups} aid-station colas at {cfg.cola_mg} mg each. The shaded band is{" "}
@@ -518,7 +529,7 @@ export function NutritionPlan() {
               }}
             >
               <span className="numerals" style={{ fontSize: 12, color: "var(--lamp)" }}>{d.n}</span>
-              <span className="numerals" style={{ fontSize: 12, color: "var(--mist)" }}>{fmtRaceClock(raceStart, d.h)}</span>
+              <span className="numerals" style={{ fontSize: 12, color: "var(--mist)" }}>{clock(d.h)}</span>
               <span className="numerals" style={{ fontSize: 10.5, color: "var(--mist-mute)" }}>mi {d.mi.toFixed(1)}</span>
               <span style={{ fontSize: 12, color: "var(--mist-dim)" }}>
                 {d.station
@@ -538,7 +549,7 @@ export function NutritionPlan() {
         <Cards>
           <Card
             title="Nothing before nightfall"
-            meta={`first dose ${caf.doses.length ? fmtRaceClock(raceStart, caf.doses[0].h) : "—"}`}
+            meta={`first dose ${caf.doses.length ? clock(caf.doses[0].h) : "—"}`}
             why={{
               label: "why",
               body: "For a habitual coffee drinker a dose in daylight does almost nothing except raise the baseline you'll be dosing against at 3 a.m. Holding the first half dry is what makes the night doses work at all — it is the highest-leverage decision on this page.",
@@ -556,7 +567,7 @@ export function NutritionPlan() {
             }}
           >
             <Li>{cafGels} doses of <N>{cfg.gel_mg} mg</N>, never closer than <N>{cfg.min_spacing_h} h</N>.</Li>
-            <Li>Peak <N>{Math.round(caf.peak.mg)} mg</N> at {fmtRaceClock(raceStart, caf.peak.h)}.</Li>
+            <Li>Peak <N>{Math.round(caf.peak.mg)} mg</N> at {clock(caf.peak.h)}.</Li>
           </Card>
           <Card
             title="Caffeine is the first thing to drop"
@@ -574,7 +585,7 @@ export function NutritionPlan() {
             meta={`${Math.round(caf.at_finish_mg)} mg at the finish`}
             why={{
               label: "the honest trade",
-              body: "This is what the higher dose buys and it is worth naming: Sunday night's sleep will be worse than it would be on half the gels. You will likely sleep anyway after a hundred miles, but sleep is the largest single lever on recovery — so don't spend more of it than the plan already does.",
+              body: `This is what the higher dose buys and it is worth naming: ${week.nightAfter} night's sleep will be worse than it would be on half the gels. You will likely sleep anyway after a hundred miles, but sleep is the largest single lever on recovery — so don't spend more of it than the plan already does.`,
             }}
           >
             <Li>All-in total across the race: <N>{Math.round(caf.total_mg)} mg</N>.</Li>
@@ -586,59 +597,59 @@ export function NutritionPlan() {
       )}
 
       {/* ---------------- before ---------------- */}
-      <SectionTag right={<span className="eyebrow" style={{ fontSize: 9 }}>wed → the gun</span>}>before</SectionTag>
+      <SectionTag right={<span className="eyebrow" style={{ fontSize: 9 }}>{week.gun}</span>}>before</SectionTag>
       <Cards>
         <Card
           title="Carbohydrate"
-          meta="thu–fri"
+          meta={week.loadDays}
           why={{
             label: "why not a full 10–12 g/kg load",
             body: "Classic carb-loading is built for marathon-intensity racing where glycogen is the binding constraint. At hundred-mile pace you burn a far higher share of fat and you eat continuously on the move, so the extra few hundred grams a day buys mostly water weight and gut bloat. Topped up beats stuffed.",
           }}
         >
-          <Li>Thu &amp; Fri: <B>~7 g/kg/day</B> → about <N>{g(7)} g</N> of carbs a day.</Li>
-          <Li>Friday: shift to <B>low-fibre</B> sources — white rice, potatoes, pasta, bananas, juice.</Li>
+          <Li>{week.loadDaysAbbr}: <B>~7 g/kg/day</B> → about <N>{g(7)} g</N> of carbs a day.</Li>
+          <Li>{week.dayBefore}: shift to <B>low-fibre</B> sources — white rice, potatoes, pasta, bananas, juice.</Li>
           <Li>Displace fat and protein rather than eating more on top.</Li>
         </Card>
         <Card
           title="Caffeine taper"
-          meta="wed–fri"
+          meta={week.taperDays}
           why={{
             label: "why a partial taper",
-            body: "Evidence that a full washout amplifies the effect is weak, and the cost is certain: withdrawal headache, flat mood and poor sleep in the exact week you are trying to arrive rested. A modest cut recovers some sensitivity at almost no cost. The Friday cutoff is about sleep, not sensitivity.",
+            body: `Evidence that a full washout amplifies the effect is weak, and the cost is certain: withdrawal headache, flat mood and poor sleep in the exact week you are trying to arrive rested. A modest cut recovers some sensitivity at almost no cost. The ${week.dayBefore} cutoff is about sleep, not sensitivity.`,
           }}
         >
-          <Li>Wed–Fri: down to <B>one cup a day</B>.</Li>
-          <Li><B>Nothing after noon Friday.</B></Li>
+          <Li>{week.taperDaysAbbr}: down to <B>one cup a day</B>.</Li>
+          <Li><B>{week.caffeineCutoff}</B></Li>
           <Li>Do <em>not</em> attempt a full withdrawal.</Li>
         </Card>
         <Card
           title="Fluid &amp; sodium"
-          meta="thu–fri"
+          meta={week.loadDays}
           why={{
             label: "why not more water",
             body: "Over-drinking before a hot race dilutes plasma sodium before you have lost a gram of it — the wrong side of the ledger to start on. The plan already asks for a high sodium rate on course; arrive with sodium aboard and normal hydration, not a full tank.",
           }}
         >
-          <Li>Salt food generously Thursday and Friday.</Li>
+          <Li>Salt food generously {week.loadDaysLong}.</Li>
           <Li>Drink to thirst — pale yellow, not clear.</Li>
           <Li>No pre-race water loading.</Li>
         </Card>
         <Card
           title="Sleep"
-          meta="tue–thu"
+          meta={week.sleepDays}
           why={{
             label: "why",
-            body: "Nobody sleeps well before a pre-dawn hundred-mile start, and forcing it just adds anxiety. Sleep debt is cumulative and partially repayable in advance — the nights that help are two and three out, so spend the effort there and let Friday be what it is.",
+            body: `Nobody sleeps well before a pre-dawn hundred-mile start, and forcing it just adds anxiety. Sleep debt is cumulative and partially repayable in advance — the nights that help are two and three out, so spend the effort there and let ${week.dayBefore} be what it is.`,
           }}
         >
-          <Li>Bank sleep <B>Tuesday through Thursday</B>.</Li>
-          <Li>Treat Friday night as a write-off.</Li>
+          <Li>Bank sleep <B>{week.sleepBank}</B>.</Li>
+          <Li>{week.sleepWriteOff}</Li>
         </Card>
         <Card
           title="Race morning"
           accent="lamp"
-          meta={`${fmtRaceClock(raceStart, -2.25)} → the gun`}
+          meta={`${clock(-2.25)} → the gun`}
           why={{
             label: "why two hours before the gun",
             body: "It leaves time for gastric emptying and one unhurried bathroom stop, and puts the insulin response from breakfast well behind you before the first climb. The fluid cutoff is the same logic applied to your bladder. The coffee goes with breakfast so its peak has passed by the start — you do not want caffeine sharpening your legs at mile two.",
@@ -727,7 +738,7 @@ export function NutritionPlan() {
               key={`${seg.from}-${seg.to}-${i}`}
               seg={seg}
               caf={caf.perSegment[i] ?? 0}
-              raceStart={raceStart}
+              clock={clock}
               last={i === fuelPlan.segments.length - 1}
               show={legShow}
             />
@@ -773,7 +784,7 @@ export function NutritionPlan() {
               key={bag.station}
               title={bag.station === "Start" ? "Vest at start" : bag.station}
               accent={bagCaf > 0 ? "lamp" : undefined}
-              meta={bag.atH > 0 ? fmtRaceClock(raceStart, bag.atH) : "mi 0"}
+              meta={bag.atH > 0 ? clock(bag.atH) : "mi 0"}
               why={{
                 label: lastBag ? "last bag — no resupply after this" : "covers",
                 body: lastBag
@@ -859,7 +870,7 @@ export function NutritionPlan() {
         <Card
           title="First 60 minutes"
           accent="lamp"
-          meta={fmtRaceClock(raceStart, finishH)}
+          meta={clock(finishH)}
           why={{
             label: "why this hour specifically",
             body: "Glycogen resynthesis runs fastest in the first hour or two while the muscle is still insulin-sensitive. Protein alongside it blunts the breakdown cascade. You will not be hungry — appetite is suppressed after long efforts and usually doesn't return until day two — so this has to be deliberate rather than intuitive.",

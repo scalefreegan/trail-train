@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useBlockConfig } from "../data";
-import { fmtRaceClock } from "./pacing";
 import { fmtCarry, type FuelPlan, type FuelSegment, type NutritionConfig } from "./nutrition";
 
 /* ------------------------------------------------------------------ */
@@ -96,7 +95,7 @@ function FuelFace({ side, pages, segments, plan, cfg }: {
                   )}
                 </td>
                 <td style={{ ...cell, fontSize: "7.5px", color: MUTED }}>
-                  {seg.fromIdx >= 0 ? fmtRaceClock(race.date, seg.departH) : fmtRaceClock(race.date, 0)}
+                  {seg.fromIdx >= 0 ? race.clock(seg.departH) : race.clock(0)}
                 </td>
                 <td style={{ ...cell, fontWeight: longest || seg.long_carry ? 700 : 400, color: longest ? WORST : INK }}>
                   {fmtCarry(seg.carryH)}

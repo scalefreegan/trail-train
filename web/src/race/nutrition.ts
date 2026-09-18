@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useRefresh } from "../data";
+import { raceClockH } from "./pacing";
 import type { projectRace } from "./pacing";
 import type { Course } from "./types";
 
@@ -366,8 +367,11 @@ export function planFuel(
   course: Course,
   raceStart: Date,
   cfg: NutritionConfig,
+  timeZone: string,
 ): FuelPlan {
-  const startH = raceStart.getHours() + raceStart.getMinutes() / 60;
+  // race-local: the heat window and the sun times are clock-of-day facts about
+  // the COURSE, so the start has to be read on the same clock they are
+  const startH = raceClockH(raceStart, timeZone);
   // clock-of-day windows converted to elapsed race hours
   const heat0 = parseHM(cfg.heat_window.start) - startH;
   const heat1 = parseHM(cfg.heat_window.end) - startH;
