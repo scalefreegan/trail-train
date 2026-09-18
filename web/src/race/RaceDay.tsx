@@ -282,7 +282,7 @@ export function RaceDay() {
               ? fuelPlan?.drop_bags.find((b) => b.station === next.station.name) ?? null
               : null}
             drive={drives[next.station.name] ?? null}
-            baseLabel={crewBase?.base.label ?? "base"}
+            baseLabel={crewBase?.base?.label ?? "base"}
           />
 
           {upcoming.length > 0 && (
@@ -425,6 +425,8 @@ function NextStation({ sp, plan, idx, posMi, legs, bag, drive, baseLabel }: {
   legs: { out: FuelSegment | null; through: FuelSegment | null };
   bag: DropBag | null;
   drive: { min: number; mi: number } | null;
+  /** crew-base.json's `base` is optional (tt-yib.9): a folder can carry
+      emergency numbers and no race-week lodging, hence a fallback label */
   baseLabel: string;
 }) {
   const u = useUnits();
