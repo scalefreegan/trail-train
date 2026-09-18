@@ -2103,7 +2103,7 @@ function SetupDrawer() {
         })}
       </ul>
       <div style={{ display: "flex", justifyContent: "space-between", padding: "14px 0 0" }}>
-        <span className="eyebrow" style={{ fontSize: 8.5 }}>© basecamp · mogollon bound · 2026</span>
+        <span className="eyebrow" style={{ fontSize: 8.5 }}>© basecamp · one race at a time</span>
         <span className="eyebrow" style={{ fontSize: 8.5 }}>strava · oura · google calendar · claude code</span>
       </div>
     </footer>

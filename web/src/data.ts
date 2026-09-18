@@ -735,7 +735,7 @@ export function computeCoachFacts(
     recommendations.push("Add one easy 60-90min Z1 day to the week without raising intensity.");
   if (flags.length === 0)
     recommendations.push("All systems green. Hold the current load, finish the block as planned.");
-  recommendations.push(`Next quality target: long with 1500m+ vert at MM100-relevant grade.`);
+  recommendations.push(`Next quality target: long with 1500m+ vert at race-relevant grade.`);
 
   return {
     d7_dist_mi, d28_dist_mi, d7_elev_ft, d28_elev_ft, acr_dist, acr_elev,

@@ -1082,14 +1082,67 @@ function nutritionFile(): Plugin {
   }
 }
 
+// Dev-only middleware: GET /course.json and GET /crew-base.json. Both used to
+// be static files in web/public; tt-yib.5 made them per-race generated output
+// (races/<slug>/build/, written by scripts/build-course.mjs), so they are read
+// from the active race — or, with none active, the most recent one — and the
+// client's fetches keep working unchanged. Same shape as nutritionFile().
+function courseFiles(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  const serve = (name: 'course.json' | 'crew-base.json') =>
+    async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+      if (crossSiteBlocked(req, res)) return
+      res.setHeader('Content-Type', 'application/json')
+      res.setHeader('Cache-Control', 'no-store')
+      try {
+        const { loadRaceOrMostRecent } = await import(path.join(projectRoot, 'scripts/race-config.mjs')) as {
+          loadRaceOrMostRecent: (root: string) => Promise<{ slug: string; dir: string } | null>
+        }
+        const folder = await loadRaceOrMostRecent(projectRoot)
+        if (!folder) {
+          // Generic mode with no race folders at all: 404 is what the client's
+          // `missing` path already means ("not generated yet"), not an error.
+          res.statusCode = 404
+          res.end(JSON.stringify({ error: 'no race folder under races/' }))
+          return
+        }
+        let body: string
+        try {
+          body = await fs.promises.readFile(path.join(folder.dir, 'build', name), 'utf8')
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+          res.statusCode = 404
+          res.end(JSON.stringify({
+            error: `races/${folder.slug}/build/${name} has not been generated — run \`npm run course:build -- --race ${folder.slug}\``,
+          }))
+          return
+        }
+        res.statusCode = 200
+        res.end(body)
+      } catch (e) {
+        res.statusCode = 500
+        res.end(JSON.stringify({ error: (e as Error).message }))
+      }
+    }
+  return {
+    name: 'trail-train-course-files',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/course.json', serve('course.json'))
+      server.middlewares.use('/crew-base.json', serve('crew-base.json'))
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceApi(), nutritionFile()],
-  // Fixed, memorable, deliberately unusual port (38 h cutoff · 100 miles).
-  // The 5173 default collides with every other Vite project on the machine,
-  // and a colliding neighbor silently claims the port so this app hops to
-  // 5174+ — which breaks the Basecamp.app launcher's health check and any
-  // bookmark. strictPort makes a genuine conflict fail LOUDLY instead of
-  // hopping; if 38100 is ever taken, something is actually wrong.
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceApi(), nutritionFile(), courseFiles()],
+  // Fixed, memorable, deliberately unusual port. The 5173 default collides
+  // with every other Vite project on the machine, and a colliding neighbor
+  // silently claims the port so this app hops to 5174+ — which breaks the
+  // Basecamp.app launcher's health check and any bookmark. strictPort makes a
+  // genuine conflict fail LOUDLY instead of hopping; if 38100 is ever taken,
+  // something is actually wrong.
   server: { port: 38100, strictPort: true },
   preview: { port: 38100, strictPort: true },
 })

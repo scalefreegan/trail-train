@@ -11,6 +11,7 @@
 import path from "node:path";
 import { fetchWeather, flushWeatherCache } from "./weather.mjs";
 import { loadState } from "./state.mjs";
+import { loadProfile } from "./facts.mjs";
 import { arg, writeJsonAtomic } from "./lib.mjs";
 import { loadConfig, ensureToken } from "./strava-auth.mjs";
 
@@ -21,6 +22,28 @@ const OUT_PATH = path.join(ROOT, "web", "public", "strava.json");
 const CROSS_OUT_PATH = path.join(ROOT, "web", "public", "cross-train.json");
 
 const isRun = (a) => a.type === "Run" || a.sport_type === "TrailRun";
+
+// An activity TITLE can mark a run as a long effort even when its distance
+// doesn't. Which words do that is athlete-specific — the names of the routes
+// and events they repeat — so they live in config/profile.json
+// (`long_run_name_patterns`, regex fragments), not in this file. The defaults
+// are the ones that hold for anyone.
+const DEFAULT_LONG_RUN_PATTERNS = ["race", "50k", "50 ?mi", "100"];
+
+/** Case-insensitive alternation over the profile's patterns (or the defaults). */
+function longRunRe(profile) {
+  const raw = profile?.long_run_name_patterns;
+  const pats = Array.isArray(raw) ? raw.filter((p) => typeof p === "string" && p.trim()) : [];
+  const use = pats.length ? pats : DEFAULT_LONG_RUN_PATTERNS;
+  try {
+    return new RegExp(use.join("|"), "i");
+  } catch (e) {
+    // A hand-edited profile with a broken fragment must not kill the sync —
+    // but it must not silently reclassify every long run either.
+    console.warn(`⚠︎ profile.long_run_name_patterns is not a valid regex (${e.message}) — using defaults`);
+    return new RegExp(DEFAULT_LONG_RUN_PATTERNS.join("|"), "i");
+  }
+}
 
 const START = arg("start", "2026-01-06");
 const END   = arg("end",   new Date().toISOString().slice(0, 10));
@@ -43,10 +66,10 @@ async function fetchActivities(token, startIso, endIso) {
   return out;
 }
 
-function classify(a) {
+function classify(a, longRe) {
   const km = a.distance / 1000;
   const name = (a.name || "").toLowerCase();
-  if (km >= 25 || /race|50k|50 ?mi|100|jmtr|crest|cedro/.test(name)) return "long";
+  if (km >= 25 || longRe.test(name)) return "long";
   if (km < 5)  return "easy";
   const grade = a.total_elevation_gain / Math.max(1, km * 1000);
   if (grade > 0.045) return "vert";
@@ -73,6 +96,9 @@ async function main() {
   // read it even before the first coach run).
   await loadState(ROOT);
 
+  // Which title words mean "long run" is athlete config, not code.
+  const longRe = longRunRe(await loadProfile(ROOT));
+
   const cfg = await loadConfig();
   const token = await ensureToken(cfg);
   console.log(`• fetching activities ${START} → ${END}…`);
@@ -93,7 +119,7 @@ async function main() {
       start_latlng: startLatLng,
       title: a.name,
       sport: a.sport_type || a.type,
-      type: classify(a),
+      type: classify(a, longRe),
       distance_m: a.distance,
       elevation_m: a.total_elevation_gain,
       moving_s: a.moving_time,

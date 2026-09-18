@@ -568,7 +568,7 @@ async function main() {
   map_track.push([+endPt.lat.toFixed(5), +endPt.lon.toFixed(5)]);
 
   // The projection's segment integrals and dwell walk assume ascending
-  // gpx_mi — a bad waypoint snap (e.g. onto the wrong side of the Horton
+  // gpx_mi — a bad waypoint snap (e.g. onto the wrong side of an
   // out-and-back spur) would corrupt ETAs silently downstream. Fail loudly.
   for (let i = 1; i < aid_stations.length; i++) {
     if (aid_stations[i].gpx_mi < aid_stations[i - 1].gpx_mi) {
@@ -597,6 +597,9 @@ async function main() {
     map_track,
     /** crew rules / directions distilled from the official crew manual */
     crew_info: race.crew_info ?? null,
+    /** what the aid chart / cutoffs were read from — the crew sheet names the
+        document rather than carrying a hard-coded manual year */
+    sources: race.sources ?? [],
   };
   await fs.mkdir(buildDir, { recursive: true });
   await writeJsonAtomic(outPath, payload);

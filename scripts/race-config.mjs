@@ -160,8 +160,8 @@ export async function loadActiveRace(root) {
  *
  * "Active" needs both halves to agree: the pointer names a folder AND that
  * folder's race.json carries status "active". A pointer left on a draft, or
- * on the race the athlete just finished and archived, is generic mode — the
- * archived MM100 must not keep coaching anybody past its finish line.
+ * on the race the athlete just finished and archived, is generic mode — an
+ * archived race must not keep coaching anybody past its finish line.
  * @returns {Promise<{slug, dir, race, block, plan, nutrition}|null>}
  */
 export async function loadActiveRaceFolder(root) {
@@ -176,8 +176,8 @@ export async function loadActiveRaceFolder(root) {
  * The active race, or — when no race is active — the most recent one by date.
  * Scripts written before generic mode existed (build-course.mjs, the dev
  * server's /nutrition.json) assume there IS a race; routing them through
- * here keeps them working off the archived MM100 folder. facts.mjs no
- * longer uses it — since tt-yib.3 it is generic mode or nothing.
+ * here keeps them working off the most recent archived race folder. facts.mjs
+ * no longer uses it — since tt-yib.3 it is generic mode or nothing.
  * @returns {Promise<{slug, dir, race, block, plan, nutrition}|null>} null when
  *   there are no race folders at all
  */

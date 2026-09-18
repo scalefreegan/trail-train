@@ -27,12 +27,24 @@ export const STATE_VERSION = 3;
     it is the only copy of race/block/plan_blocks if the split goes wrong. */
 export const STATE_BACKUP_NAME = "state.v2.backup.json";
 
-// Calendar/childcare semantics as athlete-voice data. Lives in
-// preferences.context.sections.calendar_conventions (seeded here on
-// bootstrap and by the v1→v2 migration); both coach prompts point the agent
-// at that section, so editing it in the settings dialog is what changes
-// agent behavior — there is no other copy.
-export const DEFAULT_CALENDAR_CONVENTIONS = `All-day marker events on the family calendars flag childcare days: "Em" / "M" / "Emerson" = Em is away and I have SOLO kid duty; "H" markers ("H no school", "Pick up H") = Hawthorne is home and needs coverage. Severity depends on the day of week. WEEKDAY (Mon-Fri) childcare days: I can still train during work hours (~08:00-16:00) — plan them as near-normal training days and note the window. WEEKEND childcare days are the genuinely hard ones, worst when an "Em" marker covers a weekend (solo duty, no daycare backup): default those to rest or a short pre-dawn run (start ~05:30, done by 08:00), and plan the week's long runs to AVOID Em weekends entirely — use a clear weekend day or a weekday daytime window, naming the swap. Saturday "Hawthorn soccer" (09:00) caps any Saturday session: finished and home by 08:30.`;
+// Calendar/childcare semantics live in
+// preferences.context.sections.calendar_conventions — athlete-voice prose in
+// the athlete's own state.json. Both coach prompts point the agent at that
+// section, so editing it in the settings dialog is what changes agent
+// behavior; there is no other copy.
+//
+// The DEFAULT is empty (tt-yib.5): one athlete's family markers are not a
+// sensible starting point for anybody else, so a fresh state.json starts this
+// section blank and the settings dialog invites the athlete to fill it in.
+export const DEFAULT_CALENDAR_CONVENTIONS = "";
+
+// The prose this constant used to hold. Kept ONLY so the v1→v2 migration —
+// which is where this section is created, for a file that predates coach
+// context — still moves it into the athlete's own state.json. It is never
+// written over a section the file already carries (the spread below wins) and
+// never reaches a freshly bootstrapped file, which starts blank. Nothing else
+// in the app reads it.
+const LEGACY_CALENDAR_CONVENTIONS = `All-day marker events on the family calendars flag childcare days: "Em" / "M" / "Emerson" = Em is away and I have SOLO kid duty; "H" markers ("H no school", "Pick up H") = Hawthorne is home and needs coverage. Severity depends on the day of week. WEEKDAY (Mon-Fri) childcare days: I can still train during work hours (~08:00-16:00) — plan them as near-normal training days and note the window. WEEKEND childcare days are the genuinely hard ones, worst when an "Em" marker covers a weekend (solo duty, no daycare backup): default those to rest or a short pre-dawn run (start ~05:30, done by 08:00), and plan the week's long runs to AVOID Em weekends entirely — use a clear weekend day or a weekday daytime window, naming the swap. Saturday "Hawthorn soccer" (09:00) caps any Saturday session: finished and home by 08:30.`;
 
 // Defaults used to bootstrap a fresh state.json. Editable in the file once
 // it's been created — the file becomes the source of truth.
@@ -255,9 +267,9 @@ const DATE_RANGE_RE =
  *     seeing it but it stays visible in the dialog until deleted),
  *   - the calendar_conventions section when it reads calendar-shaped,
  *   - the training_preferences section otherwise.
- * calendar_conventions is seeded with DEFAULT_CALENDAR_CONVENTIONS (the
- * prose this migration removes from the system prompts). Idempotent: keyed
- * off version < 2 in loadState.
+ * calendar_conventions is seeded with LEGACY_CALENDAR_CONVENTIONS (the prose
+ * this migration removes from the system prompts). Idempotent: keyed off
+ * version < 2 in loadState.
  */
 export function migrateToV2(state) {
   const prefs = { ...(state.preferences ?? {}) };
@@ -273,7 +285,7 @@ export function migrateToV2(state) {
   }
   const sections = {
     ...EMPTY_SECTIONS,
-    calendar_conventions: DEFAULT_CALENDAR_CONVENTIONS,
+    calendar_conventions: LEGACY_CALENDAR_CONVENTIONS,
     ...(prefs.context?.sections ?? {}),
   };
   const temporary = Array.isArray(prefs.context?.temporary) ? [...prefs.context.temporary] : [];
@@ -329,7 +341,7 @@ function legacyRaceSlug(race) {
  * the folder schema wants (no timezone, no per-station detail), so the gaps
  * are filled from the machine's zone and flagged in provenance for the user
  * to correct — a migrated race is a starting point, not an intake result.
- * The real MM100 folder was written by hand in tt-yib.2; this path exists for
+ * The real race folder was written by hand in tt-yib.2; this path exists for
  * any other v2 file (a clone, a restored backup, a test fixture).
  */
 function raceJsonFromLegacy(race, slug, todayIso) {
