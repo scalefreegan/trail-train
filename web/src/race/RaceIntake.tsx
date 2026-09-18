@@ -567,6 +567,12 @@ function ReviewScreen({ slug, onDone, onReload }: { slug: string; onDone: () => 
   const [saveError, setSaveError] = useState<string[] | null>(null);
   const [busy, setBusy] = useState<null | "saving" | "activating">(null);
 
+  /* Stage 2 and stage 3 again, on a folder that already exists. The endpoints
+     were built to be asked twice — the course build is deterministic and free,
+     and the plan is a paid agent turn that is deliberately its own button
+     rather than something the build chains into. */
+  const [stage, setStage] = useState<null | "build" | "plan">(null);
+  const [stageLine, setStageLine] = useState("");
   const [aidEdits, setAidEdits] = useState<Record<number, AidEdit>>({});
   const [blockEdits, setBlockEdits] = useState<Record<number, { target_dist?: number; target_elev?: number }>>({});
   const [themeEdit, setThemeEdit] = useState<string | null>(null);
@@ -615,6 +621,31 @@ function ReviewScreen({ slug, onDone, onReload }: { slug: string; onDone: () => 
 
   const dirty = Object.keys(aidEdits).length > 0 || Object.keys(blockEdits).length > 0 ||
     themeEdit !== null || Object.values(fills).some((v) => v.trim());
+
+  const runStageAgain = async (which: "build" | "plan") => {
+    setStage(which);
+    setStageLine("");
+    setSaveError(null);
+    const ctrl = new AbortController();
+    try {
+      await runStage(
+        which === "build" ? "/api/race-intake/build" : "/api/race-intake/plan",
+        { slug },
+        (e) => {
+          if (e.kind === "log") setStageLine(e.line);
+          else if (e.kind === "step" && e.status === "start") setStageLine(e.label ?? e.id);
+          else if (e.kind === "error") setStageLine(e.message);
+        },
+        ctrl.signal,
+      );
+      setStageLine("");
+      load();
+    } catch (e) {
+      setSaveError([(e as Error).message]);
+    } finally {
+      setStage(null);
+    }
+  };
 
   /** The PUT body for whatever is currently in the edit buffer. */
   const buildBody = (extra: Record<string, unknown> = {}): Record<string, unknown> => {
@@ -735,7 +766,7 @@ function ReviewScreen({ slug, onDone, onReload }: { slug: string; onDone: () => 
       : data.activation.ok || openHoles.length
         ? []
         : data.activation.errors;
-  const canActivate = isDraft && allAcked && busy === null;
+  const canActivate = isDraft && allAcked && busy === null && stage === null;
 
   return (
     <>
@@ -786,6 +817,40 @@ function ReviewScreen({ slug, onDone, onReload }: { slug: string; onDone: () => 
             </ul>
           </Block>
         )}
+
+        <Block>
+          <Eyebrow>stages · run again</Eyebrow>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              className="chip"
+              style={{ fontSize: 10 }}
+              disabled={stage !== null || busy !== null}
+              onClick={() => void runStageAgain("build")}
+              title="fetch the GPX if the folder has none, snap the aid stations to the track, compute sun, rebuild the profile"
+            >
+              {stage === "build" ? "building…" : "course"}
+            </button>
+            <button
+              className="chip"
+              style={{ fontSize: 10, opacity: race.date ? 1 : 0.55 }}
+              disabled={stage !== null || busy !== null || !race.date}
+              onClick={() => void runStageAgain("plan")}
+              title={race.date
+                ? "one headless claude -p turn: block targets, fuel plan, coach notes, theme suggestion"
+                : "the block is counted back from race day — fill the date in above and save before spending an agent turn"}
+            >
+              {stage === "plan" ? "planning…" : "block + fuel"}
+            </button>
+            <span
+              className={stage ? "pulse" : undefined}
+              style={{ fontSize: 10.5, color: stage ? "var(--lamp)" : "var(--mist-mute)", lineHeight: 1.4, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            >
+              {stageLine || (race.date
+                ? "the course build is deterministic and free; the plan is a paid agent turn, so it is its own button"
+                : "the plan needs a race date — it counts the block back from race day, and without one it writes no block.json at all")}
+            </span>
+          </div>
+        </Block>
 
         <ProfilePreview course={data.course} hasGpx={data.has_gpx} />
 
