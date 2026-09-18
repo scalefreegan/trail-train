@@ -162,7 +162,7 @@ The coach may propose edits to `weekly_volume_band` and `phase`; the user accept
 
 ### 5.4 `config/profile.json` additions
 
-`physiology: { body_kg, long_run_ref_mi }` (today's `caffeine.body_kg` 79.4 and pacing `D_REF` 20),
+`physiology: { body_kg, long_run_ref_mi }` (today's `caffeine.body_kg` and pacing `D_REF`),
 `long_run_name_patterns: []` (today's hard-coded regex in sync-strava). `race_base` is removed
 in favor of the race folder's `crew.private.json`.
 
