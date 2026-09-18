@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   useRefresh, REFRESH_STEPS,
@@ -16,6 +15,7 @@ import {
 } from "./data";
 import { RaceTheme, RefreshProvider, UnitsProvider, StravaProvider, OuraProvider, StateProvider } from "./providers";
 import CoachSettings from "./CoachSettings";
+import RaceIntake from "./race/RaceIntake";
 import { SectionTag, Contours } from "./atoms";
 import { RacePlanner } from "./race/RacePlanner";
 import { ClimbComparison } from "./race/ClimbComparison";
@@ -174,10 +174,29 @@ function orderedRaces(list: RaceListEntry[]): RaceListEntry[] {
   return [...known, ...list.filter((r) => !RACE_GROUPS.some((g) => g.status === r.status))];
 }
 
+/** A draft gets a second row under it — "Review…" reopens the intake dialog's
+    review screen on a folder that is already on disk, which is the only way
+    back into it once the dialog has been closed (PRD §8). A folder whose
+    race.json will not parse has nothing to review. */
+const isReviewable = (r: RaceListEntry) => r.status === "draft" && !r.error;
+
+/** Where the cursor lands on a given slug, counting the "No race" row above
+    the list and the extra "Review…" row each draft contributes. Has to agree
+    with the render order below — the roving-focus index is an index into the
+    buttons as they are emitted. */
+function cursorForSlug(list: RaceListEntry[], slug: string | null): number {
+  let i = 1;
+  for (const r of orderedRaces(list)) {
+    if (r.slug === slug) return i;
+    i += isReviewable(r) ? 2 : 1;
+  }
+  return 0;
+}
+
 /** The kinds of row in the menu, in order: "No race (generic)", one per race
-    folder, then — when there is a race to retire — "Archive with result…",
-    then "New race…". */
-type SwitcherItemKind = "generic" | "race" | "archive" | "new";
+    folder (a draft followed by its "Review…" row), then — when there is a race
+    to retire — "Archive with result…", then "New race…". */
+type SwitcherItemKind = "generic" | "race" | "review" | "archive" | "new";
 
 /**
  * The short code in the command bar, as a menu over every race folder.
@@ -196,7 +215,9 @@ function RaceSwitcher() {
   const [races, setRaces] = useState<RaceListEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [newRaceOpen, setNewRaceOpen] = useState(false);
+  /* The intake dialog, and which folder it opens on: null is the form ("New
+     race…"), a slug is the review screen of a draft already on disk. */
+  const [intake, setIntake] = useState<{ slug: string | null } | null>(null);
   const [archiveOpen, setArchiveOpen] = useState<RaceListEntry | null>(null);
   const [cursor, setCursor] = useState(0);
 
@@ -235,8 +256,10 @@ function RaceSwitcher() {
     return null;
   }, [races, trainingSlug, viewing, viewedResult]);
 
-  /** menu length: "No race", every race, maybe "Archive with result…", "New race…" */
-  const itemCount = (races?.length ?? 0) + 2 + (archiveTarget ? 1 : 0);
+  /** menu length: "No race", every race, a "Review…" row per draft, maybe
+      "Archive with result…", then "New race…" */
+  const itemCount = (races?.length ?? 0) + (races?.filter(isReviewable).length ?? 0)
+    + 2 + (archiveTarget ? 1 : 0);
 
   const close = useCallback((restoreFocus = true) => {
     setOpen(false);
@@ -258,8 +281,7 @@ function RaceSwitcher() {
       .then((d) => {
         if (stale) return;
         setRaces(d.races);
-        const at = orderedRaces(d.races).findIndex((r) => r.slug === currentSlug);
-        setCursor(at >= 0 ? at + 1 : 0);
+        setCursor(cursorForSlug(d.races, currentSlug));
       })
       .catch((e: Error) => { if (!stale) { setRaces([]); setError(e.message); } });
     return () => { stale = true; };
@@ -328,7 +350,7 @@ function RaceSwitcher() {
       tabIndex: cursor === i ? 0 : -1,
       onMouseEnter: () => setCursor(i),
     };
-    return kind === "new" || kind === "archive"
+    return kind === "new" || kind === "archive" || kind === "review"
       ? { ...common, role: "menuitem" as const }
       : { ...common, role: "menuitemradio" as const, "aria-checked": kind === "generic" ? currentSlug == null : slug === currentSlug };
   };
@@ -387,21 +409,30 @@ function RaceSwitcher() {
               <div key={g.label}>
                 <div className="eyebrow" style={{ padding: "10px 14px 4px", fontSize: 8, color: "var(--mist-dim)" }}>{g.label}</div>
                 {g.entries.map((entry) => (
-                  <SwitcherRow
-                    key={entry.slug}
-                    {...itemProps("race", entry.slug)}
-                    label={entry.name}
-                    hint={entry.error
-                      ? "race.json unreadable"
-                      : `${entry.short}${entry.date ? ` · ${entry.date}` : ""}${entry.status === "active" ? "" : " · read-only"}`}
-                    swatch={entry.error ? null : (
-                      <ThemePreview visual={entry.visual} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round />
+                  <Fragment key={entry.slug}>
+                    <SwitcherRow
+                      {...itemProps("race", entry.slug)}
+                      label={entry.name}
+                      hint={entry.error
+                        ? "race.json unreadable"
+                        : `${entry.short}${entry.date ? ` · ${entry.date}` : ""}${entry.status === "active" ? "" : " · read-only"}`}
+                      swatch={entry.error ? null : (
+                        <ThemePreview visual={entry.visual} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round />
+                      )}
+                      disabled={!!entry.error}
+                      busy={busy === entry.slug}
+                      current={entry.slug === currentSlug}
+                      onSelect={() => choose(entry.slug, modeFor(entry.status))}
+                    />
+                    {isReviewable(entry) && (
+                      <SwitcherRow
+                        {...itemProps("review", entry.slug)}
+                        label="↳ Review…"
+                        hint="aid chart, profile, unresolved · activate"
+                        onSelect={() => { setOpen(false); setIntake({ slug: entry.slug }); }}
+                      />
                     )}
-                    disabled={!!entry.error}
-                    busy={busy === entry.slug}
-                    current={entry.slug === currentSlug}
-                    onSelect={() => choose(entry.slug, modeFor(entry.status))}
-                  />
+                  </Fragment>
                 ))}
               </div>
             ))}
@@ -420,7 +451,7 @@ function RaceSwitcher() {
                 {...itemProps("new")}
                 label="New race…"
                 hint="build a race folder from its website"
-                onSelect={() => { setOpen(false); setNewRaceOpen(true); }}
+                onSelect={() => { setOpen(false); setIntake({ slug: null }); }}
               />
             </div>
             {error && (
@@ -430,7 +461,12 @@ function RaceSwitcher() {
         )}
       </AnimatePresence>
 
-      {newRaceOpen && <NewRaceDialog onClose={() => { setNewRaceOpen(false); triggerRef.current?.focus(); }} />}
+      {intake && (
+        <RaceIntake
+          slug={intake.slug}
+          onClose={() => { setIntake(null); triggerRef.current?.focus(); }}
+        />
+      )}
       {archiveOpen && (
         <ArchiveRace
           slug={archiveOpen.slug}
@@ -510,57 +546,6 @@ const SWATCH_SLOT: React.CSSProperties = {
 /** The menu shows the light source and nothing else — the full seven-swatch
     strip belongs on a screen where a palette is being CHOSEN, not listed. */
 const ACCENT_SWATCH = ["--lamp"] as const;
-
-/** Placeholder until tt-yib.14 wires the intake dialog to
-    POST /api/race-intake — the endpoints behind it already exist. */
-function NewRaceDialog({ onClose }: { onClose: () => void }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-  const backdropMouseDown = useRef(false);
-  return createPortal(
-    <div
-      onMouseDown={(e) => { backdropMouseDown.current = e.target === e.currentTarget; }}
-      onClick={(e) => { if (e.target === e.currentTarget && backdropMouseDown.current) onClose(); }}
-      style={{
-        position: "fixed", inset: 0, zIndex: 100, background: "rgba(4, 8, 12, 0.78)",
-        display: "flex", padding: "clamp(12px, 3vh, 32px)",
-      }}
-    >
-      <div
-        className="panel notch"
-        role="dialog"
-        aria-modal="true"
-        aria-label="new race"
-        onClick={(e) => e.stopPropagation()}
-        style={{ width: "min(560px, 100%)", margin: "auto", display: "flex", flexDirection: "column" }}
-      >
-        <div style={{
-          display: "flex", justifyContent: "space-between", alignItems: "center",
-          borderBottom: "1px solid var(--edge)", padding: "16px 24px",
-        }}>
-          <div className="eyebrow" style={{ color: "var(--mist-dim)" }}>new race</div>
-          <button className="chip" onClick={onClose} autoFocus style={{ fontSize: 9 }}>close esc</button>
-        </div>
-        <div style={{ padding: "20px 24px 22px", fontSize: 12.5, lineHeight: 1.6, color: "var(--mist-mute)" }}>
-          <p style={{ margin: "0 0 12px" }}>
-            The intake dialog isn't built yet — it arrives with tt-yib.14. It will take a race's
-            website, any PDFs or GPX you have, and a year, then write a draft folder under
-            <span className="numerals" style={{ color: "var(--mist)" }}> races/</span> for you to review.
-          </p>
-          <p style={{ margin: 0 }}>
-            Until then a race folder is made by hand (or by asking the coach) — see
-            <span className="numerals" style={{ color: "var(--mist)" }}> docs/PRD-modular-races.md §5</span>.
-            Any draft that exists shows up in this menu, ready to browse.
-          </p>
-        </div>
-      </div>
-    </div>,
-    document.body,
-  );
-}
 
 /** "you are looking at a race you are not training for" — on every view, so
     it can't be missed by switching tabs (PRD §7). */

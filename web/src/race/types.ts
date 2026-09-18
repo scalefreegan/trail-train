@@ -161,8 +161,10 @@ export type RaceElevation = {
     source of truth); build-course.mjs derives the plotted `gpx_mi` from it. */
 export type RaceAidStation = {
   name: string;
-  /** waypoint name in course.gpx, for snapping */
-  gpx_wpt?: string;
+  /** waypoint name in course.gpx, for snapping. Explicitly null when the
+      station has been reviewed and has no waypoint (the finish is the track
+      end); absent when nothing has looked yet. */
+  gpx_wpt?: string | null;
   seg_mi?: number | null;
   total_mi: number;
   seg_gain_ft?: number | null;
@@ -262,6 +264,14 @@ export type RaceConfig = {
   visual?: RaceVisual;
   provenance?: Record<string, RaceProvenanceEntry>;
   sources?: RaceSource[];
+  /** What the intake wants a human to double-check before this race is
+      trusted — written by scripts/race-intake.mjs, read by the review dialog. */
+  review_notes?: string;
+  /** Field paths nothing could establish. Recomputed on every review write
+      (scripts/race-edit.mjs) and gated on before activation. */
+  unresolved?: string[];
+  /** The owner has seen `unresolved` and accepted what is still missing. */
+  unresolved_acknowledged?: boolean;
 };
 
 /** races/<slug>/block.json — today's state.block, per race. */
