@@ -213,16 +213,28 @@ export async function runRefresh({
     step("plan", "done", { skipped: true });
   } else {
     step("plan", "start", { label: "re-planning the block and the fuel plan" });
-    plan = await planRace({
-      root,
-      slug,
-      dir: shadow,
-      today,
-      onProgress,
-      ...(runPlanAgent ? { runAgent: runPlanAgent } : {}),
-    });
-    warnings.push(...plan.warnings);
-    step("plan", "done", { wrote: plan.wrote.length });
+    try {
+      plan = await planRace({
+        root,
+        slug,
+        dir: shadow,
+        today,
+        onProgress,
+        ...(runPlanAgent ? { runAgent: runPlanAgent } : {}),
+      });
+      warnings.push(...plan.warnings);
+      step("plan", "done", { wrote: plan.wrote.length });
+    } catch (e) {
+      /* A failed plan does not fail the refresh. Stages 1 and 2 have already
+         re-read the chart and re-snapped the course — the expensive half — and
+         throwing that away because the block could not be planned (a draft
+         with no date is the common one) would make the owner pay for it twice.
+         block.json and nutrition.json then simply have no incoming version, so
+         they do not appear in the diff and Accept leaves them alone. */
+      warnings.push(`the block and fuel plan were not re-planned: ${e.message}`);
+      say("plan", warnings[warnings.length - 1], { stream: "err" });
+      step("plan", "error", { message: e.message });
+    }
   }
 
   /* 4. the merge — deterministic, no agent, nothing written to the live folder */

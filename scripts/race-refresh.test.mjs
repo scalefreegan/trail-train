@@ -78,6 +78,22 @@ const cannedIntake = (body) => async () => ({
   retried: false,
 });
 
+/** A well-shaped 12-week block, the same one race-plan.test.mjs validates. */
+const GOOD_TARGETS = [
+  { wk: 1, target_dist: 30, target_elev: 4000 },
+  { wk: 2, target_dist: 36, target_elev: 5000 },
+  { wk: 3, target_dist: 42, target_elev: 6000 },
+  { wk: 4, target_dist: 28, target_elev: 3600 },
+  { wk: 5, target_dist: 46, target_elev: 6800 },
+  { wk: 6, target_dist: 52, target_elev: 7800 },
+  { wk: 7, target_dist: 34, target_elev: 4400 },
+  { wk: 8, target_dist: 56, target_elev: 8600 },
+  { wk: 9, target_dist: 60, target_elev: 9200 },
+  { wk: 10, target_dist: 28, target_elev: 3800 },
+  { wk: 11, target_dist: 18, target_elev: 2200 },
+  { wk: 12, target_dist: 31.4, target_elev: 5200 },
+];
+
 /**
  * The MM100 fuel plan, scaled to the fixture's 50K, as a stage-3 reply. The
  * constants are the real file's — the point is a nutrition.json that passes
@@ -92,7 +108,7 @@ async function cannedPlan() {
   n.drop_bag_gear = { Start: ["sunscreen + hat", "arm sleeves"] };
   n.caffeine = { ...n.caffeine, gels: 3 };
   return {
-    // no `block`: the fixture race has no date, so there is no window to plan
+    block: { targets: structuredClone(GOOD_TARGETS) },
     nutrition: n,
     coach_notes: Object.fromEntries(COACH_NOTE_KEYS.map((k) => [k, `Grounded prose about ${k}.`])),
     links: { site: DEAD_SITE },
@@ -223,24 +239,52 @@ test("a hand-typed cutoff is kept, and comes back as a suggestion", async (t) =>
 });
 
 test("stage 3 plans into the shadow, leaving the live block and fuel plan alone", async (t) => {
-  const { tmp, dir } = await fixtureRace(t);
+  const { tmp, dir } = await fixtureRace(t, { raceOver: { date: "2027-08-13" } });
   const before = await fingerprint(dir);
   const plan = await cannedPlan();
 
   const { diff } = await runRefresh({
     root: tmp,
     slug: SLUG,
-    runAgent: cannedIntake(await draft()),
+    // Tue → week 1 is 2027-05-24 and race week is 12, which is the block the
+    // canned reply carries. The clock is injected for exactly this reason.
+    today: new Date(2027, 4, 18),
+    runAgent: cannedIntake(await draft({ date: "2027-08-13" })),
     runPlanAgent: async () => ({ text: JSON.stringify(plan), wrapper: {}, retried: false }),
   });
 
-  assert.deepEqual(await fingerprint(dir, [SHADOW]), before);
+  assert.deepEqual(await fingerprint(dir, [SHADOW]), before, "three stages, and the live folder still has not moved");
   const shadowNutrition = await readJson(path.join(dir, SHADOW, "nutrition.json"));
   assert.equal(shadowNutrition.flask_ml, 500);
   assert.deepEqual(Object.keys(shadowNutrition.drop_bag_gear), ["Start"], "the fuel plan came through stage 3");
-  assert.ok(diff.files.includes("nutrition.json"));
-  // the live one is still the two-key stub the fixture wrote
+  assert.equal((await readJson(path.join(dir, SHADOW, "block.json"))).total_weeks, 12);
+  assert.deepEqual(diff.files.sort(), ["block.json", "nutrition.json", "race.json"]);
+  // the live ones are still what the fixture wrote
   assert.deepEqual(Object.keys(await readJson(path.join(dir, "nutrition.json"))), ["flask_ml", "drop_bag_gear"]);
+  assert.equal((await readJson(path.join(dir, "block.json"))).total_weeks, 2);
+
+  await acceptRefresh({ root: tmp, slug: SLUG });
+  assert.equal((await readJson(path.join(dir, "block.json"))).total_weeks, 12, "accept applies the new block");
+  const liveNutrition = await readJson(path.join(dir, "nutrition.json"));
+  assert.equal(liveNutrition.tailwind_flasks, 2, "…and the rest of the new fuel plan with it");
+  assert.deepEqual(Object.keys(liveNutrition.drop_bag_gear), ["Start"]);
+});
+
+test("a plan that refuses does not cost the owner the re-read chart", async (t) => {
+  // The fixture race has no date, which race-plan.mjs refuses before spending
+  // an agent turn. Stages 1 and 2 have already done the expensive work.
+  const { tmp, dir } = await fixtureRace(t);
+  const { diff } = await runRefresh({
+    root: tmp,
+    slug: SLUG,
+    runAgent: cannedIntake(await draft({ distance_mi: 32.8 })),
+    runPlanAgent: async () => ({ text: "{}", wrapper: {}, retried: false }),
+  });
+
+  assert.deepEqual(diff.files, ["race.json"], "no block or fuel plan came out, so neither is diffed");
+  assert.ok(diff.warnings.some((w) => /were not re-planned.*has no date/.test(w)), diff.warnings.join(" | "));
+  assert.equal(diff.diff.find((d) => d.path === "distance_mi").to, 32.8, "the re-read chart survived");
+  assert.equal(diff.stages.plan, null);
 });
 
 /* -------------------------------- accept --------------------------------- */
