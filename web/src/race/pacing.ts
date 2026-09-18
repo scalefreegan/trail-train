@@ -700,7 +700,7 @@ export function nightIntervals(
     const e = s + (24 - set + rise); // sunset → next sunrise
     out.push([Math.max(0, s), Math.min(horizonH, e)]);
   }
-  // race could also start pre-dawn (6:00 start vs 6:15 sunrise → 15 min of dark)
+  // race could also start pre-dawn (MM100: 6:00 start vs 6:05 sunrise → 5 min of dark)
   if (start < rise) out.unshift([0, Math.min(horizonH, rise - start)]);
   return out;
 }
