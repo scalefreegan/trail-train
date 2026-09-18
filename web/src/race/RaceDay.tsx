@@ -231,6 +231,11 @@ export function RaceDay() {
   const elapsedH = (now - raceStart.getTime()) / 3_600_000;
   const started = elapsedH >= 0;
   const stations = proj?.stations ?? [];
+  // Where to measure "to go" from: the stated mile if the runner gave one,
+  // otherwise the mile the plan has them at right now. Both are honest —
+  // one is observed, the other is the projection's own answer — and the
+  // "where am i" block below says which is in force.
+  const posEff = posMi ?? (started && proj ? proj.mileAtElapsed(elapsedH) : null);
   const idx = nextStationIdx(stations, elapsedH, posMi);
   const next = stations[idx] ?? null;
   const upcoming = stations.slice(idx + 1, idx + 1 + LOOKAHEAD);
@@ -276,7 +281,8 @@ export function RaceDay() {
             sp={next}
             plan={plan}
             idx={idx}
-            posMi={posMi}
+            elapsedH={elapsedH}
+            posMi={posEff}
             legs={{ out: legOut(fuelPlan, idx), through: legThrough(fuelPlan, idx) }}
             bag={features.drop_bags && next.station.drop_bag
               ? fuelPlan?.drop_bags.find((b) => b.station === next.station.name) ?? null
@@ -361,7 +367,12 @@ export function RaceDay() {
           </option>
         ))}
       </select>
-      {posMi != null && (
+      {posMi == null ? (
+        <div className="numerals" style={{ fontSize: 12, color: "var(--mist-mute)", marginTop: 8, lineHeight: 1.6 }}>
+          auto — position and “to go” come from the projection against the clock.
+          Say where you actually are if it has drifted.
+        </div>
+      ) : (
         <div className="numerals" style={{ fontSize: 12, color: "var(--mist-dim)", marginTop: 8, lineHeight: 1.6 }}>
           held at <b style={{ color: "var(--mist)" }}>{u.dist(posMi)} {u.distUnit}</b>
           {proj && started && (() => {
@@ -417,10 +428,13 @@ function EtaCell({ label, value, color, big }: {
   );
 }
 
-function NextStation({ sp, plan, idx, posMi, legs, bag, drive, baseLabel }: {
+function NextStation({ sp, plan, idx, elapsedH, posMi, legs, bag, drive, baseLabel }: {
   sp: StationProjection;
   plan: RacePlan;
   idx: number;
+  /** race hours on the clock right now — the crew leave-by needs to know
+      whether it is already in the past */
+  elapsedH: number;
   posMi: number | null;
   legs: { out: FuelSegment | null; through: FuelSegment | null };
   bag: DropBag | null;
@@ -445,7 +459,7 @@ function NextStation({ sp, plan, idx, posMi, legs, bag, drive, baseLabel }: {
       <div className="numerals" style={{ fontSize: 14, color: "var(--mist-dim)", marginTop: 5 }}>
         {u.dist(s.total_mi)} {u.distUnit}
         {toGo != null && toGo > 0 && <> · <b style={{ color: "var(--lamp)" }}>{u.dist(toGo, 1)} {u.distUnit} to go</b></>}
-        {sp.seg_gain_ft > 0 && <> · {u.elev(sp.seg_gain_ft)} {u.elevUnit}↑ in</>}
+        {sp.seg_gain_ft > 0 && <> · ↑{u.elev(sp.seg_gain_ft)} {u.elevUnit} this leg</>}
         {s.water_only && <> · <span style={{ color: "var(--ember)" }}>water only</span></>}
         {s.crew_only && <> · <span style={{ color: "var(--ember)" }}>no aid</span></>}
       </div>
@@ -506,18 +520,24 @@ function NextStation({ sp, plan, idx, posMi, legs, bag, drive, baseLabel }: {
         </Block>
       )}
 
-      {features.crew && drive && (
-        <Block label="crew">
-          <div className="numerals" style={{ fontSize: 15, lineHeight: 1.6 }}>
-            {fmtDrive(drive.min)} drive from {baseLabel} · {u.dist(drive.mi, 0)} {u.distUnit}
-            {/* leave-by against the BEST case: crew that leaves on the
-                expected ETA misses a runner having a good day */}
-            <div style={{ color: "var(--mist-dim)" }}>
-              leave by <b style={{ color: "var(--lamp)" }}>{race.clock(sp.eta_h.best - drive.min / 60)}</b>
+      {features.crew && drive && (() => {
+        // leave-by against the BEST case, not the expected one: crew that
+        // leaves on the expected ETA misses a runner having a good day
+        const leaveByH = sp.eta_h.best - drive.min / 60;
+        const late = leaveByH <= elapsedH;
+        return (
+          <Block label="crew">
+            <div className="numerals" style={{ fontSize: 15, lineHeight: 1.6 }}>
+              {fmtDrive(drive.min)} drive from {baseLabel} · {u.dist(drive.mi, 0)} {u.distUnit}
+              <div style={{ color: "var(--mist-dim)" }}>
+                {late
+                  ? <>should already be driving — <b style={{ color: "var(--ember)" }}>leave now</b> (best case {race.clock(sp.eta_h.best)})</>
+                  : <>leave by <b style={{ color: "var(--lamp)" }}>{race.clock(leaveByH)}</b></>}
+              </div>
             </div>
-          </div>
-        </Block>
-      )}
+          </Block>
+        );
+      })()}
 
       {s.notes && (
         <div className="numerals" style={{ fontSize: 12, color: "var(--mist-mute)", marginTop: 12, lineHeight: 1.6 }}>

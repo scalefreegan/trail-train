@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useActiveRace, useRefresh } from "../data";
-import { cacheGet, cachePut, courseCacheKey } from "./offlineCache";
+import { cacheGet, cachePut, slugKey } from "./offlineCache";
 import type { ClimbsSnapshot, Course, CrewBase } from "./types";
 import type { PaceGradeCurve } from "./pacing";
 
@@ -33,7 +33,7 @@ export function useCourse() {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!resolved) return;
-    const cacheKey = courseCacheKey(slug);
+    const cacheKey = slugKey("course", slug);
     // a load failure is not an absence: fall back to the last copy that DID
     // load (see offlineCache.ts) and label it, rather than blanking the view
     const fallback = (message: string) => {
@@ -60,18 +60,30 @@ export function useCourse() {
     numbers and race-week lodging are independent. */
 export function useCrewBase() {
   const { key: refreshKey } = useRefresh();
+  const { slug, resolved } = useActiveRace();
   const [data, setData] = useState<CrewBase | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    if (!resolved) return;
+    // cached like course.json: race-day mode shows the crew drive and the
+    // leave-by time off this file, and they are exactly what a crew captain
+    // checks from a car park with one bar of signal
+    const cacheKey = slugKey("crew-base", slug);
+    const fallback = (message: string) => {
+      const cached = cacheGet<CrewBase>(cacheKey);
+      if (cached) { setData(cached); setError(`${message} — showing the last saved copy`); }
+      else setError(message);
+    };
     fetch(`/crew-base.json?t=${Date.now()}`)
       .then(async (r) => {
         if (r.status === 404) { setData(null); setError(null); return; }
-        if (!r.ok) { setError(`crew-base.json failed to load (HTTP ${r.status})`); return; }
+        if (!r.ok) { fallback(`crew-base.json failed to load (HTTP ${r.status})`); return; }
         const d = await r.json().catch(() => { throw new Error("parse"); });
+        cachePut(cacheKey, d);
         setData(d); setError(null);
       })
-      .catch(() => setError("crew-base.json corrupt or unreadable"));
-  }, [refreshKey]);
+      .catch(() => fallback("crew-base.json corrupt or unreadable"));
+  }, [refreshKey, resolved, slug]);
   return { crewBase: data, error };
 }
 

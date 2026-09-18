@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { useRefresh } from "../data";
+import { useActiveRace, useRefresh } from "../data";
+import { cacheGet, cachePut, slugKey } from "./offlineCache";
 import { DEFAULT_NUTRITION, normalizeNutrition, parseHM } from "./nutrition-config";
 import type { NutritionConfig } from "./nutrition-config";
 import { raceClockH } from "./pacing";
@@ -24,25 +25,39 @@ export type { NutritionConfig, CaffeineConfig } from "./nutrition-config";
     falls back to DEFAULT_NUTRITION — the file is optional tuning, not data. */
 export function useNutrition() {
   const { key: refreshKey } = useRefresh();
+  const { slug, resolved } = useActiveRace();
   const [cfg, setCfg] = useState<NutritionConfig>(DEFAULT_NUTRITION);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    if (!resolved) return;
     let stale = false;
+    // cached per slug like the other race payloads: without it an offline
+    // race-day reload silently swaps this race's tuning for the generic
+    // defaults, and the drop-bag gear list (drop_bag_gear) empties out
+    const cacheKey = slugKey("nutrition", slug);
+    const fallback = (message: string) => {
+      if (stale) return;
+      const cached = cacheGet<unknown>(cacheKey);
+      const norm = cached == null ? null : normalizeNutrition(cached);
+      if (norm) { setCfg(norm); setError(`${message} — showing the last saved copy`); }
+      else setError(message);
+    };
     fetch(`/nutrition.json?t=${Date.now()}`)
       .then(async (r) => {
         if (stale) return;
         if (r.status === 404) { setCfg(DEFAULT_NUTRITION); setError(null); return; }
-        if (!r.ok) { setError(`nutrition.json failed to load (HTTP ${r.status})`); return; }
+        if (!r.ok) { fallback(`nutrition.json failed to load (HTTP ${r.status})`); return; }
         const d = await r.json().catch(() => { throw new Error("parse"); });
         const norm = normalizeNutrition(d);
         if (!norm) { if (!stale) setError("nutrition.json invalid — using previous config or defaults"); return; }
         if (stale) return;
+        cachePut(cacheKey, d);
         setCfg(norm);
         setError(null);
       })
-      .catch(() => { if (!stale) setError("nutrition.json corrupt or unreadable"); });
+      .catch(() => fallback("nutrition.json corrupt or unreadable"));
     return () => { stale = true; };
-  }, [refreshKey]);
+  }, [refreshKey, resolved, slug]);
   return { nutrition: cfg, error };
 }
 

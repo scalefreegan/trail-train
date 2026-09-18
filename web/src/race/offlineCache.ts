@@ -28,10 +28,12 @@ const PREFIX = "bc.cache.";
 /** The merged /api/race/active payload. One key: there is one active race. */
 export const ACTIVE_RACE_CACHE = "race-active";
 
-/** Namespaced by slug — /course.json is whichever race is pointed at, and a
-    50k's profile rendered under a hundred's name is worse than no profile. */
-export function courseCacheKey(slug: string | null): string {
-  return `course.${slug ?? "__generic"}`;
+/** Key for a per-race payload (/course.json, /crew-base.json,
+    /nutrition.json). Namespaced by slug because each is served out of
+    whichever race folder is pointed at, and a 50k's profile restored under
+    a hundred's name is worse than no profile at all. */
+export function slugKey(name: string, slug: string | null): string {
+  return `${name}.${slug ?? "__generic"}`;
 }
 
 export function cachePut(key: string, value: unknown): void {
