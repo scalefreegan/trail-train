@@ -1,0 +1,1177 @@
+// The "New race…" dialog and the review gate behind it (PRD §8).
+//
+// Two screens in one modal, because they are two halves of one decision:
+//
+//   form   — the race's own site, any extra URLs, the PDFs and GPX you have,
+//            the edition year, a theme preset and what matters to you. "Run"
+//            chains the three intake stages, each one's `done` feeding the
+//            next, with the same streamed progress the resync button shows.
+//   review — the folder that came out, as something you can argue with: the
+//            aid chart, the built elevation profile, the block, the fuel plan
+//            and — the part that earns the gate — the list of fields nothing
+//            could establish. Activate stays dark until every one of them is
+//            either filled in or explicitly acknowledged.
+//
+// Nothing here is speculative state: the draft is on disk from the moment
+// stage 1 finishes, so closing the dialog (escape, backdrop, the X) loses only
+// the scroll position. The same review screen reopens from the switcher's
+// "Review…" row on any draft.
+//
+// Every write goes through PUT /api/races/:slug, which accepts exactly the
+// fields this file renders and refuses the rest by name (scripts/race-edit.mjs).
+// Activation is two steps on purpose — the folder's status first, then the
+// pointer — because they are two different claims: "this race is real" and
+// "this is what I am training for".
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useRefresh } from "../data";
+import { THEME_PRESETS, THEME_PRESET_NAMES, BASECAMP_DEFAULT, type ThemePreset } from "../themes/presets";
+import type { Course, RaceAidStation, RaceBlock, RaceConfig } from "./types";
+import type { NutritionConfig } from "./nutrition-config";
+
+/* ------------------------------------------------------------------ */
+/*  Shapes                                                             */
+/* ------------------------------------------------------------------ */
+
+/** One scored waypoint the matcher considered for a station. */
+type MatchCandidate = { wpt: string; score: number };
+
+/** scripts/aid-match.mjs's per-station result, as GET /api/races/:slug sends it. */
+type StationMatch = {
+  name: string;
+  gpx_wpt: string | null;
+  method: "exact" | "fuzzy" | "distance" | null;
+  confidence: number;
+  candidates?: MatchCandidate[];
+};
+
+/** GET /api/races/:slug — everything the review screen renders, in one read. */
+type ReviewPayload = {
+  slug: string;
+  race: RaceConfig;
+  block: RaceBlock | null;
+  nutrition: NutritionConfig | null;
+  course: Course | null;
+  has_gpx: boolean;
+  waypoints: string[];
+  matches: StationMatch[];
+  unresolved: string[];
+  unresolved_acknowledged: boolean;
+  schema_errors: string[];
+  activation: { ok: boolean; errors: string[] };
+};
+
+/** Mirrors scripts/aid-match.mjs's LOW_CONFIDENCE — below it the match is a
+    guess the mapping dropdown exists to settle, and the server agrees. */
+const LOW_CONFIDENCE = 0.6;
+
+type StageId = "intake" | "build" | "plan";
+type StageState = "pending" | "running" | "done" | "error" | "skipped";
+
+const STAGES: { id: StageId; label: string; blurb: string }[] = [
+  { id: "intake", label: "sources → draft", blurb: "fetches the site, the manual and the GPX, then one agent turn transcribes the aid chart" },
+  { id: "build", label: "course", blurb: "snaps the aid stations to the GPX track, computes sun and the elevation profile" },
+  { id: "plan", label: "block + fuel", blurb: "one agent turn: block targets back from race day, the fueling plan, coach notes" },
+];
+
+/* ------------------------------------------------------------------ */
+/*  SSE                                                                */
+/* ------------------------------------------------------------------ */
+
+type StageEvent =
+  | { kind: "step"; id: string; status: string; label?: string }
+  | { kind: "log"; line: string }
+  | { kind: "error"; message: string };
+
+/**
+ * POST a stage endpoint and consume its SSE stream, resolving with the final
+ * `done` payload. The same frame parser providers.tsx uses for /api/refresh —
+ * these endpoints speak the identical dialect on purpose.
+ *
+ * Rejects on a transport failure or on a `done` that says `ok: false`, with
+ * the server's own sentence: scripts/agent-run.mjs has already turned an
+ * expired sign-in or a spent usage limit into what to do about it, and
+ * rewording that here would only make it vaguer.
+ */
+async function runStage(
+  url: string,
+  body: unknown,
+  onEvent: (e: StageEvent) => void,
+  signal: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
+  }
+  if (!res.body) throw new Error("the server sent no stream");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let done: Record<string, unknown> | null = null;
+
+  const frame = (block: string) => {
+    let evt = "message";
+    let data = "";
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event:")) evt = line.slice(6).trim();
+      else if (line.startsWith("data:")) data += line.slice(5).trim();
+    }
+    if (!data) return;
+    let payload: Record<string, unknown>;
+    try { payload = JSON.parse(data); } catch { return; }
+    if (evt === "step") onEvent({ kind: "step", id: String(payload.id ?? ""), status: String(payload.status ?? ""), label: payload.label as string | undefined });
+    else if (evt === "log") onEvent({ kind: "log", line: String(payload.line ?? "") });
+    else if (evt === "error") onEvent({ kind: "error", message: String(payload.message ?? "") });
+    else if (evt === "done") done = payload;
+  };
+
+  for (;;) {
+    const { done: closed, value } = await reader.read();
+    if (closed) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      frame(buf.slice(0, idx));
+      buf = buf.slice(idx + 2);
+    }
+  }
+  if (!done) throw new Error("the stream ended before the stage reported a result");
+  const result = done as Record<string, unknown>;
+  if (result.ok !== true) throw new Error(String(result.error ?? "the stage failed without saying why"));
+  return result;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Shared bits of chrome                                              */
+/* ------------------------------------------------------------------ */
+
+const inputStyle: React.CSSProperties = {
+  background: "var(--night-deep)", border: "1px solid var(--edge-bright)",
+  color: "var(--mist)", fontSize: 12.5, padding: "7px 10px", outline: "none",
+};
+const cellStyle: React.CSSProperties = { ...inputStyle, fontSize: 11.5, padding: "4px 6px", width: "100%" };
+
+const Eyebrow = ({ children }: { children: React.ReactNode }) => (
+  <div className="eyebrow" style={{ fontSize: 9, color: "var(--lamp)", margin: "0 0 8px" }}>{children}</div>
+);
+const Hint = ({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) => (
+  <div style={{ fontSize: 10.5, color: "var(--mist-mute)", marginTop: 4, lineHeight: 1.45, ...style }}>{children}</div>
+);
+const Block = ({ children }: { children: React.ReactNode }) => (
+  <div style={{ marginBottom: 26 }}>{children}</div>
+);
+
+/** The accent a preset would paint the app in — enough to tell them apart
+    without applying anything (that is tt-yib.16's job, not this dialog's). */
+function ThemeSwatch({ preset }: { preset: string }) {
+  const tokens = { ...BASECAMP_DEFAULT, ...(THEME_PRESETS[preset as ThemePreset] ?? {}) };
+  return (
+    <span aria-hidden style={{ display: "inline-flex", gap: 2, verticalAlign: "middle" }}>
+      {(["--night", "--panel", "--lamp", "--pine"] as const).map((t) => (
+        <span key={t} style={{ width: 10, height: 10, background: tokens[t], border: "1px solid var(--edge)" }} />
+      ))}
+    </span>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  The dialog                                                         */
+/* ------------------------------------------------------------------ */
+
+export default function RaceIntake({ slug: openAt = null, onClose }: {
+  /** A draft to review straight away — the switcher's "Review…" row. Absent
+      means the intake form, the "New race…" row. */
+  slug?: string | null;
+  onClose: () => void;
+}) {
+  const { reload } = useRefresh();
+  const [slug, setSlug] = useState<string | null>(openAt);
+  const [screen, setScreen] = useState<"form" | "review">(openAt ? "review" : "form");
+
+  // form
+  const [siteUrl, setSiteUrl] = useState("");
+  const [extraUrls, setExtraUrls] = useState("");
+  const [year, setYear] = useState(String(new Date().getFullYear() + 1));
+  const [notes, setNotes] = useState("");
+  const [themePreset, setThemePreset] = useState<string>("");
+  const [uploads, setUploads] = useState<{ name: string; path: string; bytes: number }[]>([]);
+  const [uploading, setUploading] = useState(false);
+
+  // run
+  const [running, setRunning] = useState(false);
+  const [stageState, setStageState] = useState<Record<StageId, StageState>>({ intake: "pending", build: "pending", plan: "pending" });
+  const [stageLog, setStageLog] = useState<Record<StageId, string>>({ intake: "", build: "", plan: "" });
+  const [runError, setRunError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const [error, setError] = useState<string | null>(null);
+
+  // Escape closes. The draft is on disk, so there is nothing here to lose —
+  // except mid-run, where closing would orphan a stream the server is still
+  // writing from, so the run has to be the thing that finishes.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !running) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, running]);
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  const upload = async (files: FileList | null) => {
+    if (!files?.length) return;
+    setUploading(true);
+    setError(null);
+    try {
+      for (const file of Array.from(files)) {
+        const res = await fetch("/api/race-intake/upload", {
+          method: "POST",
+          headers: { "X-Filename": encodeURIComponent(file.name) },
+          body: file,
+        });
+        const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+        const saved = body as { name: string; path: string; bytes: number };
+        setUploads((prev) => [...prev.filter((u) => u.path !== saved.path), saved]);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const run = useCallback(async () => {
+    setRunning(true);
+    setRunError(null);
+    setError(null);
+    setStageState({ intake: "pending", build: "pending", plan: "pending" });
+    setStageLog({ intake: "", build: "", plan: "" });
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    const events = (id: StageId) => (e: StageEvent) => {
+      if (e.kind === "log") setStageLog((p) => ({ ...p, [id]: e.line }));
+      else if (e.kind === "step" && e.status === "start") setStageLog((p) => ({ ...p, [id]: e.label ?? e.id }));
+      else if (e.kind === "error") setStageLog((p) => ({ ...p, [id]: e.message }));
+    };
+    const mark = (id: StageId, s: StageState) => setStageState((p) => ({ ...p, [id]: s }));
+
+    try {
+      mark("intake", "running");
+      const intake = await runStage("/api/race-intake", {
+        site_url: siteUrl.trim(),
+        extra_urls: extraUrls.split(/\s+/).map((u) => u.trim()).filter(Boolean),
+        year: year.trim(),
+        uploads: uploads.map((u) => ({ name: u.name, path: u.path })),
+        notes: notes.trim(),
+      }, events("intake"), ctrl.signal);
+      mark("intake", "done");
+      const made = String(intake.slug ?? "");
+      if (!made) throw new Error("the intake finished without naming a folder");
+      setSlug(made);
+
+      // The intake endpoint has no theme field — the picker is a review-screen
+      // choice the form lets you make early, so it is written as an edit the
+      // moment the folder exists rather than being carried in the request.
+      if (themePreset) {
+        await fetch(`/api/races/${made}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ visual: { theme_preset: themePreset } }),
+        }).catch(() => { /* a preset is cosmetic — never fail a run over it */ });
+      }
+
+      mark("build", "running");
+      await runStage("/api/race-intake/build", { slug: made }, events("build"), ctrl.signal);
+      mark("build", "done");
+
+      mark("plan", "running");
+      await runStage("/api/race-intake/plan", { slug: made }, events("plan"), ctrl.signal);
+      mark("plan", "done");
+
+      setScreen("review");
+    } catch (e) {
+      // Stop the chain where it broke and say so in the server's own words.
+      // Whatever landed stays on disk: a draft that only got through stage 1
+      // is still a draft, and the switcher will list it.
+      setStageState((p) => {
+        const next = { ...p };
+        for (const s of STAGES) if (next[s.id] === "running") next[s.id] = "error";
+        for (const s of STAGES) if (next[s.id] === "pending") next[s.id] = "skipped";
+        return next;
+      });
+      setRunError((e as Error).message);
+    } finally {
+      setRunning(false);
+      abortRef.current = null;
+    }
+  }, [siteUrl, extraUrls, year, uploads, notes, themePreset]);
+
+  const canRun = /^https?:\/\/\S+$/i.test(siteUrl.trim()) && /^\d{4}$/.test(year.trim()) && !running;
+  const ranAnything = STAGES.some((s) => stageState[s.id] !== "pending");
+
+  const header = screen === "review" ? "review · draft race" : "new race";
+  const subtitle = screen === "review"
+    ? "check what the intake read, fill or accept what it could not, then activate"
+    : "the race's own site, whatever documents you have, and one run of the three intake stages";
+
+  return createPortal(
+    <Backdrop onClose={() => { if (!running) onClose(); }}>
+      <div
+        className="panel notch"
+        role="dialog"
+        aria-modal="true"
+        aria-label={header}
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: screen === "review" ? "min(1240px, 100%)" : "min(720px, 100%)",
+          margin: "0 auto", display: "flex", flexDirection: "column", maxHeight: "100%", flex: "0 1 auto",
+        }}
+      >
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16,
+          borderBottom: "1px solid var(--edge)", padding: "16px 28px", flexShrink: 0,
+        }}>
+          <div style={{ minWidth: 0 }}>
+            <div className="eyebrow" style={{ color: "var(--mist-dim)" }}>{header}</div>
+            <div style={{ fontSize: 11.5, color: "var(--mist-mute)", marginTop: 3 }}>{subtitle}</div>
+          </div>
+          <button className="chip" onClick={onClose} disabled={running} style={{ fontSize: 9 }}>
+            {running ? "running…" : "close esc"}
+          </button>
+        </div>
+
+        {screen === "review" && slug ? (
+          <ReviewScreen
+            slug={slug}
+            onDone={() => { reload(); onClose(); }}
+            onReload={reload}
+          />
+        ) : (
+          <>
+            <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "24px 28px 8px" }}>
+              <Block>
+                <Eyebrow>sources</Eyebrow>
+                <label style={{ display: "block" }}>
+                  <Hint style={{ marginTop: 0, marginBottom: 4 }}>race site (required)</Hint>
+                  <input
+                    style={{ ...inputStyle, width: "100%" }}
+                    placeholder="https://www.sanjuansoftie.com/"
+                    value={siteUrl}
+                    autoFocus
+                    onChange={(e) => setSiteUrl(e.target.value)}
+                  />
+                  <Hint>the intake follows this page's own links to the runner's manual, the GPX, results and tracking</Hint>
+                </label>
+                <label style={{ display: "block", marginTop: 14 }}>
+                  <Hint style={{ marginTop: 0, marginBottom: 4 }}>extra URLs</Hint>
+                  <textarea
+                    style={{ ...inputStyle, width: "100%", minHeight: 58, resize: "vertical", fontFamily: "var(--font-mono)", fontSize: 11.5 }}
+                    placeholder={"one per line — a results page, a course-change post, a Gaia or CalTopo link"}
+                    value={extraUrls}
+                    onChange={(e) => setExtraUrls(e.target.value)}
+                  />
+                </label>
+                <div style={{ marginTop: 14 }}>
+                  <Hint style={{ marginTop: 0, marginBottom: 4 }}>uploads · PDF, GPX, KML, HTML</Hint>
+                  <input
+                    type="file"
+                    multiple
+                    accept=".pdf,.gpx,.kml,.txt,.html,.htm"
+                    disabled={uploading || running}
+                    onChange={(e) => { void upload(e.target.files); e.target.value = ""; }}
+                    style={{ fontSize: 11.5, color: "var(--mist-mute)" }}
+                  />
+                  {uploads.length > 0 && (
+                    <ul style={{ listStyle: "none", padding: 0, margin: "8px 0 0", display: "flex", flexDirection: "column", gap: 4 }}>
+                      {uploads.map((u) => (
+                        <li key={u.path} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 11.5, color: "var(--mist)" }}>
+                          <span style={{ color: "var(--pine)" }}>✓</span>
+                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{u.name}</span>
+                          <span className="numerals" style={{ color: "var(--mist-mute)", fontSize: 10.5 }}>{(u.bytes / 1024).toFixed(0)} KB</span>
+                          <button
+                            className="chip"
+                            style={{ fontSize: 8.5 }}
+                            onClick={() => setUploads((prev) => prev.filter((p) => p.path !== u.path))}
+                          >
+                            remove
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <Hint>a runner's manual whose aid chart is an image is rendered to page images and transcribed — that is the case this pipeline was built for</Hint>
+                </div>
+              </Block>
+
+              <Block>
+                <Eyebrow>the edition</Eyebrow>
+                <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 14, alignItems: "start" }}>
+                  <label>
+                    <Hint style={{ marginTop: 0, marginBottom: 4 }}>year</Hint>
+                    <input
+                      className="numerals"
+                      style={{ ...inputStyle, width: "100%" }}
+                      value={year}
+                      inputMode="numeric"
+                      onChange={(e) => setYear(e.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <Hint style={{ marginTop: 0, marginBottom: 4 }}>theme</Hint>
+                    <select
+                      style={{ ...inputStyle, width: "100%" }}
+                      value={themePreset}
+                      onChange={(e) => setThemePreset(e.target.value)}
+                    >
+                      <option value="">let the intake suggest one</option>
+                      {THEME_PRESET_NAMES.map((p) => <option key={p} value={p}>{p}</option>)}
+                    </select>
+                    <Hint>
+                      {themePreset ? <ThemeSwatch preset={themePreset} /> : "presets keep one Basecamp identity — a race varies its hue, not its brand"}
+                    </Hint>
+                  </label>
+                </div>
+                <label style={{ display: "block", marginTop: 14 }}>
+                  <Hint style={{ marginTop: 0, marginBottom: 4 }}>what matters to me</Hint>
+                  <textarea
+                    style={{ ...inputStyle, width: "100%", minHeight: 76, resize: "vertical" }}
+                    placeholder="what you want the plan to weigh — altitude, night, a cutoff you are worried about, a crew that can only reach two stations"
+                    maxLength={8000}
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                  />
+                  <Hint>handed to both agent turns verbatim</Hint>
+                </label>
+              </Block>
+
+              {(ranAnything || runError) && (
+                <Block>
+                  <Eyebrow>progress</Eyebrow>
+                  <StageList state={stageState} log={stageLog} />
+                  {runError && (
+                    <p style={{ fontSize: 11.5, color: "var(--ember)", lineHeight: 1.5, marginTop: 12 }}>
+                      {runError}
+                      {slug && <><br />The folder <span className="numerals" style={{ color: "var(--mist)" }}>races/{slug}/</span> is on disk and listed in the switcher — reopen it with “Review…” once this is sorted.</>}
+                    </p>
+                  )}
+                </Block>
+              )}
+              {error && <p style={{ fontSize: 11.5, color: "var(--ember)", marginBottom: 20 }}>{error}</p>}
+            </div>
+
+            <div style={{
+              display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10,
+              borderTop: "1px solid var(--edge)", padding: "14px 28px", flexShrink: 0,
+            }}>
+              <span style={{ fontSize: 10.5, color: "var(--mist-mute)", marginRight: "auto", lineHeight: 1.4 }}>
+                stages 1 and 3 each cost one headless <code style={{ fontFamily: "var(--font-mono)" }}>claude -p</code> turn on your subscription
+              </span>
+              {slug && (
+                <button className="chip" onClick={() => setScreen("review")} style={{ fontSize: 10 }}>
+                  review draft
+                </button>
+              )}
+              <button className="chip" onClick={onClose} disabled={running} style={{ fontSize: 10 }}>
+                {ranAnything ? "save draft" : "cancel"}
+              </button>
+              <button
+                className="chip"
+                onClick={run}
+                disabled={!canRun}
+                style={{
+                  fontSize: 10, padding: "5px 16px", borderColor: "var(--lamp)",
+                  background: canRun ? "var(--lamp)" : "transparent",
+                  color: canRun ? "var(--night)" : "var(--lamp)",
+                  cursor: canRun ? "pointer" : "not-allowed",
+                }}
+              >
+                {running ? "running…" : ranAnything ? "run again" : "run intake"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </Backdrop>,
+    document.body,
+  );
+}
+
+/** Close only when the CLICK STARTED on the backdrop — releasing a
+    text-selection drag over the edge of the panel must not close it. */
+function Backdrop({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  const startedOnBackdrop = useRef(false);
+  return (
+    <div
+      onMouseDown={(e) => { startedOnBackdrop.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (e.target === e.currentTarget && startedOnBackdrop.current) onClose(); }}
+      style={{
+        position: "fixed", inset: 0, zIndex: 100, background: "rgba(4, 8, 12, 0.78)",
+        display: "flex", padding: "clamp(12px, 3vh, 32px)",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** The three stages as a run sheet — same vocabulary as the command bar's
+    resync filament, one row per stage because these are minutes, not seconds. */
+function StageList({ state, log }: { state: Record<StageId, StageState>; log: Record<StageId, string> }) {
+  const tint: Record<StageState, string> = {
+    pending: "var(--edge-bright)", running: "var(--lamp)", done: "var(--pine)",
+    error: "var(--ember)", skipped: "var(--edge-bright)",
+  };
+  return (
+    <ol style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 10 }}>
+      {STAGES.map((s, i) => (
+        <li key={s.id} style={{ display: "flex", gap: 10, alignItems: "baseline", opacity: state[s.id] === "skipped" ? 0.45 : 1 }}>
+          <span
+            aria-hidden
+            className={state[s.id] === "running" ? "pulse" : undefined}
+            style={{ width: 7, height: 7, transform: "rotate(45deg)", background: tint[state[s.id]], flexShrink: 0, marginTop: 4 }}
+          />
+          <span className="numerals" style={{ fontSize: 10.5, color: "var(--mist-mute)", width: 14 }}>{i + 1}</span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ fontSize: 12.5, color: state[s.id] === "pending" ? "var(--mist-mute)" : "var(--mist)" }}>{s.label}</span>
+            <div style={{ fontSize: 10.5, color: "var(--mist-mute)", lineHeight: 1.45, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {log[s.id] || s.blurb}
+            </div>
+          </span>
+          <span className="eyebrow" style={{ fontSize: 8, color: tint[state[s.id]], whiteSpace: "nowrap" }}>{state[s.id]}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Review screen                                                      */
+/* ------------------------------------------------------------------ */
+
+/** The edit buffer: only the fields the review screen renders, keyed the way
+    PUT /api/races/:slug wants them back. Anything not touched is absent, so a
+    save writes what was changed and nothing else. */
+type AidEdit = Partial<Pick<RaceAidStation, "name" | "total_mi" | "cutoff_h" | "crew" | "drop_bag" | "pacers" | "gpx_wpt">>;
+
+function ReviewScreen({ slug, onDone, onReload }: { slug: string; onDone: () => void; onReload: () => void }) {
+  const [data, setData] = useState<ReviewPayload | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState<null | "saving" | "activating">(null);
+
+  const [aidEdits, setAidEdits] = useState<Record<number, AidEdit>>({});
+  const [blockEdits, setBlockEdits] = useState<Record<number, { target_dist?: number; target_elev?: number }>>({});
+  const [themeEdit, setThemeEdit] = useState<string | null>(null);
+  const [fills, setFills] = useState<Record<string, string>>({});
+  const [acked, setAcked] = useState<Record<string, boolean>>({});
+
+  // Re-read on mount, and whenever a caller bumps the pulse — the folder is
+  // the source of truth and a refused write must never leave the screen
+  // showing something that is not on disk.
+  const [readKey, setReadKey] = useState(0);
+  const load = useCallback(() => setReadKey((k) => k + 1), []);
+  useEffect(() => {
+    let stale = false;
+    fetch(`/api/races/${slug}?t=${Date.now()}`)
+      .then(async (r) => {
+        const body = await r.json();
+        if (!r.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${r.status}`);
+        return body as ReviewPayload;
+      })
+      .then((body) => {
+        if (stale) return;
+        setData(body);
+        setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setFills({});
+        setLoadError(null);
+      })
+      .catch((e: Error) => { if (!stale) setLoadError(e.message); });
+    return () => { stale = true; };
+  }, [slug, readKey]);
+
+  const race = data?.race;
+  const stations = race?.aid_stations ?? [];
+
+  const stationValue = <K extends keyof AidEdit>(i: number, key: K): AidEdit[K] =>
+    (key in (aidEdits[i] ?? {}) ? aidEdits[i][key] : stations[i]?.[key]) as AidEdit[K];
+
+  const editStation = (i: number, patch: AidEdit) =>
+    setAidEdits((prev) => ({ ...prev, [i]: { ...prev[i], ...patch } }));
+
+  const openHoles = data?.unresolved ?? [];
+  const unfilled = openHoles.filter((u) => !(fills[u] ?? "").trim());
+  // An acknowledgement already on disk means every box was ticked once, so the
+  // folder's own flag is the default each checkbox falls back to — reopening
+  // the dialog must not look like the work was lost.
+  const isAcked = (p: string) => acked[p] ?? data?.unresolved_acknowledged === true;
+  const allAcked = unfilled.every(isAcked);
+
+  const dirty = Object.keys(aidEdits).length > 0 || Object.keys(blockEdits).length > 0 ||
+    themeEdit !== null || Object.values(fills).some((v) => v.trim());
+
+  /** The PUT body for whatever is currently in the edit buffer. */
+  const buildBody = (extra: Record<string, unknown> = {}): Record<string, unknown> => {
+    const body: Record<string, unknown> = { ...extra };
+    const rows = Object.entries(aidEdits)
+      .map(([i, patch]) => ({ index: Number(i), ...patch }))
+      .filter((r) => Object.keys(r).length > 1);
+    if (rows.length) body.aid_stations = rows;
+    if (themeEdit !== null) body.visual = { theme_preset: themeEdit };
+    if (data?.block && Object.keys(blockEdits).length) {
+      body.block_targets = data.block.targets.map((t) => ({
+        wk: t.wk,
+        target_dist: blockEdits[t.wk]?.target_dist ?? t.target_dist,
+        target_elev: blockEdits[t.wk]?.target_elev ?? t.target_elev,
+      }));
+    }
+    const filled: Record<string, string | number> = {};
+    for (const [p, raw] of Object.entries(fills)) {
+      const v = raw.trim();
+      if (!v) continue;
+      // The server's schema check decides the type; a bare number is sent as
+      // one so `elevation.min_ft` does not arrive as the string "7900".
+      filled[p] = /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v;
+    }
+    // `date` has its own key in the whitelist rather than riding in the fills.
+    if ("date" in filled) { body.date = filled.date; delete filled.date; }
+    if (Object.keys(filled).length) body.unresolved_fills = filled;
+    return body;
+  };
+
+  const put = async (body: Record<string, unknown>): Promise<ReviewPayload> => {
+    const res = await fetch(`/api/races/${slug}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await res.json();
+    if (!res.ok) throw Object.assign(new Error("save refused"), { errors: (payload as { errors?: string[] }).errors ?? [String((payload as { error?: string }).error)] });
+    return payload as ReviewPayload;
+  };
+
+  const save = async () => {
+    setBusy("saving");
+    setSaveError(null);
+    try {
+      const body = buildBody();
+      if (Object.keys(body).length === 0) { setBusy(null); return; }
+      setData(await put(body));
+      setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setFills({});
+      onReload();
+    } catch (e) {
+      setSaveError((e as { errors?: string[] }).errors ?? [(e as Error).message]);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const activate = async () => {
+    setBusy("activating");
+    setSaveError(null);
+    try {
+      // One write for the pending edits AND the acknowledgement, so a refused
+      // activation never leaves half of the review screen committed.
+      const body = buildBody(unfilled.length ? { unresolved_acknowledged: true } : {});
+      if (Object.keys(body).length) setData(await put(body));
+
+      const statusRes = await fetch(`/api/races/${slug}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "active" }),
+      });
+      const statusBody = await statusRes.json();
+      if (!statusRes.ok) {
+        setSaveError((statusBody as { errors?: string[] }).errors ?? [String((statusBody as { error?: string }).error)]);
+        load();
+        return;
+      }
+
+      // Status first, then the pointer: "this race is real" and "this is what
+      // I am training for" are two claims, and only the second one moves the
+      // app. Train mode is the whole point of activating.
+      const ptr = await fetch("/api/race/activate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, mode: "train" }),
+      });
+      if (!ptr.ok) {
+        const b = await ptr.json().catch(() => ({ error: `HTTP ${ptr.status}` }));
+        setSaveError([`the folder is active but the pointer did not move: ${(b as { error?: string }).error}`]);
+        load();
+        return;
+      }
+      onDone();
+    } catch (e) {
+      setSaveError((e as { errors?: string[] }).errors ?? [(e as Error).message]);
+      load();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (loadError) {
+    return (
+      <div style={{ padding: "24px 28px", fontSize: 12.5, color: "var(--ember)", lineHeight: 1.5 }}>
+        {loadError}
+      </div>
+    );
+  }
+  if (!data || !race) {
+    return <div style={{ padding: "24px 28px", fontSize: 12.5, color: "var(--mist-mute)" }}>reading races/{slug}/…</div>;
+  }
+
+  const isDraft = race.status === "draft";
+  const blockers = !isDraft
+    ? [`this folder's status is "${race.status}" — only a draft activates here`]
+    : unfilled.length && !allAcked
+      ? [`${unfilled.length} unresolved field${unfilled.length > 1 ? "s" : ""} still to fill in or acknowledge`]
+      : data.activation.ok || openHoles.length
+        ? []
+        : data.activation.errors;
+  const canActivate = isDraft && allAcked && busy === null;
+
+  return (
+    <>
+      <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "24px 28px 8px" }}>
+        <Block>
+          <Eyebrow>{race.name} · {race.short}</Eyebrow>
+          <div style={{ display: "flex", gap: 22, flexWrap: "wrap", fontSize: 11.5, color: "var(--mist-mute)" }}>
+            <span><span className="numerals" style={{ color: "var(--mist)" }}>{race.distance_mi}</span> mi</span>
+            <span><span className="numerals" style={{ color: "var(--mist)" }}>{race.gain_ft?.toLocaleString()}</span> ft gain</span>
+            <span>start <span className="numerals" style={{ color: "var(--mist)" }}>{race.start_time}</span> {race.timezone}</span>
+            <span>cutoff <span className="numerals" style={{ color: "var(--mist)" }}>{race.cutoff_h ?? "—"}</span> h</span>
+            <span>date <span className="numerals" style={{ color: race.date ? "var(--mist)" : "var(--ember)" }}>{race.date ?? "unknown"}</span></span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              theme
+              <select
+                style={{ ...inputStyle, fontSize: 11, padding: "2px 6px" }}
+                value={themeEdit ?? race.visual?.theme_preset ?? ""}
+                onChange={(e) => setThemeEdit(e.target.value)}
+              >
+                <option value="">none</option>
+                {THEME_PRESET_NAMES.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+              <ThemeSwatch preset={themeEdit ?? race.visual?.theme_preset ?? "basecamp-default"} />
+            </span>
+          </div>
+          {race.review_notes && (
+            <p style={{ fontSize: 11.5, color: "var(--mist-mute)", lineHeight: 1.55, margin: "12px 0 0", borderLeft: "2px solid var(--edge-bright)", paddingLeft: 12 }}>
+              {race.review_notes}
+            </p>
+          )}
+        </Block>
+
+        <UnresolvedList
+          unresolved={openHoles}
+          race={race}
+          course={data.course}
+          fills={fills}
+          isAcked={isAcked}
+          onFill={(p, v) => setFills((prev) => ({ ...prev, [p]: v }))}
+          onAck={(p, v) => setAcked((prev) => ({ ...prev, [p]: v }))}
+        />
+
+        {data.schema_errors.length > 0 && (
+          <Block>
+            <Eyebrow>race.json does not validate</Eyebrow>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11.5, color: "var(--ember)", lineHeight: 1.6 }}>
+              {data.schema_errors.map((e) => <li key={e}>{e}</li>)}
+            </ul>
+          </Block>
+        )}
+
+        <ProfilePreview course={data.course} hasGpx={data.has_gpx} />
+
+        <Block>
+          <Eyebrow>aid chart · {stations.length} stations</Eyebrow>
+          <Hint style={{ marginTop: 0, marginBottom: 10 }}>
+            the chart is the course's spine — miles must increase down the list and so must cutoffs, and the
+            server refuses a save that breaks either. The waypoint column maps each station onto the GPX;
+            a row the matcher was not sure about is marked and offers what it considered.
+          </Hint>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11.5 }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: "var(--mist-mute)" }}>
+                  {["#", "station", "mile", "cutoff h", "crew", "drop bag", "pacers", "gpx waypoint"].map((h) => (
+                    <th key={h} className="eyebrow" style={{ fontSize: 8, padding: "0 8px 6px 0", fontWeight: 400 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {stations.map((_station, i) => (
+                  <tr key={i} style={{ borderTop: "1px solid var(--edge)" }}>
+                    <td className="numerals" style={{ color: "var(--mist-mute)", padding: "5px 8px 5px 0" }}>{i}</td>
+                    <td style={{ padding: "5px 8px 5px 0", minWidth: 150 }}>
+                      <input
+                        aria-label={`station ${i} name`}
+                        style={cellStyle}
+                        value={String(stationValue(i, "name") ?? "")}
+                        onChange={(e) => editStation(i, { name: e.target.value })}
+                      />
+                    </td>
+                    <td style={{ padding: "5px 8px 5px 0", width: 76 }}>
+                      <input
+                        aria-label={`station ${i} mile`}
+                        type="number" step={0.1} min={0} className="numerals" style={cellStyle}
+                        value={String(stationValue(i, "total_mi") ?? "")}
+                        onChange={(e) => editStation(i, { total_mi: e.target.value === "" ? undefined : Number(e.target.value) })}
+                      />
+                    </td>
+                    <td style={{ padding: "5px 8px 5px 0", width: 76 }}>
+                      <input
+                        aria-label={`station ${i} cutoff`}
+                        type="number" step={0.25} min={0} className="numerals" style={cellStyle}
+                        placeholder="none"
+                        value={stationValue(i, "cutoff_h") == null ? "" : String(stationValue(i, "cutoff_h"))}
+                        onChange={(e) => editStation(i, { cutoff_h: e.target.value === "" ? null : Number(e.target.value) })}
+                      />
+                    </td>
+                    {(["crew", "drop_bag", "pacers"] as const).map((flag) => (
+                      <td key={flag} style={{ padding: "5px 8px 5px 0" }}>
+                        <input
+                          type="checkbox"
+                          aria-label={`station ${i} ${flag}`}
+                          checked={stationValue(i, flag) === true}
+                          onChange={(e) => editStation(i, { [flag]: e.target.checked } as AidEdit)}
+                        />
+                      </td>
+                    ))}
+                    <td style={{ padding: "5px 0", minWidth: 200 }}>
+                      <WaypointPicker
+                        value={(stationValue(i, "gpx_wpt") as string | null | undefined) ?? null}
+                        match={data.matches[i]}
+                        waypoints={data.waypoints}
+                        isFinish={i === stations.length - 1}
+                        onChange={(v) => editStation(i, { gpx_wpt: v })}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Block>
+
+        <BlockTargets block={data.block} edits={blockEdits} onEdit={(wk, patch) => setBlockEdits((p) => ({ ...p, [wk]: { ...p[wk], ...patch } }))} />
+        <NutritionSummary nutrition={data.nutrition} />
+      </div>
+
+      <div style={{
+        display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, flexWrap: "wrap",
+        borderTop: "1px solid var(--edge)", padding: "14px 28px", flexShrink: 0,
+      }}>
+        <div style={{ marginRight: "auto", maxWidth: 620 }}>
+          {saveError
+            ? <ul style={{ margin: 0, paddingLeft: 16, fontSize: 11, color: "var(--ember)", lineHeight: 1.5 }}>
+                {saveError.map((e, i) => <li key={i} style={{ listStyle: i === 0 ? "none" : undefined, marginLeft: i === 0 ? -16 : 0 }}>{e}</li>)}
+              </ul>
+            : <span style={{ fontSize: 10.5, color: "var(--mist-mute)", lineHeight: 1.4 }}>
+                {blockers.length
+                  ? blockers[0]
+                  : isDraft
+                    ? "activating sets this folder's status and points the app at it in train mode"
+                    : `status: ${race.status}`}
+              </span>}
+        </div>
+        <button className="chip" onClick={load} disabled={busy !== null} style={{ fontSize: 10 }}>
+          revert
+        </button>
+        <button className="chip" onClick={() => void save()} disabled={busy !== null || !dirty} style={{ fontSize: 10, opacity: dirty ? 1 : 0.5 }}>
+          {busy === "saving" ? "saving…" : "save edits"}
+        </button>
+        <button
+          className="chip"
+          onClick={() => void activate()}
+          disabled={!canActivate}
+          title={blockers[0] ?? "set status active and train for this race"}
+          style={{
+            fontSize: 10, padding: "5px 16px", borderColor: "var(--lamp)",
+            background: canActivate ? "var(--lamp)" : "transparent",
+            color: canActivate ? "var(--night)" : "var(--lamp)",
+            cursor: canActivate ? "pointer" : "not-allowed",
+            opacity: canActivate ? 1 : 0.5,
+          }}
+        >
+          {busy === "activating" ? "activating…" : "activate"}
+        </button>
+      </div>
+    </>
+  );
+}
+
+/* --------------------------- review sections ---------------------- */
+
+/** The gate itself: every field nothing could establish, each one either
+    filled in or consciously accepted. A suggestion is offered where the course
+    build already knows the answer — `elevation.min_ft` is sitting in the
+    profile, and making a human retype it would be theatre. */
+function UnresolvedList({ unresolved, race, course, fills, isAcked, onFill, onAck }: {
+  unresolved: string[];
+  race: RaceConfig;
+  course: Course | null;
+  fills: Record<string, string>;
+  isAcked: (path: string) => boolean;
+  onFill: (path: string, value: string) => void;
+  onAck: (path: string, value: boolean) => void;
+}) {
+  const suggestion = (path: string): string | null => {
+    if (!course?.profile?.length) return null;
+    if (path === "elevation.min_ft") return String(Math.round(Math.min(...course.profile.map((p) => p.ele_ft))));
+    if (path === "elevation.max_ft") return String(Math.round(Math.max(...course.profile.map((p) => p.ele_ft))));
+    return null;
+  };
+
+  if (unresolved.length === 0) {
+    return (
+      <Block>
+        <Eyebrow>unresolved · none</Eyebrow>
+        <Hint style={{ marginTop: 0 }}>
+          every field the intake read has a value. {race.status === "draft" ? "Activate is open." : ""}
+        </Hint>
+      </Block>
+    );
+  }
+  return (
+    <Block>
+      <Eyebrow>unresolved · {unresolved.length}</Eyebrow>
+      <Hint style={{ marginTop: 0, marginBottom: 10 }}>
+        what nothing in the sources could establish. Fill it in, or tick it to say you know it is missing —
+        an acknowledged field is recorded as not known rather than as an empty one. Activate waits for all of them.
+      </Hint>
+      <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+        {unresolved.map((path) => {
+          const filled = (fills[path] ?? "").trim() !== "";
+          const hint = suggestion(path);
+          return (
+            <li key={path} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <code style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: filled ? "var(--pine)" : "var(--ember)", minWidth: 190 }}>
+                {path}
+              </code>
+              <input
+                aria-label={`fill ${path}`}
+                style={{ ...inputStyle, fontSize: 11.5, padding: "4px 8px", width: 190 }}
+                placeholder={path === "date" ? "YYYY-MM-DD" : hint ? `e.g. ${hint}` : "leave empty to acknowledge"}
+                value={fills[path] ?? ""}
+                onChange={(e) => onFill(path, e.target.value)}
+              />
+              {hint && !filled && (
+                <button className="chip" style={{ fontSize: 8.5 }} onClick={() => onFill(path, hint)}>
+                  use {hint} from the profile
+                </button>
+              )}
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--mist-mute)", opacity: filled ? 0.4 : 1 }}>
+                <input type="checkbox" checked={filled || isAcked(path)} disabled={filled} onChange={(e) => onAck(path, e.target.checked)} />
+                acknowledge
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+    </Block>
+  );
+}
+
+/** The mapping UI PRD §14 asks for: a station's GPX waypoint, with the
+    matcher's own shortlist first when it was not confident. The full waypoint
+    list follows it — the shortlist is scored on name similarity alone and a
+    human reading the map may know better. */
+function WaypointPicker({ value, match, waypoints, isFinish, onChange }: {
+  value: string | null;
+  match?: StationMatch;
+  waypoints: string[];
+  isFinish: boolean;
+  onChange: (v: string | null) => void;
+}) {
+  const shortlist = useMemo(() => {
+    const seen = new Set<string>();
+    const out: MatchCandidate[] = [];
+    for (const c of match?.candidates ?? []) {
+      if (seen.has(c.wpt)) continue;
+      seen.add(c.wpt);
+      out.push(c);
+    }
+    return out;
+  }, [match]);
+
+  const unsure = !value && (match?.confidence ?? 0) < LOW_CONFIDENCE && !isFinish;
+  const rest = waypoints.filter((w) => !shortlist.some((c) => c.wpt === w) && w !== value);
+
+  if (waypoints.length === 0) {
+    return (
+      <span style={{ fontSize: 10.5, color: "var(--mist-mute)" }}>
+        {value ?? (isFinish ? "the track end" : "no GPX yet")}
+      </span>
+    );
+  }
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, width: "100%" }}>
+      <select
+        aria-label="gpx waypoint"
+        style={{ ...cellStyle, borderColor: unsure ? "var(--ember)" : "var(--edge-bright)" }}
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
+      >
+        <option value="">{isFinish ? "— the track end —" : "— unmapped —"}</option>
+        {value && !waypoints.includes(value) && <option value={value}>{value} (not in this GPX)</option>}
+        {shortlist.length > 0 && (
+          <optgroup label="the matcher considered">
+            {shortlist.map((c) => <option key={c.wpt} value={c.wpt}>{c.wpt} · {c.score.toFixed(2)}</option>)}
+          </optgroup>
+        )}
+        <optgroup label="every waypoint">
+          {rest.map((w) => <option key={w} value={w}>{w}</option>)}
+        </optgroup>
+      </select>
+      {unsure && <span title="the matcher was not confident — pick one" style={{ color: "var(--ember)", fontSize: 11 }}>!</span>}
+    </span>
+  );
+}
+
+const PROFILE_W = 760;
+const PROFILE_H = 110;
+
+/** The course as built — the one place the review screen can show that the
+    aid miles and the GPX actually agree. */
+function ProfilePreview({ course, hasGpx }: { course: Course | null; hasGpx: boolean }) {
+  const path = useMemo(() => {
+    const prof = course?.profile ?? [];
+    if (prof.length < 2) return null;
+    const step = Math.max(1, Math.ceil(prof.length / 600));
+    const sel = prof.filter((_, i) => i % step === 0 || i === prof.length - 1);
+    let lo = Infinity, hi = -Infinity;
+    for (const p of sel) { if (p.ele_ft < lo) lo = p.ele_ft; if (p.ele_ft > hi) hi = p.ele_ft; }
+    const span = hi - lo || 1;
+    const dist = course?.distance_mi || sel[sel.length - 1].mi || 1;
+    const pts = sel.map((p) => `${((p.mi / dist) * PROFILE_W).toFixed(1)},${(PROFILE_H - ((p.ele_ft - lo) / span) * (PROFILE_H - 8)).toFixed(1)}`);
+    return { line: `M${pts.join("L")}`, fill: `M0,${PROFILE_H} L${pts.join("L")} L${PROFILE_W},${PROFILE_H} Z`, lo, hi, dist };
+  }, [course]);
+
+  if (!course || !path) {
+    return (
+      <Block>
+        <Eyebrow>profile</Eyebrow>
+        <Hint style={{ marginTop: 0 }}>
+          {hasGpx
+            ? "the folder has a GPX but no build/course.json yet — run the course stage"
+            : "no course.gpx in the folder yet, so there is no profile to show. The course stage fetches it from the race's own GPX link."}
+        </Hint>
+      </Block>
+    );
+  }
+  return (
+    <Block>
+      <Eyebrow>profile · {course.distance_mi.toFixed(1)} mi measured · {course.gain_ft.toLocaleString()} ft</Eyebrow>
+      <svg viewBox={`0 0 ${PROFILE_W} ${PROFILE_H}`} preserveAspectRatio="none" style={{ width: "100%", height: 110, display: "block" }} aria-label="course elevation profile">
+        <path d={path.fill} fill="var(--lamp-glow)" />
+        <path d={path.line} fill="none" stroke="var(--lamp)" strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
+        {course.aid_stations.map((s) => (
+          <circle key={s.name} cx={(s.gpx_mi / path.dist) * PROFILE_W} cy={PROFILE_H - 3} r={2.2} fill="var(--mist-mute)" />
+        ))}
+      </svg>
+      <Hint>
+        {Math.round(path.lo).toLocaleString()}–{Math.round(path.hi).toLocaleString()} ft ·
+        official {course.official_distance_mi} mi / {course.official_gain_ft.toLocaleString()} ft ·
+        {" "}{course.aid_stations.length} stations snapped
+      </Hint>
+    </Block>
+  );
+}
+
+/** block.json's weekly targets — the only numbers in the folder that say what
+    the athlete will actually do, so they are editable here and nowhere else. */
+function BlockTargets({ block, edits, onEdit }: {
+  block: RaceBlock | null;
+  edits: Record<number, { target_dist?: number; target_elev?: number }>;
+  onEdit: (wk: number, patch: { target_dist?: number; target_elev?: number }) => void;
+}) {
+  if (!block) {
+    return (
+      <Block>
+        <Eyebrow>block</Eyebrow>
+        <Hint style={{ marginTop: 0 }}>no block.json yet — the plan stage writes it, working back from race day.</Hint>
+      </Block>
+    );
+  }
+  return (
+    <Block>
+      <Eyebrow>block · {block.total_weeks} weeks from {block.start_date}</Eyebrow>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 11.5 }}>
+          <thead>
+            <tr style={{ color: "var(--mist-mute)" }}>
+              <th className="eyebrow" style={{ fontSize: 8, textAlign: "left", padding: "0 10px 6px 0", fontWeight: 400 }}>wk</th>
+              <th className="eyebrow" style={{ fontSize: 8, textAlign: "left", padding: "0 10px 6px 0", fontWeight: 400 }}>miles</th>
+              <th className="eyebrow" style={{ fontSize: 8, textAlign: "left", padding: "0 10px 6px 0", fontWeight: 400 }}>vert ft</th>
+            </tr>
+          </thead>
+          <tbody>
+            {block.targets.map((t) => (
+              <tr key={t.wk} style={{ borderTop: "1px solid var(--edge)" }}>
+                <td className="numerals" style={{ color: "var(--mist-mute)", padding: "4px 10px 4px 0" }}>{t.wk}</td>
+                <td style={{ padding: "4px 10px 4px 0" }}>
+                  <input
+                    aria-label={`week ${t.wk} miles`} type="number" min={0} step={1} className="numerals"
+                    style={{ ...cellStyle, width: 74 }}
+                    value={String(edits[t.wk]?.target_dist ?? t.target_dist)}
+                    onChange={(e) => onEdit(t.wk, { target_dist: Number(e.target.value) })}
+                  />
+                </td>
+                <td style={{ padding: "4px 10px 4px 0" }}>
+                  <input
+                    aria-label={`week ${t.wk} vert`} type="number" min={0} step={100} className="numerals"
+                    style={{ ...cellStyle, width: 84 }}
+                    value={String(edits[t.wk]?.target_elev ?? t.target_elev)}
+                    onChange={(e) => onEdit(t.wk, { target_elev: Number(e.target.value) })}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Block>
+  );
+}
+
+/** Read-only: the fuel plan is a whole view of its own, and what the review
+    gate needs from it is only "does this look like this race?". */
+function NutritionSummary({ nutrition }: { nutrition: NutritionConfig | null }) {
+  if (!nutrition) {
+    return (
+      <Block>
+        <Eyebrow>fuel</Eyebrow>
+        <Hint style={{ marginTop: 0 }}>no nutrition.json yet — the plan stage writes it.</Hint>
+      </Block>
+    );
+  }
+  const bags = Object.entries(nutrition.drop_bag_gear ?? {});
+  return (
+    <Block>
+      <Eyebrow>fuel</Eyebrow>
+      <div style={{ display: "flex", gap: 22, flexWrap: "wrap", fontSize: 11.5, color: "var(--mist-mute)" }}>
+        <span>carb phases <span className="numerals" style={{ color: "var(--mist)" }}>{(nutrition.phases ?? []).map((p) => `${p.carb_g_hr}`).join(" → ")}</span> g/h</span>
+        <span>sodium <span className="numerals" style={{ color: "var(--mist)" }}>{nutrition.sodium_mg_hr}</span> mg/h</span>
+        <span>fluid <span className="numerals" style={{ color: "var(--mist)" }}>{nutrition.fluid_ml_hr}</span>→<span className="numerals" style={{ color: "var(--mist)" }}>{nutrition.fluid_ml_hr_heat}</span> mL/h</span>
+        <span>heat <span className="numerals" style={{ color: "var(--mist)" }}>{nutrition.heat_window?.start}–{nutrition.heat_window?.end}</span></span>
+        <span>caffeine <span className="numerals" style={{ color: "var(--mist)" }}>{nutrition.caffeine?.gels}</span> gels</span>
+      </div>
+      {bags.length > 0 && (
+        <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--mist-mute)", lineHeight: 1.6 }}>
+          {bags.map(([station, gear]) => (
+            <div key={station}>
+              <span style={{ color: "var(--mist)" }}>{station}</span> · {gear.join(", ")}
+            </div>
+          ))}
+        </div>
+      )}
+    </Block>
+  );
+}
