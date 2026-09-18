@@ -26,7 +26,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRefresh } from "../data";
-import { THEME_PRESETS, THEME_PRESET_NAMES, BASECAMP_DEFAULT, type ThemePreset } from "../themes/presets";
+import { THEME_PRESET_NAMES } from "../themes/presets";
+import { ThemePreview } from "../themes/ThemePreview";
 import type { Course, RaceAidStation, RaceBlock, RaceConfig } from "./types";
 import type { NutritionConfig } from "./nutrition-config";
 
@@ -168,19 +169,6 @@ const Hint = ({ children, style }: { children: React.ReactNode; style?: React.CS
 const Block = ({ children }: { children: React.ReactNode }) => (
   <div style={{ marginBottom: 26 }}>{children}</div>
 );
-
-/** The accent a preset would paint the app in — enough to tell them apart
-    without applying anything (that is tt-yib.16's job, not this dialog's). */
-function ThemeSwatch({ preset }: { preset: string }) {
-  const tokens = { ...BASECAMP_DEFAULT, ...(THEME_PRESETS[preset as ThemePreset] ?? {}) };
-  return (
-    <span aria-hidden style={{ display: "inline-flex", gap: 2, verticalAlign: "middle" }}>
-      {(["--night", "--panel", "--lamp", "--pine"] as const).map((t) => (
-        <span key={t} style={{ width: 10, height: 10, background: tokens[t], border: "1px solid var(--edge)" }} />
-      ))}
-    </span>
-  );
-}
 
 /* ------------------------------------------------------------------ */
 /*  The dialog                                                         */
@@ -435,7 +423,9 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
                       {THEME_PRESET_NAMES.map((p) => <option key={p} value={p}>{p}</option>)}
                     </select>
                     <Hint>
-                      {themePreset ? <ThemeSwatch preset={themePreset} /> : "presets keep one Basecamp identity — a race varies its hue, not its brand"}
+                      {themePreset
+                        ? <ThemePreview visual={{ theme_preset: themePreset }} size={10} />
+                        : "presets keep one Basecamp identity — a race varies its hue, not its brand"}
                     </Hint>
                   </label>
                 </div>
@@ -789,7 +779,9 @@ function ReviewScreen({ slug, onDone, onReload }: { slug: string; onDone: () => 
                 <option value="">none</option>
                 {THEME_PRESET_NAMES.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
-              <ThemeSwatch preset={themeEdit ?? race.visual?.theme_preset ?? "basecamp-default"} />
+              {/* the race's own accent and overrides ride along — the strip
+                  has to preview THIS race, not the bare preset */}
+              <ThemePreview visual={{ ...race.visual, theme_preset: themeEdit ?? race.visual?.theme_preset }} size={10} />
             </span>
           </div>
           {race.review_notes && (
