@@ -748,6 +748,10 @@ function summarizeGpx(text) {
  * @param {{name: string, path: string}[]} [opts.uploads] PDFs/GPX already on disk (copied, never moved)
  * @param {string} [opts.notes] the owner's "what matters to me"
  * @param {boolean} [opts.refresh] allow an existing slug to be overwritten
+ * @param {string} [opts.slugHint] the folder to write, when the caller already
+ *   knows it (re-intake). Checked BEFORE the agent runs so an existing race
+ *   refuses in a second rather than after a ten-minute read, and it WINS over
+ *   the name the agent derives — the caller owns the folder's identity.
  * @param {(e: {step: string, status: string, message?: string}) => void} [opts.onProgress]
  * @param {number} [opts.maxPages] fetch cap
  * @param {number} [opts.maxTurns]
@@ -763,6 +767,7 @@ export async function runIntake({
   uploads = [],
   notes = "",
   refresh = false,
+  slugHint = null,
   onProgress = () => {},
   maxPages = MAX_FETCH_PAGES,
   maxTurns = INTAKE_MAX_TURNS,
@@ -774,6 +779,9 @@ export async function runIntake({
   if (!/^\d{4}$/.test(String(year))) throw new Error(`runIntake: year must be a 4-digit year (got ${JSON.stringify(year)})`);
   const warnings = [];
   const say = (step, message, extra = {}) => onProgress({ step, status: "log", message, ...extra });
+  // Fail fast when the caller already knows the folder: the alternative is
+  // spending the whole agent run and refusing afterwards.
+  if (slugHint) await assertSlugAvailable(root, slugHint, { refresh });
 
   // Stage everything in a temp dir: the folder name depends on the race NAME,
   // which only the agent can tell us. The cache moves into races/<slug>/sources/
@@ -781,6 +789,8 @@ export async function runIntake({
   const staging = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-intake-"));
   const sourcesDir = path.join(staging, "sources");
   await fs.mkdir(sourcesDir, { recursive: true });
+  // Set when a failure left the only copy of the agent's output in staging.
+  let keepStaging = false;
 
   try {
     /* 1. fetch + cache */
@@ -870,22 +880,29 @@ export async function runIntake({
 
     /* 5. validate, then write */
     onProgress({ step: "validate", status: "start", label: "validating the draft" });
+    // Nothing below may throw without first parking the agent's output
+    // somewhere readable — a run that cost ten minutes and a chunk of the
+    // owner's session budget must not evaporate into a deleted temp dir.
+    const abort = async (slugForOutput, reason, message) => {
+      const where = await saveRawOutput({ root, slug: slugForOutput, staging, sourcesDir, raw: text, reason });
+      if (where.kept) keepStaging = true;
+      throw new Error(`${message}\n(raw agent output saved to ${where.path})`);
+    };
+
     let draft;
     let slug = null;
     try {
       draft = extractJson(text);
     } catch (e) {
-      await abortWithRawOutput({ root, slug: fallbackSlug(siteUrl, year), staging, sourcesDir, raw: text, reason: e.message });
-      throw new Error(`intake agent did not return JSON: ${e.message}`);
+      await abort(slugHint ?? fallbackSlug(siteUrl, year), e.message, `intake agent did not return JSON: ${e.message}`);
     }
-    slug = typeof draft.name === "string" && draft.name.trim()
+    slug = slugHint ?? (typeof draft.name === "string" && draft.name.trim()
       ? deriveSlug(draft.name, year)
-      : fallbackSlug(siteUrl, year);
+      : fallbackSlug(siteUrl, year));
 
     const contract = validateAgentDraft(draft);
     if (!contract.ok) {
-      await abortWithRawOutput({ root, slug, staging, sourcesDir, raw: text, reason: contract.errors.join("; ") });
-      throw new Error(`intake agent output failed the contract:\n  · ${contract.errors.join("\n  · ")}\n(raw output saved to races/${slug}/sources/agent-output.json)`);
+      await abort(slug, contract.errors.join("; "), `intake agent output failed the contract:\n  · ${contract.errors.join("\n  · ")}`);
     }
 
     await assertSlugAvailable(root, slug, { refresh });
@@ -894,8 +911,7 @@ export async function runIntake({
     const unresolved = collectUnresolved(race, draft.unresolved ?? []);
     const { errors, excused } = draftValidationErrors(race, unresolved);
     if (errors.length) {
-      await abortWithRawOutput({ root, slug, staging, sourcesDir, raw: text, reason: errors.join("; ") });
-      throw new Error(`draft failed schema validation:\n  · ${errors.join("\n  · ")}\n(raw output saved to races/${slug}/sources/agent-output.json)`);
+      await abort(slug, errors.join("; "), `draft failed schema validation:\n  · ${errors.join("\n  · ")}`);
     }
     for (const e of excused) say("validate", `known gap (listed unresolved): ${e}`);
 
@@ -922,9 +938,11 @@ export async function runIntake({
       },
     };
   } finally {
-    // The staging dir is moved on success and on an aborted-but-slugged
-    // failure; whatever is left is ours to clean up.
-    await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+    // The staging cache is copied into the race folder on success, and on a
+    // failure whose slug names a folder we may create. When it could not be
+    // (the slug is an existing race — copying would clobber ITS cache), the
+    // temp dir stays put and the thrown error names it.
+    if (!keepStaging) await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -941,17 +959,26 @@ async function moveSources(staging, dir) {
 }
 
 /**
- * Validation failed: keep everything. The sources land in the race folder and
- * the agent's raw output next to them, so the failure can be read rather than
- * re-run. No race.json is written — a draft that failed validation is not a
- * draft.
+ * Validation failed: keep everything. The sources and the agent's raw output
+ * land in races/<slug>/sources/ so the failure can be read rather than re-run.
+ * No race.json is written — a draft that failed validation is not a draft.
+ *
+ * When the slug is an EXISTING race, nothing is copied: overwriting that
+ * race's own source cache to report a failed intake would destroy the thing
+ * the re-intake diff is supposed to compare against. The staging dir is kept
+ * instead, and the caller is told where it is.
+ * @returns {Promise<{path: string, kept: boolean}>} where the output ended up
  */
-async function abortWithRawOutput({ root, slug, staging, sourcesDir, raw, reason }) {
+async function saveRawOutput({ root, slug, staging, sourcesDir, raw, reason }) {
   try {
-    await fs.writeFile(path.join(sourcesDir, "agent-output.json"), raw);
+    await fs.writeFile(path.join(sourcesDir, "agent-output.json"), raw ?? "");
     await fs.writeFile(path.join(sourcesDir, "agent-output-error.txt"), `${new Date().toISOString()}\n${reason}\n`);
-    await moveSources(staging, raceDir(root, slug));
+    if (!(await slugExists(root, slug))) {
+      await moveSources(staging, raceDir(root, slug));
+      return { path: `races/${slug}/sources/agent-output.json`, kept: false };
+    }
   } catch { /* best effort — the thrown error is what matters */ }
+  return { path: path.join(sourcesDir, "agent-output.json"), kept: true };
 }
 
 /* -------------------------------- CLI ---------------------------------- */
@@ -963,7 +990,7 @@ if (isMain) {
   const site = arg("site", null);
   const year = arg("year", null);
   if (typeof site !== "string" || typeof year !== "string") {
-    console.error("usage: node scripts/race-intake.mjs --site <url> --year <YYYY> [--url <url>]… [--upload <path>]… [--notes <text>] [--refresh]");
+    console.error("usage: node scripts/race-intake.mjs --site <url> --year <YYYY> [--url <url>]… [--upload <path>]… [--notes <text>] [--slug <slug>] [--refresh]");
     process.exit(2);
   }
   const notesArg = arg("notes", "");
@@ -975,6 +1002,7 @@ if (isMain) {
     uploads: collect("upload").map((p) => ({ name: path.basename(p), path: p })),
     notes: typeof notesArg === "string" ? notesArg : "",
     refresh: arg("refresh", false) === true,
+    slugHint: typeof arg("slug", null) === "string" ? arg("slug", null) : null,
     onProgress: (e) => {
       if (e.status === "start") console.log(`• ${e.label}`);
       else if (e.message) console.log(`  ${e.message}`);
