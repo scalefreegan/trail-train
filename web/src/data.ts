@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { isValidTimeZone, raceStart } from "./race/clock";
 import { fmtRaceClock } from "./race/pacing";
-import type { ActiveRaceResponse } from "./race/types";
+import type { ActiveBlock, ActiveRaceResponse, RaceConfig as RaceJson } from "./race/types";
 
 /* ------------------------------------------------------------------ */
 /*  Contexts + hooks + helpers. The provider components live in        */
@@ -62,40 +62,18 @@ export const useUnits = () => {
 };
 
 /* ------------------------------------------------------------------ */
-/*  Race + training block defaults                                     */
+/*  Race + training block                                              */
 /*                                                                     */
-/*  state.json (web/public/state.json, managed by scripts/state.mjs)   */
-/*  is the source of truth for race + block config. These defaults     */
-/*  only render while it loads or if it's missing. useBlockConfig()    */
-/*  below is the one place components should read this from.           */
+/*  GET /api/race/active is the ONE source: the active race folder, or */
+/*  — in generic mode — the goals and the rolling 12-week window, both */
+/*  computed server-side by scripts/block.mjs so the client and the    */
+/*  coach can never disagree about which weeks are in the block.       */
+/*  useBlockConfig() below is the only place components read it from.  */
+/*                                                                     */
+/*  There are deliberately NO hardcoded race defaults any more. A      */
+/*  default race is a lie the whole UI then renders — a countdown to   */
+/*  somebody else's finish line on a fresh checkout (PRD §6).          */
 /* ------------------------------------------------------------------ */
-
-const DEFAULT_RACE = {
-  name: "Mogollon Monster 100",
-  short: "MM100",
-  distance_mi: 102.3,
-  elevation_ft: 15900,
-  max_elev_ft: 7912,
-  cutoff_h: 38,
-  date: "2026-09-12",
-  start_time: "06:00",
-  location: "Mogollon Rim · Pine, AZ",
-  aid_stations: [
-    { mi: 11.1, name: "See Canyon" },
-    { mi: 21.5, name: "Horton" },
-    { mi: 26.8, name: "Fish Hatchery" },
-    { mi: 39.2, name: "Myrtle" },
-    { mi: 42.8, name: "Buck Springs" },
-    { mi: 52.4, name: "Pinchot Cabin" },
-    { mi: 58.7, name: "General Springs · Crew" },
-    { mi: 61.1, name: "Washington Park" },
-    { mi: 72.3, name: "Geronimo" },
-    { mi: 81.8, name: "Donahue" },
-    { mi: 85.6, name: "Dickerson Flat" },
-    { mi: 90.5, name: "Pine Canyon" },
-    { mi: 101.1, name: "Pine TH · Finish" },
-  ],
-};
 
 export type Activity = {
   id: string;
@@ -131,46 +109,18 @@ export type CrossActivity = {
   strava_url?: string;
 };
 
-/* ---- 20-week training block targets (race = week 20 = Sept 12) ---- */
-/*  Block start = Monday April 27, 2026 (race week begins Mon Sept 7)   */
-
+/** One week of the block's plan. `wk` is 1-indexed within the block —
+    in generic mode wk 12 is the current week and wk 1 is eleven weeks ago. */
 export type WeekTarget = { wk: number; target_dist: number; target_elev: number };
 
-const DEFAULT_BLOCK: { start_date: string; total_weeks: number; targets: WeekTarget[] } = {
-  start_date: "2026-04-27",
-  total_weeks: 20,
-  targets: [
-    { wk: 1,  target_dist: 38, target_elev: 5800 },
-    { wk: 2,  target_dist: 46, target_elev: 7400 },
-    { wk: 3,  target_dist: 52, target_elev: 8900 },
-    { wk: 4,  target_dist: 36, target_elev: 5400 },
-    { wk: 5,  target_dist: 54, target_elev: 9500 },
-    { wk: 6,  target_dist: 60, target_elev: 10800 },
-    { wk: 7,  target_dist: 55, target_elev: 9800 },
-    { wk: 8,  target_dist: 62, target_elev: 11200 },
-    { wk: 9,  target_dist: 38, target_elev: 5800 },
-    { wk: 10, target_dist: 70, target_elev: 13400 },
-    { wk: 11, target_dist: 78, target_elev: 14600 },
-    { wk: 12, target_dist: 72, target_elev: 13200 },
-    { wk: 13, target_dist: 42, target_elev: 6100 },
-    { wk: 14, target_dist: 68, target_elev: 12400 },
-    { wk: 15, target_dist: 58, target_elev: 9400 },
-    { wk: 16, target_dist: 52, target_elev: 8200 },
-    { wk: 17, target_dist: 42, target_elev: 6200 },
-    { wk: 18, target_dist: 30, target_elev: 4200 },
-    { wk: 19, target_dist: 18, target_elev: 2400 },
-    { wk: 20, target_dist: 102.3, target_elev: 15900 },
-  ],
-};
-
 export type AidStation = { mi: number; name: string };
-export type RaceConfig = {
+export type RaceView = {
   name: string;
   short: string;
   distance_mi: number;
   elevation_ft: number;
   max_elev_ft: number;
-  cutoff_h: number;
+  cutoff_h: number | null;
   date: Date;           // the race START instant, resolved in `timeZone`
   /** the race's IANA zone — the browser's only until a race folder is active */
   timeZone: string;
@@ -188,11 +138,41 @@ export type RaceConfig = {
   aid_stations: AidStation[];
 };
 export type BlockConfig = {
-  race: RaceConfig;
+  /** The active race, as the views need it — null in generic mode, and on
+      every render before /api/race/active answers. Nothing may dereference
+      it unguarded. */
+  race: RaceView | null;
   blockStart: string;   // ISO date, Monday of week 1
   totalWeeks: number;
   targets: WeekTarget[];
+  /** The agent's planned weeks — races/<slug>/plan.json, or, in generic
+      mode, config/generic-plan.json. Empty until a coach run writes one. */
+  planBlocks: PlanBlock[];
+  /** "race" = an active folder's block.json, counting toward a date;
+      "rolling" = generic mode's trailing 12-week window. Same discriminator
+      the payload and scripts/facts.mjs use. */
+  mode: "race" | "rolling";
+  /** true until the first /api/race/active response. The views render the
+      generic layout while it holds rather than flashing race furniture. */
+  loading: boolean;
 };
+
+/** Generic mode's window length — mirrors scripts/block.mjs ROLLING_WEEKS. */
+export const ROLLING_WEEKS = 12;
+
+/**
+ * The rolling window's start, computed client-side. Used ONLY while the
+ * first /api/race/active response is in flight: the weekly buckets need a
+ * Monday before the payload lands, and picking the same one the server will
+ * send means the log doesn't re-bucket itself when it arrives. Must stay in
+ * step with scripts/block.mjs mondayOf — local ISO week, Monday start.
+ */
+function rollingWindowStart(now = new Date()): string {
+  const m = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  m.setDate(m.getDate() - ((m.getDay() + 6) % 7) - 7 * (ROLLING_WEEKS - 1));
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${m.getFullYear()}-${p(m.getMonth() + 1)}-${p(m.getDate())}`;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -338,27 +318,14 @@ export type Preferences = {
   context?: CoachContext;
 } & Record<string, unknown>;
 
+/* state.json v3 (tt-yib.2) carries the athlete, not the race: `race`,
+   `block` and `plan_blocks` moved into races/<slug>/ (or, in generic mode,
+   config/goals.json + config/generic-plan.json) and reach the client through
+   /api/race/active instead. Nothing here may grow them back — two sources
+   for the block is how the dashboard and the coach start disagreeing. */
 export type PersistentState = {
   version: number;
   last_updated: string | null;
-  race?: {
-    name: string;
-    short?: string;
-    date: string;
-    start_time?: string;
-    distance_mi: number;
-    elevation_ft: number;
-    max_elev_ft?: number;
-    cutoff_h?: number;
-    location?: string;
-    aid_stations?: AidStation[];
-  };
-  block?: {
-    start_date: string;
-    total_weeks: number;
-    targets: WeekTarget[];
-  };
-  plan_blocks?: PlanBlock[];
   agent_notes?: { at: string; note: string }[];
   preferences?: Preferences;
 };
@@ -500,70 +467,72 @@ export const PersistentStateContext = createContext<StateCtx>({ data: null, miss
 export const usePersistentState = () => useContext(PersistentStateContext);
 
 /**
- * The single source of truth for race + training-block config.
- * Reads state.json (race meta, block start/targets) with the hardcoded
- * defaults as fallback while it loads / if it's missing.
+ * The single source of truth for race + training-block config: a thin
+ * adapter over the /api/race/active payload.
+ *
+ * Both block shapes it can return are already computed server-side — a race
+ * folder's block.json, or generic mode's rolling window from
+ * scripts/block.mjs. The only things derived here are the race START instant
+ * and the clock bound to it, because neither survives JSON.
  */
 export function useBlockConfig(): BlockConfig {
-  const { data: state } = usePersistentState();
-  const { activeRace } = useActiveRace();
-  const raceJson = activeRace?.race ?? null;
-  return useMemo(() => {
-    const r = { ...DEFAULT_RACE, ...(state?.race ?? {}) };
-    const b = state?.block;
-    const targets = b?.targets?.length ? b.targets : DEFAULT_BLOCK.targets;
-    const { start, timeZone } = resolveRaceStart(raceJson, r);
-    return {
-      race: {
-        name: r.name,
-        short: r.short ?? DEFAULT_RACE.short,
-        distance_mi: r.distance_mi,
-        elevation_ft: r.elevation_ft,
-        max_elev_ft: r.max_elev_ft ?? DEFAULT_RACE.max_elev_ft,
-        cutoff_h: r.cutoff_h ?? DEFAULT_RACE.cutoff_h,
-        date: start,
-        timeZone,
-        clock: (elapsedH: number) => fmtRaceClock(start, elapsedH, timeZone),
-        location: r.location ?? DEFAULT_RACE.location,
-        aid_stations: r.aid_stations?.length ? r.aid_stations : DEFAULT_RACE.aid_stations,
-      },
-      blockStart: b?.start_date ?? DEFAULT_BLOCK.start_date,
-      totalWeeks: b?.total_weeks ?? targets.length,
-      targets,
-    };
-  }, [state, raceJson]);
+  const { activeRace, resolved } = useActiveRace();
+  // `active` is the pointer AND the folder's status agreeing (the server
+  // resolves that); a draft or an archived race is generic mode.
+  const raceJson = activeRace?.active ? activeRace.race ?? null : null;
+  const block: ActiveBlock | null = activeRace?.block ?? null;
+  const planBlocks = activeRace?.plan?.plan_blocks ?? null;
+  return useMemo(() => ({
+    race: raceJson ? raceView(raceJson) : null,
+    // Before the payload lands — and for a race folder with no block.json
+    // yet — the window is the rolling one, so the layout that renders is the
+    // generic layout rather than a flash of race furniture.
+    blockStart: block?.start_date ?? rollingWindowStart(),
+    totalWeeks: block?.total_weeks ?? ROLLING_WEEKS,
+    // Empty, never invented: a made-up target renders as a plan the athlete
+    // never agreed to. The views show an awaiting state instead.
+    targets: block?.targets ?? [],
+    planBlocks: planBlocks ?? [],
+    mode: block?.mode === "race" ? "race" : "rolling",
+    loading: !resolved,
+  }), [raceJson, block, planBlocks, resolved]);
 }
 
 /**
- * The race START as an instant, plus the zone every clock on the page reads.
+ * race.json → what the views actually read: the START as an instant, the
+ * zone every clock on the page formats in, and the aid chart flattened to
+ * the {mi, name} pairs the ribbon plots.
  *
- * An active race folder carries an IANA zone, so its gun time is a wall clock
- * in THAT zone — 06:00 in Arizona is one instant whether the laptop is in
- * Albuquerque or Auckland.
- *
- * The fallback is the legacy path and only the legacy path: state.json's race
- * block has no zone at all, so `new Date("2026-09-12T06:00:00")` can only mean
- * 06:00 wherever the browser happens to be. It stays until tt-yib.4 retires
- * DEFAULT_RACE / state.race, and it is also what renders for the ~one frame
- * before /api/race/active answers.
+ * The race START is derived HERE and nowhere else. A race folder carries an
+ * IANA zone, so its gun time is a wall clock in THAT zone — 06:00 in Arizona
+ * is one instant whether the laptop is in Albuquerque or Auckland. A folder
+ * with a malformed date, start_time or zone falls back to the browser's zone
+ * rather than blanking every view in the app.
  */
-function resolveRaceStart(
-  raceJson: { date?: string; start_time?: string; timezone?: string } | null,
-  legacy: { date: string; start_time?: string },
-): { start: Date; timeZone: string } {
+function raceView(race: RaceJson): RaceView {
   const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  if (raceJson?.date && raceJson.start_time && isValidTimeZone(raceJson.timezone)) {
+  let start: Date | null = null;
+  let timeZone = browserZone;
+  if (race.date && race.start_time && isValidTimeZone(race.timezone)) {
     try {
-      const timeZone = raceJson.timezone as string;
-      return { start: raceStart(raceJson.date, raceJson.start_time, timeZone), timeZone };
-    } catch {
-      // a hand-edited race.json with a malformed date or start_time: fall
-      // through rather than blanking every view in the app
-    }
+      start = raceStart(race.date, race.start_time, race.timezone);
+      timeZone = race.timezone;
+    } catch { /* hand-edited race.json — fall through to the browser zone */ }
   }
+  if (!start) start = new Date(`${race.date}T${race.start_time || "00:00"}:00`);
+  const at = start;
   return {
-    start: new Date(`${legacy.date}T${legacy.start_time ?? DEFAULT_RACE.start_time}:00`),
-    timeZone: browserZone,
+    name: race.name,
+    short: race.short,
+    distance_mi: race.distance_mi,
+    elevation_ft: race.gain_ft,
+    max_elev_ft: race.elevation?.max_ft ?? 0,
+    cutoff_h: race.cutoff_h ?? null,
+    date: at,
+    timeZone,
+    clock: (elapsedH: number) => fmtRaceClock(at, elapsedH, timeZone),
+    location: race.location ?? "",
+    aid_stations: (race.aid_stations ?? []).map((a) => ({ mi: a.total_mi, name: a.name })),
   };
 }
 

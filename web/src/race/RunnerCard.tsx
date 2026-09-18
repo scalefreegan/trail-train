@@ -1,8 +1,9 @@
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
-import { useUnits, useBlockConfig } from "../data";
+import { useUnits } from "../data";
 import { fmtElapsed, type projectRace, type StationProjection } from "./pacing";
 import type { Course, CrewBase } from "./types";
+import { useRacePlan } from "./useRacePlan";
 
 /* ------------------------------------------------------------------ */
 /*  Runner card — a double-sided 3×5in index card the runner carries.  */
@@ -55,7 +56,7 @@ function CardFace({ side, stations, course, proj, emergency }: {
   emergency: CrewBase["emergency"];
 }) {
   const u = useUnits();
-  const { race } = useBlockConfig();
+  const { race } = useRacePlan();
 
   const cell: React.CSSProperties = {
     padding: "1.5px 3px", borderBottom: `0.5px solid ${RULE}`, fontSize: "8.5px",
@@ -84,7 +85,7 @@ function CardFace({ side, stations, course, proj, emergency }: {
         </span>
         <span style={{ fontSize: "7px", color: MUTED, fontVariantNumeric: "tabular-nums" }}>
           {side === 1
-            ? <>start <b style={{ color: INK }}>{race.clock(0)}</b> · cutoff {race.cutoff_h}h · {u.dist(course.official_distance_mi, 0)}{u.distUnit} {u.elev(course.official_gain_ft)}{u.elevUnit}↑</>
+            ? <>start <b style={{ color: INK }}>{race.clock(0)}</b> {race.cutoff_h != null ? ` · cutoff ${race.cutoff_h}h` : ""} · {u.dist(course.official_distance_mi, 0)}{u.distUnit} {u.elev(course.official_gain_ft)}{u.elevUnit}↑</>
             : <>finish <b style={{ color: BEST }}>{race.clock(proj.finish_h.best)}</b> <b style={{ color: INK }}>{race.clock(proj.finish_h.avg)}</b> <b style={{ color: WORST }}>{race.clock(proj.finish_h.worst)}</b>{proj.goal_h != null && <> · goal {fmtElapsed(proj.goal_h)}</>}</>}
         </span>
       </div>

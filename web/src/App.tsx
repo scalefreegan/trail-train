@@ -21,6 +21,7 @@ import { NutritionPlan } from "./race/NutritionPlan";
 import { ModelCheck } from "./race/ModelCheck";
 import { RacePlanProvider } from "./race/RacePlanProvider";
 import { useCourse } from "./race/useRaceData";
+import type { RaceView } from "./data";
 import { raceClockHM } from "./race/pacing";
 
 /* ================================================================== */
@@ -112,8 +113,19 @@ function BarStat({ label, value, accent }: { label: string; value: string; accen
 }
 
 type AppView = "training" | "race" | "nutrition";
-const APP_VIEWS: AppView[] = ["training", "race", "nutrition"];
-const isAppView = (v: string | null): v is AppView => v != null && (APP_VIEWS as string[]).includes(v);
+/** Every view the app can render — the set a persisted preference is
+    validated against, NOT the set on offer right now. */
+const ALL_APP_VIEWS: AppView[] = ["training", "race", "nutrition"];
+const isAppView = (v: string | null): v is AppView => v != null && (ALL_APP_VIEWS as string[]).includes(v);
+
+/** The views this athlete actually has. Race and fuel are a race's views:
+    with none active there is no course to project and no start clock to fuel
+    against, so they are hidden rather than shown empty (PRD §6). */
+function appViews(race: RaceView | null): AppView[] {
+  return race ? ALL_APP_VIEWS : ["training"];
+}
+
+const VIEW_LABEL: Record<AppView, string> = { training: "training", race: "race", nutrition: "fuel" };
 
 function CommandBar({ view, setView, railOpen, toggleRail }: {
   view: AppView; setView: (v: AppView) => void;
@@ -122,8 +134,10 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
   const { syncing, lastSync, refresh, currentStep, lastLog, status } = useRefresh();
   const { fetchedAt, currentWeek } = useStrava();
   const { race, totalWeeks } = useBlockConfig();
+  const views = appViews(race);
   const stamp = fetchedAt ? fetchedAt.getTime() : lastSync;
-  const dleft = daysUntil(race.date);
+  // null in generic mode — every countdown below is gated on it, not faked
+  const dleft = race ? daysUntil(race.date) : null;
   const failedSteps = REFRESH_STEPS.filter((s) => status[s] === "error");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [, force] = useState(0);
@@ -148,21 +162,27 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
           <span className="display" style={{ fontSize: 17, letterSpacing: "-0.02em" }}>
             Basecamp
           </span>
-          <span className="eyebrow" style={{ fontSize: 8, marginTop: 3 }}>{race.short} ops</span>
+          {race && <span className="eyebrow" style={{ fontSize: 8, marginTop: 3 }}>{race.short} ops</span>}
         </div>
 
         {/* view switcher */}
         <div style={{ display: "flex", gap: 6 }}>
-          <button className={"chip" + (view === "training" ? " active" : "")} onClick={() => setView("training")}>training</button>
-          <button className={"chip" + (view === "race" ? " active" : "")} onClick={() => setView("race")}>race</button>
-          <button className={"chip" + (view === "nutrition" ? " active" : "")} onClick={() => setView("nutrition")}>fuel</button>
+          {views.map((v) => (
+            <button key={v} className={"chip" + (view === v ? " active" : "")} onClick={() => setView(v)}>
+              {VIEW_LABEL[v]}
+            </button>
+          ))}
         </div>
 
         {/* mid stats */}
         <div className="commandbar-mid" style={{ flex: 1 }}>
           <BarStat label="block week" value={`${String(currentWeek).padStart(2, "0")} / ${totalWeeks}`} />
-          <BarStat label="race in" value={`${dleft} days`} accent />
-          <BarStat label="race day" value={race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, month: "short", day: "numeric" }).toLowerCase()} />
+          {race && dleft != null && (
+            <>
+              <BarStat label="race in" value={`${dleft} days`} accent />
+              <BarStat label="race day" value={race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, month: "short", day: "numeric" }).toLowerCase()} />
+            </>
+          )}
         </div>
 
         {/* sync cluster */}
@@ -263,9 +283,8 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
 const RIBBON_H = 96;
 const RIBBON_PAD = { top: 10, bottom: 6 };
 
-function ElevationRibbon() {
+function ElevationRibbon({ race }: { race: RaceView }) {
   const u = useUnits();
-  const { race } = useBlockConfig();
   const { course } = useCourse();
   const { ref: measureRef, width } = useMeasuredWidth();
 
@@ -366,9 +385,10 @@ function ElevationRibbon() {
   );
 }
 
-function RaceRibbon() {
+/* Rendered only with a race active — AppBody does the gating, so the ribbon
+   takes the race as a prop rather than re-deriving "is there one". */
+function RaceRibbon({ race }: { race: RaceView }) {
   const u = useUnits();
-  const { race } = useBlockConfig();
   const dleft = daysUntil(race.date);
   const nameWords = race.name.split(" ");
   // both read in the RACE's zone: "sep 12 · 06:00" is a fact about Arizona,
@@ -385,7 +405,7 @@ function RaceRibbon() {
       <Contours seed={4} opacity={0.12} />
       <div style={{ position: "relative", padding: "22px 26px 0", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 24, flexWrap: "wrap" }}>
         <div>
-          <div className="eyebrow" style={{ marginBottom: 8 }}>objective — {race.location.toLowerCase()}</div>
+          <div className="eyebrow" style={{ marginBottom: 8 }}>objective{race.location ? ` — ${race.location.toLowerCase()}` : ""}</div>
           <h1 className="display" style={{ fontSize: "clamp(30px, 4.4vw, 54px)", margin: 0 }}>
             {nameWords.map((w, i) => (
               <span key={i} style={i === 1 ? { color: "var(--lamp)" } : undefined}>
@@ -394,7 +414,9 @@ function RaceRibbon() {
             ))}
           </h1>
           <div className="eyebrow" style={{ marginTop: 10, color: "var(--mist-dim)" }}>
-            {u.dist(race.distance_mi)} {u.distUnit} · {u.elev(race.elevation_ft)} {u.elevUnit}↑ · max {u.elev(race.max_elev_ft)} {u.elevUnit} · cutoff {race.cutoff_h}h · {raceDay} · {raceStart}
+            {u.dist(race.distance_mi)} {u.distUnit} · {u.elev(race.elevation_ft)} {u.elevUnit}↑
+            {race.max_elev_ft > 0 && <> · max {u.elev(race.max_elev_ft)} {u.elevUnit}</>}
+            {race.cutoff_h != null && <> · cutoff {race.cutoff_h}h</>} · {raceDay} · {raceStart}
           </div>
         </div>
         <div style={{ textAlign: "right" }}>
@@ -406,7 +428,7 @@ function RaceRibbon() {
         </div>
       </div>
       <div style={{ position: "relative", height: 96, marginTop: 6 }}>
-        <ElevationRibbon />
+        <ElevationRibbon race={race} />
       </div>
       <div style={{ position: "relative", display: "flex", justifyContent: "space-between", padding: "6px 26px 12px", borderTop: "1px solid var(--edge)" }}>
         {[0, 0.25, 0.5, 0.75, 1].map((f) => (
@@ -680,6 +702,14 @@ function SleepStagesInline() {
 /*  Trajectory — cumulative actual vs plan, the centerpiece chart      */
 /* ------------------------------------------------------------------ */
 
+/** "jul 7" — the Monday a block week starts on. Generic mode has no week
+    numbers worth reading out ("wk 12" of a window that always ends today),
+    so its weeks are labelled by date instead. */
+function weekStartLabel(wk: number, blockStart: string): string {
+  const start = new Date(new Date(blockStart + "T00:00:00").getTime() + (wk - 1) * 7 * 86400_000);
+  return start.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase();
+}
+
 function weekDates(wk: number, blockStart: string): string {
   const start = new Date(new Date(blockStart + "T00:00:00").getTime() + (wk - 1) * 7 * 86400_000);
   const end = new Date(start.getTime() + 6 * 86400_000);
@@ -690,7 +720,9 @@ function weekDates(wk: number, blockStart: string): string {
 function Trajectory() {
   const u = useUnits();
   const { weekly, currentWeek } = useStrava();
-  const { targets, totalWeeks, blockStart } = useBlockConfig();
+  // `mode` below is the CHART mode (cumulative/weekly); the block's own mode
+  // is renamed so the two never get confused in this component.
+  const { targets, totalWeeks, blockStart, mode: blockMode, loading } = useBlockConfig();
   const [view, setView] = useState<"dist" | "elev">("dist");
   const [mode, setMode] = useState<"cum" | "wk">("cum");
   const [hoverWk, setHoverWk] = useState<number | null>(null); // 0-indexed
@@ -790,7 +822,11 @@ function Trajectory() {
     { label: "expected", value: `${fmt(expectedToday)} ${unit}` },
     { label: "actual", value: `${fmt(actualToday)} ${unit}`, color: lineColor },
     { label: "delta", value: `${ahead ? "+" : ""}${deltaPct.toFixed(1)}%`, color: lineColor },
-    { label: "projected wk20", value: `${fmt(projectedFinal)} ${unit}`, color: lineColor },
+    // Race mode projects forward to the finish line; the rolling window has
+    // no future in it — its last column IS this week, so the same number is
+    // a projection of where this week lands, not of a block finish.
+    { label: blockMode === "race" ? `projected wk${totalWeeks}` : "projected this week",
+      value: `${fmt(projectedFinal)} ${unit}`, color: lineColor },
     { label: "block goal", value: `${fmt(totalTarget)} ${unit}` },
   ] : [
     { label: `this week`, value: `${fmt(thisWk.actual ?? 0)} / ${fmt(thisWk.target)} ${unit}`, color: "var(--lamp)" },
@@ -799,6 +835,24 @@ function Trajectory() {
     { label: "avg attainment", value: `${avgAttain.toFixed(0)}%`, color: attainColor(avgAttain / 100) },
     { label: "block goal", value: `${fmt(totalTarget)} ${unit}` },
   ];
+
+  // No targets is a real state, not a zero one: a race folder with no
+  // block.json yet, or the moment before /api/race/active answers. Dividing
+  // cumulative actual by an expected of 0 would print "Infinity%".
+  if (targets.length === 0) {
+    return (
+      <section>
+        <SectionTag>trajectory</SectionTag>
+        <div className="panel" style={{ padding: "26px 24px" }}>
+          <div style={{ fontSize: 13, color: "var(--mist-dim)", lineHeight: 1.6 }}>
+            {loading
+              ? "Reading the training block…"
+              : "No weekly targets yet — the coach writes them into the plan on the next resync."}
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section>
@@ -816,7 +870,9 @@ function Trajectory() {
           </div>
         }
       >
-        trajectory — wk {currentWeek} of {totalWeeks}
+        {blockMode === "race"
+          ? `trajectory — wk ${currentWeek} of ${totalWeeks}`
+          : `trajectory — last ${totalWeeks} weeks`}
       </SectionTag>
 
       <div className="panel notch" style={{ overflow: "hidden" }}>
@@ -880,11 +936,16 @@ function Trajectory() {
                   />
                   <circle cx={todayX} cy={yAt(expectedToday)} r="2.5" fill="var(--mist-mute)" />
                   <circle cx={todayX} cy={yAt(actualToday)} r="3.5" fill={lineColor} stroke="var(--night)" strokeWidth="1" />
-                  {/* race marker */}
-                  <circle cx={xAt(totalWeeks - 1)} cy={yAt(totalTarget)} r="3" fill="var(--lamp)" />
-                  <text x={xAt(totalWeeks - 1) - 7} y={yAt(totalTarget) - 7} fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)" textAnchor="end">
-                    RACE
-                  </text>
+                  {/* race marker — the rolling window ends on today, not on
+                      a start line, so there is nothing to mark there */}
+                  {blockMode === "race" && (
+                    <>
+                      <circle cx={xAt(totalWeeks - 1)} cy={yAt(totalTarget)} r="3" fill="var(--lamp)" />
+                      <text x={xAt(totalWeeks - 1) - 7} y={yAt(totalTarget) - 7} fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)" textAnchor="end">
+                        RACE
+                      </text>
+                    </>
+                  )}
                 </>
               ) : (
                 /* weekly bullet bars: outline = target, fill = actual (colored by attainment) */
@@ -962,7 +1023,7 @@ function Trajectory() {
             }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                 <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--lamp)" }}>
-                  week {String(hover.i + 1).padStart(2, "0")}{hover.i + 1 === currentWeek ? " · now" : hover.i + 1 === totalWeeks ? " · race" : ""}
+                  week {String(hover.i + 1).padStart(2, "0")}{hover.i + 1 === currentWeek ? " · now" : blockMode === "race" && hover.i + 1 === totalWeeks ? " · race" : ""}
                 </span>
                 <span className="numerals" style={{ fontSize: 9, color: "var(--mist-mute)" }}>{weekDates(hover.i + 1, blockStart)}</span>
               </div>
@@ -1065,20 +1126,27 @@ function RoadAhead() {
     return out;
   }, [cal]);
 
-  /* ---- plan blocks (persisted agent plan, else block targets) ---- */
-  const { targets, totalWeeks } = useBlockConfig();
+  /* ---- plan blocks (the agent's plan, else block targets) ---- */
+  // The plan lives in races/<slug>/plan.json, or config/generic-plan.json in
+  // generic mode, and reaches us through /api/race/active — state.json has
+  // not carried plan_blocks since v3 (tt-yib.2).
+  const { targets, totalWeeks, blockStart, planBlocks, mode, loading } = useBlockConfig();
   const fallback: PlanBlock[] = useMemo(() => {
     const start = Math.min(totalWeeks, currentWeek);
     const end = Math.min(totalWeeks, currentWeek + 5);
     return targets.slice(start - 1, end).map((b) => ({
       wk: b.wk,
-      label: b.wk === totalWeeks ? "Race week" : "Planned",
+      // With a race, the last week of the block IS race week. The rolling
+      // window has no such landmark, so its weeks are named by their dates.
+      label: mode === "race"
+        ? (b.wk === totalWeeks ? "Race week" : "Planned")
+        : `Week of ${weekStartLabel(b.wk, blockStart)}`,
       dist_mi: b.target_dist,
       elev_ft: b.target_elev,
       focus: "Awaiting agent recommendations — resync to generate.",
     }));
-  }, [currentWeek, targets, totalWeeks]);
-  const stateBlocks = state?.plan_blocks ?? null;
+  }, [currentWeek, targets, totalWeeks, mode, blockStart]);
+  const stateBlocks = planBlocks.length > 0 ? planBlocks : null;
   const blocks: PlanBlock[] = useMemo(() => {
     if (!stateBlocks || stateBlocks.length === 0) return fallback;
     // The strip includes the CURRENT week. Older coach runs planned from
@@ -1100,6 +1168,9 @@ function RoadAhead() {
     return stateBlocks;
   }, [stateBlocks, fallback, currentWeek, targets]);
   const live = !!(stateBlocks && stateBlocks.length > 0);
+  // "Awaiting agent recommendations" is only honest once we KNOW the plan is
+  // empty — before the payload lands we know nothing yet.
+  const awaiting = !live && !loading;
   const maxDist = Math.max(...blocks.map((b) => b.dist_mi), 1);
 
   return (
@@ -1119,7 +1190,7 @@ function RoadAhead() {
             <span style={{ color: live ? "var(--pine)" : "var(--mist-mute)" }}>
               {live
                 ? `agent · ${state?.last_updated ? new Date(state.last_updated).toLocaleDateString("en-US", { month: "short", day: "2-digit" }).toLowerCase() : ""}`
-                : agentMissing || stateMissing ? "targets only" : "loading…"}
+                : awaiting && (agentMissing || stateMissing || targets.length > 0) ? "targets only" : "loading…"}
             </span>
           </span>
         }
@@ -1181,7 +1252,7 @@ function RoadAhead() {
           const offset = w.wk - currentWeek;
           const isNow = offset === 0;
           const isNext = offset === 1;
-          const isRace = w.wk === totalWeeks;
+          const isRace = mode === "race" && w.wk === totalWeeks;
           return (
             <motion.div
               key={w.wk}
@@ -2116,6 +2187,7 @@ function SetupDrawer() {
 
 function AppBody() {
   const { key } = useRefresh();
+  const { race } = useBlockConfig();
   const [view, setViewState] = useState<AppView>(() => {
     // validate rather than cast — a stale or hand-edited key would otherwise
     // render an empty main column with no way back except clearing storage
@@ -2135,23 +2207,32 @@ function AppBody() {
       return !open;
     });
   };
+  // A persisted "race"/"nutrition" survives the race being archived (and is
+  // there on every reload before the payload lands). Resolve it to training
+  // WITHOUT rewriting the preference: once a race is active again the
+  // athlete gets the view they last chose back, instead of having had it
+  // quietly overwritten by a loading frame.
+  const views = appViews(race);
+  const activeView = views.includes(view) ? view : "training";
   return (
     <>
-      <CommandBar view={view} setView={setView} railOpen={railOpen} toggleRail={toggleRail} />
+      <CommandBar view={activeView} setView={setView} railOpen={railOpen} toggleRail={toggleRail} />
       <div className="shell">
         <div className={"ops-grid" + (railOpen ? "" : " rail-hidden")}>
           {/* main column */}
           <main style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
-            {view === "training" ? (
+            {activeView === "training" ? (
               <>
-                <RaceRibbon />
+                {/* no race, no ribbon: there is no course, countdown or
+                    elevation profile to put in it (PRD §6) */}
+                {race && <RaceRibbon race={race} />}
                 <div key={`vitals-${key}`}><VitalsBand /></div>
                 <div key={`traj-${key}`}><Trajectory /></div>
                 <div key={`road-${key}`}><RoadAhead /></div>
                 <div key={`log-${key}`}><LogTable /></div>
                 <SetupDrawer />
               </>
-            ) : view === "race" ? (
+            ) : activeView === "race" ? (
               <div key={`race-${key}`}>
                 {/* one shared plan instance — planner sliders and the model
                     check must never disagree on the same screen. The climb

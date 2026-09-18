@@ -939,9 +939,11 @@ function settingsApi(): Plugin {
 
 // Dev-only middleware: GET /api/race/active answers "which race, and what is
 // in it?" for the client — the pointer (config/active-race.json) plus the
-// folder it names, merged into one payload. `{ active: null }` is generic
-// mode. Read-only, but it still refuses cross-site callers: the reply carries
-// local config a hostile tab has no business reading.
+// folder it names, merged into one payload. `active: null` is generic mode,
+// and it is described just as fully: the goals, the rolling 12-week block and
+// the generic plan, so the client never has to re-derive a window the coach
+// already computed. Read-only, but it still refuses cross-site callers: the
+// reply carries local config a hostile tab has no business reading.
 function raceApi(): Plugin {
   const projectRoot = path.resolve(__dirname, '..')
   return {
@@ -957,11 +959,11 @@ function raceApi(): Plugin {
           // vite.config.ts can't statically import from scripts/ (it is ESM
           // JS outside the TS project), so the loader is imported per request
           // — same as scripts/facts.mjs in the chat endpoint.
-          const { loadActiveRace } = await import(path.join(projectRoot, 'scripts/race-config.mjs')) as {
-            loadActiveRace: (root: string) => Promise<Record<string, unknown>>
+          const { activeRacePayload } = await import(path.join(projectRoot, 'scripts/race-payload.mjs')) as {
+            activeRacePayload: (root: string, now?: number) => Promise<Record<string, unknown>>
           }
           res.statusCode = 200
-          res.end(JSON.stringify(await loadActiveRace(projectRoot)))
+          res.end(JSON.stringify(await activeRacePayload(projectRoot)))
         } catch (e) {
           res.statusCode = 500
           res.end(JSON.stringify({ error: (e as Error).message }))

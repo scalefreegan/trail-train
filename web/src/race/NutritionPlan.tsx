@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useBlockConfig, useMeasuredWidth } from "../data";
+import { useMeasuredWidth } from "../data";
 import { SectionTag } from "../atoms";
 import { useRacePlan } from "./useRacePlan";
 import { planCaffeine, heatBands, sunBounds, type CaffeinePlan } from "./caffeine";
@@ -316,7 +316,7 @@ function LegRow({ seg, caf, clock, last, show }: {
 /* ---- the view ---- */
 
 export function NutritionPlan() {
-  const { race } = useBlockConfig();
+  const { race } = useRacePlan();
   const { course, missing, error, proj, nutrition, fuelPlan, raceStart, timeZone, clock,
     nutritionError, features, panels, raceConfig } = useRacePlan();
   const cfg = nutrition.caffeine;

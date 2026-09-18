@@ -280,11 +280,45 @@ export type RacePlan = {
   }[];
 };
 
-/** GET /api/race/active — `{ active: null }` is generic mode (no race). */
+/** config/goals.json — what generic mode trains toward in place of a race
+    (PRD §5.3). Validated by scripts/goals.mjs; every field is advisory prose
+    except the volume band, which is the only number a raceless week has. */
+export type Goals = {
+  event_class?: string;
+  horizon?: string;
+  phase?: string;
+  weekly_volume_band?: { dist_mi?: [number, number]; vert_ft?: [number, number] };
+  notes?: string;
+};
+
+/** Generic mode's block: the 12 ISO weeks ending with the current one,
+    computed by scripts/block.mjs — the SAME function that builds the coach's
+    window, so the client never re-derives it (a one-day disagreement would
+    shift every weekly bucket by a column). */
+export type RollingBlock = {
+  mode: "rolling";
+  start_date: string;
+  total_weeks: number;
+  targets: RaceBlock["targets"];
+};
+
+/** The block the app is training in, whichever kind it is. `mode` is the
+    discriminator so no consumer has to sniff fields to tell them apart. */
+export type ActiveBlock = (RaceBlock & { mode: "race" }) | RollingBlock;
+
+/** GET /api/race/active — `active: null` is generic mode (no race), and it is
+    described just as fully as a race: goals, the rolling block, the generic
+    plan. Assembled by scripts/race-payload.mjs. */
 export type ActiveRaceResponse = {
   active: string | null;
-  race?: RaceConfig;
-  block?: RaceBlock | null;
+  race?: RaceConfig | null;
+  /** null whenever a race IS active — then the race is the goal. */
+  goals?: Goals | null;
+  /** null only for a race folder that carries no block.json yet (a draft the
+      intake hasn't planned). Generic mode always has one. */
+  block?: ActiveBlock | null;
   plan?: RacePlan | null;
   nutrition?: NutritionConfig | null;
+  /** local config was broken and the server fell back to generic mode */
+  warning?: string;
 };

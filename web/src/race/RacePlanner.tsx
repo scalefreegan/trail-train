@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
-import { useUnits, useBlockConfig, useMeasuredWidth, relativeAgo } from "../data";
+import { useUnits, useMeasuredWidth, relativeAgo } from "../data";
 import { SectionTag, Contours } from "../atoms";
 import { useCrewBase } from "./useRaceData";
 import { useRacePlan } from "./useRacePlan";
@@ -83,7 +83,7 @@ function ProfileChart({ course, proj, night }: {
   night: boolean;
 }) {
   const u = useUnits();
-  const { race } = useBlockConfig();
+  const { race } = useRacePlan();
   const { ref: measureRef, width } = useMeasuredWidth();
   const [hoverMi, setHoverMi] = useState<number | null>(null);
 
@@ -417,7 +417,7 @@ function ProfileChart({ course, proj, night }: {
 
 export function RacePlanner() {
   const u = useUnits();
-  const { race } = useBlockConfig();
+  const { race } = useRacePlan();
   const { crewBase } = useCrewBase();
   // projection + fuel wiring is shared with the nutrition view — see
   // useRacePlan.ts. Both views must agree to the minute, so there is exactly

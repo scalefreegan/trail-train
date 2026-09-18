@@ -9,7 +9,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { loadState, loadPlanBlocks, activeContext, isoDate } from "./state.mjs";
 import { listRaces, loadActiveRaceFolder, raceDir } from "./race-config.mjs";
-import { bandMidpoint, loadGoals } from "./goals.mjs";
+import { loadGoals } from "./goals.mjs";
+import { ROLLING_WEEKS, rollingBlock } from "./block.mjs";
 
 // Heat exposure threshold (Celsius) — mirrors weather.mjs WEATHER_HOT_THRESHOLD_C.
 const HOT_THRESHOLD_C = 24;
@@ -29,12 +30,11 @@ export async function loadProfile(projectRoot) {
   return { athlete_name: "the athlete", location: "their home mountains", home_trails: [] };
 }
 
-/**
- * Generic mode's training block: the current week plus the 11 before it
- * (PRD §6). There is no race to count down to, so the window rolls forward
- * with the athlete instead of ending at a date.
- */
-export const ROLLING_WEEKS = 12;
+// Generic mode's window length. Re-exported because this module was its
+// original home and coach.mjs/the tests import it from here; the definition
+// (and the window arithmetic) now lives in block.mjs, shared with the
+// dev server's /api/race/active.
+export { ROLLING_WEEKS };
 
 const M_PER_MI = 1609.344;
 const M_PER_FT = 0.3048;
@@ -51,39 +51,6 @@ const weekIndexFor = (date, blockStart) => {
   const s = new Date(blockStart + "T00:00:00").getTime();
   return Math.floor((d - s) / 86400000 / 7) + 1;
 };
-
-/** Local Monday of the week containing `d` — ISO weeks start on Monday. */
-const mondayOf = (d) => {
-  const m = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  m.setDate(m.getDate() - ((m.getDay() + 6) % 7));
-  return m;
-};
-
-/**
- * Weekly targets for the rolling window. The coach writes its plan into
- * config/generic-plan.json (plan_blocks, wk 1..ROLLING_WEEKS indexing this
- * same window), so a week it has planned is its own target; the rest fall
- * back to the midpoint of the goals volume band — the only number available
- * when nobody has planned that week.
- * @param {object[]} planBlocks  plan_blocks as loaded from the generic plan
- * @param {object|null} goals    config/goals.json
- */
-function rollingTargets(planBlocks, goals) {
-  const midDist = bandMidpoint(goals?.weekly_volume_band?.dist_mi);
-  const midElev = bandMidpoint(goals?.weekly_volume_band?.vert_ft);
-  const planned = new Map();
-  for (const b of planBlocks ?? []) {
-    if (typeof b?.wk === "number") planned.set(b.wk, b);
-  }
-  return Array.from({ length: ROLLING_WEEKS }, (_, i) => {
-    const b = planned.get(i + 1);
-    return {
-      wk: i + 1,
-      target_dist: +(typeof b?.dist_mi === "number" ? b.dist_mi : midDist).toFixed(1),
-      target_elev: Math.round(typeof b?.elev_ft === "number" ? b.elev_ft : midElev),
-    };
-  });
-}
 
 const C_TO_F = (c) => c * 9 / 5 + 32;
 
@@ -192,11 +159,11 @@ export function computeFacts(strava, oura, ctx, now = Date.now()) {
   // intake hasn't planned yet) still gets the rolling window — better a
   // window of real weeks than a block with no targets in it.
   const raceBlock = race && ctx?.block?.start_date && ctx?.block?.total_weeks ? ctx.block : null;
-  const windowStart = mondayOf(today);
-  windowStart.setDate(windowStart.getDate() - 7 * (ROLLING_WEEKS - 1));
-  const blockStart   = raceBlock ? raceBlock.start_date : isoDate(windowStart);
-  const totalWeeks   = raceBlock ? raceBlock.total_weeks : ROLLING_WEEKS;
-  const blockTargets = raceBlock ? (raceBlock.targets ?? []) : rollingTargets(ctx?.plan_blocks, goals);
+  // One definition of the rolling window, shared with the client payload.
+  const rolling = raceBlock ? null : rollingBlock(goals, ctx?.plan_blocks, now);
+  const blockStart   = raceBlock ? raceBlock.start_date  : rolling.start_date;
+  const totalWeeks   = raceBlock ? raceBlock.total_weeks : rolling.total_weeks;
+  const blockTargets = raceBlock ? (raceBlock.targets ?? []) : rolling.targets;
   const heatThresholdC = ctx?.preferences?.heat_threshold_c ?? 24;
 
   const acts = (strava?.activities ?? []).map((a) => ({

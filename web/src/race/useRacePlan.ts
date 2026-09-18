@@ -1,5 +1,5 @@
 import { createContext, useContext, useMemo, useState } from "react";
-import { useStrava, useBlockConfig, useActiveRace } from "../data";
+import { useStrava, useActiveRace, type RaceView } from "../data";
 import { useCourse, usePaceGrade } from "./useRaceData";
 import { planFuel, useNutrition, type FuelPlan, type NutritionConfig } from "./nutrition";
 import { fitPacing, projectRace, type PacingFit, type PaceGradeCurve } from "./pacing";
@@ -142,9 +142,13 @@ export type RacePlan = {
   proj: ReturnType<typeof projectRace> | null;
   nutrition: NutritionConfig;
   fuelPlan: FuelPlan | null;
-  /** the active race folder's race.json — null in generic mode, and on
-      every render before /api/race/active answers */
-  raceConfig: RaceConfig | null;
+  /** the active race folder's race.json. Non-null: generic mode (and every
+      render before /api/race/active answers) never mounts this context —
+      RacePlanProvider renders an empty state instead. */
+  raceConfig: RaceConfig;
+  /** the same race as the views read it: start instant, bound clock, the
+      aid chart flattened to {mi, name} */
+  race: RaceView;
   /** what this race even has. Resolved HERE, once, rather than in each
       component: the race view mounts four consumers of it, and four
       useActiveRace() calls would be four fetches of the same file that
@@ -192,15 +196,20 @@ export function useRacePlan(): RacePlan {
   return shared;
 }
 
-export function useRacePlanInstance(): RacePlan {
-  const { race } = useBlockConfig();
-  const { activeRace, slug: activeSlug, resolved: raceResolved } = useActiveRace();
+/**
+ * The plan instance itself. Takes the race rather than reading it: the race
+ * view only mounts with one resolved (RacePlanProvider does the gating), so
+ * every consumer below gets a non-null race and a real start instant instead
+ * of threading "what if there is no race" through the projection.
+ * @param race       the ACTIVE race, as data.ts's raceView() resolved it
+ * @param raceConfig the folder's race.json behind it
+ */
+export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): RacePlan {
+  const { slug: activeSlug, resolved: raceResolved } = useActiveRace();
   const { activities } = useStrava();
   const { course, missing, error: courseError } = useCourse();
   const { paceGrade, error: paceGradeError } = usePaceGrade();
   const { nutrition, error: nutritionError } = useNutrition();
-
-  const raceConfig = activeRace?.race ?? null;
 
   // Knobs are namespaced by race: a goal set for a 38 h hundred means nothing
   // on a 50k, and switching the active race used to inherit the last race's
@@ -212,7 +221,7 @@ export function useRacePlanInstance(): RacePlan {
   // 85 % of the cutoff, to the nearest half hour: a goal that is ambitious but
   // inside the cutoff, for THIS race — the old constant 32 was MM100's answer
   // and would be an impossible target on a race with a 24 h limit.
-  const cutoffH = raceConfig?.cutoff_h ?? race.cutoff_h;
+  const cutoffH = raceConfig.cutoff_h ?? race.cutoff_h;
   const goalDefaultH = cutoffH != null && cutoffH > 0 ? Math.round(cutoffH * 0.85 * 2) / 2 : 32;
 
   const [fatigue, setFatigue] = usePersistedNumber(knob("fatigue_pct_v2"), 5);
@@ -254,7 +263,7 @@ export function useRacePlanInstance(): RacePlan {
     paceGrade, paceGradeError, nutritionError,
     fit, proj, nutrition, fuelPlan,
     raceStart: race.date, timeZone: race.timeZone, clock: race.clock,
-    raceConfig, features, panels, columns,
+    raceConfig, race, features, panels, columns,
     settings: { fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides },
     set: {
       fatigue: setFatigue, calibration: setCalibration, restraint: setRestraint,

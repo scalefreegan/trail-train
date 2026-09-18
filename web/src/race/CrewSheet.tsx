@@ -1,9 +1,10 @@
 import { useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { useUnits, useBlockConfig } from "../data";
+import { useUnits } from "../data";
 import { fmtElapsed, type projectRace } from "./pacing";
 import { gmapsDirectionsUrl } from "./links";
 import type { Course, CrewBase } from "./types";
+import { useRacePlan } from "./useRacePlan";
 
 /* ------------------------------------------------------------------ */
 /*  Crew sheet — a light, printer-friendly handout: station table with */
@@ -108,7 +109,7 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
   onClose: () => void;
 }) {
   const u = useUnits();
-  const { race } = useBlockConfig();
+  const { race } = useRacePlan();
   const base = crewBase?.base ?? null;
   const drives = crewBase?.drives ?? {};
   const emergency = crewBase?.emergency ?? course.crew_info?.emergency ?? [];
@@ -172,7 +173,10 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
           <div style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>
             {race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, weekday: "long", month: "long", day: "numeric", year: "numeric" })}
             {" · start "}{race.clock(0)} · {u.dist(course.official_distance_mi, 1)} {u.distUnit} · {u.elev(course.official_gain_ft)} {u.elevUnit}↑
-            {" · course closes "}{race.clock(race.cutoff_h)} ({race.cutoff_h}h)
+            {/* a race may post no overall cutoff — say so rather than print NaN */}
+            {race.cutoff_h != null
+              ? <>{" · course closes "}{race.clock(race.cutoff_h)} ({race.cutoff_h}h)</>
+              : <>{" · no posted cutoff"}</>}
           </div>
           {base && (
             <div style={{ fontSize: 12, marginTop: 3 }}>

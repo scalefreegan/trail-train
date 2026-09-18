@@ -1,7 +1,7 @@
 import React, { useEffect } from "react";
 import { createPortal } from "react-dom";
-import { useBlockConfig } from "../data";
 import type { FuelPlan, NutritionConfig } from "./nutrition";
+import { useRacePlan } from "./useRacePlan";
 
 /* ------------------------------------------------------------------ */
 /*  Drop-bag card — one 3×5in page: what to pack in each drop bag      */
@@ -21,7 +21,7 @@ export function DropBagCard({ plan, cfg, onClose }: {
   cfg: NutritionConfig;
   onClose: () => void;
 }) {
-  const { race } = useBlockConfig();
+  const { race } = useRacePlan();
 
   // the vest note must match the FIRST leg's fill instruction on the fuel
   // card (a long opening carry can demand the 4th/5th flask at the gun),
