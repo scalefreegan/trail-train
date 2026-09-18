@@ -8,7 +8,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { loadState, loadPlanBlocks, activeContext, isoDate } from "./state.mjs";
-import { loadActiveRaceFolder } from "./race-config.mjs";
+import { listRaces, loadActiveRaceFolder, raceDir } from "./race-config.mjs";
 import { bandMidpoint, loadGoals } from "./goals.mjs";
 
 // Heat exposure threshold (Celsius) — mirrors weather.mjs WEATHER_HOT_THRESHOLD_C.
@@ -305,6 +305,9 @@ export function computeFacts(strava, oura, ctx, now = Date.now()) {
     // The athlete's standing goals, in place of a race (PRD §5.3). null
     // whenever a race IS active — then the race is the goal.
     goals,
+    // Races already run (archived folders) with their results and the notes
+    // the coach wrote about them. Always an array, empty for a first-timer.
+    history: (ctx?.history ?? []).map((h) => ({ ...h, agent_notes: notesAboutRace(ctx?.agent_notes, h) })),
     block: {
       // "race" = the active folder's block.json, counting toward a date;
       // "rolling" = the trailing 12-week window of generic mode.
@@ -411,6 +414,7 @@ async function trainingContext(projectRoot) {
     return null;
   });
   const { plan_blocks } = await loadPlanBlocks(projectRoot);
+  const history = await raceHistory(projectRoot);
   if (!folder) {
     const { goals, bootstrapped, errors } = await loadGoals(projectRoot).catch((e) => {
       console.warn(`• config/goals.json unreadable (${e.message}) — coaching without goals`);
@@ -418,28 +422,105 @@ async function trainingContext(projectRoot) {
     });
     if (bootstrapped) console.log("• created config/goals.json (phase: maintain) — edit it in coach settings");
     for (const err of errors) console.warn(`• config/goals.json: ${err}`);
-    return { race: null, block: null, goals, plan_blocks };
+    return { race: null, block: null, goals, plan_blocks, history };
   }
   const { race, block } = folder;
   return {
     race: {
+      // slug so the prompt can name the folder's own files (races/<slug>/…)
+      // in the agent's Read list
+      slug: folder.slug,
       name: race.name,
       short: race.short,
       date: race.date,
       start_time: race.start_time,
+      // the race-local zone: race day's weekday, and every clock in the prompt
+      timezone: race.timezone ?? null,
       distance_mi: race.distance_mi,
       elevation_ft: race.gain_ft,
       max_elev_ft: race.elevation?.max_ft ?? null,
       cutoff_h: race.cutoff_h ?? null,
       location: race.location ?? "",
-      // the v2 `notes` string is now a set of coach_notes sections
-      notes: Object.values(race.coach_notes ?? {}).filter(Boolean).join(" "),
-      aid_stations: (race.aid_stations ?? []).map((a) => ({ mi: a.total_mi, name: a.name })),
+      // The v2 `notes` string was a lossy join of these sections; the prompt
+      // now quotes each section verbatim, so pass them through as authored.
+      coach_notes: race.coach_notes ?? {},
+      // What the course asks for (night, heat, altitude, water crossings) and
+      // what it withholds (crew, drop bags, pacers) — both are training demands.
+      features: race.features ?? {},
+      elevation: race.elevation ?? null,
+      // The course's spine. The agent was previously given a bare name list
+      // and could not reason about cutoff margins or where crew may appear.
+      aid_stations: (race.aid_stations ?? []).map((a) => ({
+        name: a.name,
+        total_mi: a.total_mi,
+        cutoff_h: a.cutoff_h ?? null,
+        crew: Boolean(a.crew),
+        drop_bag: Boolean(a.drop_bag),
+        pacers: Boolean(a.pacers),
+      })),
     },
     block: block ?? null,
     goals: null,
     plan_blocks,
+    history,
   };
+}
+
+/**
+ * Races the athlete has already run: every archived folder, newest first,
+ * with its result.json summary when one exists.
+ *
+ * Emitted in BOTH modes — the last race is evidence whether or not another
+ * one is on the calendar. result.json is gitignored (it records a real
+ * finish), so its absence is normal and lands as `result: null` rather than
+ * dropping the race from the athlete's history.
+ * @returns {Promise<{slug, name, date, distance_mi, gain_ft, result}[]>}
+ */
+async function raceHistory(projectRoot) {
+  const races = await listRaces(projectRoot).catch((e) => {
+    console.warn(`• races/ unreadable (${e.message}) — coaching without race history`);
+    return [];
+  });
+  const archived = races.filter((r) => r.race?.status === "archived");
+  const out = [];
+  for (const { slug, race } of archived) {
+    const result = await fs
+      .readFile(path.join(raceDir(projectRoot, slug), "result.json"), "utf8")
+      .then(JSON.parse)
+      .catch(() => null);
+    out.push({
+      slug,
+      name: race.name,
+      short: race.short ?? null,
+      date: race.date ?? null,
+      distance_mi: race.distance_mi ?? null,
+      gain_ft: race.gain_ft ?? null,
+      result: result
+        ? {
+            status: result.status ?? null,
+            finish_h: result.finish_h ?? null,
+            official_time: result.official_time ?? null,
+            placement: result.placement ?? null,
+            notes: result.notes ?? null,
+          }
+        : null,
+    });
+  }
+  return out.sort((a, b) => String(b.date ?? "").localeCompare(String(a.date ?? "")));
+}
+
+/**
+ * The agent's own notes about a past race — matched on the race's name or its
+ * short code, most recent last. Capped at 3: this is a reminder of what the
+ * coach already concluded, not the whole history.
+ */
+function notesAboutRace(agentNotes, race) {
+  const needles = [race.name, race.short].filter((s) => typeof s === "string" && s.trim().length > 2)
+    .map((s) => s.toLowerCase());
+  if (!needles.length || !Array.isArray(agentNotes)) return [];
+  return agentNotes
+    .filter((n) => needles.some((needle) => String(n?.note ?? "").toLowerCase().includes(needle)))
+    .slice(-3);
 }
 
 export async function loadFactsFromRoot(projectRoot) {
