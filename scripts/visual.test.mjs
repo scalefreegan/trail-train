@@ -241,3 +241,36 @@ test("every preset's own accent would pass validation as a race accent", () => {
     );
   }
 });
+
+/* ------------------------------ write path ------------------------------ */
+
+test("validateRaceJson refuses a race.json whose visual block is wrong", async () => {
+  const { validateRaceJson } = await import("./race-config.mjs");
+  const base = {
+    schema_version: 1,
+    slug: "san-juan-softie-100-2027",
+    status: "draft",
+    name: "San Juan Softie 100",
+    short: "SJS100",
+    date: "2027-08-13",
+    start_time: "06:00",
+    timezone: "America/Denver",
+    distance_mi: 104,
+    gain_ft: 19000,
+    cutoff_h: 38,
+    aid_stations: [{ name: "Finish", total_mi: 104, cutoff_h: 38, crew: true, drop_bag: false, menu: "full" }],
+  };
+
+  assert.equal(validateRaceJson({ ...base, visual: { theme_preset: "alpine", accent: "#4b7f9e" } }).ok, true);
+
+  for (const [visual, needle] of [
+    [{ theme_preset: "neon" }, /theme_preset/],
+    [{ accent: "chartreuse" }, /accent/],
+    [{ hero: "../../etc/passwd" }, /hero/],
+    [{ overrides: { "--nope": "#fff" } }, /not a theme token/],
+  ]) {
+    const res = validateRaceJson({ ...base, visual });
+    assert.equal(res.ok, false, `${JSON.stringify(visual)} should be refused`);
+    assert.ok(res.errors.some((e) => needle.test(e)), `expected ${needle} in ${JSON.stringify(res.errors)}`);
+  }
+});
