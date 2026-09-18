@@ -8,7 +8,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { loadState, loadPlanBlocks, activeContext, isoDate } from "./state.mjs";
-import { loadRaceOrMostRecent } from "./race-config.mjs";
+import { loadActiveRaceFolder } from "./race-config.mjs";
+import { bandMidpoint, loadGoals } from "./goals.mjs";
 
 // Heat exposure threshold (Celsius) — mirrors weather.mjs WEATHER_HOT_THRESHOLD_C.
 const HOT_THRESHOLD_C = 24;
@@ -28,42 +29,12 @@ export async function loadProfile(projectRoot) {
   return { athlete_name: "the athlete", location: "their home mountains", home_trails: [] };
 }
 
-export const RACE = {
-  name: "Mogollon Monster 100",
-  date: "2026-09-12",
-  distance_mi: 102.3,
-  elevation_ft: 15900,
-  max_elev_ft: 7912,
-  cutoff_h: 38,
-  location: "Mogollon Rim · Pine, AZ (90 min NE of Phoenix)",
-  notes: "Climbs the rim 6×. Technical sections on Highline / Donahue / Myrtle / Promontory.",
-};
-
-export const BLOCK_START = "2026-04-27";
-export const TOTAL_WEEKS = 20;
-
-export const BLOCK_TARGETS = [
-  { wk: 1,  target_dist: 38, target_elev: 5800 },
-  { wk: 2,  target_dist: 46, target_elev: 7400 },
-  { wk: 3,  target_dist: 52, target_elev: 8900 },
-  { wk: 4,  target_dist: 36, target_elev: 5400 },
-  { wk: 5,  target_dist: 54, target_elev: 9500 },
-  { wk: 6,  target_dist: 60, target_elev: 10800 },
-  { wk: 7,  target_dist: 55, target_elev: 9800 },
-  { wk: 8,  target_dist: 62, target_elev: 11200 },
-  { wk: 9,  target_dist: 38, target_elev: 5800 },
-  { wk: 10, target_dist: 70, target_elev: 13400 },
-  { wk: 11, target_dist: 78, target_elev: 14600 },
-  { wk: 12, target_dist: 72, target_elev: 13200 },
-  { wk: 13, target_dist: 42, target_elev: 6100 },
-  { wk: 14, target_dist: 68, target_elev: 12400 },
-  { wk: 15, target_dist: 58, target_elev: 9400 },
-  { wk: 16, target_dist: 52, target_elev: 8200 },
-  { wk: 17, target_dist: 42, target_elev: 6200 },
-  { wk: 18, target_dist: 30, target_elev: 4200 },
-  { wk: 19, target_dist: 18, target_elev: 2400 },
-  { wk: 20, target_dist: 102.3, target_elev: 15900 },
-];
+/**
+ * Generic mode's training block: the current week plus the 11 before it
+ * (PRD §6). There is no race to count down to, so the window rolls forward
+ * with the athlete instead of ending at a date.
+ */
+export const ROLLING_WEEKS = 12;
 
 const M_PER_MI = 1609.344;
 const M_PER_FT = 0.3048;
@@ -80,6 +51,39 @@ const weekIndexFor = (date, blockStart) => {
   const s = new Date(blockStart + "T00:00:00").getTime();
   return Math.floor((d - s) / 86400000 / 7) + 1;
 };
+
+/** Local Monday of the week containing `d` — ISO weeks start on Monday. */
+const mondayOf = (d) => {
+  const m = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  m.setDate(m.getDate() - ((m.getDay() + 6) % 7));
+  return m;
+};
+
+/**
+ * Weekly targets for the rolling window. The coach writes its plan into
+ * config/generic-plan.json (plan_blocks, wk 1..ROLLING_WEEKS indexing this
+ * same window), so a week it has planned is its own target; the rest fall
+ * back to the midpoint of the goals volume band — the only number available
+ * when nobody has planned that week.
+ * @param {object[]} planBlocks  plan_blocks as loaded from the generic plan
+ * @param {object|null} goals    config/goals.json
+ */
+function rollingTargets(planBlocks, goals) {
+  const midDist = bandMidpoint(goals?.weekly_volume_band?.dist_mi);
+  const midElev = bandMidpoint(goals?.weekly_volume_band?.vert_ft);
+  const planned = new Map();
+  for (const b of planBlocks ?? []) {
+    if (typeof b?.wk === "number") planned.set(b.wk, b);
+  }
+  return Array.from({ length: ROLLING_WEEKS }, (_, i) => {
+    const b = planned.get(i + 1);
+    return {
+      wk: i + 1,
+      target_dist: +(typeof b?.dist_mi === "number" ? b.dist_mi : midDist).toFixed(1),
+      target_elev: Math.round(typeof b?.elev_ft === "number" ? b.elev_ft : midElev),
+    };
+  });
+}
 
 const C_TO_F = (c) => c * 9 / 5 + 32;
 
@@ -167,17 +171,33 @@ function fitPacing(acts) {
 }
 
 /**
- * @param {object} strava   — parsed strava.json
+ * @param {object} strava    — parsed strava.json
  * @param {object|null} oura — parsed oura.json
- * @param {object} state    — loaded state.json (provides block targets, race meta)
+ * @param {object} ctx       — state.json's athlete-level fields (preferences,
+ *   agent_notes) merged with the training context assembled by
+ *   loadFactsFromRoot: `race` + `block` from the ACTIVE race folder, or
+ *   `goals` (config/goals.json) when none is active, plus `plan_blocks`.
+ *   Every field is optional — with no race and no goals file this still
+ *   returns a complete facts object, just a raceless one.
+ * @param {number} [now]     — "now" in ms, injectable so tests can pin a date
  */
-export function computeFacts(strava, oura, state) {
-  const now = Date.now();
-  const race = state?.race ?? RACE;
-  const blockStart  = state?.block?.start_date ?? BLOCK_START;
-  const totalWeeks  = state?.block?.total_weeks ?? TOTAL_WEEKS;
-  const blockTargets = state?.block?.targets ?? BLOCK_TARGETS;
-  const heatThresholdC = state?.preferences?.heat_threshold_c ?? 24;
+export function computeFacts(strava, oura, ctx, now = Date.now()) {
+  const today = new Date(now);
+  const race = ctx?.race ?? null;
+  // Goals only steer the coach in generic mode; with a race active the race
+  // and its block.json are the plan, and a stale goals file must not show up
+  // beside them as a second, contradicting target.
+  const goals = race ? null : (ctx?.goals ?? null);
+  // A race whose folder carries no usable block.json (a draft, or one the
+  // intake hasn't planned yet) still gets the rolling window — better a
+  // window of real weeks than a block with no targets in it.
+  const raceBlock = race && ctx?.block?.start_date && ctx?.block?.total_weeks ? ctx.block : null;
+  const windowStart = mondayOf(today);
+  windowStart.setDate(windowStart.getDate() - 7 * (ROLLING_WEEKS - 1));
+  const blockStart   = raceBlock ? raceBlock.start_date : isoDate(windowStart);
+  const totalWeeks   = raceBlock ? raceBlock.total_weeks : ROLLING_WEEKS;
+  const blockTargets = raceBlock ? (raceBlock.targets ?? []) : rollingTargets(ctx?.plan_blocks, goals);
+  const heatThresholdC = ctx?.preferences?.heat_threshold_c ?? 24;
 
   const acts = (strava?.activities ?? []).map((a) => ({
     ...a,
@@ -259,21 +279,36 @@ export function computeFacts(strava, oura, state) {
       weekly[w - 1].sessions += 1;
     }
   }
-  const currentWeek = Math.max(1, Math.min(totalWeeks, weekIndexFor(new Date().toISOString(), blockStart)));
+  const currentWeek = Math.max(1, Math.min(totalWeeks, weekIndexFor(today.toISOString(), blockStart)));
   const block_dist_actual = sumNum(weekly.slice(0, currentWeek).map((w) => w.dist_mi));
   const block_elev_actual = sumNum(weekly.slice(0, currentWeek).map((w) => w.elev_ft));
   const block_dist_expected = sumNum(blockTargets.slice(0, currentWeek).map((w) => w.target_dist));
   const block_elev_expected = sumNum(blockTargets.slice(0, currentWeek).map((w) => w.target_elev));
 
   const longest = d7.reduce((m, a) => (!m || a.distance_mi > m.distance_mi ? a : m), null);
-  const daysUntilRace = Math.ceil((new Date(race.date).getTime() - now) / 86400000);
+  // null, not a number, with no race — there is nothing to count down to,
+  // and a 0 or a NaN here reads as "race day" to everything downstream.
+  const daysUntilRace = race?.date
+    ? Math.ceil((new Date(`${race.date}T00:00:00`).getTime() - now) / 86400000)
+    : null;
 
   return {
     // local date, matching the expiry filtering — a UTC date would tell the
     // agent it's tomorrow from ~17:00 MT and skew its expiry reasoning
-    today: isoDate(new Date()),
-    race: { ...race, days_until: daysUntilRace },
+    today: isoDate(today),
+    // null in generic mode. Every consumer must treat a raceless app as the
+    // normal case: it is what the athlete sees between races.
+    race: race ? { ...race, days_until: daysUntilRace } : null,
+    // Also at the top level so "how far out are we?" has one answer that
+    // doesn't require reaching through a possibly-null race.
+    days_until: daysUntilRace,
+    // The athlete's standing goals, in place of a race (PRD §5.3). null
+    // whenever a race IS active — then the race is the goal.
+    goals,
     block: {
+      // "race" = the active folder's block.json, counting toward a date;
+      // "rolling" = the trailing 12-week window of generic mode.
+      mode: raceBlock ? "race" : "rolling",
       current_week: currentWeek,
       total_weeks: totalWeeks,
       block_start: blockStart,
@@ -351,33 +386,41 @@ export function computeFacts(strava, oura, state) {
       apparent_avg_f: a.weather?.apparent_avg_c != null ? +C_TO_F(a.weather.apparent_avg_c).toFixed(0) : null,
       humidity_avg: a.weather?.humidity_avg ?? null,
     })),
-    plan_blocks: state?.plan_blocks ?? [],
-    agent_notes: (state?.agent_notes ?? []).slice(-10),
+    plan_blocks: ctx?.plan_blocks ?? [],
+    agent_notes: (ctx?.agent_notes ?? []).slice(-10),
     // expired temporary context items are filtered out here — the agent
     // only ever sees constraints still in force. Local date, not UTC: an
     // item must stay active through the end of its expires day here.
-    preferences: activeContext(state?.preferences ?? {}, isoDate(new Date())),
+    preferences: activeContext(ctx?.preferences ?? {}, isoDate(today)),
   };
 }
 
-// TODO(tt-yib.3): replaced by goals/generic mode.
-// computeFacts still speaks the pre-v3 state shape (state.race, state.block,
-// state.plan_blocks). Those fields left state.json in the v3 split, so this
-// reads them back out of the active race folder — or the most recent archived
-// one — and hands computeFacts the shape it expects. When tt-yib.3 lands,
-// facts reads the folder (or config/goals.json) directly and this goes away.
-async function legacyRaceShim(projectRoot) {
-  const folder = await loadRaceOrMostRecent(projectRoot).catch((e) => {
-    console.warn(`• race folder unreadable (${e.message}) — falling back to the built-in race constants`);
+/**
+ * What the athlete is training FOR, right now: the active race folder, or —
+ * with none active — the goals file that drives generic mode. Also resolves
+ * where the plan lives (the race's plan.json, or config/generic-plan.json).
+ *
+ * Nothing here throws on race absence: generic mode is the default state of
+ * the app, and even a broken pointer degrades to it with a warning rather
+ * than taking the dashboard down.
+ * @returns {Promise<{race: object|null, block: object|null, goals: object|null, plan_blocks: object[]}>}
+ */
+async function trainingContext(projectRoot) {
+  const folder = await loadActiveRaceFolder(projectRoot).catch((e) => {
+    console.warn(`• active race unreadable (${e.message}) — coaching in generic mode`);
     return null;
   });
-  // The plan lives with the race it belongs to; loadPlanBlocks only knows
-  // about the ACTIVE race, so an archived folder's plan.json is read here.
-  const { race, block, plan } = folder ?? {};
-  const plan_blocks = Array.isArray(plan?.plan_blocks)
-    ? plan.plan_blocks
-    : (await loadPlanBlocks(projectRoot)).plan_blocks;
-  if (!folder) return { plan_blocks };
+  const { plan_blocks } = await loadPlanBlocks(projectRoot);
+  if (!folder) {
+    const { goals, bootstrapped, errors } = await loadGoals(projectRoot).catch((e) => {
+      console.warn(`• config/goals.json unreadable (${e.message}) — coaching without goals`);
+      return { goals: null, bootstrapped: false, errors: [] };
+    });
+    if (bootstrapped) console.log("• created config/goals.json (phase: maintain) — edit it in coach settings");
+    for (const err of errors) console.warn(`• config/goals.json: ${err}`);
+    return { race: null, block: null, goals, plan_blocks };
+  }
+  const { race, block } = folder;
   return {
     race: {
       name: race.name,
@@ -393,7 +436,8 @@ async function legacyRaceShim(projectRoot) {
       notes: Object.values(race.coach_notes ?? {}).filter(Boolean).join(" "),
       aid_stations: (race.aid_stations ?? []).map((a) => ({ mi: a.total_mi, name: a.name })),
     },
-    block: block ?? undefined,
+    block: block ?? null,
+    goals: null,
     plan_blocks,
   };
 }
@@ -415,15 +459,16 @@ export async function loadFactsFromRoot(projectRoot) {
     loadProfile(projectRoot),
     loadState(projectRoot),
   ]);
-  // state.json no longer carries race/block/plan_blocks (v3) — see the shim.
-  const stateForFacts = { ...state, ...(await legacyRaceShim(projectRoot)) };
+  // state.json no longer carries race/block/plan_blocks (v3) — the race (or
+  // the goals that stand in for it) comes from the folder, not from state.
+  const ctx = { ...state, ...(await trainingContext(projectRoot)) };
   if (!strava) throw new Error("strava.json missing — run sync:strava");
   const base = {
     profile,
     // same expiry filter on the embedded raw state, so the agent can't see
     // expired temporary items through this path either
     // Identity only. Every substantive field of state.json is already broken
-    // out at the top level of this digest (race, block, plan_blocks,
+    // out at the top level of this digest (race/goals, block, plan_blocks,
     // agent_notes, preferences), so embedding the whole blob here duplicated
     // ~25 KB — a third of the file — into a digest whose entire purpose is to
     // be readable in a single Read call. `agent_notes` alone was the full
@@ -432,7 +477,7 @@ export async function loadFactsFromRoot(projectRoot) {
     // state fresh from disk on purpose (a snapshot minutes old would clobber a
     // concurrent settings save), so the key stays present and truthy.
     state: { version: state?.version ?? null, last_updated: state?.last_updated ?? null },
-    ...computeFacts(strava, oura, stateForFacts),
+    ...computeFacts(strava, oura, ctx),
   };
   if (cross) {
     // Non-run activities (rides, hikes, strength, …) — context only. None of
