@@ -1,20 +1,36 @@
 #!/usr/bin/env node
-// Builds web/public/course.json — the Race views' source of truth — from the
-// race folder's course.gpx plus the aid chart / climb windows / sun times in
-// its race.json (races/<slug>/, tt-yib.2 — was config/race-course.json).
+// Builds ONE race folder's build/course.json — the Race views' source of truth
+// — from that folder's course.gpx plus the aid chart / climb windows / sun
+// times in its race.json (races/<slug>/, tt-yib.2 — was config/race-course.json).
 //
-// Usage:  node scripts/build-course.mjs      (run manually; output is committed)
+// Usage:  node scripts/build-course.mjs [--race <slug>]
+//
+//   --race <slug>   build races/<slug>/. Omitted: the active race
+//                   (config/active-race.json). With no active race the run
+//                   fails and lists the slugs it could have built — building
+//                   "whichever race is newest" behind the athlete's back is
+//                   how the wrong course.json used to reach the dashboard.
+//
+// Output is gitignored generated data (races/*/build/), not committed config.
+// The dev server serves the active-or-most-recent race's build/course.json and
+// build/crew-base.json at /course.json and /crew-base.json (web/vite.config.ts).
 //
 // Pipeline:
 //   1. Regex-scan the GPX for track points (lat/lon/ele; ele is meters) and the
 //      aid/crew/water waypoints. No XML dependency — StravaGPX is flat and stable.
 //   2. Cumulative haversine distance → per-point (mi, ele_ft).
 //   3. smoothProfile() (climb-lib) → clean 0.02 mi grid + hysteresis total gain.
-//   4. Snap each aid waypoint to its nearest track point, but search only within
-//      ±5 mi of its official mile (scaled by measured/official) so the Horton
-//      out-and-back can't snap the return-leg waypoint to the outbound leg.
-//   5. detectClimbs() over the whole course, then match each detected climb to the
-//      six approx_mi windows by maximum overlap (raw window as fallback).
+//   4. Resolve each aid station to a GPX waypoint (aid-match.mjs: the authored
+//      gpx_wpt when it still names a real waypoint, else name/mile matching),
+//      then snap that waypoint to its nearest track point searching only within
+//      ±SNAP_WINDOW_MI of its official mile (scaled by measured/official) so an
+//      out-and-back spur can't snap the return-leg waypoint to the outbound leg.
+//      A station the matcher cannot resolve confidently is NOT fatal: it falls
+//      back to a track-distance snap at its charted mile and warns.
+//   5. detectClimbs() over the whole course, then match each detected climb to
+//      the race.json approx_mi windows by maximum overlap (raw window as
+//      fallback). Any number of windows — a 50k with two climbs is as valid as
+//      a 100-miler with eight.
 //
 // Logs measured-vs-official distance & gain and every aid snap so the numbers can
 // be sanity-checked; warns on any snap > 1.5 mi off official.
@@ -23,13 +39,25 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { writeJsonAtomic } from "./lib.mjs";
 import { haversine, smoothProfile, detectClimbs, gainBetween } from "./climb-lib.mjs";
-import { loadRaceOrMostRecent } from "./race-config.mjs";
+import { getActiveRace, listRaces, loadRaceFolder } from "./race-config.mjs";
+import { matchAidStations, LOW_CONFIDENCE } from "./aid-match.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-const OUT_PATH = path.join(ROOT, "web", "public", "course.json");
 
 const M_PER_FT = 0.3048;
 const OUT_GRID_MI = 0.05; // profile resolution written to course.json
+
+/** ± window, in measured miles, for snapping a waypoint onto the track. */
+const SNAP_WINDOW_MI = 5;
+
+// A climb's detected start is extended back toward its authored window when the
+// approach is genuinely part of the climb rather than a separate bump: net
+// uphill over the approach, with no more than EXTEND_MAX_DRAWDOWN_FT of
+// give-back anywhere in it. Generic on purpose — a course whose first climb
+// opens with a bench before the wall, and one that starts straight up, both
+// want the same rule. Per-climb override: race.json race_climbs[].extend_start
+// = false to disable, or a number to set that climb's drawdown budget in feet.
+const EXTEND_MAX_DRAWDOWN_FT = 70;
 
 /** Parse GPX track points. ele is meters; carried forward if a point omits it. */
 function parseTrack(gpx) {
@@ -131,6 +159,17 @@ function nearestGridIdx(grid, mi) {
   return lo;
 }
 
+/** Index of the track point whose cumulative mile is nearest `mi`. */
+function nearestTrackIdx(track, mi) {
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < track.length; i++) {
+    const d = Math.abs(track[i].mi - mi);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
 /** Overlap length (mi) between [a0,a1] and [b0,b1]. */
 function overlap(a0, a1, b0, b1) {
   return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
@@ -151,11 +190,43 @@ async function osrmDrive(from, to) {
   };
 }
 
+/** `--race <slug>` (or `--race=<slug>`); null when the flag is absent. */
+function parseRaceArg(argv) {
+  const i = argv.indexOf("--race");
+  if (i >= 0) {
+    const slug = argv[i + 1];
+    if (!slug || slug.startsWith("--")) throw new Error("--race needs a race slug (see races/)");
+    return slug;
+  }
+  const eq = argv.find((a) => a.startsWith("--race="));
+  return eq ? eq.slice("--race=".length) : null;
+}
+
+/** The folder to build: --race, else the active race, else a listing + error. */
+async function resolveFolder(argv) {
+  const requested = parseRaceArg(argv) ?? (await getActiveRace(ROOT));
+  const known = await listRaces(ROOT);
+  if (!requested) {
+    const slugs = known.map((r) => r.slug);
+    throw new Error(
+      slugs.length
+        ? `no active race — pass --race <slug>. Available: ${slugs.join(", ")}`
+        : "no active race and no folders under races/ — nothing to build"
+    );
+  }
+  if (!known.some((r) => r.slug === requested)) {
+    const slugs = known.map((r) => r.slug);
+    throw new Error(
+      `no race folder "${requested}"${slugs.length ? ` — available: ${slugs.join(", ")}` : " — races/ is empty"}`
+    );
+  }
+  return loadRaceFolder(ROOT, requested);
+}
+
 async function main() {
-  // TODO(tt-yib.5): take the slug as an argument and write into the folder's
-  // build/ directory instead of assuming one course.json for the whole app.
-  const folder = await loadRaceOrMostRecent(ROOT);
-  if (!folder) throw new Error("no race folder under races/ — nothing to build");
+  const folder = await resolveFolder(process.argv.slice(2));
+  const buildDir = path.join(folder.dir, "build");
+  const outPath = path.join(buildDir, "course.json");
   const gpxPath = path.join(folder.dir, "course.gpx");
   const gpx = await fs.readFile(gpxPath, "utf8");
   const race = folder.race;
@@ -174,7 +245,7 @@ async function main() {
   const officialGain = race.gain_ft;
   const scale = measuredDist / officialDist; // measured miles per official mile
 
-  console.log(`── ${race.name} · course build ──`);
+  console.log(`── ${race.name} (${folder.slug}) · course build ──`);
   console.log(
     `distance: measured ${measuredDist.toFixed(2)} mi vs official ${officialDist} mi ` +
       `(${((measuredDist / officialDist - 1) * 100).toFixed(1)}%)`
@@ -186,9 +257,21 @@ async function main() {
   console.log(`track points: ${track.length} · grid points: ${grid.length}`);
   console.log("");
 
-  // ── Aid stations: snap each to the track ────────────────────────────────
+  // ── Aid stations: resolve to a waypoint, then snap to the track ─────────
+  // The authored gpx_wpt is still authoritative when it names a real waypoint;
+  // when it doesn't (a typo, or the organizer re-exported the GPX with new
+  // names) aid-match.mjs recovers the station by name and charted mile instead
+  // of throwing the way this script used to — an unseen GPX from a race site
+  // must never be able to fail the whole build. Anything it can only guess at
+  // (below LOW_CONFIDENCE, or no candidate at all) warns and falls back to a
+  // plain track-distance snap at the station's charted mile.
   const wptByName = new Map(waypoints.map((w) => [w.name, w]));
-  const aid_stations = race.aid_stations.map((a) => {
+  const matches = matchAidStations(race.aid_stations, {
+    waypoints: waypoints.map((w) => ({ name: w.name, lat: w.lat, lon: w.lon })),
+    track: track.map((p) => ({ lat: p.lat, lon: p.lon, cum_mi: p.mi })),
+  }, { scale });
+  const lastStationIdx = race.aid_stations.length - 1;
+  const aid_stations = race.aid_stations.map((a, i) => {
     const base = {
       name: a.name,
       total_mi: a.total_mi,
@@ -217,8 +300,10 @@ async function main() {
         return t;
       })(),
     };
-    if (!a.gpx_wpt) {
-      // Finish: no waypoint — track end is the finish line.
+    // The last station with no authored waypoint is the finish line, and the
+    // finish line is where the track stops — no matching needed, and no GPX
+    // ever marks it. (Generic: it is the definition of a course's end.)
+    if (!a.gpx_wpt && i === lastStationIdx) {
       const end = track[track.length - 1];
       base.gpx_mi = +measuredDist.toFixed(3);
       base.lat = +end.lat.toFixed(5);
@@ -226,12 +311,41 @@ async function main() {
       console.log(`  ${a.name.padEnd(16)} official ${a.total_mi.toFixed(1)} → track end ${measuredDist.toFixed(2)} mi (finish)`);
       return base;
     }
-    const wpt = wptByName.get(a.gpx_wpt);
-    if (!wpt) throw new Error(`GPX waypoint not found: "${a.gpx_wpt}" for ${a.name}`);
+
+    const match = matches[i];
+    const resolved = match.confidence >= LOW_CONFIDENCE ? match.gpx_wpt : null;
+    if (resolved && resolved !== a.gpx_wpt) {
+      console.warn(
+        `⚠︎ ${a.name}: gpx_wpt ${a.gpx_wpt ? `"${a.gpx_wpt}" is not in this GPX` : "is unset"} — ` +
+          `matched "${resolved}" by ${match.method} (confidence ${match.confidence})`
+      );
+    }
+    const wpt = resolved ? wptByName.get(resolved) : null;
+    if (!wpt) {
+      // No confident waypoint: put the station where the chart says it is,
+      // measured along the track. Lat/lon come from that track point, so the
+      // crew sheet's GPS link still lands on the course rather than nowhere.
+      const cand = match.candidates?.[0];
+      console.warn(
+        `⚠︎ ${a.name}: no confident GPX waypoint` +
+          `${cand ? ` (best candidate "${cand.wpt}", score ${cand.score})` : ""}` +
+          ` — snapping to the charted mile ${a.total_mi.toFixed(1)} along the track`
+      );
+      const at = track[nearestTrackIdx(track, a.total_mi * scale)];
+      base.gpx_mi = +at.mi.toFixed(3);
+      base.lat = +at.lat.toFixed(5);
+      base.lon = +at.lon.toFixed(5);
+      base.gpx_match = { method: match.method, confidence: match.confidence, snapped: "track-distance" };
+      console.log(`  ${a.name.padEnd(16)} official ${a.total_mi.toFixed(1)} → track ${at.mi.toFixed(2)} mi (distance snap)`);
+      return base;
+    }
+    if (match.method !== "exact") {
+      base.gpx_match = { method: match.method, confidence: match.confidence, wpt: resolved };
+    }
     base.lat = +wpt.lat.toFixed(5);
     base.lon = +wpt.lon.toFixed(5);
     const expectedMi = a.total_mi * scale;
-    const snap = snapWaypoint(track, wpt, expectedMi, 5);
+    const snap = snapWaypoint(track, wpt, expectedMi, SNAP_WINDOW_MI);
     base.gpx_mi = +snap.mi.toFixed(3);
     // Report delta against official, in official-mile space.
     const officialMi = snap.mi / scale;
@@ -246,15 +360,18 @@ async function main() {
   });
   console.log("");
 
-  // ── Race climbs: detect, then match to the six windows ──────────────────
+  // ── Race climbs: detect, then match to the authored windows ────────────
   const detected = detectClimbs(grid, { minGainFt: 300, minAvgGradePct: 3 });
   console.log(`detected ${detected.length} climbs ≥300 ft / ≥3% over the course`);
 
-  // Extend a matched climb's start back toward its manual window when the
-  // approach is genuinely part of the climb — net uphill with < 70 ft of
-  // drawdown. (The start climb gains ~250 ft in its first mile, sits on a
-  // ~0.6 mi bench, then climbs the wall; plain detection starts at the wall.)
-  const extendStart = (startMi, windowLoMi) => {
+  // Extend a matched climb's start back toward its authored window when the
+  // approach is genuinely part of the climb — net uphill, and never giving back
+  // more than `maxDrawdownFt` anywhere along the way. Detection alone starts a
+  // climb at the steep wall, so a climb that opens with a gentler mile and a
+  // bench would otherwise be reported shorter and steeper than it runs.
+  // See EXTEND_MAX_DRAWDOWN_FT for the default and the per-climb override.
+  const extendStart = (startMi, windowLoMi, maxDrawdownFt) => {
+    if (!(maxDrawdownFt > 0)) return startMi; // extension disabled for this climb
     if (windowLoMi >= startMi) return startMi;
     const seg = rawGrid.filter((p) => p.mi >= windowLoMi && p.mi <= startMi);
     if (seg.length < 2) return startMi;
@@ -265,10 +382,19 @@ async function main() {
       maxE = Math.max(maxE, p.ele_ft);
       drawdown = Math.max(drawdown, maxE - p.ele_ft);
     }
-    return net > 0 && drawdown < 70 ? windowLoMi : startMi;
+    return net > 0 && drawdown < maxDrawdownFt ? windowLoMi : startMi;
   };
 
-  const race_climbs = race.race_climbs.map((rc) => {
+  /** race.json race_climbs[].extend_start: false = off, number = ft budget. */
+  const drawdownBudget = (rc) => {
+    if (rc.extend_start === false) return 0;
+    if (typeof rc.extend_start === "number" && Number.isFinite(rc.extend_start)) {
+      return Math.max(0, rc.extend_start);
+    }
+    return EXTEND_MAX_DRAWDOWN_FT;
+  };
+
+  const race_climbs = (race.race_climbs ?? []).map((rc) => {
     // Windows in config are official miles; scale to measured space.
     const w0 = rc.approx_mi[0] * scale;
     const w1 = rc.approx_mi[1] * scale;
@@ -286,7 +412,7 @@ async function main() {
     let p;
     let stats;
     if (match) {
-      const startMi = extendStart(match.start_mi, w0);
+      const startMi = extendStart(match.start_mi, w0, drawdownBudget(rc));
       s = nearestGridIdx(grid, startMi);
       p = match.peakIdx;
       const lengthMi = match.end_mi - startMi;
@@ -353,11 +479,11 @@ async function main() {
     });
   }
 
-  // ── Crew base + drive times → gitignored crew-base.json ─────────────────
-  // The base is the athlete's race-week lodging: it lives in the gitignored
-  // config/profile.json (key `race_base`) and the output goes to a separate
-  // gitignored snapshot, so neither the address nor anything derived from it
-  // ends up in the committed course.json of this public repo.
+  // ── Crew base + drive times → build/crew-base.json ──────────────────────
+  // The base is the athlete's race-week lodging: it lives in the race folder's
+  // gitignored crew.private.json (or config/profile.json's `race_base`) and the
+  // output goes to a separate file, so neither the address nor anything derived
+  // from it ends up in course.json.
   let personal = null;
   try {
     personal = JSON.parse(await fs.readFile(path.join(ROOT, "config", "profile.json"), "utf8"));
@@ -419,15 +545,17 @@ async function main() {
         console.warn(`⚠︎ drive base → ${s.name} failed: ${e.message}`);
       }
     }
-    await writeJsonAtomic(path.join(ROOT, "web", "public", "crew-base.json"), {
+    await fs.mkdir(buildDir, { recursive: true });
+    await writeJsonAtomic(path.join(buildDir, "crew-base.json"), {
       generated_at: new Date().toISOString(),
+      race: folder.slug,
       base,
       drives,
       // The crew sheet's emergency strip reads these from here now that they
-      // are out of the committed course.json.
+      // are out of course.json.
       emergency,
     });
-    console.log("✓ wrote crew-base.json (gitignored — lodging address + emergency numbers)\n");
+    console.log(`✓ wrote races/${folder.slug}/build/crew-base.json (gitignored — lodging address + emergency numbers)\n`);
   }
 
   // ── Overview-map polyline: track lat/lon downsampled to ~400 points ─────
@@ -440,7 +568,7 @@ async function main() {
   map_track.push([+endPt.lat.toFixed(5), +endPt.lon.toFixed(5)]);
 
   // The projection's segment integrals and dwell walk assume ascending
-  // gpx_mi — a bad waypoint snap (e.g. onto the wrong side of the Horton
+  // gpx_mi — a bad waypoint snap (e.g. onto the wrong side of an
   // out-and-back spur) would corrupt ETAs silently downstream. Fail loudly.
   for (let i = 1; i < aid_stations.length; i++) {
     if (aid_stations[i].gpx_mi < aid_stations[i - 1].gpx_mi) {
@@ -453,7 +581,9 @@ async function main() {
 
   const payload = {
     generated_at: new Date().toISOString(),
-    source: `races/${folder.slug}/course.gpx + races/${folder.slug}/race.json`,
+    race: folder.slug,
+    race_name: race.name,
+    source: `${race.name} — races/${folder.slug}/course.gpx + races/${folder.slug}/race.json`,
     distance_mi: +measuredDist.toFixed(3),
     gain_ft: Math.round(measuredGain),
     official_distance_mi: officialDist,
@@ -467,10 +597,14 @@ async function main() {
     map_track,
     /** crew rules / directions distilled from the official crew manual */
     crew_info: race.crew_info ?? null,
+    /** what the aid chart / cutoffs were read from — the crew sheet names the
+        document rather than carrying a hard-coded manual year */
+    sources: race.sources ?? [],
   };
-  await writeJsonAtomic(OUT_PATH, payload);
+  await fs.mkdir(buildDir, { recursive: true });
+  await writeJsonAtomic(outPath, payload);
   console.log(
-    `✓ wrote course.json → ${OUT_PATH}\n` +
+    `✓ wrote course.json → races/${folder.slug}/build/course.json\n` +
       `  profile ${profile.length} pts · ${aid_stations.length} aid stations · ${race_climbs.length} climbs`
   );
 }

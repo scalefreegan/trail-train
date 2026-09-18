@@ -105,12 +105,11 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   fluid_ml_hr_heat: 650,
   heat_window: { start: "10:00", end: "17:00" },
   long_carry_h: 2.5,
-  drop_bag_gear: {
-    "Start": ["sunscreen + hat", "arm sleeves (am chill)"],
-    "Fish Hatchery": ["small headlamp (dusk cover → Buck Springs)", "long-sleeve for night", "anti-chafe"],
-    "Buck Springs": ["main headlamp + spare battery", "beanie + gloves", "warm midlayer", "caffeine starts here"],
-    "Geronimo": ["fresh socks + blister kit", "sunscreen for day 2"],
-  },
+  // Station names are per-race, so the built-in defaults carry NONE: the
+  // race folder's nutrition.json supplies them, keyed by station name ("Start"
+  // = the vest). A drop-bag station with no entry here still gets its row —
+  // the gear line is simply omitted (see planFuel's `?? []` and DropBagCard).
+  drop_bag_gear: {},
   caffeine: {
     body_kg: 79.4,
     gel_mg: 100,

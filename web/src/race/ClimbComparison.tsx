@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { motion } from "motion/react";
-import { useUnits, useMeasuredWidth } from "../data";
+import { useUnits, useMeasuredWidth, useBlockConfig } from "../data";
 import { SectionTag, Contours } from "../atoms";
 import { useClimbs, useCourse } from "./useRaceData";
 import { useRacePlan } from "./useRacePlan";
@@ -8,7 +8,9 @@ import type { Course, RaceClimb, TrainingClimb } from "./types";
 
 /* ------------------------------------------------------------------ */
 /*  Climb comparison — every significant training climb (dots) vs the  */
-/*  six race climbs (markers), plus each race climb's real profile.    */
+/*  race's climbs (markers), plus each race climb's real profile. The  */
+/*  race supplies however many climbs it has; nothing here assumes a   */
+/*  count.                                                             */
 /* ------------------------------------------------------------------ */
 
 function gradeColor(pct: number): string {
@@ -314,6 +316,7 @@ export function ClimbComparison() {
   const { course } = useCourse();
   const { climbs, missing, error } = useClimbs();
   const { panels } = useRacePlan();
+  const { race } = useBlockConfig();
 
   const training = useMemo(() => climbs?.climbs ?? [], [climbs]);
   const raceClimbs = useMemo(() => course?.race_climbs ?? [], [course]);
@@ -358,7 +361,7 @@ export function ClimbComparison() {
           </span>
         }
       >
-        climb readiness — you vs the monster
+        climb readiness — you vs {race.short.toLowerCase()}
       </SectionTag>
 
       <motion.div
@@ -379,8 +382,10 @@ export function ClimbComparison() {
           </div>
         )}
 
+        {/* columns follow the climb count: a 2-climb 50k gets 2 across,
+            anything larger fills the 3-up grid and wraps. */}
         {course && raceClimbs.length > 0 && (
-          <div className="climb-grid">
+          <div className="climb-grid" style={raceClimbs.length < 3 ? { gridTemplateColumns: `repeat(${raceClimbs.length}, 1fr)` } : undefined}>
             {raceClimbs.map((c) => (
               <MiniProfile key={c.id} climb={c} course={course} windowMi={windowMi} sharedSpanFt={sharedSpanFt} />
             ))}

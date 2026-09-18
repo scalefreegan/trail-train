@@ -17,7 +17,7 @@ import type { Course } from "./types";
 /*  Placement rule: spread `gels` evenly from nightfall to `tail_h`    */
 /*  before the projected finish, never tighter than `min_spacing_h`,   */
 /*  then snap each dose to a nearby aid station so the instruction is  */
-/*  "take one leaving Buck Springs" and not "take one at 18:07".      */
+/*  "take one leaving the next aid" and not "take one at 18:07".      */
 /*  Because the window is derived from proj.finish_h, moving the goal  */
 /*  slider moves the whole schedule.                                  */
 /* ------------------------------------------------------------------ */
@@ -160,7 +160,7 @@ export function planCaffeine(
   }
 
   // ---- station events available to snap to ----
-  // DEPARTURES only. "Take one leaving Buck Springs" is an instruction you can
+  // DEPARTURES only. "Take one leaving <station>" is an instruction you can
   // act on with a gel already in hand; "take one arriving" is ambiguous about
   // whether it comes out of the bag you're standing at or the one you carried.
   type Ev = { h: number; name: string; at: Exclude<DoseAnchor, null>; mi: number };

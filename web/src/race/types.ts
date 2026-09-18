@@ -72,7 +72,13 @@ export type Course = {
     cell_strategy: string;
     station_notes: Record<string, string>;
     start_notes: string;
+    /** how crews get around this course — replaces what used to be a
+        hard-coded sentence in CrewSheet. Optional: falls back to generic. */
+    driving?: string;
   } | null;
+  /** race.json `sources` — what the aid chart and cutoffs were read from, so
+      the crew sheet can name the document instead of hard-coding a year. */
+  sources?: { kind: "url" | "pdf" | "gpx"; ref: string }[];
 };
 
 /** crew-base.json — gitignored (contains the lodging address); written by

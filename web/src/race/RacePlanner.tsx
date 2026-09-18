@@ -821,7 +821,7 @@ export function RacePlanner() {
                           <a
                             href={gmapsDirectionsUrl(crewBase.base.address, course.map_track[0][0], course.map_track[0][1])}
                             target="_blank" rel="noopener noreferrer"
-                            title="google maps directions to the start (Two-Sixty TH)"
+                            title="google maps directions to the start"
                             style={{ color: "var(--creek)", textDecoration: "none", borderBottom: "1px dotted var(--creek)", whiteSpace: "nowrap" }}
                           >
                             drive to start {fmtDrive(crewBase.base.drive_to_start_min)} ↗

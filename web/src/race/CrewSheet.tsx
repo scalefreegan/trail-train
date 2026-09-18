@@ -119,6 +119,18 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
     return () => document.body.classList.remove("crew-printing");
   }, []);
 
+  // Crew prose comes from race.json's crew_info (the intake distills it from
+  // the organizer's crew manual); the fallbacks are true of any trail ultra.
+  const drivingNote = course.crew_info?.driving
+    ?? "see the official crew guide for driving directions; never block access roads.";
+  // "cutoffs from …" names the document they came from: the first manual-ish
+  // source in race.json, minus its parenthetical scope note.
+  const cutoffSource = useMemo(() => {
+    const manual = (course.sources ?? []).find((s) => /manual|guide|handbook/i.test(s.ref));
+    const ref = (manual ?? (course.sources ?? []).find((s) => s.kind !== "gpx"))?.ref;
+    return ref ? ref.replace(/\s*\([^)]*\)\s*$/, "") : "the official runner manual";
+  }, [course.sources]);
+
   const crewNames = course.aid_stations.filter((s) => s.crew || s.crew_only).map((s) => s.name);
   const dropNames = course.aid_stations.filter((s) => s.drop_bag).map((s) => s.name);
   const firstPacer = course.aid_stations.find((s) => s.pacers);
@@ -174,14 +186,21 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
                       target="_blank" rel="noopener noreferrer"
                       style={{ color: INK, textDecorationStyle: "dotted" }}
                     >
-                      the start (Two-Sixty TH)
+                      the start
                     </a>
                   ) : (
-                    "the start (Two-Sixty TH)"
+                    "the start"
                   )}
-                  {" "}<b>{fmtDrive(base.drive_to_start_min)}</b> — shuttles leave Old Pine lot 4:25a/4:40a
+                  {" "}<b>{fmtDrive(base.drive_to_start_min)}</b>
                 </>
               )}
+            </div>
+          )}
+          {/* Parking, shuttles and drop-off rules are per-race prose the
+              intake distills from the crew manual — never a literal here. */}
+          {course.crew_info?.start_notes && (
+            <div style={{ fontSize: 11, color: MUTED, marginTop: 3 }}>
+              <b>Start:</b> {course.crew_info.start_notes}
             </div>
           )}
           <div style={{ display: "flex", gap: 26, marginTop: 10, fontSize: 12 }}>
@@ -287,13 +306,13 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
 
         {/* notes */}
         <div style={{ marginTop: 12, fontSize: 10.5, color: INK, lineHeight: 1.6 }}>
-          <b>Crew access:</b> {crewNames.join(", ")} — see the official Crew Guide for driving directions; never block forest roads.<br />
+          <b>Crew access:</b> {crewNames.join(", ")}{drivingNote ? ` — ${drivingNote}` : ""}<br />
           <b>Drop bags:</b> {dropNames.join(", ")}.
           {" "}<b>Pacers:</b> from {firstPacer?.name} ({u.dist(firstPacer?.total_mi ?? 0, 0)} {u.distUnit}) onward, one at a time.<br />
-          <b>Night:</b> sunset {course.sun.sunset} · sunrise {course.sun.sunrise} — headlamp in the Fish Hatchery drop bag.
+          <b>Night:</b> sunset {course.sun.sunset} · sunrise {course.sun.sunrise} — night gear rides in the drop bags listed above.
           {" "}<b>If the runner drops:</b> they must report to an aid station captain — never leave the course unreported.<br />
           <span style={{ color: MUTED }}>
-            ETAs from Basecamp's pacing model (best/worst = ± model band); cutoffs from the 2025 runner manual.
+            ETAs from Basecamp's pacing model (best/worst = ± model band); cutoffs from {cutoffSource}.
             {" "}GPS links open Google Maps driving directions from the base — coordinates are the station point, not the parking area.
             {" "}Drive times are OSRM road estimates; forest-road conditions vary, so verify against the official Crew Guide and add buffer.
           </span>

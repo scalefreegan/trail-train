@@ -19,7 +19,7 @@
 //   - <2 usable samples → empty grid / no climbs (never throws).
 //   - Non-monotonic distance (GPS jitter, brief backtracks) → backward/duplicate
 //     samples are dropped before resampling, so interpolation stays well-defined.
-//   - Out-and-back sections (e.g. the Horton spur) keep advancing cumulative
+//   - Out-and-back sections (a spur to a turnaround) keep advancing cumulative
 //     distance, so they resample fine — disambiguation is the caller's job (snap
 //     each waypoint within a mile window), not this library's.
 //   - Flat activities → gain 0, zero climbs. A single monotonic climb → one climb.
