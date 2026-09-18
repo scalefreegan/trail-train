@@ -18,12 +18,15 @@ export const RACE_SCHEMA_VERSION = 1;
 export const RACE_STATUSES = ["draft", "active", "archived"];
 
 /**
- * Who last set a field. "computed" is a third party alongside the human and
- * the intake agent: scripts/race-sun.mjs derives `sun` from the course
- * coordinates, so neither hand-editing it nor re-running intake is what that
- * value came from — and only "user" is protected from a re-intake merge.
+ * Who last set a field. "computed" and "matcher" are third parties alongside
+ * the human and the intake agent: scripts/race-sun.mjs derives `sun` from the
+ * course coordinates, and scripts/race-build.mjs's aid-station matcher picks a
+ * station's `gpx_wpt` out of the GPX — neither is a hand edit nor an agent
+ * claim, and only "user" is protected from a re-intake merge. They are kept
+ * apart because a matcher entry also carries its confidence and method, which
+ * a re-match is allowed to overwrite; a computed one has no such gradient.
  */
-export const PROVENANCE_BY = ["user", "agent", "computed"];
+export const PROVENANCE_BY = ["user", "agent", "computed", "matcher"];
 
 /** Folders whose name starts with "_" are scratch/templates, never races. */
 const SKIP_PREFIXES = ["_", "."];

@@ -117,9 +117,12 @@ window. The coach coaches toward the goals prose.
   "links": { "site": "", "manual": "", "gpx": "", "tracking": "", "results": "", "map": "" },
   "visual": { "theme_preset": "alpine", "accent": "#...", "hero": "hero.jpg",
               "panels": { "climb_comparison": true, "crew_sheet": true, "model_check": true } },
-  "provenance": {                         // per top-level field: who last set it
+  "provenance": {                         // per field path: who last set it
                                           // by: user | agent | computed (scripts/race-sun.mjs)
+                                          //   | matcher (scripts/race-build.mjs picked a station's
+                                          //     gpx_wpt out of the GPX; carries confidence + method)
     "aid_stations": { "by": "agent", "at": "...", "source": "manual-2026.pdf p11" },
+    "aid_stations[3].gpx_wpt": { "by": "matcher", "at": "...", "confidence": 0.95, "method": "fuzzy" },
     "date": { "by": "user", "at": "..." }
   },
   "sources": [ { "kind": "url|pdf|gpx", "ref": "...", "fetched_at": "..." } ]
