@@ -478,10 +478,16 @@ const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, swatch, .
       e.currentTarget.style.outline = "none";
     }}
   >
-    <span aria-hidden style={{ width: 8, color: "var(--lamp)", fontSize: 10 }}>{current ? "•" : ""}</span>
-    {/* Every row keeps the slot whether or not it has a dot, so the names
-        line up: the menu is a column, and a ragged one reads as a mistake. */}
-    <span aria-hidden style={SWATCH_SLOT}>{swatch}</span>
+    {/* One mark, not two: the dot IS the race's palette, and the race on
+        screen is the one wearing a ring. (aria-checked on the row is what
+        actually says "current" — this is its visible half.) Fixed width
+        whether or not there is a dot, so the names stay in a column. */}
+    <span
+      aria-hidden
+      style={{ ...SWATCH_SLOT, boxShadow: current ? "inset 0 0 0 1px var(--lamp)" : undefined }}
+    >
+      {swatch}
+    </span>
     <span style={{ fontSize: 12.5, color: "var(--mist)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
       {label}
     </span>
@@ -491,11 +497,15 @@ const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, swatch, .
   </button>
 );
 
-/** The swatch column in the switcher menu: one accent dot per race, always
-    the same width so a row without one (New race…) does not shift the names. */
-const SWATCH_DOT = 7;
+/** The switcher menu's left gutter: one accent dot per race, inside a slot
+    that gains a lamp ring when that race is the one on screen. Same width on
+    every row, dot or no dot, so the names stay in a column. */
+const SWATCH_DOT = 6;
 const SWATCH_SLOT: React.CSSProperties = {
-  width: SWATCH_DOT, height: SWATCH_DOT, flex: "0 0 auto", alignSelf: "center", display: "flex",
+  // 11px so the gutter costs the names almost nothing against the bullet it
+  // replaces, and a 6px dot still has room for the ring
+  width: 11, height: 11, borderRadius: "50%", flex: "0 0 auto", alignSelf: "center",
+  display: "flex", alignItems: "center", justifyContent: "center",
 };
 /** The menu shows the light source and nothing else — the full seven-swatch
     strip belongs on a screen where a palette is being CHOSEN, not listed. */
