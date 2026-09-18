@@ -12,11 +12,13 @@
 //   5. Extract the JSON, write web/public/coach.json
 //
 // Usage:  node scripts/coach.mjs [--max-turns 8] [--timeout 240]
+//         node scripts/coach.mjs --print-prompt [path]   (dry run, no session)
 
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import { loadFactsFromRoot } from "./facts.mjs";
 import { loadState, saveState, mergeAgentUpdate } from "./state.mjs";
 import { arg, writeJsonAtomic } from "./lib.mjs";
@@ -52,6 +54,11 @@ const MODEL = typeof MODEL_ARG === "string" && MODEL_ARG.trim() ? MODEL_ARG.trim
 // Passed by the dashboard's resync endpoint from the live UI toggle, or
 // set manually: `node scripts/coach.mjs --units imperial`.
 const UNITS = String(arg("units", process.env.TRAIL_UNITS || "metric")) === "imperial" ? "imperial" : "metric";
+// Dry run: assemble the facts and both prompts, write them out, spawn nothing.
+// A headless session costs real money and a usage slot, so reviewing a prompt
+// change must not require paying for one.
+//   node scripts/coach.mjs --print-prompt [path]
+const PRINT_PROMPT = arg("print-prompt", null);
 
 
 /* -------- Claude Code CLI subprocess (pattern from agent-trade) -------- */
@@ -79,16 +86,69 @@ function failureHint(text) {
   return null;
 }
 
-const SYSTEM_PROMPT_TEMPLATE = (profile, hasPacing) => `You are the coach inside Trail Almanac, a personal ultra-training dashboard.
+/**
+ * The parts of the prompt that depend on WHAT the athlete is training for.
+ *
+ * With a race active that is the race and its block; in generic mode
+ * (PRD §6) it is config/goals.json and a rolling window — so the race
+ * paragraph becomes a goals paragraph and every "race week 20" style
+ * instruction has to go with it. Exported so the chat prompt can share it
+ * when the two prompts are merged (tt-yib.10).
+ */
+export function coachFocus(facts) {
+  const block = facts?.block ?? {};
+  const totalWeeks = block.total_weeks ?? 12;
+  const race = facts?.race;
+  const n = (v) => (typeof v === "number" ? v.toLocaleString("en-US") : null);
 
-The athlete is ${profile.athlete_name}, training for the Mogollon Monster 100 (102.3 mi, 15,900 ft, Sept 12, 2026).
+  if (race) {
+    const spec = [
+      race.distance_mi != null ? `${n(race.distance_mi)} mi` : null,
+      race.elevation_ft != null ? `${n(Math.round(race.elevation_ft))} ft` : null,
+      race.date,
+    ].filter(Boolean).join(", ");
+    const days = race.days_until != null ? `, ${race.days_until} days out` : "";
+    return {
+      training_for: `They are training for ${race.name}${spec ? ` (${spec}${days})` : ""}${race.location ? `, ${race.location}` : ""}.`,
+      block_phrase: `their planned ${totalWeeks}-week training block`,
+      wk_comment: `training-block week number (1..${totalWeeks})`,
+      plan_horizon: `(or fewer if fewer remain before race week ${totalWeeks})`,
+      // the intake writes these; they are the only course prose the coach gets
+      course_line: [race.notes, race.max_elev_ft != null ? `Max elevation ${n(Math.round(race.max_elev_ft))} ft.` : null]
+        .filter(Boolean).join(" "),
+      shape_line: `Reflect race-specific prep: the demands named above, a taper proportional to the distance, race week = wk ${totalWeeks}.`,
+      user_horizon: `for ${race.name} (${race.days_until} days out)`,
+      state_line: "the race (meta, block targets, the current plan_blocks) lives in races/<slug>/",
+    };
+  }
+
+  const goals = facts?.goals ?? {};
+  const band = goals.weekly_volume_band ?? {};
+  const range = (pair, unit) =>
+    Array.isArray(pair) && pair.length === 2 ? `${n(pair[0])}-${n(pair[1])} ${unit}` : `unset ${unit}`;
+  const eventClass = goals.event_class || "no named event";
+  return {
+    training_for: `NO RACE IS ACTIVE — there is no date to count down to. They are training toward ${eventClass}${goals.horizon ? ` (${goals.horizon})` : ""}, currently in a "${goals.phase || "unset"}" phase, with a target weekly volume band of ${range(band.dist_mi, "mi")} and ${range(band.vert_ft, "ft")} of vert.${goals.notes ? ` Athlete's goals notes: ${goals.notes}` : ""} These goals (facts.goals) are the standing target; you may PROPOSE a change to the phase or the band in your summary, but the athlete accepts it in settings — never assume it.`,
+    block_phrase: `a rolling ${totalWeeks}-week training window (facts.block.mode "rolling": wk ${totalWeeks} is the CURRENT week and wk 1 is ${totalWeeks - 1} weeks ago; weekly targets are the coach's own planned weeks where they exist, else the midpoint of the goals band)`,
+    wk_comment: `week index in the rolling ${totalWeeks}-week window — wk ${totalWeeks} is the CURRENT week, so the weeks you plan ahead continue ${totalWeeks + 1}, ${totalWeeks + 2}, …`,
+    plan_horizon: "(the window rolls forward one week at a time, so prior plan_blocks were indexed against LAST week's window — re-index them rather than assuming they line up)",
+    course_line: "",
+    shape_line: `There is no race week and no taper to build toward. Shape the six weeks to the current phase (${goals.phase || "unset"}) and keep each week inside the goals volume band — if the data justifies stepping outside it, say so explicitly and propose the band change.`,
+    user_horizon: `toward ${eventClass}`,
+    state_line: "the standing goals live in config/goals.json and the rolling plan_blocks in config/generic-plan.json",
+  };
+}
+
+const SYSTEM_PROMPT_TEMPLATE = (profile, hasPacing, focus) => `You are the coach inside Trail Almanac, a personal ultra-training dashboard.
+
+The athlete is ${profile.athlete_name}. ${focus.training_for}
 They live in ${profile.location}. Local training trails: ${(profile.home_trails || []).join(", ") || "their home mountains"}.
 
 You will be given the path to a JSON facts file built from their Strava activities, Oura ring
 data, weather conditions during each run, Google Calendar events (next 14 days under
 facts.calendar.upcoming_14d; schedule-shaping events over the full ~30-day window — trips,
 races, recurring family commitments like weekend kid sports — under
-facts.calendar.upcoming_notable), and their planned 20-week training block. You may also read
+facts.calendar.upcoming_notable), and ${focus.block_phrase}. You may also read
 the underlying snapshots at web/public/strava.json, web/public/cross-train.json,
 web/public/oura.json, web/public/google-cal.json, and web/public/state.json for additional
 context if useful.
@@ -149,7 +209,7 @@ below it needs evidence, exactly as deviating above it does. Unearned caution ha
 cost in a 100: it forfeits the time-on-feet and eccentric-load adaptations the race demands.
 
 DURABILITY & RACE-EFFORT SIMULATION — the race is ~30+ hours at very low intensity. The
-limiting factor late in a 100 is musculoskeletal (quads on the rim descents, feet,
+limiting factor late in a 100 is musculoskeletal (quads on the long descents, feet,
 connective tissue), not aerobic fitness. Build that specific durability:
 - When recovery is merely "okay" (not flagged), prefer converting a day to long,
   very-low-intensity time-on-feet over cutting it: same or more hours at strictly capped
@@ -200,8 +260,8 @@ upcoming_14d and upcoming_notable against them before locking in a key_session, 
 a constraint applies, name the workaround explicitly (e.g. "5:30am start to finish before
 Em event") — never work around one silently.
 
-Persistent state is split: web/public/state.json holds agent_notes and preferences, and the
-race (meta, block targets, the current plan_blocks) lives in races/<slug>/. You already see
+Persistent state is split: web/public/state.json holds agent_notes and preferences, and
+${focus.state_line}. You already see
 the key contents of both in the facts file. Treat the EXISTING plan_blocks as the prior plan.
 Do not regenerate from scratch every run — keep what still makes sense, only revise blocks
 where new data justifies a change. If the current plan still fits the picture, return it
@@ -218,11 +278,11 @@ When done, respond with ONLY a single JSON object — no prose outside, no markd
   "recommendations": ["actionable bullet w/ specific session/day", ...],   // 2-5 short-horizon items (next 14 days)
   "plan_blocks": [                                          // 6 weeks starting from the CURRENT week (current_week..current_week+5). KEEP prior plan unless data justifies a change.
     {
-      "wk": 6,                                              // training-block week number (1..total_weeks)
+      "wk": 6,                                              // ${focus.wk_comment}
       "label": "Specific endurance",                        // 1-3 word block theme
       "dist_mi": 60,                                        // planned miles for the week (you may adjust from target if recovery/load suggests it)
       "elev_ft": 10800,                                     // planned vert (ft)
-      "focus": "8-12 word coaching focus for the week",     // strategic intent, e.g. "B2B long w/ rim-specific vert; heat block starts"
+      "focus": "8-12 word coaching focus for the week",     // strategic intent, e.g. "B2B long w/ course-specific vert; heat block starts"
       "key_session": "Sat 16-18 mi / 3,500 ft on home long-route trail, fuel @ 300 kcal/h",  // the one signal workout
       "quality": 2                                          // # of quality (non-easy) sessions, 1-3
     },
@@ -242,18 +302,16 @@ Rules:
 - Prose INSIDE plan_blocks (focus, key_session) follows the selected unit system like all
   other prose. When carrying forward prior blocks whose text is in the other unit system,
   convert the text — a pure unit conversion does not count as a plan change.
-- No emojis. No platitudes. Direct, specific, useful.
-- The course climbs the rim 6×, max elev 7,912 ft. Heat / altitude / technical descent are the real wildcards.
+- No emojis. No platitudes. Direct, specific, useful.${focus.course_line ? `\n- Course: ${focus.course_line}` : ""}
 
 For plan_blocks:
-- Start at the CURRENT week (current_week) and emit exactly 6 blocks (or fewer if fewer
-  remain before race week 20). The current week's block reflects the plan for the REST of
+- Start at the CURRENT week (block.current_week) and emit exactly 6 blocks
+  ${focus.plan_horizon}. The current week's block reflects the plan for the REST of
   this week: keep what already happened fixed, plan the remaining days.
 - The base targets are in block.weekly_target. Prior agent decisions are in plan_blocks (top level).
   PREFER continuity — keep prior blocks if they still hold up; revise only what new data
   justifies. State your reason in summary or new_notes when you change something.
-- Reflect Mogollon-specific prep: heat block in the build-out, course rec near peak, taper
-  proportional, race week = wk 20.
+- ${focus.shape_line}
 - In build weeks (before the taper), when recovery signals allow, at least one key_session
   per 2-3 weeks should be a race-effort simulation or back-to-back long block per the
   DURABILITY section — not every long run, but a recurring thread.
@@ -377,6 +435,10 @@ async function main() {
   if (!facts.recovery) console.warn("• oura.json missing — agent will reason on strava alone");
   const factsPath = path.join(os.tmpdir(), `trail-facts-${Date.now()}.json`);
   await fs.writeFile(factsPath, JSON.stringify(facts, null, 2));
+  const focus = coachFocus(facts);
+  console.log(facts.race
+    ? `• race: ${facts.race.name} (${facts.race.days_until} days out)`
+    : `• no active race — coaching toward the goals in config/goals.json (phase ${facts.goals?.phase ?? "unset"})`);
 
   const prompt = `Today is ${facts.today}. Read the training facts at:
   ${factsPath}
@@ -395,15 +457,24 @@ than a readout built from the facts digest alone. Read the slice you need with
 offset/limit rather than the whole file, and stop as soon as you can write.
 
 Produce the JSON coach readout per the schema in the system prompt. Be specific about the
-next 14 days for ${facts.race.name} (${facts.race.days_until} days out). Anchor every claim
-in real numbers from the data.`;
+next 14 days ${focus.user_horizon}. Anchor every claim in real numbers from the data.`;
+
+  const systemPrompt = SYSTEM_PROMPT_TEMPLATE(facts.profile || {}, Boolean(facts.pacing), focus);
+  if (PRINT_PROMPT) {
+    const out = typeof PRINT_PROMPT === "string"
+      ? PRINT_PROMPT
+      : path.join(os.tmpdir(), `trail-coach-prompt-${Date.now()}.txt`);
+    await fs.writeFile(out, `===== SYSTEM PROMPT =====\n${systemPrompt}\n\n===== USER PROMPT =====\n${prompt}\n`);
+    console.log(`✓ wrote the assembled prompt to ${out} (facts: ${factsPath}) — no session spawned`);
+    return;
+  }
 
   console.log(`• spawning claude -p (model ${MODEL}, max-turns ${MAX_TURNS}, timeout ${TIMEOUT}s)…`);
   const t0 = Date.now();
   if (!facts.pacing) console.warn("• facts.pacing null (< 8 usable runs) — agent will estimate durations without a pacing model");
   const { stdout } = await runClaude({
     prompt,
-    systemPrompt: SYSTEM_PROMPT_TEMPLATE(facts.profile || {}, Boolean(facts.pacing)),
+    systemPrompt,
     maxTurns: MAX_TURNS,
     timeoutSec: TIMEOUT,
     cwd: ROOT,
@@ -485,4 +556,8 @@ in real numbers from the data.`;
   }
 }
 
-main().catch((e) => { console.error("\n✗", e.message || e); process.exit(1); });
+// Only when run as a script: coachFocus is imported elsewhere (the chat
+// prompt, tests), and importing this file must never spawn a paid session.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((e) => { console.error("\n✗", e.message || e); process.exit(1); });
+}
