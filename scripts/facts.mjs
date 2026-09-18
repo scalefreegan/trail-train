@@ -15,20 +15,12 @@ import { ROLLING_WEEKS, rollingBlock } from "./block.mjs";
 // Heat exposure threshold (Celsius) — mirrors weather.mjs WEATHER_HOT_THRESHOLD_C.
 const HOT_THRESHOLD_C = 24;
 
-/**
- * Load athlete profile (name, location, home trails). Falls back to the
- * generic example file if a personal profile.json doesn't exist yet.
- */
-export async function loadProfile(projectRoot) {
-  const tryPaths = [
-    path.join(projectRoot, "config", "profile.json"),
-    path.join(projectRoot, "config", "profile.example.json"),
-  ];
-  for (const p of tryPaths) {
-    try { return JSON.parse(await fs.readFile(p, "utf8")); } catch {}
-  }
-  return { athlete_name: "the athlete", location: "their home mountains", home_trails: [] };
-}
+// Athlete profile (name, location, home trails, physiology). The loader moved
+// to scripts/profile.mjs in tt-yib.9 — physiology defaults and validation are
+// shared with the settings API, and a module that only reads config/ is a
+// cheaper import for vite.config.ts than all of facts.mjs. Re-exported here
+// so every existing `import { loadProfile } from "./facts.mjs"` still works.
+export { loadProfile } from "./profile.mjs";
 
 // Generic mode's window length. Re-exported because this module was its
 // original home and coach.mjs/the tests import it from here; the definition
