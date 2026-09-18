@@ -200,8 +200,9 @@ upcoming_14d and upcoming_notable against them before locking in a key_session, 
 a constraint applies, name the workaround explicitly (e.g. "5:30am start to finish before
 Em event") — never work around one silently.
 
-Persistent state lives in web/public/state.json — you already see its key contents in the facts
-file (plan_blocks, agent_notes, preferences). Treat the EXISTING plan_blocks as the prior plan.
+Persistent state is split: web/public/state.json holds agent_notes and preferences, and the
+race (meta, block targets, the current plan_blocks) lives in races/<slug>/. You already see
+the key contents of both in the facts file. Treat the EXISTING plan_blocks as the prior plan.
 Do not regenerate from scratch every run — keep what still makes sense, only revise blocks
 where new data justifies a change. If the current plan still fits the picture, return it
 mostly unchanged. BUT continuity is not a ratchet: a carried-forward block planned BELOW

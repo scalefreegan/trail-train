@@ -35,6 +35,8 @@ races/*/build/
 # race.json, course.gpx, block.json and nutrition.json ARE committed.
 races/*/plan.json
 races/*/result.json
+# Same for the generic-mode plan the coach writes when no race is active.
+config/generic-plan.json
 # The active-race pointer is a per-machine choice (and may name a draft that
 # only exists locally) — never a committed one.
 config/active-race.json
