@@ -98,3 +98,69 @@ export function useClimbs() {
   }, [refreshKey]);
   return { climbs: data, missing, error };
 }
+
+/* ------------------------------------------------------------------ */
+/*  Athlete physiology — config/profile.json (tt-yib.9)                */
+/*                                                                    */
+/*  Body mass and the long-run reference distance belong to the        */
+/*  RUNNER, not to the race: a race folder has to be shareable without */
+/*  carrying someone's weight, and the pacing fit must not silently be */
+/*  read at a reference distance a different race chose. They live in  */
+/*  the gitignored config/profile.json and reach the client through    */
+/*  the settings endpoint the coach dialog already uses, rather than   */
+/*  through a generated file in web/public — one writer, one reader,   */
+/*  and an edit in the dialog is live on the next refresh pulse.       */
+/*                                                                    */
+/*  That endpoint is dev-only middleware, so a static build (or a dev  */
+/*  server that hasn't been restarted) legitimately has no profile.    */
+/*  The defaults below then carry the page, and `error` says which     */
+/*  numbers the plan is actually built on — a caffeine band against a  */
+/*  stand-in body mass looks exactly like one against the athlete's,   */
+/*  which is the whole reason this stopped being a hard-coded 79.4.    */
+/* ------------------------------------------------------------------ */
+
+export type Physiology = {
+  /** athlete mass, kg — drives every mg/kg caffeine figure */
+  body_kg: number;
+  /** distance the fitted fitness pace is evaluated at, mi (pacing D_REF) */
+  long_run_ref_mi: number;
+};
+
+/** KEEP IN SYNC with PHYSIOLOGY_FIELDS in scripts/profile.mjs — the server
+    normalizes to the same numbers, these cover the endpoint being absent. */
+export const DEFAULT_PHYSIOLOGY: Physiology = { body_kg: 75, long_run_ref_mi: 20 };
+
+const isPhysNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
+
+export function usePhysiology() {
+  const { key: refreshKey } = useRefresh();
+  const [data, setData] = useState<Physiology>(DEFAULT_PHYSIOLOGY);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let stale = false;
+    fetch(`/api/settings?t=${Date.now()}`)
+      .then(async (r) => {
+        if (stale) return;
+        if (!r.ok) {
+          setError(`athlete profile unavailable (HTTP ${r.status}) — planning against ${DEFAULT_PHYSIOLOGY.body_kg} kg defaults`);
+          return;
+        }
+        const d = await r.json().catch(() => { throw new Error("parse"); });
+        if (stale) return;
+        const p = (d as { physiology?: Partial<Physiology> }).physiology;
+        // the server already applied its own defaults; this is belt-and-braces
+        // against a hand-edited profile reaching the client half-validated
+        if (!p || !isPhysNumber(p.body_kg) || !isPhysNumber(p.long_run_ref_mi)) {
+          setError(`config/profile.json has no usable physiology — planning against ${DEFAULT_PHYSIOLOGY.body_kg} kg / ${DEFAULT_PHYSIOLOGY.long_run_ref_mi} mi defaults`);
+          return;
+        }
+        setData({ body_kg: p.body_kg, long_run_ref_mi: p.long_run_ref_mi });
+        setError(null);
+      })
+      .catch(() => {
+        if (!stale) setError(`athlete profile unreadable — planning against ${DEFAULT_PHYSIOLOGY.body_kg} kg defaults`);
+      });
+    return () => { stale = true; };
+  }, [refreshKey]);
+  return { physiology: data, error };
+}

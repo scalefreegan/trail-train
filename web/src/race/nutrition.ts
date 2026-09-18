@@ -50,9 +50,6 @@ export type NutritionConfig = {
     darkness and the circadian low rather than by carb demand, so it can't be
     folded into the phase model. Everything here is per-athlete tuning. */
 export type CaffeineConfig = {
-  /** athlete mass, kg — every mg/kg figure on the page depends on this, and
-      no other config file carries a body weight. Wrong here = wrong dose. */
-  body_kg: number;
   /** caffeine in one caffeinated gel, mg (Maurten CAF 100 = 100) */
   gel_mg: number;
   /** how many caffeinated gels to place across the race */
@@ -111,7 +108,6 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
   // the gear line is simply omitted (see planFuel's `?? []` and DropBagCard).
   drop_bag_gear: {},
   caffeine: {
-    body_kg: 79.4,
     gel_mg: 100,
     gels: 9,
     min_spacing_h: 1.75,
@@ -127,6 +123,20 @@ export const DEFAULT_NUTRITION: NutritionConfig = {
 };
 
 const isHM = (v: unknown): v is string => typeof v === "string" && /^([01]?\d|2[0-3]):[0-5]\d$/.test(v);
+
+/** One note per session for a nutrition.json still carrying `caffeine.body_kg`
+    — see normalizeNutrition. Module-level, so a refetch on every refresh pulse
+    doesn't repeat it. */
+let legacyBodyKgNoted = false;
+function noteLegacyBodyKg() {
+  if (legacyBodyKgNoted) return;
+  legacyBodyKgNoted = true;
+  console.info(
+    "nutrition.json still has caffeine.body_kg — ignoring it. Body mass now " +
+      "lives in config/profile.json as physiology.body_kg (editable in the " +
+      "coach settings dialog); the key can be deleted from the race folder.",
+  );
+}
 
 /** Validate a fetched nutrition.json and merge it over the defaults. Nested
     objects are deep-merged or fall back wholesale — a partial heat_window or
@@ -175,10 +185,20 @@ export function normalizeNutrition(d: unknown): NutritionConfig | null {
   // caffeine: every field reaches either mg/kg arithmetic or the dose-placement
   // loop, so a hand-edited string or a zero body mass must not survive. A
   // partial block merges over the defaults rather than falling back wholesale.
-  const rawCaf = (raw.caffeine ?? {}) as Partial<CaffeineConfig>;
+  const rawCaf = (raw.caffeine ?? {}) as Partial<CaffeineConfig> & { body_kg?: unknown };
   const caffeine: CaffeineConfig = { ...DEFAULT_NUTRITION.caffeine, ...rawCaf };
+  // tt-yib.9 moved body mass to config/profile.json's `physiology.body_kg`: a
+  // race folder has to be shareable without carrying the athlete's weight, and
+  // the mg/kg band must not depend on which race folder happens to be active.
+  // Older files still carry the key — strip it (the spread would otherwise
+  // smuggle it back into the merged config) and say so once per session, not
+  // once per refetch, so the note reads as a migration hint and not as noise.
+  if ("body_kg" in rawCaf) {
+    delete (caffeine as Record<string, unknown>).body_kg;
+    noteLegacyBodyKg();
+  }
   const cafPositive = [
-    "body_kg", "gel_mg", "min_spacing_h", "half_life_h",
+    "gel_mg", "min_spacing_h", "half_life_h",
     "cola_mg", "band_lo_mg_kg", "band_hi_mg_kg",
   ] as const;
   for (const k of cafPositive) caffeine[k] = posOr(caffeine[k], DEFAULT_NUTRITION.caffeine[k]);

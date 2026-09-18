@@ -87,6 +87,12 @@ export function planCaffeine(
   fuel: FuelPlan,
   raceStart: Date,
   cfg: CaffeineConfig,
+  /** athlete mass, kg — from config/profile.json's `physiology.body_kg` via
+      useRacePlan, NOT from the race folder (tt-yib.9). Every mg/kg figure on
+      the page scales with it, so it is a required argument rather than an
+      optional with a default: a plan silently built against a stand-in weight
+      is the failure this move was meant to end. */
+  bodyKg: number,
   timeZone: string,
 ): CaffeinePlan {
   const k = Math.LN2 / cfg.half_life_h;
@@ -126,7 +132,7 @@ export function planCaffeine(
     return clock >= setClock || clock < riseClock;
   };
 
-  const band = { lo_mg: cfg.band_lo_mg_kg * cfg.body_kg, hi_mg: cfg.band_hi_mg_kg * cfg.body_kg };
+  const band = { lo_mg: cfg.band_lo_mg_kg * bodyKg, hi_mg: cfg.band_hi_mg_kg * bodyKg };
 
   // ---- background doses: race-morning coffee + aid-station cola ----
   const bg: Array<[number, number]> = [];
@@ -301,7 +307,7 @@ export function planCaffeine(
   for (let x = from; x <= to + 1e-9; x += STEP) {
     const mg = loadAt(x, all, k);
     curve.push({ h: x, mg });
-    if (mg > peak.mg) peak = { h: x, mg, mg_kg: mg / cfg.body_kg };
+    if (mg > peak.mg) peak = { h: x, mg, mg_kg: mg / bodyKg };
   }
 
   const gel_mg_total = doses.reduce((a, d) => a + d.mg, 0);

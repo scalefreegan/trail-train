@@ -318,12 +318,14 @@ function LegRow({ seg, caf, clock, last, show }: {
 export function NutritionPlan() {
   const { race } = useRacePlan();
   const { course, missing, error, proj, nutrition, fuelPlan, raceStart, timeZone, clock,
-    nutritionError, features, panels, raceConfig } = useRacePlan();
+    nutritionError, physiology, physiologyError, features, panels, raceConfig } = useRacePlan();
   const cfg = nutrition.caffeine;
+  // body mass comes from the athlete profile, not the race folder (tt-yib.9)
+  const bodyKg = physiology.body_kg;
 
   const caf = useMemo(
-    () => (course && proj && fuelPlan ? planCaffeine(proj, course, fuelPlan, raceStart, cfg, timeZone) : null),
-    [course, proj, fuelPlan, raceStart, cfg, timeZone],
+    () => (course && proj && fuelPlan ? planCaffeine(proj, course, fuelPlan, raceStart, cfg, bodyKg, timeZone) : null),
+    [course, proj, fuelPlan, raceStart, cfg, bodyKg, timeZone],
   );
 
   const finishH = proj?.finish_h.avg ?? 0;
@@ -378,7 +380,7 @@ export function NutritionPlan() {
     );
   }
 
-  const kg = cfg.body_kg;
+  const kg = bodyKg;
   const g = (perKg: number) => Math.round(perKg * kg);
   const cafGels = caf.doses.length;
   const plainGels = Math.max(0, fuelPlan.total_gels - cafGels);
@@ -956,6 +958,7 @@ export function NutritionPlan() {
         </span>
         <span>Not medical advice. Rehearse the caffeine timing and the gel-to-mix ratio on a long run before race day.</span>
         {nutritionError && <span style={{ color: "var(--ember)" }}>{nutritionError}</span>}
+        {physiologyError && <span style={{ color: "var(--ember)" }}>{physiologyError}</span>}
       </div>
     </section>
   );
