@@ -108,13 +108,23 @@ async function slugExists(root, slug) {
 
 /**
  * Guard the one destructive thing intake could do: overwrite a race folder.
- * Re-intake is a separate bead with a merge step, so without `refresh` this
- * refuses rather than clobbering hand edits.
+ *
+ * `outDir` moves the question: a re-intake writes a SHADOW copy of the folder
+ * (races/<slug>/.refresh/ — scripts/race-refresh.mjs), so what must be free is
+ * that directory, not races/<slug>/, which is the whole point of the exercise
+ * and is left exactly as it is until the diff is accepted. Without an outDir,
+ * `refresh` alone still means "overwrite" — the CLI's escape hatch.
  * @param {string} root
  * @param {string} slug
- * @param {{refresh?: boolean}} [opts]
+ * @param {{refresh?: boolean, outDir?: string|null}} [opts]
  */
-export async function assertSlugAvailable(root, slug, { refresh = false } = {}) {
+export async function assertSlugAvailable(root, slug, { refresh = false, outDir = null } = {}) {
+  if (outDir) {
+    // The shadow folder is the run's own scratch space; a stale one from an
+    // abandoned refresh is replaced, not defended.
+    if (!refresh) throw new Error(`refresh: true is required to write a shadow folder (${outDir})`);
+    return;
+  }
   if (!(await slugExists(root, slug))) return;
   if (refresh) return;
   throw new Error(`races/${slug}/race.json already exists — pass refresh: true to re-intake it (hand edits are NOT merged by this stage)`);
@@ -779,6 +789,12 @@ function summarizeGpx(text) {
  * @param {{name: string, path: string}[]} [opts.uploads] PDFs/GPX already on disk (copied, never moved)
  * @param {string} [opts.notes] the owner's "what matters to me"
  * @param {boolean} [opts.refresh] allow an existing slug to be overwritten
+ * @param {string|null} [opts.outDir] write the draft and its source cache HERE
+ *   instead of races/<slug>/ — how a re-intake fills its shadow folder without
+ *   touching the live race (PRD §8 re-intake). Implies `refresh`.
+ * @param {typeof runClaudeJson} [opts.runAgent] the headless spawn. Injectable
+ *   for the same reason race-plan.mjs's is: the write path is what is worth
+ *   testing and it is the half locked behind a paid agent turn.
  * @param {string} [opts.slugHint] the folder to write, when the caller already
  *   knows it (re-intake). Checked BEFORE the agent runs so an existing race
  *   refuses in a second rather than after a ten-minute read, and it WINS over
@@ -798,12 +814,14 @@ export async function runIntake({
   uploads = [],
   notes = "",
   refresh = false,
+  outDir = null,
   slugHint = null,
   onProgress = () => {},
   maxPages = MAX_FETCH_PAGES,
   maxTurns = INTAKE_MAX_TURNS,
   timeoutSec = INTAKE_TIMEOUT_SEC,
   model = agentModel(),
+  runAgent = runClaudeJson,
 }) {
   if (!root) throw new Error("runIntake: root is required");
   if (!siteUrl || !/^https?:\/\//i.test(siteUrl)) throw new Error("runIntake: siteUrl must be an http(s) URL");
@@ -812,7 +830,7 @@ export async function runIntake({
   const say = (step, message, extra = {}) => onProgress({ step, status: "log", message, ...extra });
   // Fail fast when the caller already knows the folder: the alternative is
   // spending the whole agent run and refusing afterwards.
-  if (slugHint) await assertSlugAvailable(root, slugHint, { refresh });
+  if (slugHint) await assertSlugAvailable(root, slugHint, { refresh, outDir });
 
   // Stage everything in a temp dir: the folder name depends on the race NAME,
   // which only the agent can tell us. The cache moves into races/<slug>/sources/
@@ -904,7 +922,7 @@ export async function runIntake({
     /* 4. the agent */
     onProgress({ step: "agent", status: "start", label: "reading sources with the intake agent" });
     const prompt = buildPrompt({ siteUrl, extraUrls, year, notes, manifest, images, gpxSummary, sourcesDir });
-    const { text, wrapper, retried } = await runClaudeJson({
+    const { text, wrapper, retried } = await runAgent({
       prompt,
       systemPrompt: SYSTEM_PROMPT,
       allowedTools: ["WebFetch", "WebSearch", "Read"],
@@ -926,7 +944,7 @@ export async function runIntake({
     // somewhere readable — a run that cost ten minutes and a chunk of the
     // owner's session budget must not evaporate into a deleted temp dir.
     const abort = async (slugForOutput, reason, message) => {
-      const where = await saveRawOutput({ root, slug: slugForOutput, staging, sourcesDir, raw: text, reason });
+      const where = await saveRawOutput({ root, slug: slugForOutput, outDir, staging, sourcesDir, raw: text, reason });
       if (where.kept) keepStaging = true;
       throw new Error(`${message}\n(raw agent output saved to ${where.path})`);
     };
@@ -947,7 +965,7 @@ export async function runIntake({
       await abort(slug, contract.errors.join("; "), `intake agent output failed the contract:\n  · ${contract.errors.join("\n  · ")}`);
     }
 
-    await assertSlugAvailable(root, slug, { refresh });
+    await assertSlugAvailable(root, slug, { refresh, outDir });
 
     const race = buildRaceJson(draft, { slug, year: Number(year), manifest });
     const unresolved = collectUnresolved(race, draft.unresolved ?? []);
@@ -957,7 +975,7 @@ export async function runIntake({
     }
     for (const e of excused) say("validate", `known gap (listed unresolved): ${e}`);
 
-    const dir = raceDir(root, slug);
+    const dir = outDir ?? raceDir(root, slug);
     await moveSources(staging, dir);
     await writeJsonAtomic(path.join(dir, "sources", "manifest.json"), manifest);
     await writeJsonAtomic(path.join(dir, "race.json"), race);
@@ -1011,10 +1029,16 @@ async function moveSources(staging, dir) {
  * instead, and the caller is told where it is.
  * @returns {Promise<{path: string, kept: boolean}>} where the output ended up
  */
-async function saveRawOutput({ root, slug, staging, sourcesDir, raw, reason }) {
+async function saveRawOutput({ root, slug, outDir = null, staging, sourcesDir, raw, reason }) {
   try {
     await fs.writeFile(path.join(sourcesDir, "agent-output.json"), raw ?? "");
     await fs.writeFile(path.join(sourcesDir, "agent-output-error.txt"), `${new Date().toISOString()}\n${reason}\n`);
+    // A shadow run has somewhere of its own to fail into, and nothing there is
+    // anybody's cache but this run's.
+    if (outDir) {
+      await moveSources(staging, outDir);
+      return { path: path.join(outDir, "sources", "agent-output.json"), kept: false };
+    }
     if (!(await slugExists(root, slug))) {
       await moveSources(staging, raceDir(root, slug));
       return { path: `races/${slug}/sources/agent-output.json`, kept: false };

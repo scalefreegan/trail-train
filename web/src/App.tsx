@@ -16,6 +16,7 @@ import {
 import { RaceTheme, RefreshProvider, UnitsProvider, StravaProvider, OuraProvider, StateProvider } from "./providers";
 import CoachSettings from "./CoachSettings";
 import RaceIntake from "./race/RaceIntake";
+import RaceRefresh from "./race/RaceRefresh";
 import { SectionTag, Contours } from "./atoms";
 import { RacePlanner } from "./race/RacePlanner";
 import { ClimbComparison } from "./race/ClimbComparison";
@@ -180,6 +181,18 @@ function orderedRaces(list: RaceListEntry[]): RaceListEntry[] {
     race.json will not parse has nothing to review. */
 const isReviewable = (r: RaceListEntry) => r.status === "draft" && !r.error;
 
+/** Any race whose race.json parses can be re-read from its own sources —
+    draft, active or archived. An archived one is the interesting case: the
+    organizer posts the finished results and the following year's chart to the
+    same page, and a folder that is read-only in the app is not read-only to
+    the intake. A folder we cannot parse has no links to refresh from. */
+const isRefreshable = (r: RaceListEntry) => !r.error;
+
+/** How many menu rows a race contributes: itself, plus its "Review…" and
+    "Refresh from sources…" rows. cursorForSlug and itemCount both count with
+    this, and the render order below has to match it. */
+const rowsFor = (r: RaceListEntry) => 1 + (isReviewable(r) ? 1 : 0) + (isRefreshable(r) ? 1 : 0);
+
 /** Where the cursor lands on a given slug, counting the "No race" row above
     the list and the extra "Review…" row each draft contributes. Has to agree
     with the render order below — the roving-focus index is an index into the
@@ -188,15 +201,16 @@ function cursorForSlug(list: RaceListEntry[], slug: string | null): number {
   let i = 1;
   for (const r of orderedRaces(list)) {
     if (r.slug === slug) return i;
-    i += isReviewable(r) ? 2 : 1;
+    i += rowsFor(r);
   }
   return 0;
 }
 
 /** The kinds of row in the menu, in order: "No race (generic)", one per race
-    folder (a draft followed by its "Review…" row), then — when there is a race
-    to retire — "Archive with result…", then "New race…". */
-type SwitcherItemKind = "generic" | "race" | "review" | "archive" | "new";
+    folder (a draft followed by its "Review…" row, then every race's "Refresh
+    from sources…" row), then — when there is a race to retire — "Archive with
+    result…", then "New race…". */
+type SwitcherItemKind = "generic" | "race" | "review" | "refresh" | "archive" | "new";
 
 /**
  * The short code in the command bar, as a menu over every race folder.
@@ -219,6 +233,9 @@ function RaceSwitcher() {
      race…"), a slug is the review screen of a draft already on disk. */
   const [intake, setIntake] = useState<{ slug: string | null } | null>(null);
   const [archiveOpen, setArchiveOpen] = useState<RaceListEntry | null>(null);
+  /* The re-intake dialog. It opens on a folder that already exists, and may
+     find a diff from an earlier run still waiting in it. */
+  const [refreshing, setRefreshing] = useState<RaceListEntry | null>(null);
   const [cursor, setCursor] = useState(0);
 
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -256,9 +273,9 @@ function RaceSwitcher() {
     return null;
   }, [races, trainingSlug, viewing, viewedResult]);
 
-  /** menu length: "No race", every race, a "Review…" row per draft, maybe
+  /** menu length: "No race", every race with its own extra rows, maybe
       "Archive with result…", then "New race…" */
-  const itemCount = (races?.length ?? 0) + (races?.filter(isReviewable).length ?? 0)
+  const itemCount = (races ?? []).reduce((n, r) => n + rowsFor(r), 0)
     + 2 + (archiveTarget ? 1 : 0);
 
   const close = useCallback((restoreFocus = true) => {
@@ -350,7 +367,7 @@ function RaceSwitcher() {
       tabIndex: cursor === i ? 0 : -1,
       onMouseEnter: () => setCursor(i),
     };
-    return kind === "new" || kind === "archive" || kind === "review"
+    return kind === "new" || kind === "archive" || kind === "review" || kind === "refresh"
       ? { ...common, role: "menuitem" as const }
       : { ...common, role: "menuitemradio" as const, "aria-checked": kind === "generic" ? currentSlug == null : slug === currentSlug };
   };
@@ -432,6 +449,14 @@ function RaceSwitcher() {
                         onSelect={() => { setOpen(false); setIntake({ slug: entry.slug }); }}
                       />
                     )}
+                    {isRefreshable(entry) && (
+                      <SwitcherRow
+                        {...itemProps("refresh", entry.slug)}
+                        label="↳ Refresh from sources…"
+                        hint="re-read the site and manual · diff before anything is written"
+                        onSelect={() => { setOpen(false); setRefreshing(entry); }}
+                      />
+                    )}
                   </Fragment>
                 ))}
               </div>
@@ -465,6 +490,13 @@ function RaceSwitcher() {
         <RaceIntake
           slug={intake.slug}
           onClose={() => { setIntake(null); triggerRef.current?.focus(); }}
+        />
+      )}
+      {refreshing && (
+        <RaceRefresh
+          slug={refreshing.slug}
+          name={refreshing.name}
+          onClose={() => { setRefreshing(null); triggerRef.current?.focus(); }}
         />
       )}
       {archiveOpen && (

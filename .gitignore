@@ -30,6 +30,9 @@ web/public/crew-base.json
 races/*/*.private.json
 races/*/sources/
 races/*/build/
+# The re-intake shadow folder: a whole second copy of the race, produced by
+# "Refresh from sources" and deleted on Accept or Reject (scripts/race-refresh.mjs).
+races/*/.refresh/
 # plan.json is agent-managed (the coach rewrites it every resync) and
 # result.json records a real finish — both are personal/local like state.json.
 # race.json, course.gpx, block.json and nutrition.json ARE committed.

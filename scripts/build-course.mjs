@@ -39,7 +39,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { writeJsonAtomic } from "./lib.mjs";
 import { haversine, smoothProfile, detectClimbs, gainBetween } from "./climb-lib.mjs";
-import { getActiveRace, listRaces, loadRaceFolder } from "./race-config.mjs";
+import { getActiveRace, listRaces, loadRaceFolder, loadRaceFolderAt } from "./race-config.mjs";
 import { matchAidStations, LOW_CONFIDENCE } from "./aid-match.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
@@ -295,7 +295,11 @@ export function crewBaseFromPrivate(privateJson) {
 export async function buildCourse(root, slug, opts = {}) {
   const log = opts.log ?? ((line) => console.log(line));
   const warn = opts.warn ?? ((line) => console.warn(line));
-  const folder = await loadRaceFolder(root, slug);
+  // `dir` overrides races/<slug>/ — a re-intake builds a shadow copy of the
+  // folder (scripts/race-refresh.mjs) and must not write over the live one.
+  const folder = opts.dir
+    ? await loadRaceFolderAt(opts.dir, slug)
+    : await loadRaceFolder(root, slug);
   const buildDir = path.join(folder.dir, "build");
   const outPath = path.join(buildDir, "course.json");
   const gpxPath = path.join(folder.dir, "course.gpx");

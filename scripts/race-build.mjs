@@ -33,7 +33,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { arg, writeJsonAtomic } from "./lib.mjs";
 import { LOW_CONFIDENCE, matchAidStations, parseGpx } from "./aid-match.mjs";
-import { loadRaceFolder, raceDir, validateRaceJson } from "./race-config.mjs";
+import { loadRaceFolderAt, raceDir, validateRaceJson } from "./race-config.mjs";
 import { collectUnresolved, draftValidationErrors, kebab } from "./race-intake.mjs";
 import { buildCourse } from "./build-course.mjs";
 import { computeRaceSun, SUN_SOURCE } from "./race-sun.mjs";
@@ -195,9 +195,11 @@ function matchStations(race, gpx, unresolved, warnings, at) {
 }
 
 /**
- * Run stage 2 over races/<slug>/.
+ * Run stage 2 over races/<slug>/ — or over `dir`, when a re-intake is building
+ * a shadow copy of the folder (scripts/race-refresh.mjs). `root` still points
+ * at the repo either way; only the folder being written moves.
  *
- * @param {{root: string, slug: string,
+ * @param {{root: string, slug: string, dir?: string,
  *          onProgress?: (e: {step: string, status: string, label?: string,
  *                            message?: string, stream?: string}) => void}} opts
  * @returns {Promise<{slug: string, dir: string, unresolved: string[],
@@ -206,18 +208,17 @@ function matchStations(race, gpx, unresolved, warnings, at) {
  *   `unresolved` is what still needs a human after this stage; `matched` has one
  *   row per aid station (`written` marks the ones the matcher committed).
  */
-export async function buildRace({ root, slug, onProgress = () => {} }) {
+export async function buildRace({ root, slug, dir = raceDir(root, slug), onProgress = () => {} }) {
   if (!root) throw new Error("buildRace: root is required");
   if (!slug) throw new Error("buildRace: slug is required");
   const step = (id, status, extra = {}) => onProgress({ step: id, status, ...extra });
   const say = (id, message, extra = {}) => onProgress({ step: id, status: "log", message, ...extra });
   const at = new Date().toISOString();
   const warnings = [];
-  const dir = raceDir(root, slug);
 
   /* 1. validate */
   step("validate", "start", { label: "validating race.json" });
-  const folder = await loadRaceFolder(root, slug);
+  const folder = await loadRaceFolderAt(dir, slug);
   const race = structuredClone(folder.race);
   const { unresolved, excused } = validateForBuild(slug, race);
   for (const e of excused) say("validate", `known gap (listed unresolved): ${e}`);
@@ -297,6 +298,7 @@ export async function buildRace({ root, slug, onProgress = () => {} }) {
   /* 5. the course build */
   step("build", "start", { label: "building course.json" });
   const course = await buildCourse(root, slug, {
+    dir,
     log: (line) => say("build", line),
     warn: (line) => say("build", line, { stream: "err" }),
   });

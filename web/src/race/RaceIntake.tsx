@@ -30,6 +30,8 @@ import { THEME_PRESET_NAMES } from "../themes/presets";
 import { ThemePreview } from "../themes/ThemePreview";
 import type { Course, RaceAidStation, RaceBlock, RaceConfig } from "./types";
 import type { NutritionConfig } from "./nutrition-config";
+import { cellStyle, inputStyle, runStage, type StageEvent, type StageRow, type StageState } from "./dialogChrome";
+
 
 /* ------------------------------------------------------------------ */
 /*  Shapes                                                             */
@@ -68,7 +70,6 @@ type ReviewPayload = {
 const LOW_CONFIDENCE = 0.6;
 
 type StageId = "intake" | "build" | "plan";
-type StageState = "pending" | "running" | "done" | "error" | "skipped";
 
 const STAGES: { id: StageId; label: string; blurb: string }[] = [
   { id: "intake", label: "sources → draft", blurb: "fetches the site, the manual and the GPX, then one agent turn transcribes the aid chart" },
@@ -80,93 +81,13 @@ const STAGES: { id: StageId; label: string; blurb: string }[] = [
 /*  SSE                                                                */
 /* ------------------------------------------------------------------ */
 
-type StageEvent =
-  | { kind: "step"; id: string; status: string; label?: string }
-  | { kind: "log"; line: string }
-  | { kind: "error"; message: string };
-
-/**
- * POST a stage endpoint and consume its SSE stream, resolving with the final
- * `done` payload. The same frame parser providers.tsx uses for /api/refresh —
- * these endpoints speak the identical dialect on purpose.
- *
- * Rejects on a transport failure or on a `done` that says `ok: false`, with
- * the server's own sentence: scripts/agent-run.mjs has already turned an
- * expired sign-in or a spent usage limit into what to do about it, and
- * rewording that here would only make it vaguer.
- */
-async function runStage(
-  url: string,
-  body: unknown,
-  onEvent: (e: StageEvent) => void,
-  signal: AbortSignal,
-): Promise<Record<string, unknown>> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-    throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
-  }
-  if (!res.body) throw new Error("the server sent no stream");
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  let done: Record<string, unknown> | null = null;
-
-  const frame = (block: string) => {
-    let evt = "message";
-    let data = "";
-    for (const line of block.split("\n")) {
-      if (line.startsWith("event:")) evt = line.slice(6).trim();
-      else if (line.startsWith("data:")) data += line.slice(5).trim();
-    }
-    if (!data) return;
-    let payload: Record<string, unknown>;
-    try { payload = JSON.parse(data); } catch { return; }
-    if (evt === "step") onEvent({ kind: "step", id: String(payload.id ?? ""), status: String(payload.status ?? ""), label: payload.label as string | undefined });
-    else if (evt === "log") onEvent({ kind: "log", line: String(payload.line ?? "") });
-    else if (evt === "error") onEvent({ kind: "error", message: String(payload.message ?? "") });
-    else if (evt === "done") done = payload;
-  };
-
-  for (;;) {
-    const { done: closed, value } = await reader.read();
-    if (closed) break;
-    buf += decoder.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buf.indexOf("\n\n")) >= 0) {
-      frame(buf.slice(0, idx));
-      buf = buf.slice(idx + 2);
-    }
-  }
-  if (!done) throw new Error("the stream ended before the stage reported a result");
-  const result = done as Record<string, unknown>;
-  if (result.ok !== true) throw new Error(String(result.error ?? "the stage failed without saying why"));
-  return result;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Shared bits of chrome                                              */
-/* ------------------------------------------------------------------ */
-
-const inputStyle: React.CSSProperties = {
-  background: "var(--night-deep)", border: "1px solid var(--edge-bright)",
-  color: "var(--mist)", fontSize: 12.5, padding: "7px 10px", outline: "none",
-};
-const cellStyle: React.CSSProperties = { ...inputStyle, fontSize: 11.5, padding: "4px 6px", width: "100%" };
-
-const Eyebrow = ({ children }: { children: React.ReactNode }) => (
+export const Eyebrow = ({ children }: { children: React.ReactNode }) => (
   <div className="eyebrow" style={{ fontSize: 9, color: "var(--lamp)", margin: "0 0 8px" }}>{children}</div>
 );
-const Hint = ({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) => (
+export const Hint = ({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) => (
   <div style={{ fontSize: 10.5, color: "var(--mist-mute)", marginTop: 4, lineHeight: 1.45, ...style }}>{children}</div>
 );
-const Block = ({ children }: { children: React.ReactNode }) => (
+export const Block = ({ children }: { children: React.ReactNode }) => (
   <div style={{ marginBottom: 26 }}>{children}</div>
 );
 
@@ -445,7 +366,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
               {(ranAnything || runError) && (
                 <Block>
                   <Eyebrow>progress</Eyebrow>
-                  <StageList state={stageState} log={stageLog} />
+                  <StageList stages={STAGES} state={stageState} log={stageLog} />
                   {runError && (
                     <p style={{ fontSize: 11.5, color: "var(--ember)", lineHeight: 1.5, marginTop: 12 }}>
                       {runError}
@@ -496,7 +417,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
 
 /** Close only when the CLICK STARTED on the backdrop — releasing a
     text-selection drag over the edge of the panel must not close it. */
-function Backdrop({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+export function Backdrop({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
   const startedOnBackdrop = useRef(false);
   return (
     <div
@@ -512,30 +433,37 @@ function Backdrop({ children, onClose }: { children: React.ReactNode; onClose: (
   );
 }
 
-/** The three stages as a run sheet — same vocabulary as the command bar's
-    resync filament, one row per stage because these are minutes, not seconds. */
-function StageList({ state, log }: { state: Record<StageId, StageState>; log: Record<StageId, string> }) {
+/** A run sheet — same vocabulary as the command bar's resync filament, one row
+    per stage because these are minutes, not seconds. The stages are a
+    parameter: the intake runs three and a refresh (RaceRefresh.tsx) runs four,
+    and they are the same sheet. */
+export function StageList({ stages, state, log }: {
+  stages: StageRow[];
+  state: Record<string, StageState>;
+  log: Record<string, string>;
+}) {
   const tint: Record<StageState, string> = {
     pending: "var(--edge-bright)", running: "var(--lamp)", done: "var(--pine)",
     error: "var(--ember)", skipped: "var(--edge-bright)",
   };
+  const at = (id: string): StageState => state[id] ?? "pending";
   return (
     <ol style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 10 }}>
-      {STAGES.map((s, i) => (
-        <li key={s.id} style={{ display: "flex", gap: 10, alignItems: "baseline", opacity: state[s.id] === "skipped" ? 0.45 : 1 }}>
+      {stages.map((s, i) => (
+        <li key={s.id} style={{ display: "flex", gap: 10, alignItems: "baseline", opacity: at(s.id) === "skipped" ? 0.45 : 1 }}>
           <span
             aria-hidden
-            className={state[s.id] === "running" ? "pulse" : undefined}
-            style={{ width: 7, height: 7, transform: "rotate(45deg)", background: tint[state[s.id]], flexShrink: 0, marginTop: 4 }}
+            className={at(s.id) === "running" ? "pulse" : undefined}
+            style={{ width: 7, height: 7, transform: "rotate(45deg)", background: tint[at(s.id)], flexShrink: 0, marginTop: 4 }}
           />
           <span className="numerals" style={{ fontSize: 10.5, color: "var(--mist-mute)", width: 14 }}>{i + 1}</span>
           <span style={{ flex: 1, minWidth: 0 }}>
-            <span style={{ fontSize: 12.5, color: state[s.id] === "pending" ? "var(--mist-mute)" : "var(--mist)" }}>{s.label}</span>
+            <span style={{ fontSize: 12.5, color: at(s.id) === "pending" ? "var(--mist-mute)" : "var(--mist)" }}>{s.label}</span>
             <div style={{ fontSize: 10.5, color: "var(--mist-mute)", lineHeight: 1.45, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {log[s.id] || s.blurb}
             </div>
           </span>
-          <span className="eyebrow" style={{ fontSize: 8, color: tint[state[s.id]], whiteSpace: "nowrap" }}>{state[s.id]}</span>
+          <span className="eyebrow" style={{ fontSize: 8, color: tint[at(s.id)], whiteSpace: "nowrap" }}>{at(s.id)}</span>
         </li>
       ))}
     </ol>

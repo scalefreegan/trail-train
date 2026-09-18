@@ -1827,6 +1827,204 @@ function racePlanApi(): Plugin {
   }
 }
 
+/* Dev-only middleware: re-intake, the "Refresh from sources" half of PRD §8.
+     POST /api/race-intake/refresh        — { slug, uploads[], notes, site_url,
+       extra_urls } → SSE progress like the other three stage endpoints, then a
+       final `done` carrying the diff. This is the expensive one: it runs stage
+       1 (one agent turn) and stage 3 (another) into races/<slug>/.refresh/.
+     GET  /api/races/:slug/refresh        — the diff waiting for review, or 404
+       when there is none.
+     POST /api/races/:slug/refresh/accept — apply the merge, delete the shadow.
+     POST /api/races/:slug/refresh/reject — delete the shadow. Nothing else.
+
+   The live folder is not written until accept, which is scripts/race-refresh.mjs's
+   guarantee and not this middleware's: everything here does is route, guard the
+   slug and stream. Nothing touches config/active-race.json — a race being
+   refreshed is still the race the athlete is training for.
+
+   TWO mounts, one plugin, and the registration order matters twice over:
+   /api/race-intake/refresh must be registered before raceIntakeApi (connect
+   matches by path prefix in registration order, so /api/race-intake would
+   otherwise swallow it), and /api/races/<slug>/refresh before raceSwitchApi,
+   whose GET /api/races answers the race LIST for anything on that prefix. */
+function raceRefreshApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* A slug, a note and a handful of upload paths; a body bigger than this is
+     not one. */
+  const BODY_MAX_BYTES = 1024 * 1024
+  /* The same pin raceIntakeApi puts on upload paths: a POST must not be able
+     to name any file on the disk for the intake to copy into a race folder. */
+  const safeRoots = [os.tmpdir(), '/tmp', '/private/tmp', projectRoot].map((p) => {
+    try { return fs.realpathSync(p) } catch { return p }
+  })
+  const insideSafeRoot = (p: string): boolean => {
+    let real: string
+    try { real = fs.realpathSync(p) } catch { return false }
+    return safeRoots.some((root) => real === root || real.startsWith(root + path.sep))
+  }
+
+  type RefreshMod = {
+    runRefresh: (opts: Record<string, unknown>) => Promise<{ slug: string; dir: string; shadow: string; diff: Record<string, unknown> }>
+    readRefresh: (root: string, slug: string) => Promise<Record<string, unknown> | null>
+    acceptRefresh: (opts: Record<string, unknown>) => Promise<{ slug: string; wrote: string[]; sources: string | null; conflicts: unknown[] }>
+    rejectRefresh: (opts: Record<string, unknown>) => Promise<{ slug: string; removed: boolean }>
+  }
+
+  return {
+    name: 'trail-train-race-refresh-api',
+    apply: 'serve',
+    configureServer(server) {
+      const json = (res: ServerResponse, code: number, payload: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(JSON.stringify(payload))
+      }
+      const refreshMod = () =>
+        // vite.config.ts can't statically import from scripts/ (ESM JS outside
+        // the TS project), so the module is imported per request.
+        import(path.join(projectRoot, 'scripts/race-refresh.mjs')) as Promise<RefreshMod>
+      const readBody = async (req: IncomingMessage): Promise<Record<string, unknown> | null | undefined> => {
+        const chunks: Buffer[] = []
+        let total = 0
+        for await (const c of req) {
+          total += (c as Buffer).byteLength
+          if (total > BODY_MAX_BYTES) return undefined
+          chunks.push(c as Buffer)
+        }
+        try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as Record<string, unknown> }
+        catch { return null }
+      }
+      /* The slug becomes a path segment, so the kebab shape is the guard as
+         much as the schema: no dots, no separators, nothing to traverse. */
+      const raceExists = (slug: string) =>
+        /^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug) && fs.existsSync(path.join(projectRoot, 'races', slug, 'race.json'))
+
+      /* ---- the run: POST /api/race-intake/refresh ---- */
+      server.middlewares.use('/api/race-intake/refresh', async (req, res) => {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        if (crossSiteBlocked(req, res)) return
+
+        const body = await readBody(req)
+        if (body === undefined) { json(res, 413, { error: 'request body too large' }); return }
+        if (body === null) { json(res, 400, { error: 'bad json' }); return }
+
+        const slug = typeof body.slug === 'string' ? body.slug.trim() : ''
+        if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) { json(res, 400, { error: 'slug: lowercase kebab-case required' }); return }
+        if (!raceExists(slug)) {
+          json(res, 404, { error: `no race folder "${slug}" — races/${slug}/race.json is not there` })
+          return
+        }
+        const uploads: { name: string; path: string }[] = []
+        for (const u of Array.isArray(body.uploads) ? body.uploads : []) {
+          const up = (u ?? {}) as { name?: unknown; path?: unknown }
+          if (typeof up.path !== 'string' || !up.path) { json(res, 400, { error: 'uploads[].path: string required' }); return }
+          if (!insideSafeRoot(up.path)) {
+            json(res, 400, { error: `uploads[].path must be a file from /api/race-intake/upload (or inside the project): ${up.path}` })
+            return
+          }
+          uploads.push({ name: typeof up.name === 'string' && up.name ? path.basename(up.name) : path.basename(up.path), path: up.path })
+        }
+        const siteUrl = typeof body.site_url === 'string' && /^https?:\/\/\S+$/i.test(body.site_url.trim())
+          ? body.site_url.trim()
+          : null
+        const extraUrls = Array.isArray(body.extra_urls)
+          ? body.extra_urls.filter((u): u is string => typeof u === 'string' && /^https?:\/\/\S+$/i.test(u))
+          : []
+        const notes = typeof body.notes === 'string' ? body.notes.slice(0, 8000) : ''
+        const skipPlan = body.skip_plan === true
+
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        })
+        const send = (event: string, data: unknown) => {
+          if (res.writableEnded) return
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        }
+        /* Two agent turns and a fetch pass: minutes of silence, so keep the
+           stream warm the way the intake and chat endpoints do. */
+        const hb = setInterval(() => send('heartbeat', { t: Date.now() }), 4000)
+        /* A disconnect is not an abort. The agent turns are paid for either
+           way and everything lands in .refresh/, where the dialog finds it
+           again through GET /api/races/:slug/refresh. */
+        req.on('close', () => { clearInterval(hb) })
+
+        try {
+          const { runRefresh } = await refreshMod()
+          const result = await runRefresh({
+            root: projectRoot,
+            slug,
+            siteUrl,
+            extraUrls,
+            uploads,
+            notes,
+            skipPlan,
+            onProgress: (e: { step: string; status: string; label?: string; message?: string; stream?: string }) => {
+              if (e.status === 'log') send('log', { id: e.step, line: e.message ?? '', stream: e.stream })
+              else send('step', { id: e.step, status: e.status, label: e.label })
+            },
+          })
+          send('done', {
+            ok: true,
+            slug: result.slug,
+            shadow: path.relative(projectRoot, result.shadow),
+            diff: result.diff,
+          })
+        } catch (e) {
+          const message = (e as Error).message || String(e)
+          console.error(`[race-refresh] ${message}`)
+          send('error', { message })
+          send('done', { ok: false, error: message })
+        } finally {
+          clearInterval(hb)
+          if (!res.writableEnded) res.end()
+        }
+      })
+
+      /* ---- the review: /api/races/:slug/refresh[/accept|/reject] ---- */
+      server.middlewares.use('/api/races', async (req, res, next) => {
+        const rest = (req.url ?? '/').split('?')[0]
+        const m = /^\/([a-z0-9]+(?:-[a-z0-9]+)*)\/refresh(\/accept|\/reject)?\/?$/.exec(rest)
+        // Anything else on this prefix belongs to another plugin (the list,
+        // the review edit, the result, the hero asset) — hand it straight on.
+        if (!m) { next(); return }
+        const [, slug, action] = m
+        if (crossSiteBlocked(req, res)) return
+        if (!raceExists(slug)) {
+          json(res, 404, { error: `no race folder "${slug}" — races/${slug}/race.json is not there` })
+          return
+        }
+
+        try {
+          const mod = await refreshMod()
+          if (!action) {
+            if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+            const pending = await mod.readRefresh(projectRoot, slug)
+            if (!pending) { json(res, 404, { error: `no refresh waiting for ${slug}` }); return }
+            json(res, 200, pending)
+            return
+          }
+          if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+          if (action === '/reject') {
+            json(res, 200, await mod.rejectRefresh({ root: projectRoot, slug }))
+            return
+          }
+          json(res, 200, await mod.acceptRefresh({ root: projectRoot, slug }))
+        } catch (e) {
+          const message = (e as Error).message || String(e)
+          console.error(`[race-refresh] ${message}`)
+          // "no refresh waiting" is the client asking about something that is
+          // not there, not a server fault.
+          json(res, /no refresh waiting/.test(message) ? 404 : 500, { error: message })
+        }
+      })
+    },
+  }
+}
+
 function raceIntakeApi(): Plugin {
   const projectRoot = path.resolve(__dirname, '..')
   /* The intake call takes absolute upload paths from the client, so pin them
@@ -2067,13 +2265,15 @@ export default defineConfig({
   // before raceApi for the same reason (/api/race/activate vs
   // /api/race/active) — connect's own boundary check makes that safe either
   // way, but the order says the intent. raceResultApi, raceAssetApi and
-  // raceEditApi before raceSwitchApi is NOT cosmetic: /api/races/<slug>,
-  // /api/races/<slug>/status, /api/races/<slug>/result and
-  // /api/races/<slug>/asset/<name> are all under /api/races, and the list
-  // endpoint answers every GET it sees, so each has to be given the request
-  // first. All three call next() for a path that is not theirs, which is what
-  // lets them share one prefix in any order.
-  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceAssetApi(), raceEditApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
+  // Everything before raceSwitchApi is NOT cosmetic: /api/races/<slug>,
+  // /api/races/<slug>/status, /api/races/<slug>/result,
+  // /api/races/<slug>/refresh and /api/races/<slug>/asset/<name> are all under
+  // /api/races, and the list endpoint answers every GET it sees, so each has
+  // to be given the request first. All four call next() for a path that is not
+  // theirs, which is what lets them share one prefix in any order.
+  // raceRefreshApi is also why it sits ahead of raceIntakeApi: its other mount
+  // is /api/race-intake/refresh, which the intake's own prefix would swallow.
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceAssetApi(), raceRefreshApi(), raceEditApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
   // Fixed, memorable, deliberately unusual port. The 5173 default collides
   // with every other Vite project on the machine, and a colliding neighbor
   // silently claims the port so this app hops to 5174+ — which breaks the
