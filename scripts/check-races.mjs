@@ -295,7 +295,7 @@ async function checkFolders(root) {
     status: errors.length ? "FAIL" : "PASS",
     reason: errors.length
       ? `${errors.length} validation error${errors.length === 1 ? "" : "s"} across ${races.length} folders`
-      : `${races.length} folder${races.length === 1 ? "" : "s"} validate · active: ${single.active[0] ?? "none"}`,
+      : `${races.length === 1 ? "1 folder validates" : `${races.length} folders validate`} · active: ${single.active[0] ?? "none"}`,
     detail: errors,
     info,
   };
