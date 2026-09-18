@@ -34,7 +34,16 @@ export const EDITABLE_AID_FIELDS = ["name", "total_mi", "cutoff_h", "crew", "dro
 /** Top-level keys PUT /api/races/:slug accepts. Anything else is refused BY
     NAME so the client gets told which field it invented rather than having it
     silently dropped. */
-export const EDITABLE_RACE_KEYS = ["aid_stations", "date", "visual", "unresolved_acknowledged", "block_targets"];
+export const EDITABLE_RACE_KEYS = ["aid_stations", "date", "visual", "unresolved_acknowledged", "block_targets", "unresolved_fills"];
+
+/** Roots `unresolved_fills` will never write, whatever the folder declares.
+    The first four are the folder's identity and the server's own bookkeeping;
+    `aid_stations` is excluded because the table editor above already owns it
+    with per-field validation, and a blanket path write would sneak past that. */
+const UNFILLABLE_ROOTS = new Set([
+  "schema_version", "slug", "status", "provenance", "sources",
+  "unresolved", "unresolved_acknowledged", "aid_stations",
+]);
 
 /** The only `visual` sub-key the review screen exposes — the preset picker.
     Per-token `overrides` are tt-yib.16's surface, not this one. */
@@ -63,6 +72,42 @@ export function valueAtPath(obj, pathStr) {
   return cur;
 }
 
+/** Write `a.b[2].c`, refusing to invent the containers on the way. Returns
+    false when the parent does not exist — a fill is for a hole in a shape that
+    is already there, not a way to graft new structure onto race.json. */
+function setAtPath(obj, pathStr, value) {
+  const parts = String(pathStr).split(".");
+  let cur = obj;
+  for (let i = 0; i < parts.length; i++) {
+    const m = /^([A-Za-z0-9_]+)((?:\[\d+\])*)$/.exec(parts[i]);
+    if (!m) return false;
+    const idxs = (m[2].match(/\d+/g) ?? []).map(Number);
+    const last = i === parts.length - 1;
+    if (!isObj(cur) && !Array.isArray(cur)) return false;
+    if (last && idxs.length === 0) { cur[m[1]] = value; return true; }
+    let node = cur[m[1]];
+    for (let j = 0; j < idxs.length; j++) {
+      if (!Array.isArray(node)) return false;
+      if (last && j === idxs.length - 1) { node[idxs[j]] = value; return true; }
+      node = node[idxs[j]];
+    }
+    cur = node;
+  }
+  return false;
+}
+
+/** Remove `a.b.c` from an object; a no-op when the parent is not there. */
+function deleteAtPath(obj, pathStr) {
+  const parts = String(pathStr).split(".");
+  const leaf = parts.pop();
+  const m = /^([A-Za-z0-9_]+)$/.exec(leaf ?? "");
+  if (!m) return false;
+  const parent = parts.length ? valueAtPath(obj, parts.join(".")) : obj;
+  if (!isObj(parent) || !(m[1] in parent)) return false;
+  delete parent[m[1]];
+  return true;
+}
+
 /**
  * Shape-check a PUT body. Pure and race-independent except for the station
  * count, which bounds `aid_stations[].index`.
@@ -71,10 +116,14 @@ export function valueAtPath(obj, pathStr) {
  * saves a whole table at once and a one-error-at-a-time save is a slot machine.
  *
  * @param {unknown} body
- * @param {{stationCount: number}} ctx
+ * @param {{stationCount?: number, unresolved?: string[]}} ctx
+ *   unresolved: the folder's CURRENT unresolved list — `unresolved_fills` may
+ *   only name a path that is on it, which is what keeps a free-form path write
+ *   from being a way around the whitelist.
  * @returns {{ok: boolean, errors: string[], code: "bad_request"|null}}
  */
-export function validateRaceEdit(body, { stationCount = 0 } = {}) {
+export function validateRaceEdit(body, { stationCount = 0, unresolved = [] } = {}) {
+  const open = (unresolved ?? []).filter((u) => typeof u === "string");
   const errors = [];
   const bad = (m) => errors.push(m);
   const done = () => ({ ok: errors.length === 0, errors, code: errors.length ? "bad_request" : null });
@@ -145,6 +194,24 @@ export function validateRaceEdit(body, { stationCount = 0 } = {}) {
 
   if (body.unresolved_acknowledged !== undefined && typeof body.unresolved_acknowledged !== "boolean") {
     bad("unresolved_acknowledged: boolean required");
+  }
+
+  if (body.unresolved_fills !== undefined) {
+    if (!isObj(body.unresolved_fills)) bad("unresolved_fills: object keyed by unresolved field path required");
+    else for (const [p, v] of Object.entries(body.unresolved_fills)) {
+      if (!open.includes(p)) {
+        bad(`unresolved_fills["${p}"]: only a field the folder currently lists as unresolved can be filled this way`);
+        continue;
+      }
+      if (UNFILLABLE_ROOTS.has(p.split(/[.[]/)[0])) {
+        bad(`unresolved_fills["${p}"]: ${p.split(/[.[]/)[0]} is never filled through this endpoint`);
+        continue;
+      }
+      if (v !== null && typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") {
+        bad(`unresolved_fills["${p}"]: a string, number, boolean or null required — the schema check decides which`);
+      }
+      if (typeof v === "number" && !Number.isFinite(v)) bad(`unresolved_fills["${p}"]: finite number required`);
+    }
   }
 
   if (body.block_targets !== undefined) {
@@ -221,6 +288,11 @@ export function applyRaceEdit(race, body, { at = new Date().toISOString() } = {}
     stamp("unresolved_acknowledged");
   }
 
+  for (const [p, v] of Object.entries(body.unresolved_fills ?? {})) {
+    if (valueAtPath(next, p) === v) continue;
+    if (setAtPath(next, p, v)) stamp(p);
+  }
+
   // block.json carries no provenance block of its own, so the fact that a
   // human wrote its targets is recorded on the race — the only file in the
   // folder that remembers who said what.
@@ -287,6 +359,35 @@ export function unresolvedFromMatches(stations = [], matches = [], waypointNames
 }
 
 /**
+ * Drop the acknowledged holes, so they read as "not known" instead of "null".
+ *
+ * The schema's way of saying a field is unknown is for the key to be ABSENT:
+ * `elevation.min_ft` may be a number or missing, and `null` is neither. A
+ * draft is allowed to carry the null because the draft is a work in progress
+ * with a list of what is still open; an active race is not. So acknowledging a
+ * hole and activating records it the way the schema models it — the key goes,
+ * and `unresolved` keeps the memory that it was never established.
+ *
+ * Only null-valued, acknowledged, currently-unresolved paths are touched, and
+ * never a root the folder's identity depends on.
+ *
+ * @param {object} race
+ * @param {string[]} unresolved
+ * @returns {{race: object, pruned: string[]}}
+ */
+export function pruneAcknowledgedNulls(race, unresolved = []) {
+  const next = structuredClone(race);
+  const pruned = [];
+  if (next.unresolved_acknowledged !== true) return { race: next, pruned };
+  for (const p of unresolved) {
+    if (typeof p !== "string" || UNFILLABLE_ROOTS.has(p.split(/[.[]/)[0])) continue;
+    if (valueAtPath(next, p) !== null) continue;
+    if (deleteAtPath(next, p)) pruned.push(p);
+  }
+  return { race: next, pruned };
+}
+
+/**
  * May this folder's status become `req.status`?
  *
  * The only transition this bead's dialog performs is draft → active, and it is
@@ -325,12 +426,8 @@ export function validateStatusTransition(race, req, { unresolved = [], otherActi
     );
   }
 
-  // An active race is read by the training views, the coach prompt and every
-  // clock in the app, so it has to satisfy the schema outright — the draft
-  // excuses (race-intake's draftValidationErrors) stop applying here.
-  const { ok, errors } = validateRaceJson({ ...race, status });
-  if (!ok) return fail([`races/${race.slug ?? "?"}/race.json is not valid as an active race:`, ...errors]);
-
+  // The review gate, in the order a human would ask it: is every hole either
+  // filled or consciously accepted…
   const open = (unresolved ?? []).filter((u) => typeof u === "string" && u.trim());
   if (open.length && race.unresolved_acknowledged !== true) {
     return fail([
@@ -338,6 +435,16 @@ export function validateStatusTransition(race, req, { unresolved = [], otherActi
       ...open,
     ]);
   }
+
+  // …and is what is left a race the app can actually run on? An active race is
+  // read by the training views, the coach prompt and every clock in the app,
+  // so it has to satisfy the schema outright — the draft excuses
+  // (race-intake's draftValidationErrors) stop applying here. Acknowledged
+  // nulls are pruned first, since "not known" is an absent key, not a null.
+  const { race: pruned } = pruneAcknowledgedNulls(race, unresolved);
+  const { ok, errors } = validateRaceJson({ ...pruned, status });
+  if (!ok) return fail([`races/${race.slug ?? "?"}/race.json is not valid as an active race:`, ...errors]);
+
   return { ok: true, errors: [], code: null, status };
 }
 
@@ -352,9 +459,13 @@ export function otherActiveSlugs(races, slug) {
   return (races ?? []).filter((r) => r.slug !== slug && r.race?.status === "active").map((r) => r.slug);
 }
 
-/** Set the status, stamping who did it. Does not mutate its input. */
-export function applyStatus(race, status, { at = new Date().toISOString() } = {}) {
-  const next = structuredClone(race);
+/**
+ * Set the status, stamping who did it, and record the acknowledged holes the
+ * way the schema records "not known" (see pruneAcknowledgedNulls). Does not
+ * mutate its input.
+ */
+export function applyStatus(race, status, { at = new Date().toISOString(), unresolved = [] } = {}) {
+  const { race: next } = pruneAcknowledgedNulls(race, unresolved);
   next.status = status;
   next.provenance = isObj(next.provenance) ? { ...next.provenance } : {};
   next.provenance.status = { by: "user", at };

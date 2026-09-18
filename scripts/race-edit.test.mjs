@@ -11,6 +11,7 @@ import {
   applyRaceEdit,
   applyStatus,
   otherActiveSlugs,
+  pruneAcknowledgedNulls,
   recomputeUnresolved,
   unresolvedFromMatches,
   validateRaceEdit,
@@ -69,7 +70,9 @@ test("validateRaceEdit accepts a null cutoff and a null gpx_wpt — both mean \"
 
 test("the editable field lists are the ones the module documents", () => {
   assert.deepEqual(EDITABLE_AID_FIELDS, ["name", "total_mi", "cutoff_h", "crew", "drop_bag", "pacers", "gpx_wpt"]);
-  assert.deepEqual(EDITABLE_RACE_KEYS, ["aid_stations", "date", "visual", "unresolved_acknowledged", "block_targets"]);
+  assert.deepEqual(EDITABLE_RACE_KEYS, [
+    "aid_stations", "date", "visual", "unresolved_acknowledged", "block_targets", "unresolved_fills",
+  ]);
 });
 
 /* ------------------------------ refusals -------------------------------- */
@@ -328,4 +331,88 @@ test("applyStatus writes the status and stamps who did it, without mutating", ()
   assert.equal(next.status, "active");
   assert.deepEqual(next.provenance.status, { by: "user", at: AT });
   assert.deepEqual(before, snapshot);
+});
+
+/* --------------------------- unresolved fills --------------------------- */
+
+test("unresolved_fills writes only paths the folder currently declares open", () => {
+  const open = ["elevation.min_ft", "links.tracking"];
+  const ok = validateRaceEdit({ unresolved_fills: { "elevation.min_ft": 7900 } }, { ...ctx, unresolved: open });
+  assert.equal(ok.ok, true, ok.errors.join("; "));
+
+  const closed = validateRaceEdit({ unresolved_fills: { "distance_mi": 50 } }, { ...ctx, unresolved: open });
+  assert.equal(closed.ok, false);
+  assert.match(closed.errors.join(" "), /only a field the folder currently lists as unresolved/);
+});
+
+test("unresolved_fills never writes the folder's identity or the aid table", () => {
+  for (const p of ["status", "slug", "provenance", "sources", "unresolved_acknowledged", "aid_stations[0].name"]) {
+    const r = validateRaceEdit({ unresolved_fills: { [p]: "x" } }, { ...ctx, unresolved: [p] });
+    assert.equal(r.ok, false, p);
+    assert.match(r.errors.join(" "), /is never filled through this endpoint/);
+  }
+});
+
+test("unresolved_fills takes scalars only — no grafting new structure on", () => {
+  const open = ["elevation.min_ft"];
+  for (const v of [{ a: 1 }, [1, 2], Infinity]) {
+    const r = validateRaceEdit({ unresolved_fills: { "elevation.min_ft": v } }, { ...ctx, unresolved: open });
+    assert.equal(r.ok, false, JSON.stringify(v));
+  }
+});
+
+test("applyRaceEdit fills a declared hole and stamps the path", () => {
+  const before = race({ elevation: { min_ft: null, max_ft: 12438 }, links: { tracking: null } });
+  const { race: next, written } = applyRaceEdit(before, {
+    unresolved_fills: { "elevation.min_ft": 7900, "links.tracking": "https://track.example/sjs" },
+  }, { at: AT });
+  assert.equal(next.elevation.min_ft, 7900);
+  assert.equal(next.links.tracking, "https://track.example/sjs");
+  assert.deepEqual(written.sort(), ["elevation.min_ft", "links.tracking"]);
+  assert.deepEqual(next.provenance["elevation.min_ft"], { by: "user", at: AT });
+  // and the hole is a hole no longer
+  assert.deepEqual(recomputeUnresolved(next, ["elevation.min_ft", "links.tracking"]), []);
+});
+
+test("applyRaceEdit will not invent a container a fill path passes through", () => {
+  const { race: next, written } = applyRaceEdit(race(), { unresolved_fills: { "elevation.min_ft": 7900 } }, { at: AT });
+  assert.equal(next.elevation, undefined);
+  assert.deepEqual(written, []);
+});
+
+/* ------------------- acknowledged holes become absences ------------------ */
+
+test("an acknowledged null is recorded as an ABSENT key, which is how the schema says \"not known\"", () => {
+  const r = race({ elevation: { min_ft: null, max_ft: 12438 }, links: { tracking: null }, unresolved_acknowledged: true });
+  const { race: next, pruned } = pruneAcknowledgedNulls(r, ["elevation.min_ft", "links.tracking"]);
+  assert.deepEqual(pruned.sort(), ["elevation.min_ft", "links.tracking"]);
+  assert.equal("min_ft" in next.elevation, false);
+  assert.equal(next.elevation.max_ft, 12438);
+  assert.equal("tracking" in next.links, false);
+});
+
+test("pruneAcknowledgedNulls does nothing until the holes are acknowledged", () => {
+  const r = race({ elevation: { min_ft: null } });
+  const { race: next, pruned } = pruneAcknowledgedNulls(r, ["elevation.min_ft"]);
+  assert.deepEqual(pruned, []);
+  assert.equal(next.elevation.min_ft, null);
+});
+
+test("acknowledging an optional null lets the draft activate; a required one still does not", () => {
+  const optional = race({ elevation: { min_ft: null }, unresolved_acknowledged: true });
+  assert.equal(
+    validateStatusTransition(optional, { status: "active" }, { unresolved: ["elevation.min_ft"] }).ok,
+    true,
+  );
+  const required = race({ date: null, unresolved_acknowledged: true });
+  const r = validateStatusTransition(required, { status: "active" }, { unresolved: ["date"] });
+  assert.equal(r.ok, false);
+  assert.match(r.errors.join(" "), /date must be a YYYY-MM-DD/);
+});
+
+test("applyStatus prunes the acknowledged holes it was validated against", () => {
+  const r = race({ elevation: { min_ft: null, max_ft: 12438 }, unresolved_acknowledged: true });
+  const next = applyStatus(r, "active", { at: AT, unresolved: ["elevation.min_ft"] });
+  assert.equal(next.status, "active");
+  assert.equal("min_ft" in next.elevation, false);
 });

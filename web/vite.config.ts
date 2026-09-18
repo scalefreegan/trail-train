@@ -1313,6 +1313,177 @@ function raceResultApi(): Plugin {
   }
 }
 
+/* Dev-only middleware backing the review screen of the "New race…" dialog
+   (PRD §8, "Review dialog"), one path segment deeper than the switcher's list:
+     GET  /api/races/:slug         — everything the review screen renders, in
+       one read: race.json, block.json, nutrition.json, the built course
+       profile, the GPX waypoint list, the matcher's ranked candidates per
+       station, the merged unresolved[] and whether Activate may light up.
+     PUT  /api/races/:slug         — the validated edit. A whitelist: the aid
+       fields the table renders, the date, the theme preset, the block targets
+       and the unresolved acknowledgement. Everything else is refused BY NAME.
+     POST /api/races/:slug/status  — draft → active, and nothing else.
+
+   Registered BEFORE raceSwitchApi() in the plugins array: connect matches
+   middleware by path prefix in registration order, so /api/races would
+   otherwise answer "GET required" to every call here. The exact path
+   /api/races is handed straight back with next() — that one is the switcher's.
+
+   Neither write touches config/active-race.json. Editing a folder says
+   nothing about which race the athlete trains for, and the review dialog moves
+   the pointer through POST /api/race/activate like everything else does. */
+function raceEditApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* A folder's editable subset: an aid table, a block and a few scalars. */
+  const BODY_MAX_BYTES = 512 * 1024
+
+  type RaceEditMod = {
+    validateRaceEdit: (body: unknown, ctx: { stationCount: number; unresolved: string[] }) => { ok: boolean; errors: string[]; code: string | null }
+    applyRaceEdit: (race: Record<string, unknown>, body: Record<string, unknown>, opts: { at: string }) =>
+      { race: Record<string, unknown>; written: string[]; block_targets: Record<string, number>[] | null }
+    recomputeUnresolved: (race: Record<string, unknown>, prior: string[]) => string[]
+    unresolvedFromMatches: (stations: unknown[], matches: unknown[], waypoints: string[]) => string[]
+    validateStatusTransition: (race: unknown, req: unknown, ctx: { unresolved?: string[]; otherActive?: string[] }) =>
+      { ok: boolean; errors: string[]; code: string | null; status: string | null }
+    applyStatus: (race: Record<string, unknown>, status: string, opts: { at: string; unresolved: string[] }) => Record<string, unknown>
+    otherActiveSlugs: (races: unknown[], slug: string) => string[]
+    loadReview: (root: string, slug: string) => Promise<Record<string, unknown>>
+  }
+
+  return {
+    name: 'trail-train-race-edit-api',
+    apply: 'serve',
+    configureServer(server) {
+      const raceEdit = () =>
+        // vite.config.ts can't statically import from scripts/ (it is ESM JS
+        // outside the TS project), so the module is imported per request.
+        import(path.join(projectRoot, 'scripts/race-edit.mjs')) as Promise<RaceEditMod>
+      const json = (res: ServerResponse, code: number, payload: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(JSON.stringify(payload))
+      }
+      const readBody = async (req: IncomingMessage): Promise<Record<string, unknown> | null | undefined> => {
+        const chunks: Buffer[] = []
+        let total = 0
+        for await (const c of req) {
+          total += (c as Buffer).byteLength
+          if (total > BODY_MAX_BYTES) return undefined
+          chunks.push(c as Buffer)
+        }
+        try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as Record<string, unknown> }
+        catch { return null }
+      }
+
+      server.middlewares.use('/api/races', async (req, res, next) => {
+        // connect strips the mount path: "" or "/" IS /api/races, which is the
+        // switcher's list endpoint and none of our business.
+        const rest = (req.url ?? '/').split('?')[0]
+        if (rest === '' || rest === '/') { next(); return }
+        /* The slug becomes a path segment, so the kebab shape is the guard as
+           much as the schema: no dots, no separators, nothing to traverse. */
+        const m = /^\/([a-z0-9]+(?:-[a-z0-9]+)*)(\/status)?\/?$/.exec(rest)
+        // Not one of ours: /api/races/<slug>/result, /archive and
+        // /asset/<name> belong to the other plugins on this prefix, so an
+        // unrecognized sub-path is handed on rather than 404'd.
+        if (!m) { next(); return }
+        const [, slug, statusPath] = m
+        if (crossSiteBlocked(req, res)) return
+        if (!fs.existsSync(path.join(projectRoot, 'races', slug, 'race.json'))) {
+          json(res, 404, { error: `no race folder "${slug}" — races/${slug}/race.json is not there` })
+          return
+        }
+
+        try {
+          const mod = await raceEdit()
+          const { writeJsonAtomic } = await import(path.join(projectRoot, 'scripts/lib.mjs')) as {
+            writeJsonAtomic: (p: string, data: unknown) => Promise<void>
+          }
+          const dir = path.join(projectRoot, 'races', slug)
+          const at = new Date().toISOString()
+
+          if (statusPath) {
+            if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+            const body = await readBody(req)
+            if (body === undefined) { json(res, 413, { error: 'request body too large' }); return }
+            if (body === null) { json(res, 400, { error: 'bad json' }); return }
+
+            const review = await mod.loadReview(projectRoot, slug)
+            const race = review.race as Record<string, unknown>
+            const { listRaces } = await import(path.join(projectRoot, 'scripts/race-config.mjs')) as {
+              listRaces: (root: string) => Promise<unknown[]>
+            }
+            const otherActive = mod.otherActiveSlugs(await listRaces(projectRoot), slug)
+            const check = mod.validateStatusTransition(race, body, { unresolved: review.unresolved as string[], otherActive })
+            if (!check.ok) { json(res, 400, { error: check.errors.join('\n'), errors: check.errors }); return }
+
+            const unresolved = review.unresolved as string[]
+            await writeJsonAtomic(path.join(dir, 'race.json'), mod.applyStatus(race, check.status as string, { at, unresolved }))
+            json(res, 200, { slug, status: check.status })
+            return
+          }
+
+          if (req.method === 'GET') {
+            json(res, 200, await mod.loadReview(projectRoot, slug))
+            return
+          }
+          if (req.method !== 'PUT') { res.statusCode = 405; res.end('GET or PUT required'); return }
+
+          const body = await readBody(req)
+          if (body === undefined) { json(res, 413, { error: 'request body too large' }); return }
+          if (body === null) { json(res, 400, { error: 'bad json' }); return }
+
+          /* The whole review payload, not just race.json: `unresolved_fills`
+             may only name a path the folder CURRENTLY declares open, and that
+             list includes the GPX-derived holes only loadReview knows about. */
+          const review = await mod.loadReview(projectRoot, slug)
+          const before = review.race as Record<string, unknown>
+          const stationCount = Array.isArray(before.aid_stations) ? before.aid_stations.length : 0
+          const shape = mod.validateRaceEdit(body, { stationCount, unresolved: review.unresolved as string[] })
+          if (!shape.ok) { json(res, 400, { error: shape.errors.join('\n'), errors: shape.errors }); return }
+
+          const applied = mod.applyRaceEdit(before, body, { at })
+          const next_ = applied.race
+          /* Recomputed, then persisted: the review screen's red list has to be
+             a fact about the folder on disk, not something the client
+             remembers. A field the human just filled stops being a hole here
+             and nowhere else. */
+          next_.unresolved = mod.recomputeUnresolved(next_, (before.unresolved as string[]) ?? [])
+
+          const { draftValidationErrors } = await import(path.join(projectRoot, 'scripts/race-intake.mjs')) as {
+            draftValidationErrors: (race: unknown, unresolved: string[]) => { errors: string[]; excused: string[] }
+          }
+          /* Draft rules, not active-race rules: a hole the folder DECLARES is
+             still legal here — that is what the review screen is for. A mile
+             that runs backwards is not, and never becomes one. */
+          const { errors } = draftValidationErrors(next_, next_.unresolved as string[])
+          if (errors.length) { json(res, 400, { error: errors.join('\n'), errors }); return }
+
+          if (applied.block_targets) {
+            const blockPath = path.join(dir, 'block.json')
+            if (!fs.existsSync(blockPath)) {
+              json(res, 400, { error: `races/${slug}/block.json does not exist yet — run the plan stage before editing block targets` })
+              return
+            }
+            const block = JSON.parse(fs.readFileSync(blockPath, 'utf8')) as Record<string, unknown>
+            await writeJsonAtomic(blockPath, { ...block, targets: applied.block_targets })
+          }
+          await writeJsonAtomic(path.join(dir, 'race.json'), next_)
+
+          // Answer with the same payload a GET would give, so the client never
+          // has to guess what its own write did.
+          json(res, 200, { ...(await mod.loadReview(projectRoot, slug)), written: applied.written })
+        } catch (e) {
+          const message = (e as Error).message || String(e)
+          console.error(`[race-edit] ${message}`)
+          json(res, 500, { error: message })
+        }
+      })
+    },
+  }
+}
+
 // Dev-only middleware: GET /api/race/active answers "which race, and what is
 // in it?" for the client — the pointer (config/active-race.json) plus the
 // folder it names, merged into one payload. `active: null` is generic mode,
@@ -1895,12 +2066,14 @@ export default defineConfig({
   // /api/race-intake/build and /api/race-intake/plan. raceSwitchApi sits
   // before raceApi for the same reason (/api/race/activate vs
   // /api/race/active) — connect's own boundary check makes that safe either
-  // way, but the order says the intent. raceResultApi and raceAssetApi before
-  // raceSwitchApi is NOT cosmetic: /api/races/<slug>/result and
-  // /api/races/<slug>/asset/<name> are both under /api/races, and the list
+  // way, but the order says the intent. raceResultApi, raceAssetApi and
+  // raceEditApi before raceSwitchApi is NOT cosmetic: /api/races/<slug>,
+  // /api/races/<slug>/status, /api/races/<slug>/result and
+  // /api/races/<slug>/asset/<name> are all under /api/races, and the list
   // endpoint answers every GET it sees, so each has to be given the request
-  // first (both call next() for a path that is not theirs).
-  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceAssetApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
+  // first. All three call next() for a path that is not theirs, which is what
+  // lets them share one prefix in any order.
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceAssetApi(), raceEditApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
   // Fixed, memorable, deliberately unusual port. The 5173 default collides
   // with every other Vite project on the machine, and a colliding neighbor
   // silently claims the port so this app hops to 5174+ — which breaks the
