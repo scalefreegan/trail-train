@@ -932,10 +932,16 @@ async function loadStyleReference(root, slug) {
   try {
     const { race, block, nutrition } = await loadRaceFolder(root, STYLE_REFERENCE_SLUG);
     if (!block && !nutrition) return null;
-    // body_kg is the athlete's, not the race's: strip it so the reference
-    // cannot teach the agent to write it back into a race folder.
+    // body_kg is the athlete's, not the race's: strip it — along with the two
+    // prose comments, which name it — so the reference cannot teach the agent
+    // to write it back into a race folder. The comments are boilerplate this
+    // module re-attaches on write anyway.
     const ref = nutrition ? structuredClone(nutrition) : null;
-    if (ref?.caffeine) delete ref.caffeine.body_kg;
+    if (ref) {
+      delete ref.comment;
+      delete ref.caffeine_comment;
+      if (ref.caffeine) delete ref.caffeine.body_kg;
+    }
     return { name: race?.name ?? STYLE_REFERENCE_SLUG, block, nutrition: ref, coach_notes: race?.coach_notes ?? null };
   } catch {
     return null; // a checkout without the archive plans fine, just unguided
