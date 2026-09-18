@@ -192,3 +192,90 @@ test("loadFactsFromRoot ignores an archived race — archived is not active", as
   assert.equal(f.block.mode, "rolling");
   assert.ok(f.goals, "generic mode is the real default now");
 });
+
+/* -------- the race payload the coach prompt is built from (tt-yib.10) -------- */
+
+/** Write a race folder; returns its dir. */
+async function writeRace(root, slug, race) {
+  const dir = path.join(root, "races", slug);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify({ schema_version: 1, slug, ...race }));
+  return dir;
+}
+
+test("an active race reaches facts with its course structure, not a name list", async (t) => {
+  const root = await tempRoot(t);
+  await fs.mkdir(path.join(root, "web", "public"), { recursive: true });
+  await fs.mkdir(path.join(root, "config"), { recursive: true });
+  await fs.writeFile(path.join(root, "web", "public", "strava.json"), JSON.stringify({ activities: [] }));
+  await writeRace(root, "softie-100-2027", {
+    status: "active", name: "San Juan Softie 100", short: "SJS100",
+    date: "2027-08-13", start_time: "06:00", timezone: "America/Denver",
+    distance_mi: 104, gain_ft: 19000, cutoff_h: 40, location: "Durango, CO",
+    elevation: { min_ft: 7800, max_ft: 12438, avg_ft: 10600, altitude_significant: true },
+    features: { crew: true, pacers: false, night: true },
+    coach_notes: { terrain: "High and rocky.", key_demands: "Altitude." },
+    aid_stations: [
+      { name: "Start", total_mi: 0, cutoff_h: null, crew: true, drop_bag: false, pacers: false },
+      { name: "Kennebec", total_mi: 52.5, cutoff_h: 21, crew: true, drop_bag: true, pacers: false },
+    ],
+  });
+  await fs.writeFile(path.join(root, "config", "active-race.json"), JSON.stringify({ slug: "softie-100-2027" }));
+
+  const f = await loadFactsFromRoot(root);
+  assert.equal(f.race.slug, "softie-100-2027");
+  assert.equal(f.race.timezone, "America/Denver");
+  assert.equal(f.race.cutoff_h, 40);
+  // the sections stay as authored — the prompt quotes each one verbatim
+  assert.deepEqual(f.race.coach_notes, { terrain: "High and rocky.", key_demands: "Altitude." });
+  assert.deepEqual(f.race.features, { crew: true, pacers: false, night: true });
+  assert.equal(f.race.elevation.altitude_significant, true);
+  assert.equal(f.race.max_elev_ft, 12438);
+  // mile, cutoff hour and access flags per station — enough to reason about margins
+  assert.deepEqual(f.race.aid_stations[1], {
+    name: "Kennebec", total_mi: 52.5, cutoff_h: 21, crew: true, drop_bag: true, pacers: false,
+  });
+  assert.deepEqual(f.history, [], "the active race is not its own history");
+});
+
+test("history: archived races, their result, and the notes written about them", async (t) => {
+  const root = await tempRoot(t);
+  await fs.mkdir(path.join(root, "web", "public"), { recursive: true });
+  await fs.mkdir(path.join(root, "config"), { recursive: true });
+  await fs.writeFile(path.join(root, "web", "public", "strava.json"), JSON.stringify({ activities: [] }));
+  await fs.writeFile(path.join(root, "config", "active-race.json"), JSON.stringify({ slug: null }));
+  await fs.writeFile(path.join(root, "web", "public", "state.json"), JSON.stringify({
+    version: 3,
+    agent_notes: [
+      { at: "2026-09-13T00:00:00Z", note: "Old Race: quads were the limiter after mile 70." },
+      { at: "2026-09-14T00:00:00Z", note: "General note about sleep, no race named." },
+      { at: "2026-09-15T00:00:00Z", note: "OLD taper felt about right." },
+    ],
+  }));
+  const dir = await writeRace(root, "old-race-2026", {
+    status: "archived", name: "Old Race", short: "OLD",
+    date: "2026-09-12", distance_mi: 102.6, gain_ft: 15900,
+  });
+  await fs.writeFile(path.join(dir, "result.json"), JSON.stringify({
+    status: "finished", finish_h: 33.27, official_time: "33:16:12", placement: 41, notes: "",
+  }));
+  // a second archived race with no result.json — gitignored, so absence is normal
+  await writeRace(root, "older-race-2025", {
+    status: "archived", name: "Older Race", short: "OLDER", date: "2025-06-07", distance_mi: 50, gain_ft: 7000,
+  });
+
+  const f = await loadFactsFromRoot(root);
+  assert.equal(f.race, null, "history does not resurrect a race as active");
+  assert.deepEqual(f.history.map((h) => h.slug), ["old-race-2026", "older-race-2025"], "newest first");
+  assert.deepEqual(f.history[0].result, {
+    status: "finished", finish_h: 33.27, official_time: "33:16:12", placement: 41, notes: "",
+  });
+  assert.equal(f.history[1].result, null, "a missing result.json is not a missing race");
+  assert.equal(f.history[0].distance_mi, 102.6);
+  // notes are matched on the race name OR its short code, and capped at 3
+  assert.deepEqual(f.history[0].agent_notes.map((n) => n.note), [
+    "Old Race: quads were the limiter after mile 70.",
+    "OLD taper felt about right.",
+  ]);
+  assert.deepEqual(f.history[1].agent_notes, []);
+});

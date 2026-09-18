@@ -198,6 +198,7 @@ export function coachFocus(facts) {
       user_horizon: `for ${race.name}${typeof race.days_until === "number" ? ` (${race.days_until} days out)` : ""}`,
       state_line: `the race (meta, block targets, the current plan_blocks) lives in races/${race.slug || "<slug>"}/`,
       effort_line: `the race is ${typeof race.cutoff_h === "number" ? `up to ~${race.cutoff_h} hours (its cutoff)` : "a long day"} at very low intensity`,
+      taper_line: `This governs the BUILD, not the taper: the final ~2-3 weeks before race week (wk ${totalWeeks}) stay genuinely protective.`,
       readiness_target: `arriving at the start line ready for ${readySpec || race.name}`,
     };
   }
@@ -213,6 +214,7 @@ export function coachFocus(facts) {
     user_horizon: `toward ${eventClass}`,
     state_line: "the standing goals live in config/goals.json and the rolling plan_blocks in config/generic-plan.json",
     effort_line: `the event class they are building toward (${eventClass}) is a long, low-intensity effort`,
+    taper_line: `This governs BUILD work. There is no race to taper into, so when the goals phase is "taper" or "recovery" the same weeks stay genuinely protective instead.`,
     readiness_target: `holding the standing goals (${eventClass}, phase ${goals.phase || "unset"}) inside the volume band`,
   };
 }
@@ -351,8 +353,7 @@ descents, feet, connective tissue), not aerobic fitness. Build that specific dur
   Weekday daytime windows (08:00-16:00, including weekday childcare days) can absorb long
   low-intensity time-on-feet without the recovery cost intensity carries. When weekly
   volume needs to rise, add it here first rather than loading the weekends.
-- This governs the BUILD, not the taper: the final ~2-3 weeks before race week stay
-  genuinely protective.
+- ${focus.taper_line}
 
 LOST WEEKS & PATH TO READINESS — when a planned build week is lost or heavily cut
 (constraint collision, travel, illness), do not just absorb it: re-place the lost key
