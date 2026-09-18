@@ -1122,6 +1122,99 @@ function raceSwitchApi(): Plugin {
   }
 }
 
+// Dev-only middleware: results capture (PRD §10).
+//   POST /api/races/:slug/archive — { activity_id, official?, notes?, status? }
+//                                   links a Strava activity to a finished
+//                                   race: derives the per-station splits from
+//                                   its GPS track, writes result.json, flips
+//                                   race.json to "archived" and releases the
+//                                   pointer. The rules (race-day guard,
+//                                   official overrides, what a re-archive
+//                                   keeps) live in scripts/race-result.mjs
+//                                   under `node --test`.
+//   GET  /api/races/:slug/result   — that race's result.json, or null.
+// MUST be registered before raceSwitchApi: connect matches by path prefix, and
+// its GET /api/races would otherwise answer /api/races/<slug>/result with the
+// race LIST. Anything under /api/races that is not one of these two routes is
+// passed straight through to it.
+function raceResultApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* An activity id, a handful of official splits and a note. */
+  const BODY_MAX_BYTES = 64 * 1024
+  type RaceResultMod = {
+    archiveRace: (o: Record<string, unknown>) => Promise<{ slug: string; result: unknown; pointer: unknown }>
+    loadResult: (root: string, slug: string) => Promise<unknown>
+  }
+  return {
+    name: 'trail-train-race-result-api',
+    apply: 'serve',
+    configureServer(server) {
+      const json = (res: ServerResponse, code: number, body: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(JSON.stringify(body))
+      }
+      // scripts/ is ESM JS outside the TS project, so it is imported per
+      // request rather than statically — same as the other race endpoints.
+      const raceResult = () =>
+        import(path.join(projectRoot, 'scripts/race-result.mjs')) as Promise<RaceResultMod>
+      // archiveRace tags its refusals; anything untagged is ours.
+      const fail = (res: ServerResponse, e: unknown) => {
+        const code = (e as { code?: string }).code
+        const status = code === 'not_found' ? 404 : code === 'bad_request' ? 400 : 500
+        json(res, status, { error: (e as Error).message })
+      }
+
+      server.middlewares.use('/api/races', async (req, res, next) => {
+        // req.url is the remainder after the mount point: "/<slug>/archive".
+        const m = /^\/([^/?]+)\/(archive|result)(?:\?.*)?$/.exec(req.url ?? '')
+        if (!m) { next(); return }
+        const [, slug, route] = m
+        if (crossSiteBlocked(req, res)) return
+
+        if (route === 'result') {
+          if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+          try {
+            const { loadResult } = await raceResult()
+            json(res, 200, { slug, result: await loadResult(projectRoot, decodeURIComponent(slug)) })
+          } catch (e) {
+            fail(res, e)
+          }
+          return
+        }
+
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        try {
+          const chunks: Buffer[] = []
+          let size = 0
+          for await (const c of req) {
+            size += (c as Buffer).length
+            if (size > BODY_MAX_BYTES) { json(res, 413, { error: 'body too large' }); return }
+            chunks.push(c as Buffer)
+          }
+          let body: { activity_id?: unknown; official?: unknown; notes?: unknown; status?: unknown }
+          try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
+          catch { json(res, 400, { error: 'bad json' }); return }
+
+          const { archiveRace } = await raceResult()
+          const { result, pointer } = await archiveRace({
+            root: projectRoot,
+            slug: decodeURIComponent(slug),
+            activityId: body.activity_id,
+            official: body.official ?? null,
+            notes: body.notes,
+            status: body.status,
+          })
+          json(res, 200, { slug, result, pointer })
+        } catch (e) {
+          fail(res, e)
+        }
+      })
+    },
+  }
+}
+
 // Dev-only middleware: GET /api/race/active answers "which race, and what is
 // in it?" for the client — the pointer (config/active-race.json) plus the
 // folder it names, merged into one payload. `active: null` is generic mode,
@@ -1704,8 +1797,10 @@ export default defineConfig({
   // /api/race-intake/build and /api/race-intake/plan. raceSwitchApi sits
   // before raceApi for the same reason (/api/race/activate vs
   // /api/race/active) — connect's own boundary check makes that safe either
-  // way, but the order says the intent.
-  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
+  // way, but the order says the intent. raceResultApi before raceSwitchApi is
+  // NOT cosmetic: /api/races/<slug>/result is under /api/races, so the list
+  // endpoint would answer it if it were registered first.
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
   // Fixed, memorable, deliberately unusual port. The 5173 default collides
   // with every other Vite project on the machine, and a colliding neighbor
   // silently claims the port so this app hops to 5174+ — which breaks the
