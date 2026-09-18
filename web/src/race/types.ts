@@ -123,7 +123,10 @@ export type ClimbsSnapshot = {
 /** At most one folder is "active"; a draft is never read by the training views. */
 export type RaceStatus = "draft" | "active" | "archived";
 
-/** Which optional panels/cards a race even has. Absent flag = off. */
+/** Which optional panels/cards a race even has. An ABSENT flag means on:
+    a folder written before a flag existed keeps rendering as it did, so
+    hiding something is always an explicit `false`. See race/features.ts,
+    which is the only place that reads these. */
 export type RaceFeatures = {
   crew?: boolean;
   drop_bags?: boolean;

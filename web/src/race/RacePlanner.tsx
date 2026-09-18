@@ -10,6 +10,7 @@ import { RunnerCard } from "./RunnerCard";
 import { FuelCard } from "./FuelCard";
 import { DropBagCard } from "./DropBagCard";
 import { fmtCarry } from "./nutrition";
+import type { VisibleColumns } from "./features";
 import {
   projectRace, nightIntervals,
   fmtRaceClock, fmtElapsed,
@@ -50,11 +51,16 @@ function FlagChip({ label, color }: { label: string; color: string }) {
   );
 }
 
-function stationFlags(s: StationProjection["station"]) {
+/* A station row carries the flags this RACE has, not the ones its chart
+   row happens to set: an aid chart copied from a crewed edition can leave
+   `crew: true` on a year that forbids crew, and a CREW chip nobody may use
+   is worse than no chip. H₂O and NO AID are unconditional — they describe
+   the station itself, not an optional feature. */
+function stationFlags(s: StationProjection["station"], cols: VisibleColumns) {
   const flags: { label: string; color: string }[] = [];
-  if (s.crew || s.crew_only) flags.push({ label: "CREW", color: "var(--pine)" });
-  if (s.drop_bag) flags.push({ label: "DROP", color: "var(--lamp)" });
-  if (s.pacers) flags.push({ label: "PACER", color: "var(--creek)" });
+  if (cols.crew && (s.crew || s.crew_only)) flags.push({ label: "CREW", color: "var(--pine)" });
+  if (cols.drop_bag && s.drop_bag) flags.push({ label: "DROP", color: "var(--lamp)" });
+  if (cols.pacers && s.pacers) flags.push({ label: "PACER", color: "var(--creek)" });
   if (s.water_only) flags.push({ label: "H₂O", color: "var(--mist-mute)" });
   if (s.crew_only) flags.push({ label: "NO AID", color: "var(--mist-mute)" });
   return flags;
@@ -70,9 +76,11 @@ const PACE_TOP = H + 6;
 const PACE_H = 56;
 const TOTAL_H = PACE_TOP + PACE_H + 22;
 
-function ProfileChart({ course, proj }: {
+function ProfileChart({ course, proj, night }: {
   course: Course;
   proj: ReturnType<typeof projectRace> | null;
+  /** features.night — a race that finishes in daylight gets no bands */
+  night: boolean;
 }) {
   const u = useUnits();
   const { race } = useBlockConfig();
@@ -123,13 +131,13 @@ function ProfileChart({ course, proj }: {
 
   // night bands, mapped from elapsed hours onto the mile axis via the projection
   const nights = useMemo(() => {
-    if (!proj) return [];
+    if (!proj || !night) return [];
     const startClock = `${String(race.date.getHours()).padStart(2, "0")}:${String(race.date.getMinutes()).padStart(2, "0")}`;
     const horizon = Math.max(38, proj.finish_h.worst);
     return nightIntervals(startClock, course.sun.sunset, course.sun.sunrise, horizon)
       .map(([s, e]) => [proj.mileAtElapsed(s), proj.mileAtElapsed(e)] as [number, number])
       .filter(([a, b]) => b - a > 0.2);
-  }, [proj, course.sun, race.date]);
+  }, [proj, night, course.sun, race.date]);
 
   const aidWithMi = useMemo(
     () => course.aid_stations
@@ -415,7 +423,7 @@ export function RacePlanner() {
   // useRacePlan.ts. Both views must agree to the minute, so there is exactly
   // one projectRace/planFuel call and one set of persisted sliders.
   const { course, missing, error, fit, proj, nutrition, fuelPlan, settings, set,
-    paceGrade, paceGradeError, nutritionError } = useRacePlan();
+    paceGrade, paceGradeError, nutritionError, features, panels, columns } = useRacePlan();
   const { fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides } = settings;
   const { fatigue: setFatigue, calibration: setCalibration, restraint: setRestraint,
     goalH: setGoalH, aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
@@ -497,9 +505,14 @@ export function RacePlanner() {
                 style={{ width: 70, accentColor: "var(--lamp)" }}
               />
             </label>
+            {/* the second number is the crew+drop-bag stop; with neither on
+                the course it would be a knob wired to nothing */}
             <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-              title="fresh stop minutes at a regular aid station / at crew+drop-bag stations — stops stretch late-race with fatigue">
-              stops {numInput(aidStopMin, setAidStopMin, 0, 30)}/{numInput(crewStopMin, setCrewStopMin, 0, 45)}m
+              title={columns.crew || columns.drop_bag
+                ? "fresh stop minutes at a regular aid station / at crew+drop-bag stations — stops stretch late-race with fatigue"
+                : "fresh stop minutes at an aid station — stops stretch late-race with fatigue"}>
+              stops {numInput(aidStopMin, setAidStopMin, 0, 30)}
+              {(columns.crew || columns.drop_bag) && <>/{numInput(crewStopMin, setCrewStopMin, 0, 45)}</>}m
             </label>
             <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               goal
@@ -535,7 +548,7 @@ export function RacePlanner() {
         )}
 
         <div style={{ position: "relative", padding: "4px 0 0" }}>
-          <ProfileChart course={course} proj={proj} />
+          <ProfileChart course={course} proj={proj} night={features.night} />
         </div>
 
         {!fit && (
@@ -678,9 +691,9 @@ export function RacePlanner() {
                 </span>
                 <span className="col-flags" style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-start" }}>
                   <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
-                    {stationFlags(s).map((f) => <FlagChip key={f.label} label={f.label} color={f.color} />)}
+                    {stationFlags(s, columns).map((f) => <FlagChip key={f.label} label={f.label} color={f.color} />)}
                   </span>
-                  {crewBase?.drives[s.name] && (
+                  {columns.crew && crewBase?.drives[s.name] && (
                     s.lat != null && s.lon != null ? (
                       <a
                         className="numerals"
@@ -748,7 +761,9 @@ export function RacePlanner() {
               })()}
             </span>
             <span className="numerals col-fuel" style={{ fontSize: 10.5, textAlign: "right" }}
-              title="race totals from the fuel plan — distributed across the drop bags (see ⎙ drop bags 3×5)">
+              title={panels.drop_bag_card
+                ? "race totals from the fuel plan — distributed across the drop bags (see ⎙ drop bags 3×5)"
+                : "race totals from the fuel plan — no drop bags on this course, so this is what you carry and what gets restocked at aid"}>
               {fuelPlan && (
                 <>
                   <span style={{ display: "block", fontWeight: 600, whiteSpace: "nowrap" }}>{fuelPlan.total_gels}G+{fuelPlan.total_bloks}B {fuelPlan.total_tabs}t</span>
@@ -769,7 +784,7 @@ export function RacePlanner() {
               <>
                 <span className="eyebrow" style={{ fontSize: 8.5 }}>fuel totals</span>
                 <span className="numerals" style={{ fontSize: 11, fontWeight: 600 }}
-                  title="whole-race consumables (no-crew plan): Maurten gels, Clif Blok packets, Tailwind High Carb scoops (1 per MIX flask; W flasks are plain water, no scoop), salt tabs — split across drop bags via ⎙ drop bags 3×5">
+                  title={`whole-race consumables (no-crew plan): Maurten gels, Clif Blok packets, Tailwind High Carb scoops (1 per MIX flask; W flasks are plain water, no scoop), salt tabs${panels.drop_bag_card ? " — split across drop bags via ⎙ drop bags 3×5" : ""}`}>
                   ≈{(fuelPlan.total_carb_g / 1000).toFixed(1)}kg carb · {fuelPlan.total_gels} gels · {fuelPlan.total_bloks} bloks · {fuelPlan.total_hcf_scoops} HCF scoops · {fuelPlan.total_tabs} tabs
                 </span>
               </>
@@ -790,11 +805,11 @@ export function RacePlanner() {
                     {paceGrade?.fitted_at && ` (fitted ${relativeAgo(new Date(paceGrade.fitted_at).getTime())}${paceGrade.runs_pending_time ? `, ${paceGrade.runs_pending_time} runs awaiting time streams` : ""})`}
                     {paceGradeError && <span style={{ color: "var(--ember)" }}> · {paceGradeError}</span>}
                     {nutritionError && <span style={{ color: "var(--ember)" }}> · {nutritionError}</span>}
-                    {" "}· tech: {course.aid_stations.filter((s) => (s.tech_pct ?? 0) > 0).map((s) => `${s.name.toLowerCase()} +${s.tech_pct}%`).join(", ") || "none"} · race-cal +{calibration}% all paces · restraint +{restraint}% thru mi {RESTRAINT_FULL_MI} (fades by {RESTRAINT_END_MI}, restrained miles age ×{(1 - RESTRAINT_FATIGUE_PAYOFF * restraint / 100).toFixed(2)} on the fatigue clock) · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}/{crewStopMin}m fresh
+                    {" "}· tech: {course.aid_stations.filter((s) => (s.tech_pct ?? 0) > 0).map((s) => `${s.name.toLowerCase()} +${s.tech_pct}%`).join(", ") || "none"} · race-cal +{calibration}% all paces · restraint +{restraint}% thru mi {RESTRAINT_FULL_MI} (fades by {RESTRAINT_END_MI}, restrained miles age ×{(1 - RESTRAINT_FATIGUE_PAYOFF * restraint / 100).toFixed(2)} on the fatigue clock) · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}{(columns.crew || columns.drop_bag) && `/${crewStopMin}`}m fresh
                   </span>
                 </>
               )}
-              {crewBase && (
+              {columns.crew && crewBase && (
                 <>
                   <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)" }}>base</span>
                   <span className="eyebrow" style={{ fontSize: 8.5, lineHeight: 1.9, color: "var(--creek)" }}>
@@ -844,26 +859,30 @@ export function RacePlanner() {
               >
                 ⎙ fuel card 3×5
               </button>
-              <button
-                className="chip"
-                style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
-                onClick={() => setOpenDoc("drops")}
-              >
-                ⎙ drop bags 3×5
-              </button>
-              <button
-                className="chip"
-                style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
-                onClick={() => setOpenDoc("crew")}
-              >
-                ⎙ crew sheet pdf
-              </button>
+              {panels.drop_bag_card && (
+                <button
+                  className="chip"
+                  style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
+                  onClick={() => setOpenDoc("drops")}
+                >
+                  ⎙ drop bags 3×5
+                </button>
+              )}
+              {panels.crew_sheet && (
+                <button
+                  className="chip"
+                  style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
+                  onClick={() => setOpenDoc("crew")}
+                >
+                  ⎙ crew sheet pdf
+                </button>
+              )}
             </span>
           </div>
         </div>
       )}
 
-      {openDoc === "crew" && proj && (
+      {openDoc === "crew" && panels.crew_sheet && proj && (
         <CrewSheet course={course} proj={proj} crewBase={crewBase} onClose={() => setOpenDoc(null)} />
       )}
       {openDoc === "card" && proj && (
@@ -872,7 +891,7 @@ export function RacePlanner() {
       {openDoc === "fuel" && fuelPlan && (
         <FuelCard plan={fuelPlan} cfg={nutrition} onClose={() => setOpenDoc(null)} />
       )}
-      {openDoc === "drops" && fuelPlan && (
+      {openDoc === "drops" && panels.drop_bag_card && fuelPlan && (
         <DropBagCard plan={fuelPlan} cfg={nutrition} onClose={() => setOpenDoc(null)} />
       )}
     </section>

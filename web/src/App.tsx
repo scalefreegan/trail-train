@@ -2150,10 +2150,13 @@ function AppBody() {
               </>
             ) : view === "race" ? (
               <div key={`race-${key}`}>
-                <ClimbComparison />
                 {/* one shared plan instance — planner sliders and the model
-                    check must never disagree on the same screen */}
+                    check must never disagree on the same screen. The climb
+                    comparison takes no sliders, but it reads its visual.panels
+                    gate off the same instance rather than fetching the active
+                    race a second time, so it lives inside the provider too. */}
                 <RacePlanProvider>
+                  <ClimbComparison />
                   <RacePlanner />
                   <ModelCheck />
                 </RacePlanProvider>

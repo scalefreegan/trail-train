@@ -247,12 +247,14 @@ function CaffeineChart({ caf, raceStart, finishH, heat, night, kg }: {
 
 /* ---- leg table ---- */
 
-function LegRow({ seg, caf, raceStart, last }: {
+function LegRow({ seg, caf, raceStart, last, show }: {
   seg: FuelSegment; caf: number; raceStart: Date; last: boolean;
+  /** which of this row's optional cells the race carries */
+  show: { caf: boolean; heat: boolean; night: boolean };
 }) {
   const flags: Array<[string, string]> = [];
-  if (seg.heat) flags.push(["heat", "var(--ember)"]);
-  if (seg.night) flags.push(["night", "var(--creek)"]);
+  if (show.heat && seg.heat) flags.push(["heat", "var(--ember)"]);
+  if (show.night && seg.night) flags.push(["night", "var(--creek)"]);
   if (seg.long_carry) flags.push(["long", "var(--mist-mute)"]);
   const cell: React.CSSProperties = {
     padding: "7px 9px", textAlign: "right", fontSize: 11.5,
@@ -281,6 +283,7 @@ function LegRow({ seg, caf, raceStart, last }: {
       {/* the caffeine schedule is placed by darkness, not by carb demand, so a
           dose can land on a leg whose carb target rounds to fewer gels than the
           doses it carries. Say so rather than rendering "— gels, 1 caf". */}
+      {show.caf && (
       <div
         className="numerals"
         title={caf > seg.gels
@@ -294,6 +297,7 @@ function LegRow({ seg, caf, raceStart, last }: {
       >
         {caf || "—"}{caf > seg.gels && "*"}
       </div>
+      )}
       <div className="numerals" style={cell}>{seg.bloks || <span style={{ color: "var(--mist-mute)" }}>—</span>}</div>
       <div className="numerals" style={cell}>{seg.salt_tabs || <span style={{ color: "var(--mist-mute)" }}>—</span>}</div>
       <div className="numerals" style={cell}>{(seg.fluid_ml / 1000).toFixed(1)} L</div>
@@ -311,7 +315,8 @@ function LegRow({ seg, caf, raceStart, last }: {
 
 export function NutritionPlan() {
   const { race } = useBlockConfig();
-  const { course, missing, error, proj, nutrition, fuelPlan, raceStart, nutritionError } = useRacePlan();
+  const { course, missing, error, proj, nutrition, fuelPlan, raceStart, nutritionError,
+    features, panels, raceConfig } = useRacePlan();
   const cfg = nutrition.caffeine;
 
   const caf = useMemo(
@@ -322,12 +327,16 @@ export function NutritionPlan() {
   const finishH = proj?.finish_h.avg ?? 0;
   const startClock = raceStart.getHours() + raceStart.getMinutes() / 60;
   const heat = useMemo(
-    () => (course ? heatBands(startClock, nutrition.heat_window.start, nutrition.heat_window.end, finishH) : []),
-    [course, startClock, nutrition.heat_window, finishH],
+    () => (course && features.heat
+      ? heatBands(startClock, nutrition.heat_window.start, nutrition.heat_window.end, finishH)
+      : []),
+    [course, features.heat, startClock, nutrition.heat_window, finishH],
   );
+  // both band sets feed the caffeine chart only, and each is behind the flag
+  // that gives it meaning — no bands for a window this race never enters
   const night = useMemo(
-    () => (course ? sunBounds(course, raceStart, finishH) : []),
-    [course, raceStart, finishH],
+    () => (course && features.night ? sunBounds(course, raceStart, finishH) : []),
+    [course, features.night, raceStart, finishH],
   );
 
   if (missing || !course) {
@@ -364,8 +373,13 @@ export function NutritionPlan() {
   const plainGels = Math.max(0, fuelPlan.total_gels - cafGels);
   const goalH = proj.goal_h;
 
-  const colHead = ["leg", "carry", "carb", "gels", "↳ caf", "bloks", "tabs", "fluid", "fill", "pre-load"];
-  const gridCols = "minmax(190px, 1.6fr) repeat(9, minmax(52px, auto))";
+  // the caffeine schedule is placed by nightfall, so a race that finishes in
+  // daylight has no ↳ caf column to fill — drop it rather than print a column
+  // of dashes, and let the grid narrow by one
+  const colHead = ["leg", "carry", "carb", "gels", ...(features.night ? ["↳ caf"] : []),
+    "bloks", "tabs", "fluid", "fill", "pre-load"];
+  const gridCols = `minmax(190px, 1.6fr) repeat(${colHead.length - 1}, minmax(52px, auto))`;
+  const legShow = { caf: features.night, heat: features.heat, night: features.night };
 
   return (
     <section>
@@ -387,18 +401,36 @@ export function NutritionPlan() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", gap: 1, background: "var(--edge)", border: "1px solid var(--edge)", marginTop: 14 }}>
           <Vital k="carbs" v={String(Math.round(fuelPlan.total_carb_g))} unit="g" />
           <Vital k="gels" v={String(fuelPlan.total_gels)} />
-          <Vital k="caffeinated" v={String(cafGels)} accent="var(--lamp)" />
+          {features.night && <Vital k="caffeinated" v={String(cafGels)} accent="var(--lamp)" />}
           <Vital k="blok pks" v={String(fuelPlan.total_bloks)} />
           <Vital k="salt tabs" v={String(fuelPlan.total_tabs)} />
           <Vital k="hcf scoops" v={String(fuelPlan.total_hcf_scoops)} />
-          <Vital k="peak caf" v={caf.peak.mg_kg.toFixed(1)} unit="mg/kg" accent={caf.over_band ? "var(--ember)" : "var(--mist)"} />
+          {features.night && (
+            <Vital k="peak caf" v={caf.peak.mg_kg.toFixed(1)} unit="mg/kg" accent={caf.over_band ? "var(--ember)" : "var(--mist)"} />
+          )}
           <Vital k="body mass" v={String(kg)} unit="kg" />
         </div>
       </div>
 
+      {/* ---------------- altitude ---------------- */}
+      {/* Verbatim intake prose, not a derived number: v1 models no altitude
+          effect at all (PRD §2), so the honest surface is the coach's own
+          paragraph, shown only for a race whose flag says it applies. */}
+      {features.altitude && raceConfig?.coach_notes?.altitude && (
+        <>
+          <SectionTag right={<span className="eyebrow" style={{ fontSize: 9 }}>coach note</span>}>altitude</SectionTag>
+          <div className="panel" style={{ padding: "14px 16px" }}>
+            <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--mist-dim)", margin: 0, maxWidth: "76ch" }}>
+              {raceConfig.coach_notes.altitude}
+            </p>
+          </div>
+        </>
+      )}
+
       {/* ---------------- read first ---------------- */}
       <SectionTag right={<span className="eyebrow" style={{ fontSize: 9 }}>before you buy anything</span>}>read first</SectionTag>
       <Cards>
+        {features.night && (
         <Card
           title="Check the Tailwind flavor"
           accent="lamp"
@@ -410,6 +442,7 @@ export function NutritionPlan() {
           <Li>Confirm the mix is a <B>non-caffeinated</B> flavor.</Li>
           <Li>Nothing else in this plan assumes caffeine from the drink.</Li>
         </Card>
+        )}
 
         <Card
           title="The clock follows the projection"
@@ -430,6 +463,7 @@ export function NutritionPlan() {
           <Li>Move fatigue, calibration or restraint in the planner and this page follows.</Li>
         </Card>
 
+        {features.heat && (
         <Card
           title="Hot legs may over-prescribe gels"
           accent="ember"
@@ -442,9 +476,16 @@ export function NutritionPlan() {
           <Li>The gap is then re-prescribed as gels — up to <N>+13 g/hr</N> over target.</Li>
           <Li>{fuelPlan.segments.filter((s) => s.heat).length} of {fuelPlan.segments.length} legs carry the heat flag.</Li>
         </Card>
+        )}
       </Cards>
 
       {/* ---------------- caffeine ---------------- */}
+      {/* Every dose in this section is anchored to darkness — the schedule,
+          the body-load curve and all four cards. A race that finishes in
+          daylight has nothing to anchor them to, so the section goes rather
+          than degrading into a chart of one morning coffee. */}
+      {features.night && (
+        <>
       <SectionTag right={
         <span className="eyebrow numerals" style={{ fontSize: 9, color: caf.over_band ? "var(--ember)" : "var(--mist-mute)" }}>
           {cafGels} gels · {caf.gel_mg_total} mg · peak {caf.peak.mg_kg.toFixed(1)} mg/kg
@@ -541,6 +582,8 @@ export function NutritionPlan() {
           </Card>
         </Cards>
       </div>
+        </>
+      )}
 
       {/* ---------------- before ---------------- */}
       <SectionTag right={<span className="eyebrow" style={{ fontSize: 9 }}>wed → the gun</span>}>before</SectionTag>
@@ -648,15 +691,19 @@ export function NutritionPlan() {
           <Li>Drink alone leaves <N>{Math.round(fuelPlan.sodium_gap_mg_hr)} mg/hr</N> uncovered.</Li>
         </Card>
         <Card
-          title="Fluid follows heat"
-          meta={`${nutrition.fluid_ml_hr} → ${nutrition.fluid_ml_hr_heat} mL/hr`}
+          title={features.heat ? "Fluid follows heat" : "Fluid"}
+          meta={features.heat ? `${nutrition.fluid_ml_hr} → ${nutrition.fluid_ml_hr_heat} mL/hr` : `${nutrition.fluid_ml_hr} mL/hr`}
           why={{
             label: "why the pre-load column",
             body: "Several legs demand more fluid than your flasks hold. Rather than carry another flask for a 200 mL overage, you drink the difference at the aid station before leaving — so a pre-load figure is already drunk, not carried.",
           }}
         >
-          <Li><N>{nutrition.fluid_ml_hr_heat} mL/hr</N> inside the {nutrition.heat_window.start}–{nutrition.heat_window.end} heat window.</Li>
-          <Li><N>{nutrition.fluid_ml_hr} mL/hr</N> outside it.</Li>
+          {/* fluid_ml_hr_heat is a window this race may not have — a cool
+              mountain 50k would be quoting a rate that never applies */}
+          {features.heat && (
+            <Li><N>{nutrition.fluid_ml_hr_heat} mL/hr</N> inside the {nutrition.heat_window.start}–{nutrition.heat_window.end} heat window.</Li>
+          )}
+          <Li><N>{nutrition.fluid_ml_hr} mL/hr</N>{features.heat ? " outside it" : " through the race"}.</Li>
           <Li>Fill codes: <N>M</N> = mix, <N>W</N> = plain water.</Li>
         </Card>
       </Cards>
@@ -682,15 +729,21 @@ export function NutritionPlan() {
               caf={caf.perSegment[i] ?? 0}
               raceStart={raceStart}
               last={i === fuelPlan.segments.length - 1}
+              show={legShow}
             />
           ))}
         </div>
       </div>
       <div style={{ fontSize: 11, color: "var(--mist-mute)", lineHeight: 1.55, margin: "8px 0 0", maxWidth: "76ch" }}>
-        <B>↳ caf</B> is a subset of <B>gels</B>, not additional — a leg showing 1 gel and 1 caf carries one gel, and it is
-        the caffeinated one. Pre-load figures are millilitres drunk at the aid station before departing. Carry times sum to
+        {features.night && (
+          <>
+            <B>↳ caf</B> is a subset of <B>gels</B>, not additional — a leg showing 1 gel and 1 caf carries one gel, and it is
+            the caffeinated one.{" "}
+          </>
+        )}
+        Pre-load figures are millilitres drunk at the aid station before departing. Carry times sum to
         more than moving time because stops at crew-only points fall inside a leg rather than ending it.
-        {fuelPlan.segments.some((s, i) => (caf.perSegment[i] ?? 0) > s.gels) && (
+        {features.night && fuelPlan.segments.some((s, i) => (caf.perSegment[i] ?? 0) > s.gels) && (
           <span style={{ color: "var(--ember)" }}>
             {" "}A <B>*</B> marks a leg carrying more caffeinated gels than the fuel model asks gels for — the dose is
             scheduled by darkness, not carb demand, so those legs run slightly over their carb target.
@@ -699,6 +752,11 @@ export function NutritionPlan() {
       </div>
 
       {/* ---- drop bags ---- */}
+      {/* No drop bags on the course means one notional "Start" bag holding the
+          whole race — a packing list with nothing to pack into. The buy list
+          below it survives: you still have to own the gels. */}
+      {panels.drop_bag_card && (
+        <>
       <SectionTag right={<span className="eyebrow" style={{ fontSize: 9 }}>packing list</span>}>drop bags</SectionTag>
       <Cards min={230}>
         {fuelPlan.drop_bags.map((bag) => {
@@ -732,8 +790,13 @@ export function NutritionPlan() {
           );
         })}
       </Cards>
+        </>
+      )}
       <div style={{ fontSize: 11, color: "var(--mist-mute)", lineHeight: 1.55, margin: "8px 0 0", maxWidth: "76ch" }}>
-        Buy list with spares: <B>{cafGels + 2} caffeinated</B>, <B>{plainGels + 3} plain</B>,{" "}
+        Buy list with spares:{" "}
+        {features.night
+          ? <><B>{cafGels + 2} caffeinated</B>, <B>{plainGels + 3} plain</B></>
+          : <B>{fuelPlan.total_gels + 3} gels</B>},{" "}
         <B>{fuelPlan.total_bloks + 2} blok packs</B>, <B>{fuelPlan.total_tabs + 4} salt tabs</B>.
       </div>
 
