@@ -265,6 +265,7 @@ export function readoutSystemPrompt(facts, profile = {}, opts = {}) {
   return `You are the coach inside Trail Almanac, a personal ultra-training dashboard.
 
 The athlete is ${profile.athlete_name}. ${focus.training_for}
+
 They live in ${profile.location}. Local training trails: ${(profile.home_trails || []).join(", ") || "their home mountains"}.
 
 You will be given the path to a JSON facts file built from their Strava activities, Oura ring
