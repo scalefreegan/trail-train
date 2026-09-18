@@ -274,6 +274,35 @@ npm run sync:all     # strava + oura
 npm run coach        # regenerate readout + plan
 ```
 
+## Race day on your phone
+
+`#/race-day` is the phone view: race-local now, elapsed (or a countdown
+before the gun), the next station with its best/expected/worst ETA and
+cutoff margin, what to pick up there from the fuel plan, the drop-bag
+contents, the crew drive with a leave-by time, and the two stations after
+that. Same projection the planner and the printed cards use, so the numbers
+agree. Tap **just left…** or type a mile if the clock has drifted from where
+you actually are. To reach it from a phone on the same Wi-Fi, start the
+server with `cd web && npx vite --host` and open
+`http://<your-laptop's-LAN-IP>:38100/#/race-day` — but `--host` alone only
+serves the page: the state-changing endpoints pin both `Origin` and `Host`
+to loopback and will 403 from the LAN. Name the origin you are allowing, and
+only that one, in `TRAIL_ALLOWED_ORIGINS` (comma-separated exact origins, no
+wildcard, read at startup — restart to change it):
+
+```bash
+cd web
+TRAIL_ALLOWED_ORIGINS=http://192.168.1.42:38100 npx vite --host
+```
+
+Unset — the default — nothing changes and the server stays loopback-only.
+Only do this on a network you trust: there is still no auth, so anyone on
+that Wi-Fi who knows the port can drive the dashboard. A reload with the
+laptop asleep or out of range falls back to the last race payload and
+course profile this phone loaded, labelled as such; that cache is
+`localStorage`, **not** a service worker, so the *first* load of the day
+still needs the server reachable.
+
 ## Safety & backups
 
 Anything that's *not* in git lives only on your laptop and would be lost if it

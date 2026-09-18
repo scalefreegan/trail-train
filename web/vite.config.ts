@@ -18,11 +18,53 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 // call), which is not the CSRF threat model (a local process needs no CSRF).
 // The Host is also pinned to loopback as cheap defense against DNS-rebinding.
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
+
+// Race-day mode (`#/race-day`) is read on a phone, which means the dev
+// server has to be reachable off loopback — `npx vite --host`. That alone
+// would not be enough: the guard above pins BOTH the Origin and the Host to
+// loopback, so every state-changing endpoint would 403 from the LAN.
+//
+// TRAIL_ALLOWED_ORIGINS widens it, and only it: a comma-separated list of
+// EXACT origins ("http://192.168.1.42:38100"), read from the environment of
+// the process that launched the server. Deliberately an env var rather than
+// a file — the allowance then lives exactly as long as the command that also
+// passed --host, instead of sitting in a config file weeks after the race.
+// There is no wildcard: `*` is not a parseable origin, so it is dropped like
+// any other malformed entry and the guard stays closed.
+function parseAllowedOrigins(raw: string | undefined): string[] {
+  const out: string[] = []
+  for (const part of (raw ?? '').split(',')) {
+    const spec = part.trim()
+    if (!spec) continue
+    try {
+      const u = new URL(spec)
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('scheme')
+      // normalized to the origin: a trailing slash or a path in the config
+      // must not make two spellings of the same host fail to match the
+      // Origin header, which is always bare scheme://host:port
+      out.push(u.origin)
+    } catch {
+      console.warn(`[dev-api] TRAIL_ALLOWED_ORIGINS: ignoring "${spec}" — not an http(s) origin (expected e.g. http://192.168.1.42:38100)`)
+    }
+  }
+  return out
+}
+const ALLOWED_ORIGINS = new Set(parseAllowedOrigins(process.env.TRAIL_ALLOWED_ORIGINS))
+// The Host header carries no scheme and the guard already strips the port,
+// so the host check needs the hostnames on their own.
+const ALLOWED_HOSTS = new Set([...ALLOWED_ORIGINS].map((o) => new URL(o).hostname))
+if (ALLOWED_ORIGINS.size > 0) {
+  console.log(`[dev-api] extra allowed origins: ${[...ALLOWED_ORIGINS].join(', ')}`)
+}
+
 function crossSiteBlocked(req: IncomingMessage, res: ServerResponse): boolean {
   const origin = req.headers.origin
   if (origin) {
     let ok: boolean
-    try { ok = LOOPBACK_HOSTS.has(new URL(origin).hostname) } catch { ok = false }
+    try {
+      const u = new URL(origin)
+      ok = LOOPBACK_HOSTS.has(u.hostname) || ALLOWED_ORIGINS.has(u.origin)
+    } catch { ok = false }
     if (!ok) {
       res.statusCode = 403
       res.end('cross-origin request refused')
@@ -30,7 +72,7 @@ function crossSiteBlocked(req: IncomingMessage, res: ServerResponse): boolean {
     }
   }
   const host = (req.headers.host ?? '').replace(/:\d+$/, '')
-  if (host && !LOOPBACK_HOSTS.has(host)) {
+  if (host && !LOOPBACK_HOSTS.has(host) && !ALLOWED_HOSTS.has(host)) {
     res.statusCode = 403
     res.end('non-loopback host refused')
     return true
@@ -1670,6 +1712,17 @@ export default defineConfig({
   // Basecamp.app launcher's health check and any bookmark. strictPort makes a
   // genuine conflict fail LOUDLY instead of hopping; if 38100 is ever taken,
   // something is actually wrong.
-  server: { port: 38100, strictPort: true },
+  server: {
+    port: 38100,
+    strictPort: true,
+    // `host` stays unset: loopback-only by default, and `npx vite --host`
+    // is the deliberate opt-in (README → "Race day on your phone").
+    //
+    // Vite's own Host-header check already accepts bare IPs, so a LAN
+    // address needs nothing here; a NAME (basecamp.local) does, and only
+    // the ones TRAIL_ALLOWED_ORIGINS already named get it. Omitted entirely
+    // when the list is empty so the default config is byte-identical.
+    ...(ALLOWED_HOSTS.size > 0 ? { allowedHosts: [...ALLOWED_HOSTS] } : {}),
+  },
   preview: { port: 38100, strictPort: true },
 })

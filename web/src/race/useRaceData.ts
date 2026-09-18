@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { useRefresh } from "../data";
+import { useActiveRace, useRefresh } from "../data";
+import { cacheGet, cachePut, slugKey } from "./offlineCache";
 import type { ClimbsSnapshot, Course, CrewBase } from "./types";
 import type { PaceGradeCurve } from "./pacing";
 
@@ -14,21 +15,48 @@ import type { PaceGradeCurve } from "./pacing";
    can flag stale/failed data instead of telling the user to rebuild a file
    that already exists. */
 
+/**
+ * The active race's course profile + aid chart.
+ *
+ * Gated on the active-race pointer having RESOLVED, and keyed on its slug:
+ * /course.json is served out of whichever race folder is pointed at, so the
+ * offline copy has to be filed under the race it belongs to — a 50k's
+ * profile restored under a hundred's name would be a silently wrong plan.
+ * The extra round-trip costs nothing visible: every consumer of this hook
+ * already sits inside a race gate that waits on the same pointer.
+ */
 export function useCourse() {
   const { key: refreshKey } = useRefresh();
+  // `viewing`, not `slug`: the dev server serves /course.json,
+  // /crew-base.json and /nutrition.json out of the folder the POINTER
+  // names, which in view mode (tt-yib.7) is the archived race being
+  // browsed rather than the training target. Keying the cache on the
+  // training slug would file one race's course under another's name.
+  const { viewing: slug, resolved } = useActiveRace();
   const [data, setData] = useState<Course | null>(null);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    if (!resolved) return;
+    const cacheKey = slugKey("course", slug);
+    // a load failure is not an absence: fall back to the last copy that DID
+    // load (see offlineCache.ts) and label it, rather than blanking the view
+    const fallback = (message: string) => {
+      const cached = cacheGet<Course>(cacheKey);
+      setMissing(false);
+      if (cached) { setData(cached); setError(`${message} — showing the last saved copy`); }
+      else setError(message);
+    };
     fetch(`/course.json?t=${Date.now()}`)
       .then(async (r) => {
         if (r.status === 404) { setData(null); setMissing(true); setError(null); return; }
-        if (!r.ok) { setMissing(false); setError(`course.json failed to load (HTTP ${r.status})`); return; }
+        if (!r.ok) { fallback(`course.json failed to load (HTTP ${r.status})`); return; }
         const d = await r.json().catch(() => { throw new Error("parse"); });
+        cachePut(cacheKey, d);
         setData(d); setMissing(false); setError(null);
       })
-      .catch(() => { setMissing(false); setError("course.json corrupt or unreadable"); });
-  }, [refreshKey]);
+      .catch(() => fallback("course.json corrupt or unreadable"));
+  }, [refreshKey, resolved, slug]);
   return { course: data, missing, error };
 }
 
@@ -37,18 +65,35 @@ export function useCourse() {
     numbers and race-week lodging are independent. */
 export function useCrewBase() {
   const { key: refreshKey } = useRefresh();
+  // `viewing`, not `slug`: the dev server serves /course.json,
+  // /crew-base.json and /nutrition.json out of the folder the POINTER
+  // names, which in view mode (tt-yib.7) is the archived race being
+  // browsed rather than the training target. Keying the cache on the
+  // training slug would file one race's course under another's name.
+  const { viewing: slug, resolved } = useActiveRace();
   const [data, setData] = useState<CrewBase | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    if (!resolved) return;
+    // cached like course.json: race-day mode shows the crew drive and the
+    // leave-by time off this file, and they are exactly what a crew captain
+    // checks from a car park with one bar of signal
+    const cacheKey = slugKey("crew-base", slug);
+    const fallback = (message: string) => {
+      const cached = cacheGet<CrewBase>(cacheKey);
+      if (cached) { setData(cached); setError(`${message} — showing the last saved copy`); }
+      else setError(message);
+    };
     fetch(`/crew-base.json?t=${Date.now()}`)
       .then(async (r) => {
         if (r.status === 404) { setData(null); setError(null); return; }
-        if (!r.ok) { setError(`crew-base.json failed to load (HTTP ${r.status})`); return; }
+        if (!r.ok) { fallback(`crew-base.json failed to load (HTTP ${r.status})`); return; }
         const d = await r.json().catch(() => { throw new Error("parse"); });
+        cachePut(cacheKey, d);
         setData(d); setError(null);
       })
-      .catch(() => setError("crew-base.json corrupt or unreadable"));
-  }, [refreshKey]);
+      .catch(() => fallback("crew-base.json corrupt or unreadable"));
+  }, [refreshKey, resolved, slug]);
   return { crewBase: data, error };
 }
 

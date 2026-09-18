@@ -22,6 +22,8 @@ import { ClimbComparison } from "./race/ClimbComparison";
 import { NutritionPlan } from "./race/NutritionPlan";
 import { ModelCheck } from "./race/ModelCheck";
 import { RacePlanProvider } from "./race/RacePlanProvider";
+import { RaceDayRoute } from "./race/RaceDay";
+import { RACE_DAY_HASH, useHashRoute } from "./race/hashRoute";
 import { useCourse } from "./race/useRaceData";
 import type { RaceView } from "./data";
 import { raceClockHM } from "./race/pacing";
@@ -2603,6 +2605,7 @@ function SetupDrawer() {
 function AppBody() {
   const { key } = useRefresh();
   const { race, viewing } = useBlockConfig();
+  const hash = useHashRoute();
   const [view, setViewState] = useState<AppView>(() => {
     // validate rather than cast — a stale or hand-edited key would otherwise
     // render an empty main column with no way back except clearing storage
@@ -2629,6 +2632,12 @@ function AppBody() {
   // quietly overwritten by a loading frame.
   const views = appViews(race);
   const activeView = views.includes(view) ? view : "training";
+  // Race-day mode takes the whole screen: the command bar and the agent
+  // rail are desk furniture, and on a phone they cost a third of the page
+  // the runner is squinting at. All hooks above run either way, so this is
+  // a render branch, not a conditional hook. Reached by URL today; the
+  // switcher menu has no entry for it yet (see the bead's follow-ups).
+  if (hash === RACE_DAY_HASH) return <RaceDayRoute />;
   return (
     <>
       <CommandBar view={activeView} setView={setView} railOpen={railOpen} toggleRail={toggleRail} />
