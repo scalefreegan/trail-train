@@ -1,24 +1,31 @@
 // Persistent agentic state for Trail Almanac.
 //
-// One JSON file at web/public/state.json is the source of truth for everything
-// that should survive across syncs and server restarts:
-//   - race meta (name, date, distance, elevation, location)
-//   - 20-week block targets (planned weekly miles + vert)
-//   - the agent's current plan_blocks (6 upcoming weeks of focus + key sessions)
+// One JSON file at web/public/state.json holds what is true about the ATHLETE
+// and survives across syncs, server restarts and races:
 //   - agent's persistent notes (observations the coach has made and wants
 //     to remember between sessions)
-//   - athlete-set preferences (training philosophy, constraints)
+//   - athlete-set preferences (training philosophy, coach context)
+//
+// What is true about a RACE does not live here (v3, PRD §5.5): race meta,
+// block targets and the agent's plan_blocks moved into races/<slug>/ as
+// race.json, block.json and plan.json — see scripts/race-config.mjs. In
+// generic mode (no active race) the plan lands in config/generic-plan.json.
 //
 // On first run, bootstrapped from DEFAULT_STATE. The coach reads this,
 // passes it to the agent as context, and MERGES the agent's response back
-// (plan_blocks + new notes) — the agent never overwrites the whole file,
+// (plan blocks + new notes) — the agent never overwrites the whole file,
 // which prevents accidental data loss if it returns malformed output.
 
 import fs from "node:fs/promises";
 import path from "node:path";
 import { writeJsonAtomic } from "./lib.mjs";
+import { RACE_SCHEMA_VERSION, getActiveRace, raceDir } from "./race-config.mjs";
 
-export const STATE_VERSION = 2;
+export const STATE_VERSION = 3;
+
+/** Written beside state.json before the v2→v3 split, once and never again —
+    it is the only copy of race/block/plan_blocks if the split goes wrong. */
+export const STATE_BACKUP_NAME = "state.v2.backup.json";
 
 // Calendar/childcare semantics as athlete-voice data. Lives in
 // preferences.context.sections.calendar_conventions (seeded here on
@@ -32,62 +39,6 @@ export const DEFAULT_CALENDAR_CONVENTIONS = `All-day marker events on the family
 export const DEFAULT_STATE = {
   version: STATE_VERSION,
   last_updated: null,
-  race: {
-    name: "Mogollon Monster 100",
-    short: "MM100",
-    date: "2026-09-12",
-    start_time: "06:00",
-    distance_mi: 102.3,
-    elevation_ft: 15900,
-    max_elev_ft: 7912,
-    cutoff_h: 38,
-    location: "Mogollon Rim · Pine, AZ (90 min NE of Phoenix)",
-    notes: "Climbs the rim 6×. Technical sections on Highline / Donahue / Myrtle / Promontory. September can run 80°F+ in the canyons.",
-    aid_stations: [
-      { mi: 11.1, name: "See Canyon" },
-      { mi: 21.5, name: "Horton" },
-      { mi: 26.8, name: "Fish Hatchery" },
-      { mi: 39.2, name: "Myrtle" },
-      { mi: 42.8, name: "Buck Springs" },
-      { mi: 52.4, name: "Pinchot Cabin" },
-      { mi: 58.7, name: "General Springs · Crew" },
-      { mi: 61.1, name: "Washington Park" },
-      { mi: 72.3, name: "Geronimo" },
-      { mi: 81.8, name: "Donahue" },
-      { mi: 85.6, name: "Dickerson Flat" },
-      { mi: 90.5, name: "Pine Canyon" },
-      { mi: 101.1, name: "Pine TH · Finish" },
-    ],
-  },
-  block: {
-    start_date: "2026-04-27",
-    total_weeks: 20,
-    targets: [
-      { wk: 1,  target_dist: 38, target_elev: 5800 },
-      { wk: 2,  target_dist: 46, target_elev: 7400 },
-      { wk: 3,  target_dist: 52, target_elev: 8900 },
-      { wk: 4,  target_dist: 36, target_elev: 5400 },
-      { wk: 5,  target_dist: 54, target_elev: 9500 },
-      { wk: 6,  target_dist: 60, target_elev: 10800 },
-      { wk: 7,  target_dist: 55, target_elev: 9800 },
-      { wk: 8,  target_dist: 62, target_elev: 11200 },
-      { wk: 9,  target_dist: 38, target_elev: 5800 },
-      { wk: 10, target_dist: 70, target_elev: 13400 },
-      { wk: 11, target_dist: 78, target_elev: 14600 },
-      { wk: 12, target_dist: 72, target_elev: 13200 },
-      { wk: 13, target_dist: 42, target_elev: 6100 },
-      { wk: 14, target_dist: 68, target_elev: 12400 },
-      { wk: 15, target_dist: 58, target_elev: 9400 },
-      { wk: 16, target_dist: 52, target_elev: 8200 },
-      { wk: 17, target_dist: 42, target_elev: 6200 },
-      { wk: 18, target_dist: 30, target_elev: 4200 },
-      { wk: 19, target_dist: 18, target_elev: 2400 },
-      { wk: 20, target_dist: 102.3, target_elev: 15900 },
-    ],
-  },
-  // Agent-managed: current 6-week plan with focus + key session for each
-  // upcoming week. Reset only when the block restructure justifies it.
-  plan_blocks: [],
   // Agent-managed: a running list of observations the coach has made and
   // wants to remember (e.g. "heat block needs to start by wk 10").
   // Capped at 30 most recent on save.
@@ -351,25 +302,200 @@ export function migrateToV2(state) {
   }
   delete prefs.personal_constraints;
   prefs.context = { sections, temporary };
-  return { ...state, version: STATE_VERSION, preferences: prefs };
+  // Pinned to 2, not STATE_VERSION: a v1 file has to pass through the v3
+  // split too, and claiming the current version here would skip it.
+  return { ...state, version: 2, preferences: prefs };
 }
 
 /**
  * Load state.json from web/public/, bootstrapping it from DEFAULT_STATE
  * the first time. Always returns a valid state object.
  */
+/* ------------------------- v2 → v3 split ------------------------- */
+
+/** races/<slug> for a legacy state.race: "<name>-<race year>", kebab-cased. */
+function legacyRaceSlug(race) {
+  const name = String(race?.name ?? "race")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const year = /^\d{4}/.exec(String(race?.date ?? ""))?.[0];
+  return year ? `${name}-${year}` : name;
+}
+
+/**
+ * Best-effort race.json from a v2 state.race. The v2 shape carries less than
+ * the folder schema wants (no timezone, no per-station detail), so the gaps
+ * are filled from the machine's zone and flagged in provenance for the user
+ * to correct — a migrated race is a starting point, not an intake result.
+ * The real MM100 folder was written by hand in tt-yib.2; this path exists for
+ * any other v2 file (a clone, a restored backup, a test fixture).
+ */
+function raceJsonFromLegacy(race, slug, todayIso) {
+  const aid = Array.isArray(race.aid_stations) ? race.aid_stations : [];
+  const at = new Date().toISOString();
+  const source = "state.json v2→v3 migration";
+  return {
+    schema_version: RACE_SCHEMA_VERSION,
+    slug,
+    // A race already run is history; one still ahead is the live one.
+    status: String(race.date ?? "") < todayIso ? "archived" : "active",
+    name: race.name ?? "Race",
+    short: race.short ?? String(race.name ?? "Race").slice(0, 8),
+    date: race.date ?? todayIso,
+    start_time: race.start_time ?? "06:00",
+    // v2 had no timezone. The machine's zone is the best guess available and
+    // is almost always right for a race the athlete actually travelled to.
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    location: race.location ?? "",
+    distance_mi: race.distance_mi ?? 0,
+    gain_ft: race.elevation_ft ?? 0,
+    elevation: race.max_elev_ft != null ? { max_ft: race.max_elev_ft } : undefined,
+    cutoff_h: race.cutoff_h ?? null,
+    aid_stations: aid.map((a) => ({ name: a.name, total_mi: a.mi ?? a.total_mi ?? 0 })),
+    coach_notes: race.notes ? { terrain: race.notes } : undefined,
+    provenance: {
+      timezone: { by: "agent", at, source: `${source} — guessed from the machine's zone, CHECK IT` },
+      aid_stations: { by: "agent", at, source: `${source} — miles only; the official chart has more` },
+      status: { by: "agent", at, source },
+    },
+  };
+}
+
+// Never clobber a folder that already carries the file: the hand-authored
+// race.json is richer than anything this migration can synthesize.
+async function writeIfAbsent(p, data) {
+  try {
+    await fs.access(p);
+    console.log(`• ${p} already exists — keeping it`);
+    return false;
+  } catch (e) {
+    if (e.code !== "ENOENT") throw e;
+  }
+  await writeJsonAtomic(p, data);
+  console.log(`• wrote ${p}`);
+  return true;
+}
+
+/**
+ * v2 → v3: race, block and plan_blocks leave state.json for races/<slug>/
+ * (PRD §5.5). Writes web/public/state.v2.backup.json FIRST and REFUSES to
+ * migrate if that backup cannot be written — the v2 file is the only copy of
+ * what is being moved. Idempotent: loadState only calls it while the file
+ * still carries a v2 marker, the backup is created with "wx" so a second run
+ * cannot overwrite the first, and an existing folder file is never replaced.
+ * @returns {Promise<object>} the v3 state (race/block/plan_blocks removed)
+ */
+export async function migrateToV3(projectRoot, state) {
+  const backupPath = path.join(projectRoot, "web", "public", STATE_BACKUP_NAME);
+  try {
+    await fs.mkdir(path.dirname(backupPath), { recursive: true });
+    await fs.writeFile(backupPath, JSON.stringify(state, null, 2) + "\n", { flag: "wx" });
+    console.log(`• backed up the v2 state to ${backupPath}`);
+  } catch (e) {
+    // EEXIST is the good case — a previous run already backed the v2 file up,
+    // and that first copy is the one worth keeping. Anything else (no space,
+    // read-only mount, a DIRECTORY sitting on the path) means there is no
+    // backup, so the split must not happen.
+    const existing = e.code === "EEXIST" ? await fs.stat(backupPath).catch(() => null) : null;
+    if (!existing?.isFile()) {
+      throw new Error(
+        `refusing to split state.json to v3: cannot write the backup at ${backupPath} ` +
+          `(${e.code === "EEXIST" ? "the path exists but is not a file" : e.message}). ` +
+          "Nothing has been changed — fix it and re-run.",
+      );
+    }
+    console.log(`• ${STATE_BACKUP_NAME} already exists — kept the original backup`);
+  }
+
+  const todayIso = isoDate(new Date());
+  const planBlocks = Array.isArray(state.plan_blocks) ? state.plan_blocks : [];
+  if (state.race) {
+    const slug = legacyRaceSlug(state.race);
+    const dir = raceDir(projectRoot, slug);
+    await fs.mkdir(dir, { recursive: true });
+    await writeIfAbsent(path.join(dir, "race.json"), raceJsonFromLegacy(state.race, slug, todayIso));
+    if (state.block) await writeIfAbsent(path.join(dir, "block.json"), state.block);
+    if (planBlocks.length > 0) await writeIfAbsent(path.join(dir, "plan.json"), { plan_blocks: planBlocks });
+  } else if (planBlocks.length > 0) {
+    // No race in this file at all: the plan is already a generic-mode plan.
+    await writeIfAbsent(genericPlanPath(projectRoot), { plan_blocks: planBlocks });
+  }
+
+  const next = { ...state, version: STATE_VERSION };
+  delete next.race;
+  delete next.block;
+  delete next.plan_blocks;
+  return next;
+}
+
+/* --------------------- where plan_blocks live now --------------------- */
+
+/** config/generic-plan.json — the plan when no race is active (PRD §6). */
+function genericPlanPath(projectRoot) {
+  return path.join(projectRoot, "config", "generic-plan.json");
+}
+
+/**
+ * The file the agent's plan_blocks belong in right now: the active race's
+ * plan.json, or config/generic-plan.json in generic mode.
+ * @returns {Promise<string>} absolute path (the file may not exist yet)
+ */
+export async function planBlocksPath(projectRoot) {
+  const slug = await getActiveRace(projectRoot);
+  return slug ? path.join(raceDir(projectRoot, slug), "plan.json") : genericPlanPath(projectRoot);
+}
+
+/**
+ * Read the current plan_blocks from wherever they live. Missing file or
+ * malformed contents read as [] — an absent plan is normal (a fresh race
+ * folder has none) and must not break a sync.
+ * @returns {Promise<{path: string, plan_blocks: object[]}>}
+ */
+export async function loadPlanBlocks(projectRoot) {
+  const p = await planBlocksPath(projectRoot);
+  try {
+    const parsed = JSON.parse(await fs.readFile(p, "utf8"));
+    return { path: p, plan_blocks: Array.isArray(parsed?.plan_blocks) ? parsed.plan_blocks : [] };
+  } catch (e) {
+    if (e.code !== "ENOENT") console.warn(`• ${p} unreadable (${e.message}) — treating the plan as empty`);
+    return { path: p, plan_blocks: [] };
+  }
+}
+
+/**
+ * Replace the plan_blocks in the active race's plan.json (or the generic
+ * plan). The file holds nothing else, so a whole-file write is the update.
+ * @returns {Promise<string>} the path written
+ */
+export async function savePlanBlocks(projectRoot, planBlocks) {
+  const p = await planBlocksPath(projectRoot);
+  await writeJsonAtomic(p, { plan_blocks: planBlocks });
+  return p;
+}
+
 export async function loadState(projectRoot) {
   const p = statePath(projectRoot);
   try {
     const buf = await fs.readFile(p, "utf8");
     let state = JSON.parse(buf);
+    let migrated = false;
     if ((state.version ?? 0) < 2 || !state.preferences?.context) {
       state = migrateToV2(state);
-      await writeJsonAtomic(p, state);
-      console.log(`• migrated state.json to v${STATE_VERSION} (coach context)`);
+      migrated = true;
+      console.log("• migrated state.json to v2 (coach context)");
+    }
+    // Key presence, not the version number alone: a file hand-edited back to
+    // carrying a race must still be split rather than left half-migrated.
+    if ((state.version ?? 0) < 3 || "race" in state || "block" in state || "plan_blocks" in state) {
+      state = await migrateToV3(projectRoot, state);
+      migrated = true;
+      console.log("• migrated state.json to v3 (race/block/plan → races/<slug>/)");
     } else if (state.version !== STATE_VERSION) {
       console.warn(`• state.json version ${state.version} ≠ ${STATE_VERSION}; using as-is`);
     }
+    if (migrated) await writeJsonAtomic(p, state);
     return state;
   } catch (e) {
     if (e.code !== "ENOENT") throw e;
@@ -397,15 +523,21 @@ export async function saveState(projectRoot, state) {
 
 /**
  * Merge an agent's update into the loaded state.
- * - plan_blocks: replace with agent's version if non-empty
+ * - plan_blocks: written to the active race's plan.json (or the generic
+ *   plan) when non-empty — since v3 they are NOT part of state.json
  * - agent_notes: append the agent's new notes (with timestamps)
  * - new_context_items: append as source:"agent" temporary context items
  * - everything else: untouched (agent can't accidentally clobber)
+ * @returns {Promise<{state: object, plan: {path: string, previous_count: number, count: number, written: boolean}}>}
  */
-export function mergeAgentUpdate(state, update) {
+export async function mergeAgentUpdate(projectRoot, state, update) {
   let next = { ...state };
+  const before = await loadPlanBlocks(projectRoot);
+  const plan = { path: before.path, previous_count: before.plan_blocks.length, count: before.plan_blocks.length, written: false };
   if (Array.isArray(update?.plan_blocks) && update.plan_blocks.length > 0) {
-    next.plan_blocks = update.plan_blocks;
+    plan.path = await savePlanBlocks(projectRoot, update.plan_blocks);
+    plan.count = update.plan_blocks.length;
+    plan.written = true;
   }
   if (Array.isArray(update?.new_notes) && update.new_notes.length > 0) {
     const ts = new Date().toISOString();
@@ -417,5 +549,5 @@ export function mergeAgentUpdate(state, update) {
   if (Array.isArray(update?.new_context_items) && update.new_context_items.length > 0) {
     next = appendContextItems(next, update.new_context_items).state;
   }
-  return next;
+  return { state: next, plan };
 }

@@ -461,13 +461,15 @@ in real numbers from the data.`;
   // would silently delete expired context items).
   if (facts.state) {
     const freshState = await loadState(ROOT);
-    const merged = mergeAgentUpdate(freshState, readout);
+    // Since v3 the plan_blocks land in the active race's plan.json (or
+    // config/generic-plan.json), not state.json — mergeAgentUpdate writes
+    // that file and reports where it went.
+    const { state: merged, plan } = await mergeAgentUpdate(ROOT, freshState, readout);
     const saved = await saveState(ROOT, merged);
-    const prevCount = freshState.plan_blocks?.length ?? 0;
-    const newCount = saved.plan_blocks?.length ?? 0;
     const notesDelta = (saved.agent_notes?.length ?? 0) - (freshState.agent_notes?.length ?? 0);
     const ctxDelta = (saved.preferences?.context?.temporary?.length ?? 0) - (freshState.preferences?.context?.temporary?.length ?? 0);
-    console.log(`✓ merged into state.json  (plan_blocks ${prevCount}→${newCount}, +${notesDelta} note${notesDelta === 1 ? "" : "s"}${ctxDelta > 0 ? `, +${ctxDelta} context item${ctxDelta === 1 ? "" : "s"}` : ""})`);
+    console.log(`✓ merged into state.json  (+${notesDelta} note${notesDelta === 1 ? "" : "s"}${ctxDelta > 0 ? `, +${ctxDelta} context item${ctxDelta === 1 ? "" : "s"}` : ""})`);
+    console.log(`  plan_blocks ${plan.previous_count}→${plan.count} → ${path.relative(ROOT, plan.path)}${plan.written ? "" : " (unchanged)"}`);
   }
 
   console.log(`✓ wrote ${OUT_PATH}  (${elapsed}s · ${numTurns ?? "?"} turns${cost != null ? ` · $${cost.toFixed(4)}` : ""})`);
