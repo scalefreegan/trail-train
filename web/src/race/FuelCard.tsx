@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
-import { useBlockConfig } from "../data";
 import { fmtCarry, type FuelPlan, type FuelSegment, type NutritionConfig } from "./nutrition";
+import { useRacePlan } from "./useRacePlan";
 
 /* ------------------------------------------------------------------ */
 /*  Fuel card — the nutrition companion to RunnerCard: a double-sided  */
@@ -31,7 +31,7 @@ function FuelFace({ side, pages, segments, plan, cfg }: {
   plan: FuelPlan;
   cfg: NutritionConfig;
 }) {
-  const { race } = useBlockConfig();
+  const { race } = useRacePlan();
 
   const cell: React.CSSProperties = {
     padding: "1.5px 3px", borderBottom: `0.5px solid ${RULE}`, fontSize: "8.5px",

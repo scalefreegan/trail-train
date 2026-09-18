@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { motion } from "motion/react";
-import { useUnits, useMeasuredWidth, useBlockConfig } from "../data";
+import { useUnits, useMeasuredWidth } from "../data";
 import { SectionTag, Contours } from "../atoms";
 import { useClimbs, useCourse } from "./useRaceData";
 import { useRacePlan } from "./useRacePlan";
@@ -316,7 +316,7 @@ export function ClimbComparison() {
   const { course } = useCourse();
   const { climbs, missing, error } = useClimbs();
   const { panels } = useRacePlan();
-  const { race } = useBlockConfig();
+  const { race } = useRacePlan();
 
   const training = useMemo(() => climbs?.climbs ?? [], [climbs]);
   const raceClimbs = useMemo(() => course?.race_climbs ?? [], [course]);
