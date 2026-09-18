@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Builds web/public/course.json — the Race views' source of truth — from the
-// committed race GPX (config/mogollon-monster-100.gpx) plus the hand-authored
-// aid chart / climb windows / sun times (config/race-course.json).
+// race folder's course.gpx plus the aid chart / climb windows / sun times in
+// its race.json (races/<slug>/, tt-yib.2 — was config/race-course.json).
 //
 // Usage:  node scripts/build-course.mjs      (run manually; output is committed)
 //
@@ -23,10 +23,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { writeJsonAtomic } from "./lib.mjs";
 import { haversine, smoothProfile, detectClimbs, gainBetween } from "./climb-lib.mjs";
+import { loadRaceOrMostRecent } from "./race-config.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-const GPX_PATH = path.join(ROOT, "config", "mogollon-monster-100.gpx");
-const RACE_PATH = path.join(ROOT, "config", "race-course.json");
 const OUT_PATH = path.join(ROOT, "web", "public", "course.json");
 
 const M_PER_FT = 0.3048;
@@ -153,8 +152,13 @@ async function osrmDrive(from, to) {
 }
 
 async function main() {
-  const gpx = await fs.readFile(GPX_PATH, "utf8");
-  const race = JSON.parse(await fs.readFile(RACE_PATH, "utf8"));
+  // TODO(tt-yib.5): take the slug as an argument and write into the folder's
+  // build/ directory instead of assuming one course.json for the whole app.
+  const folder = await loadRaceOrMostRecent(ROOT);
+  if (!folder) throw new Error("no race folder under races/ — nothing to build");
+  const gpxPath = path.join(folder.dir, "course.gpx");
+  const gpx = await fs.readFile(gpxPath, "utf8");
+  const race = folder.race;
 
   const track = cumulativeMiles(parseTrack(gpx));
   const waypoints = parseWaypoints(gpx);
@@ -164,11 +168,13 @@ async function main() {
     track.map((p) => ({ mi: p.mi, ele_ft: p.ele_ft }))
   );
 
-  const officialDist = race.official_distance_mi;
-  const officialGain = race.official_gain_ft;
+  // race.json names these distance_mi / gain_ft; they are still the OFFICIAL
+  // chart figures, against which the GPX-measured ones are compared.
+  const officialDist = race.distance_mi;
+  const officialGain = race.gain_ft;
   const scale = measuredDist / officialDist; // measured miles per official mile
 
-  console.log("── Mogollon Monster 100 · course build ──");
+  console.log(`── ${race.name} · course build ──`);
   console.log(
     `distance: measured ${measuredDist.toFixed(2)} mi vs official ${officialDist} mi ` +
       `(${((measuredDist / officialDist - 1) * 100).toFixed(1)}%)`
@@ -196,7 +202,7 @@ async function main() {
       water_only: a.water_only,
       notes: a.notes,
       // optional %-slowdown for technical tread on the segment INTO this
-      // station (editable in config/race-course.json; consumed by the race
+      // station (editable in the folder's race.json; consumed by the race
       // pace projection on top of grade adjustment). Validated loudly: a
       // hand-edited "5%" or negative value would otherwise NaN-poison or
       // silently speed up every ETA downstream.
@@ -364,7 +370,20 @@ async function main() {
       process.exit(1);
     }
   }
-  const raceBase = personal?.race_base;
+  // tt-yib.2: the crew base and the emergency numbers now live in the race
+  // folder's gitignored crew.private.json (race.json must never carry them).
+  // config/profile.json race_base stays as the fallback until tt-yib.9 drops it.
+  let crewPrivate = null;
+  try {
+    crewPrivate = JSON.parse(await fs.readFile(path.join(folder.dir, "crew.private.json"), "utf8"));
+  } catch (e) {
+    if (e.code !== "ENOENT") {
+      console.error(`✗ ${folder.slug}/crew.private.json is present but unreadable: ${e.message}`);
+      process.exit(1);
+    }
+  }
+  const emergency = Array.isArray(crewPrivate?.emergency) ? crewPrivate.emergency : [];
+  const raceBase = crewPrivate?.base ?? personal?.race_base;
   if (raceBase && !(
     Number.isFinite(raceBase.lat) &&
     Number.isFinite(raceBase.lon) &&
@@ -404,8 +423,11 @@ async function main() {
       generated_at: new Date().toISOString(),
       base,
       drives,
+      // The crew sheet's emergency strip reads these from here now that they
+      // are out of the committed course.json.
+      emergency,
     });
-    console.log("✓ wrote crew-base.json (gitignored — contains the lodging address)\n");
+    console.log("✓ wrote crew-base.json (gitignored — lodging address + emergency numbers)\n");
   }
 
   // ── Overview-map polyline: track lat/lon downsampled to ~400 points ─────
@@ -431,7 +453,7 @@ async function main() {
 
   const payload = {
     generated_at: new Date().toISOString(),
-    source: "config/mogollon-monster-100.gpx + config/race-course.json",
+    source: `races/${folder.slug}/course.gpx + races/${folder.slug}/race.json`,
     distance_mi: +measuredDist.toFixed(3),
     gain_ft: Math.round(measuredGain),
     official_distance_mi: officialDist,

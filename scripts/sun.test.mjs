@@ -3,8 +3,9 @@
 // Two kinds of check:
 //   1. Against published sunrise/sunset tables for well-known places (NOAA's
 //      own calculator / USNO), which is what actually validates the formulas.
-//   2. Against the hand-authored `sun` block in config/race-course.json, which
-//      is what bead tt-yib.6 has to replace with a computed value.
+//   2. Against the hand-authored `sun` block in the MM100 race folder's
+//      race.json (was config/race-course.json before tt-yib.2), which is what
+//      bead tt-yib.6 has to replace with a computed value.
 //
 // Nothing depends on the machine's zone: run under
 // `TZ=Pacific/Auckland node --test scripts/` and the numbers do not move.
@@ -36,9 +37,9 @@ function assertWithin(actual, expected, toleranceMin, label) {
  * As of this writing the file's first point is lat 34.30691, lon -110.95165.
  */
 function mogollonStart() {
-  const gpx = readFileSync(new URL("../config/mogollon-monster-100.gpx", import.meta.url), "utf8");
+  const gpx = readFileSync(new URL("../races/mogollon-monster-100-2026/course.gpx", import.meta.url), "utf8");
   const m = /<trkpt\s+lat="(-?[\d.]+)"\s+lon="(-?[\d.]+)"/.exec(gpx);
-  assert.ok(m, "no <trkpt> found in config/mogollon-monster-100.gpx");
+  assert.ok(m, "no <trkpt> found in races/mogollon-monster-100-2026/course.gpx");
   return { lat: Number(m[1]), lon: Number(m[2]) };
 }
 
@@ -52,9 +53,9 @@ test("sunTimes: Mogollon Monster 100 start, 2026-09-12, America/Phoenix", () => 
   const { lat, lon } = mogollonStart();
   const sun = sunTimes({ lat, lon, date: "2026-09-12", timeZone: "America/Phoenix" });
 
-  // Hand-authored in config/race-course.json: sunset 18:35, sunrise 06:15.
+  // Hand-authored in the race folder's race.json: sunset 18:35, sunrise 06:15.
   // Computed: sunset 18:35 (exact), sunrise 06:05.
-  assertWithin(sun.sunset, "18:35", 5, "sunset vs. the hand-authored race-course.json value");
+  assertWithin(sun.sunset, "18:35", 5, "sunset vs. the hand-authored race.json value");
 
   // The computed sunrise is 06:05, TEN minutes earlier than the hand-authored
   // 06:15 — outside the 5-minute tolerance the sunset meets. The algorithm is

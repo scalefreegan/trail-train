@@ -16,6 +16,8 @@ web/public/cross-train.json
 web/public/oura.json
 web/public/coach.json
 web/public/state.json
+# …and the one-shot v2 backup the v3 split leaves behind (same contents).
+web/public/state.v2.backup.json
 web/public/google-cal.json
 web/public/climbs.json
 # crew-base.json holds the race-week lodging address + drive times (from

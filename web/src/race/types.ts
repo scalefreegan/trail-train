@@ -33,7 +33,7 @@ export type CourseAidStation = {
   water_only: boolean;
   notes: string;
   /** %-slowdown for technical tread on the segment INTO this station
-      (editable in config/race-course.json; 0/absent = none). */
+      (editable in the race folder's race.json; 0/absent = none). */
   tech_pct?: number;
 };
 
@@ -64,8 +64,10 @@ export type Course = {
   map_track?: [number, number][];
   /** crew rules / directions distilled from the official crew manual */
   crew_info?: {
-    source: string;
-    emergency: { label: string; phone: string }[];
+    source?: string;
+    /** Left behind by the race-folder split — the numbers are personal and
+        live in crew-base.json now (tt-yib.2). Kept for older course.json. */
+    emergency?: { label: string; phone: string }[];
     rules: string[];
     cell_strategy: string;
     station_notes: Record<string, string>;
@@ -87,6 +89,9 @@ export type CrewBase = {
   };
   /** OSRM driving estimates from the base, keyed by station name */
   drives: Record<string, { min: number; mi: number }>;
+  /** Race-day emergency contacts, from races/<slug>/crew.private.json — they
+      are personal, so they ride in this gitignored file, not course.json. */
+  emergency?: { label: string; phone: string }[];
 };
 
 export type TrainingClimb = {

@@ -2,7 +2,7 @@
 //
 // Why this exists: organizer GPX files name their waypoints nothing like the
 // runner manual's aid chart ("See Canyon" in the chart is "See Canyon Aid" in
-// the GPX, "Pine Trailhead" is "Pine TH Water"). Today config/race-course.json
+// the GPX, "Pine Trailhead" is "Pine TH Water"). Today races/<slug>/race.json
 // carries a hand-authored `gpx_wpt` per station and build-course.mjs throws when
 // one doesn't name a real waypoint — fine for one hand-tuned race, fatal for the
 // modular-races intake, where the GPX arrives from a race site unseen.

@@ -147,6 +147,26 @@ export async function loadActiveRace(root) {
   return { active: slug, race, block, plan, nutrition };
 }
 
+/**
+ * TODO(tt-yib.3): replaced by goals/generic mode.
+ * The active race, or — when no race is active — the most recent one by date.
+ * Scripts written before generic mode existed (facts.mjs, build-course.mjs)
+ * assume there IS a race; routing them through here keeps them working off
+ * the archived MM100 folder until goals.json and the rolling window land.
+ * @returns {Promise<{slug, dir, race, block, plan, nutrition}|null>} null when
+ *   there are no race folders at all
+ */
+export async function loadRaceOrMostRecent(root) {
+  const slug = await getActiveRace(root);
+  if (slug) return loadRaceFolder(root, slug);
+  const usable = (await listRaces(root)).filter((r) => r.race);
+  if (usable.length === 0) return null;
+  // Newest edition first; slug breaks ties so the choice is deterministic.
+  usable.sort((a, b) =>
+    String(b.race.date ?? "").localeCompare(String(a.race.date ?? "")) || a.slug.localeCompare(b.slug));
+  return loadRaceFolder(root, usable[0].slug);
+}
+
 const isObj = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 const isStr = (v) => typeof v === "string" && v.trim() !== "";
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);

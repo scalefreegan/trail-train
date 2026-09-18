@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useUnits, useBlockConfig } from "../data";
 import { fmtRaceClock, fmtElapsed, type projectRace, type StationProjection } from "./pacing";
-import type { Course } from "./types";
+import type { Course, CrewBase } from "./types";
 
 /* ------------------------------------------------------------------ */
 /*  Runner card — a double-sided 3×5in index card the runner carries.  */
@@ -46,11 +46,13 @@ function stationLabel(name: string, crewOnly: boolean): string {
   return (name.length > avail ? `${name.slice(0, avail - 1)}…` : name) + suffix;
 }
 
-function CardFace({ side, stations, course, proj }: {
+function CardFace({ side, stations, course, proj, emergency }: {
   side: 1 | 2;
   stations: StationProjection[];
   course: Course;
   proj: Proj;
+  /** race-day contacts — personal, so they arrive via crew-base.json */
+  emergency: CrewBase["emergency"];
 }) {
   const u = useUnits();
   const { race } = useBlockConfig();
@@ -64,7 +66,7 @@ function CardFace({ side, stations, course, proj }: {
     color: MUTED, borderBottom: `1px solid ${INK}`, fontWeight: 600,
   };
 
-  const emergency = course.crew_info?.emergency?.[0];
+  const contact = emergency?.[0] ?? course.crew_info?.emergency?.[0];
 
   return (
     <div
@@ -147,7 +149,7 @@ function CardFace({ side, stations, course, proj }: {
           </div>
           <div>
             drop only at a station — tell the captain
-            {emergency && <> · {emergency.label} <b style={{ color: INK }}>{emergency.phone}</b></>}
+            {contact && <> · {contact.label} <b style={{ color: INK }}>{contact.phone}</b></>}
           </div>
         </div>
       )}
@@ -155,9 +157,10 @@ function CardFace({ side, stations, course, proj }: {
   );
 }
 
-export function RunnerCard({ course, proj, onClose }: {
+export function RunnerCard({ course, proj, crewBase, onClose }: {
   course: Course;
   proj: Proj;
+  crewBase: CrewBase | null;
   onClose: () => void;
 }) {
   // print isolation: while the card is open, @media print shows only it
@@ -211,7 +214,7 @@ export function RunnerCard({ course, proj, onClose }: {
               side {i + 1} — {stations[0].station.name} → {stations[stations.length - 1].station.name}
             </div>
             <div style={{ border: `1px solid ${RULE}`, boxShadow: "0 1px 4px rgba(0,0,0,0.12)", width: "fit-content" }}>
-              <CardFace side={(i + 1) as 1 | 2} stations={stations} course={course} proj={proj} />
+              <CardFace side={(i + 1) as 1 | 2} stations={stations} course={course} proj={proj} emergency={crewBase?.emergency} />
             </div>
           </div>
         ))}

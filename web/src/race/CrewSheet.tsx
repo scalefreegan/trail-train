@@ -111,6 +111,7 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
   const { race } = useBlockConfig();
   const base = crewBase?.base ?? null;
   const drives = crewBase?.drives ?? {};
+  const emergency = crewBase?.emergency ?? course.crew_info?.emergency ?? [];
 
   // print isolation: while the sheet is open, @media print shows only it
   useEffect(() => {
@@ -192,14 +193,16 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
           </div>
         </div>
 
-        {/* emergency strip */}
-        {course.crew_info && (
+        {/* emergency strip — from crew-base.json since tt-yib.2 moved the
+            numbers out of the committed course.json; older course.json files
+            still carry them, hence the fallback. */}
+        {emergency.length > 0 && (
           <div style={{
             display: "flex", flexWrap: "wrap", gap: "4px 26px", alignItems: "baseline",
             border: `2px solid ${INK}`, padding: "7px 12px", marginBottom: 14, fontSize: 12,
           }}>
             <b style={{ letterSpacing: "0.06em" }}>EMERGENCY</b>
-            {course.crew_info.emergency.map((e) => (
+            {emergency.map((e) => (
               <span key={e.phone}>{e.label}: <b style={{ whiteSpace: "nowrap" }}>{e.phone}</b></span>
             ))}
           </div>

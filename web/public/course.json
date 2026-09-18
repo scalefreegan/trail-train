@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-08-14T21:53:28.889Z",
-  "source": "config/mogollon-monster-100.gpx + config/race-course.json",
+  "generated_at": "2026-09-18T20:56:54.167Z",
+  "source": "races/mogollon-monster-100-2026/course.gpx + races/mogollon-monster-100-2026/race.json",
   "distance_mi": 101.902,
   "gain_ft": 15346,
   "official_distance_mi": 102.6,
@@ -12785,17 +12785,6 @@
     ]
   ],
   "crew_info": {
-    "source": "2025 Mogollon Monster 100 Crew Manual",
-    "emergency": [
-      {
-        "label": "MedStar 24-hr medical (printed on runner bibs)",
-        "phone": "480-269-4126"
-      },
-      {
-        "label": "Race Director Noah Dougherty (text or call)",
-        "phone": "480-518-6731"
-      }
-    ],
     "rules": [
       "Never impede traffic — park fully in pull-offs or keep moving. Emergency vehicles must be able to pass at all times; this is the permitting agencies' #1 issue.",
       "If the runner drops, they MUST report to an aid station captain (or text the RD) before leaving the course. THIS IS CRITICAL.",

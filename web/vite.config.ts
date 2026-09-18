@@ -973,8 +973,47 @@ function raceApi(): Plugin {
   }
 }
 
+// Dev-only middleware: GET /nutrition.json. The fueling config used to be a
+// static file in web/public; tt-yib.2 moved it into the race folder, so it is
+// served from the active race — or, with none active, the most recent one —
+// and the client's fetch keeps working unchanged.
+// TODO(tt-yib.5): the client should read it from /api/race/active instead.
+function nutritionFile(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  return {
+    name: 'trail-train-nutrition-file',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/nutrition.json', async (req, res) => {
+        if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+        if (crossSiteBlocked(req, res)) return
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        try {
+          const { loadRaceOrMostRecent } = await import(path.join(projectRoot, 'scripts/race-config.mjs')) as {
+            loadRaceOrMostRecent: (root: string) => Promise<{ slug: string; nutrition: unknown } | null>
+          }
+          const folder = await loadRaceOrMostRecent(projectRoot)
+          if (!folder?.nutrition) {
+            // The nutrition page falls back to its own DEFAULTS, but it should
+            // say why rather than quietly showing somebody else's numbers.
+            res.statusCode = 404
+            res.end(JSON.stringify({ error: 'no race folder carries a nutrition.json' }))
+            return
+          }
+          res.statusCode = 200
+          res.end(JSON.stringify(folder.nutrition))
+        } catch (e) {
+          res.statusCode = 500
+          res.end(JSON.stringify({ error: (e as Error).message }))
+        }
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceApi()],
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceApi(), nutritionFile()],
   // Fixed, memorable, deliberately unusual port (38 h cutoff · 100 miles).
   // The 5173 default collides with every other Vite project on the machine,
   // and a colliding neighbor silently claims the port so this app hops to

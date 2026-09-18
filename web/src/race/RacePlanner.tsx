@@ -867,7 +867,7 @@ export function RacePlanner() {
         <CrewSheet course={course} proj={proj} crewBase={crewBase} onClose={() => setOpenDoc(null)} />
       )}
       {openDoc === "card" && proj && (
-        <RunnerCard course={course} proj={proj} onClose={() => setOpenDoc(null)} />
+        <RunnerCard course={course} proj={proj} crewBase={crewBase} onClose={() => setOpenDoc(null)} />
       )}
       {openDoc === "fuel" && fuelPlan && (
         <FuelCard plan={fuelPlan} cfg={nutrition} onClose={() => setOpenDoc(null)} />

@@ -6,7 +6,8 @@ import type { Course } from "./types";
 /* ------------------------------------------------------------------ */
 /*  Fueling model — per-segment carb / sodium / fluid plan derived     */
 /*  from the pacing projection's EXPECTED splits. Constants come from  */
-/*  web/public/nutrition.json (user-editable) with DEFAULTS below as   */
+/*  the race folder's nutrition.json, served at /nutrition.json by the */
+/*  dev server (user-editable), with DEFAULTS below as                 */
 /*  the fallback. All math is departure-oriented: a FuelSegment is     */
 /*  what you carry OUT of `from` to reach `to`.                        */
 /* ------------------------------------------------------------------ */

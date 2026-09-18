@@ -7,7 +7,8 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { loadState, activeContext, isoDate } from "./state.mjs";
+import { loadState, loadPlanBlocks, activeContext, isoDate } from "./state.mjs";
+import { loadRaceOrMostRecent } from "./race-config.mjs";
 
 // Heat exposure threshold (Celsius) — mirrors weather.mjs WEATHER_HOT_THRESHOLD_C.
 const HOT_THRESHOLD_C = 24;
@@ -359,6 +360,44 @@ export function computeFacts(strava, oura, state) {
   };
 }
 
+// TODO(tt-yib.3): replaced by goals/generic mode.
+// computeFacts still speaks the pre-v3 state shape (state.race, state.block,
+// state.plan_blocks). Those fields left state.json in the v3 split, so this
+// reads them back out of the active race folder — or the most recent archived
+// one — and hands computeFacts the shape it expects. When tt-yib.3 lands,
+// facts reads the folder (or config/goals.json) directly and this goes away.
+async function legacyRaceShim(projectRoot) {
+  const folder = await loadRaceOrMostRecent(projectRoot).catch((e) => {
+    console.warn(`• race folder unreadable (${e.message}) — falling back to the built-in race constants`);
+    return null;
+  });
+  // The plan lives with the race it belongs to; loadPlanBlocks only knows
+  // about the ACTIVE race, so an archived folder's plan.json is read here.
+  const { race, block, plan } = folder ?? {};
+  const plan_blocks = Array.isArray(plan?.plan_blocks)
+    ? plan.plan_blocks
+    : (await loadPlanBlocks(projectRoot)).plan_blocks;
+  if (!folder) return { plan_blocks };
+  return {
+    race: {
+      name: race.name,
+      short: race.short,
+      date: race.date,
+      start_time: race.start_time,
+      distance_mi: race.distance_mi,
+      elevation_ft: race.gain_ft,
+      max_elev_ft: race.elevation?.max_ft ?? null,
+      cutoff_h: race.cutoff_h ?? null,
+      location: race.location ?? "",
+      // the v2 `notes` string is now a set of coach_notes sections
+      notes: Object.values(race.coach_notes ?? {}).filter(Boolean).join(" "),
+      aid_stations: (race.aid_stations ?? []).map((a) => ({ mi: a.total_mi, name: a.name })),
+    },
+    block: block ?? undefined,
+    plan_blocks,
+  };
+}
+
 export async function loadFactsFromRoot(projectRoot) {
   const stravaPath  = path.join(projectRoot, "web", "public", "strava.json");
   const crossPath   = path.join(projectRoot, "web", "public", "cross-train.json");
@@ -376,6 +415,8 @@ export async function loadFactsFromRoot(projectRoot) {
     loadProfile(projectRoot),
     loadState(projectRoot),
   ]);
+  // state.json no longer carries race/block/plan_blocks (v3) — see the shim.
+  const stateForFacts = { ...state, ...(await legacyRaceShim(projectRoot)) };
   if (!strava) throw new Error("strava.json missing — run sync:strava");
   const base = {
     profile,
@@ -391,7 +432,7 @@ export async function loadFactsFromRoot(projectRoot) {
     // state fresh from disk on purpose (a snapshot minutes old would clobber a
     // concurrent settings save), so the key stays present and truthy.
     state: { version: state?.version ?? null, last_updated: state?.last_updated ?? null },
-    ...computeFacts(strava, oura, state),
+    ...computeFacts(strava, oura, stateForFacts),
   };
   if (cross) {
     // Non-run activities (rides, hikes, strength, …) — context only. None of
