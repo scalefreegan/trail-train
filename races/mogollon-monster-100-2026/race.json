@@ -1,9 +1,33 @@
 {
-  "race": "Mogollon Monster 100",
-  "year": 2025,
-  "source_notes": "Hand-authored from the 2025 Mogollon Monster 100 runner manual aid chart + the StravaGPX route. Segment miles/cutoff hours are 2025 values and may shift when the 2026 manual drops — this file is the single editable source. build-course.mjs snaps each aid station to the GPX track and treats course.json as the Race views' source of truth (state.json race object is left untouched). NOTE: the 2025 chart's 'total elapsed hours' column contradicts its own bold cutoff clock times (by up to 1h45m); cutoff_h here is derived from the posted CLOCK times (start 6:00 AM), which are what aid captains enforce.",
-  "official_distance_mi": 102.6,
-  "official_gain_ft": 15900,
+  "schema_version": 1,
+  "slug": "mogollon-monster-100-2026",
+  "status": "archived",
+  "name": "Mogollon Monster 100",
+  "short": "MM100",
+  "edition_year": 2026,
+  "date": "2026-09-12",
+  "start_time": "06:00",
+  "timezone": "America/Phoenix",
+  "location": "Mogollon Rim · Pine, AZ (90 min NE of Phoenix)",
+  "format": "point_to_point",
+  "distance_mi": 102.6,
+  "gain_ft": 15900,
+  "elevation": {
+    "min_ft": 5326,
+    "max_ft": 7912,
+    "avg_ft": 6627,
+    "altitude_significant": false
+  },
+  "cutoff_h": 38,
+  "features": {
+    "crew": true,
+    "drop_bags": true,
+    "pacers": true,
+    "night": true,
+    "heat": true,
+    "altitude": true,
+    "water_crossings": true
+  },
   "sun": {
     "sunset": "18:35",
     "sunrise": "06:15"
@@ -42,7 +66,7 @@
     {
       "name": "Black Mesa",
       "gpx_wpt": "Black Mesa Crew Zone",
-      "seg_mi": 0.0,
+      "seg_mi": 0,
       "total_mi": 21.3,
       "seg_gain_ft": 0,
       "cutoff_h": null,
@@ -59,7 +83,7 @@
       "seg_mi": 5.4,
       "total_mi": 26.7,
       "seg_gain_ft": 125,
-      "cutoff_h": 10.0,
+      "cutoff_h": 10,
       "crew": false,
       "crew_only": false,
       "drop_bag": true,
@@ -159,7 +183,7 @@
       "total_mi": 81.8,
       "seg_gain_ft": 2200,
       "tech_pct": 6,
-      "cutoff_h": 30.0,
+      "cutoff_h": 30,
       "crew": false,
       "crew_only": false,
       "drop_bag": false,
@@ -216,7 +240,7 @@
       "seg_mi": 1.5,
       "total_mi": 102.6,
       "seg_gain_ft": 45,
-      "cutoff_h": 38.0,
+      "cutoff_h": 38,
       "crew": true,
       "crew_only": false,
       "drop_bag": false,
@@ -276,17 +300,6 @@
     }
   ],
   "crew_info": {
-    "source": "2025 Mogollon Monster 100 Crew Manual",
-    "emergency": [
-      {
-        "label": "MedStar 24-hr medical (printed on runner bibs)",
-        "phone": "480-269-4126"
-      },
-      {
-        "label": "Race Director Noah Dougherty (text or call)",
-        "phone": "480-518-6731"
-      }
-    ],
     "rules": [
       "Never impede traffic — park fully in pull-offs or keep moving. Emergency vehicles must be able to pass at all times; this is the permitting agencies' #1 issue.",
       "If the runner drops, they MUST report to an aid station captain (or text the RD) before leaving the course. THIS IS CRITICAL.",
@@ -305,5 +318,99 @@
       "Finish": "Pine Town Ramada / Community Center on the main road through Pine; parking surrounds the area, food within walking distance."
     },
     "start_notes": "Park at the Old Pine Parking Area (vehicles may stay all weekend; free dispersed camping). Two-Sixty TH is DROP-OFF ONLY — no parking at the start. Runner shuttles leave Old Pine at 4:25a and 4:40a."
-  }
+  },
+  "coach_notes": {
+    "terrain": "Climbs the Mogollon Rim 6× over 102.6 mi and 15,900 ft. Technical tread on Highline / Donahue / Myrtle / Promontory; the rim climbs are long and the canyon descents are steep and rocky. The limiting factor late in this race is musculoskeletal — quads on the rim descents, feet, connective tissue — not aerobic fitness, so durability and eccentric load are the training targets.",
+    "climate": "Mid-September on the Rim: the below-rim canyons can run 80 °F+ in the afternoon while the nights on top get genuinely cold. Heat is one of the three wildcards and a heat block belongs in the build-out; the overnight asks for real layers.",
+    "altitude": "The course runs between about 5,300 ft and 7,912 ft, most of it on the Rim near 7,000 ft. For an athlete training at ~5,300 ft in Albuquerque this is a mild stressor rather than a limiter — it shows up as a slightly lower ceiling on the climbs, not as acclimatization work.",
+    "key_demands": "~30+ hours at very low intensity. Time-on-feet durability, deliberate race-effort simulation days (hike the climbs, relaxed shuffle elsewhere, fueling at the kcal/h target, race gear and poles), back-to-back long days when one huge day will not fit the calendar, a night section rehearsed, and a fueling plan that survives a day and a half. Heat, altitude and technical descent are the real wildcards.",
+    "race_week": "Race week is week 20 of the block — taper proportional to the build, course rec near peak rather than in race week, 06:00 start on Saturday 2026-09-12 with a 38 h cutoff. Runner shuttles leave Old Pine at 04:25 and 04:40."
+  },
+  "links": {
+    "site": "https://www.aravaiparunning.com/mogollon-monster-2/",
+    "tracking": "https://live.aravaiparunning.com"
+  },
+  "visual": {
+    "theme_preset": "desert",
+    "panels": {
+      "climb_comparison": true,
+      "crew_sheet": true,
+      "model_check": true
+    }
+  },
+  "provenance": {
+    "aid_stations": {
+      "by": "agent",
+      "at": "2026-09-18T00:00:00Z",
+      "source": "tt-yib.2 migration from config/race-course.json — Hand-authored from the 2025 Mogollon Monster 100 runner manual aid chart + the StravaGPX route. Segment miles/cutoff hours are 2025 values and may shift when the 2026 manual drops — this file is the single editable source. build-course.mjs snaps each aid station to the GPX track and treats course.json as the Race views' source of truth (state.json race object is left untouched). NOTE: the 2025 chart's 'total elapsed hours' column contradicts its own bold cutoff clock times (by up to 1h45m); cutoff_h here is derived from the posted CLOCK times (start 6:00 AM), which are what aid captains enforce."
+    },
+    "distance_mi": {
+      "by": "agent",
+      "at": "2026-09-18T00:00:00Z",
+      "source": "tt-yib.2 migration: official_distance_mi 102.6 from the runner manual's aid chart; state.json carried 102.3 from the race site"
+    },
+    "gain_ft": {
+      "by": "agent",
+      "at": "2026-09-18T00:00:00Z",
+      "source": "tt-yib.2 migration from config/race-course.json official_gain_ft"
+    },
+    "elevation": {
+      "by": "agent",
+      "at": "2026-09-18T00:00:00Z",
+      "source": "tt-yib.2 migration: max_ft 7,912 is the manual's posted high point; min_ft/avg_ft derived from course.gpx (6,517 track points, 5,326–7,901 ft). altitude_significant is false because the athlete trains at ~5,300 ft — features.altitude stays on for the night/heat/altitude panel set"
+    },
+    "coach_notes": {
+      "by": "agent",
+      "at": "2026-09-18T00:00:00Z",
+      "source": "tt-yib.2 migration: distilled from the prompt literals in scripts/coach.mjs and web/vite.config.ts plus state.race.notes"
+    },
+    "crew_info": {
+      "by": "agent",
+      "at": "2026-09-18T00:00:00Z",
+      "source": "tt-yib.2 migration from config/race-course.json crew_info; emergency phone numbers moved to crew.private.json"
+    },
+    "race_climbs": {
+      "by": "agent",
+      "at": "2026-09-18T00:00:00Z",
+      "source": "tt-yib.2 migration from config/race-course.json race_climbs"
+    },
+    "sun": {
+      "by": "agent",
+      "at": "2026-09-18T00:00:00Z",
+      "source": "tt-yib.2 migration from config/race-course.json sun (hand-entered 2025 values; build-course recomputes from date + coords)"
+    },
+    "timezone": {
+      "by": "agent",
+      "at": "2026-09-18T00:00:00Z",
+      "source": "tt-yib.2 migration: Arizona does not observe DST, so America/Phoenix is MST year-round"
+    },
+    "date": {
+      "by": "agent",
+      "at": "2026-09-18T00:00:00Z",
+      "source": "tt-yib.2 migration from state.json race.date"
+    },
+    "status": {
+      "by": "agent",
+      "at": "2026-09-18T00:00:00Z",
+      "source": "tt-yib.2 migration: the race was run on 2026-09-12 — see result.json"
+    }
+  },
+  "sources": [
+    {
+      "kind": "pdf",
+      "ref": "2025 Mogollon Monster 100 runner manual (aid chart, cutoff clock times)"
+    },
+    {
+      "kind": "pdf",
+      "ref": "2025 Mogollon Monster 100 Crew Manual (rules, station notes, emergency numbers)"
+    },
+    {
+      "kind": "gpx",
+      "ref": "races/mogollon-monster-100-2026/course.gpx (Strava route export)"
+    },
+    {
+      "kind": "url",
+      "ref": "https://www.aravaiparunning.com/mogollon-monster-2/"
+    }
+  ]
 }

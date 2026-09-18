@@ -28,6 +28,11 @@ web/public/crew-base.json
 races/*/*.private.json
 races/*/sources/
 races/*/build/
+# plan.json is agent-managed (the coach rewrites it every resync) and
+# result.json records a real finish — both are personal/local like state.json.
+# race.json, course.gpx, block.json and nutrition.json ARE committed.
+races/*/plan.json
+races/*/result.json
 # The active-race pointer is a per-machine choice (and may name a draft that
 # only exists locally) — never a committed one.
 config/active-race.json

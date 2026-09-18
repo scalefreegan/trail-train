@@ -158,8 +158,9 @@ test("no plausible match returns null with candidates, and never throws", () => 
 });
 
 test("regression: MM100 stations matched by name alone reproduce the hand-authored gpx_wpt", () => {
-  const race = JSON.parse(fs.readFileSync(path.join(ROOT, "config", "race-course.json"), "utf8"));
-  const gpx = parseGpx(fs.readFileSync(path.join(ROOT, "config", "mogollon-monster-100.gpx"), "utf8"));
+  const raceDir = path.join(ROOT, "races", "mogollon-monster-100-2026");
+  const race = JSON.parse(fs.readFileSync(path.join(raceDir, "race.json"), "utf8"));
+  const gpx = parseGpx(fs.readFileSync(path.join(raceDir, "course.gpx"), "utf8"));
   const stations = race.aid_stations.map((a) => ({ name: a.name, total_mi: a.total_mi }));
   const got = matchAidStations(stations, gpx);
 

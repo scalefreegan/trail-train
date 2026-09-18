@@ -1,6 +1,7 @@
 // Unit tests for the race-folder loader. Run with `npm test` from web/
 // (node --test, no dependencies). Every fixture is synthetic and written to
-// a temp dir — nothing here touches the real races/ or config/.
+// a temp dir — the one exception is the last test, which READS the committed
+// races/ folders so a hand-edit that breaks the schema fails CI.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -226,4 +227,30 @@ test("loadRaceFolder round-trips a folder, optional files as null", async (t) =>
 test("loadRaceFolder throws for a folder that is not there", async (t) => {
   const root = await tempRoot(t);
   await assert.rejects(() => loadRaceFolder(root, "nope-100-2027"), /race\.json not found/);
+});
+
+// The committed race folders are the schema's only real-world instances, so
+// they are part of the test surface: a hand-edit that breaks race.json (or a
+// second folder marked "active") has to fail here rather than at load time in
+// the dashboard.
+test("the committed race folders validate", async () => {
+  const root = path.resolve(import.meta.dirname, "..");
+  const races = await listRaces(root);
+  assert.ok(races.length > 0, "expected at least one committed race folder");
+  for (const r of races) {
+    assert.equal(r.error, null, `${r.slug}: ${r.error}`);
+    const { ok, errors } = validateRaceJson(r.race);
+    assert.ok(ok, `${r.slug}/race.json: ${errors.join("; ")}`);
+  }
+  assert.equal(validateSingleActive(races).ok, true);
+  assert.ok(races.some((r) => r.slug === "mogollon-monster-100-2026"), "MM100 folder is missing");
+
+  // block.json and nutrition.json are committed alongside race.json; plan.json
+  // and result.json are gitignored, so they are absent in a fresh checkout.
+  const mm100 = await loadRaceFolder(root, "mogollon-monster-100-2026");
+  assert.equal(mm100.block.total_weeks, 20);
+  assert.equal(mm100.race.status, "archived");
+  assert.equal(mm100.race.timezone, "America/Phoenix");
+  assert.equal(mm100.race.aid_stations.length, 15);
+  assert.ok(mm100.nutrition.caffeine, "nutrition.json should carry the caffeine block");
 });
