@@ -209,12 +209,19 @@ a { color: inherit; }
   align-items: center;
 }
 
+/* an ARCHIVED race gains an "actual" column between the eta band and the
+   goal — only then, so a race still to be run keeps its ten */
+.race-grid.has-actual {
+  grid-template-columns: minmax(110px, 1.3fr) 44px 58px 50px 58px minmax(184px, 1.4fr) 70px 62px minmax(124px, 1fr) 96px minmax(90px, 0.9fr);
+}
+
 /* station table: when the viewport can't fit the columns' true widths, the
    panel scrolls horizontally — never squeeze, never spill into the rail */
 .race-table { overflow-x: auto; }
 /* ≥ every row's intrinsic minimum (station rows carry a 2px borderLeft the
    header lacks) so all rows share one width while the panel scrolls */
 .race-table > .race-grid { min-width: 1015px; }
+.race-table > .race-grid.has-actual { min-width: 1096px; }
 
 .climb-grid {
   display: grid;
@@ -290,6 +297,11 @@ a { color: inherit; }
     gap: 10px;
   }
   .race-grid > .col-seg, .race-grid > .col-stop, .race-grid > .col-pace, .race-grid > .col-goal, .race-grid > .col-fuel, .race-grid > .col-flags { display: none; }
+  /* what actually happened outranks the projection's edges on a phone — the
+     archived table keeps "actual" and drops nothing else for it */
+  .race-grid.has-actual {
+    grid-template-columns: minmax(90px, 1.1fr) 36px minmax(140px, 1.2fr) 62px minmax(104px, 0.9fr);
+  }
   /* the desktop min-width floor would force the collapsed 4-column layout
      to scroll on every phone — the narrow template fits natively */
   .race-table > .race-grid { min-width: 0; }
