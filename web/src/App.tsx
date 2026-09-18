@@ -2635,8 +2635,8 @@ function AppBody() {
   // Race-day mode takes the whole screen: the command bar and the agent
   // rail are desk furniture, and on a phone they cost a third of the page
   // the runner is squinting at. All hooks above run either way, so this is
-  // a render branch, not a conditional hook. (tt-yib.7 adds the switcher
-  // entry that points here; the URL works on its own in the meantime.)
+  // a render branch, not a conditional hook. Reached by URL today; the
+  // switcher menu has no entry for it yet (see the bead's follow-ups).
   if (hash === RACE_DAY_HASH) return <RaceDayRoute />;
   return (
     <>

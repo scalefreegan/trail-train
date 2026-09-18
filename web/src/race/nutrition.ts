@@ -25,7 +25,12 @@ export type { NutritionConfig, CaffeineConfig } from "./nutrition-config";
     falls back to DEFAULT_NUTRITION — the file is optional tuning, not data. */
 export function useNutrition() {
   const { key: refreshKey } = useRefresh();
-  const { slug, resolved } = useActiveRace();
+  // `viewing`, not `slug`: the dev server serves /course.json,
+  // /crew-base.json and /nutrition.json out of the folder the POINTER
+  // names, which in view mode (tt-yib.7) is the archived race being
+  // browsed rather than the training target. Keying the cache on the
+  // training slug would file one race's course under another's name.
+  const { viewing: slug, resolved } = useActiveRace();
   const [cfg, setCfg] = useState<NutritionConfig>(DEFAULT_NUTRITION);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {

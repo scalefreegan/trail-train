@@ -191,8 +191,11 @@ function Eyebrow({ children, style }: { children: React.ReactNode; style?: React
  */
 export function RaceDayRoute() {
   const { race, loading } = useBlockConfig();
-  const { activeRace, error } = useActiveRace();
-  if (!race || !activeRace?.active) {
+  const { activeRace, viewing, error } = useActiveRace();
+  // the SAME condition RacePlanProvider gates on: anything else and this
+  // page would claim there is no race while the provider below it would
+  // happily have rendered one (view mode browsing an archived folder)
+  if (!race || !(activeRace?.active || viewing)) {
     return (
       <Shell>
         <div className="display" style={{ fontSize: 28, marginTop: 18 }}>
@@ -222,10 +225,12 @@ export function RaceDay() {
   const u = useUnits();
   const plan = useRacePlan();
   const { race, proj, fuelPlan, features, raceStart, error: courseError, missing } = plan;
-  const { slug, error: activeError, offline } = useActiveRace();
+  // the race ON SCREEN owns the override, same namespace as the plan
+  // knobs (useRacePlan) — view mode browses a different folder
+  const { viewing, error: activeError, offline } = useActiveRace();
   const { crewBase } = useCrewBase();
   const now = useNow();
-  const [posMi, setPosMi] = usePosition(slug);
+  const [posMi, setPosMi] = usePosition(viewing);
   const [miDraft, setMiDraft] = useState("");
 
   const elapsedH = (now - raceStart.getTime()) / 3_600_000;
