@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useStrava, useMeasuredWidth } from "../data";
+import { useStrava, useMeasuredWidth, useUnits } from "../data";
 import { SectionTag } from "../atoms";
 import { useRacePlan } from "./useRacePlan";
 import { ANCHOR_HI_MI, ANCHOR_LO_MI, BIAS_WORTH_ACTING_ON, calibrate, type Band, type Flag } from "./calibration";
@@ -162,7 +162,8 @@ function Band3({ best, avg, worst, goal }: { best: number; avg: number; worst: n
 }
 
 export function ModelCheck() {
-  const { course, proj, fit, paceGrade, settings } = useRacePlan();
+  const u = useUnits();
+  const { course, proj, fit, paceGrade, settings, features, panels, raceConfig } = useRacePlan();
   const { activities } = useStrava();
 
   const cal = useMemo(
@@ -174,6 +175,7 @@ export function ModelCheck() {
   );
 
   if (!proj || !cal) return null;
+  if (!panels.model_check) return null;
 
   const maxErr = Math.max(
     5,
@@ -198,6 +200,21 @@ export function ModelCheck() {
         <div>
           <span className="eyebrow" style={{ fontSize: 8.5, display: "block", marginBottom: 8 }}>projection band</span>
           <Band3 best={proj.finish_h.best} avg={proj.finish_h.avg} worst={proj.finish_h.worst} goal={proj.goal_h} />
+          {/* PRD §2: the altitude flag buys a caveat, not pacing math. The fit
+              is built from training runs at whatever elevation you train at,
+              and nothing downstream corrects for the race's — so the band
+              above is silently optimistic and the honest move is to say so
+              rather than invent an adjustment nobody validated. */}
+          {features.altitude && (
+            <p style={{ fontSize: 11.5, color: "var(--lamp)", lineHeight: 1.55, margin: "8px 0 0", maxWidth: "72ch" }}>
+              Altitude is not modeled.{" "}
+              {raceConfig?.elevation?.max_ft != null
+                ? `This course runs as high as ${u.elev(raceConfig.elevation.max_ft)} ${u.elevUnit}, and `
+                : "This race is flagged as run at altitude, and "}
+              none of the paces behind these three numbers know it — every band here is a
+              lowland-equivalent projection. Read it as the optimistic edge, not the middle.
+            </p>
+          )}
         </div>
 
         {/* ---- is the fit any good ---- */}

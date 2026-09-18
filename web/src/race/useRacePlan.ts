@@ -1,9 +1,13 @@
 import { createContext, useContext, useMemo, useState } from "react";
-import { useStrava, useBlockConfig } from "../data";
+import { useStrava, useBlockConfig, useActiveRace } from "../data";
 import { useCourse, usePaceGrade } from "./useRaceData";
 import { planFuel, useNutrition, type FuelPlan, type NutritionConfig } from "./nutrition";
 import { fitPacing, projectRace, type PacingFit, type PaceGradeCurve } from "./pacing";
-import type { Course } from "./types";
+import {
+  resolveFeatures, visibleColumns, visiblePanels,
+  type ResolvedFeatures, type VisibleColumns, type VisiblePanels,
+} from "./features";
+import type { Course, RaceConfig } from "./types";
 
 /* ------------------------------------------------------------------ */
 /*  Shared race-plan wiring.                                          */
@@ -77,6 +81,16 @@ export type RacePlan = {
   proj: ReturnType<typeof projectRace> | null;
   nutrition: NutritionConfig;
   fuelPlan: FuelPlan | null;
+  /** the active race folder's race.json — null in generic mode, and on
+      every render before /api/race/active answers */
+  raceConfig: RaceConfig | null;
+  /** what this race even has. Resolved HERE, once, rather than in each
+      component: the race view mounts four consumers of it, and four
+      useActiveRace() calls would be four fetches of the same file that
+      could disagree with each other mid-flight. */
+  features: ResolvedFeatures;
+  panels: VisiblePanels;
+  columns: VisibleColumns;
   /** local race START instant (date + start_time), from block config */
   raceStart: Date;
   settings: {
@@ -115,6 +129,7 @@ export function useRacePlan(): RacePlan {
 
 export function useRacePlanInstance(): RacePlan {
   const { race } = useBlockConfig();
+  const { activeRace } = useActiveRace();
   const { activities } = useStrava();
   const { course, missing, error: courseError } = useCourse();
   const { paceGrade, error: paceGradeError } = usePaceGrade();
@@ -131,6 +146,11 @@ export function useRacePlanInstance(): RacePlan {
   const [aidStopMin, setAidStopMin] = usePersistedNumber("race.aid_stop_min", 5);
   const [crewStopMin, setCrewStopMin] = usePersistedNumber("race.crew_stop_min", 10);
   const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops("race.stop_overrides");
+
+  const raceConfig = activeRace?.race ?? null;
+  const features = useMemo(() => resolveFeatures(raceConfig), [raceConfig]);
+  const panels = useMemo(() => visiblePanels(raceConfig), [raceConfig]);
+  const columns = useMemo(() => visibleColumns(raceConfig), [raceConfig]);
 
   const fit = useMemo(() => fitPacing(activities), [activities]);
 
@@ -154,6 +174,7 @@ export function useRacePlanInstance(): RacePlan {
     course, missing, error: courseError,
     paceGrade, paceGradeError, nutritionError,
     fit, proj, nutrition, fuelPlan, raceStart: race.date,
+    raceConfig, features, panels, columns,
     settings: { fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides },
     set: {
       fatigue: setFatigue, calibration: setCalibration, restraint: setRestraint,

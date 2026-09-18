@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import { useUnits, useMeasuredWidth } from "../data";
 import { SectionTag, Contours } from "../atoms";
 import { useClimbs, useCourse } from "./useRaceData";
+import { useRacePlan } from "./useRacePlan";
 import type { Course, RaceClimb, TrainingClimb } from "./types";
 
 /* ------------------------------------------------------------------ */
@@ -312,6 +313,7 @@ export function ClimbComparison() {
   const u = useUnits();
   const { course } = useCourse();
   const { climbs, missing, error } = useClimbs();
+  const { panels } = useRacePlan();
 
   const training = useMemo(() => climbs?.climbs ?? [], [climbs]);
   const raceClimbs = useMemo(() => course?.race_climbs ?? [], [course]);
@@ -338,6 +340,10 @@ export function ClimbComparison() {
     }
     return span;
   }, [course, raceClimbs, windowMi]);
+
+  // after the hooks, never before them: a panel the race has switched off
+  // still has to run this component's hooks in the same order every render
+  if (!panels.climb_comparison) return null;
 
   return (
     <section>
