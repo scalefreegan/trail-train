@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "node --test ../scripts/*.test.mjs",
     "build": "tsc -b && eslint . && vite build",
     "lint": "eslint .",
     "test": "node --test ../scripts/*.test.mjs",
