@@ -13,7 +13,7 @@ import { fmtCarry } from "./nutrition";
 import type { VisibleColumns } from "./features";
 import {
   projectRace, nightIntervals,
-  fmtRaceClock, fmtElapsed,
+  fmtElapsed, raceClockHM,
   RESTRAINT_FULL_MI, RESTRAINT_END_MI, RESTRAINT_FATIGUE_PAYOFF,
   type StationProjection,
 } from "./pacing";
@@ -132,12 +132,12 @@ function ProfileChart({ course, proj, night }: {
   // night bands, mapped from elapsed hours onto the mile axis via the projection
   const nights = useMemo(() => {
     if (!proj || !night) return [];
-    const startClock = `${String(race.date.getHours()).padStart(2, "0")}:${String(race.date.getMinutes()).padStart(2, "0")}`;
+    // sunset/sunrise are race-local wall clocks, so the start has to be one too
     const horizon = Math.max(38, proj.finish_h.worst);
-    return nightIntervals(startClock, course.sun.sunset, course.sun.sunrise, horizon)
+    return nightIntervals(raceClockHM(race.date, race.timeZone), course.sun.sunset, course.sun.sunrise, horizon)
       .map(([s, e]) => [proj.mileAtElapsed(s), proj.mileAtElapsed(e)] as [number, number])
       .filter(([a, b]) => b - a > 0.2);
-  }, [proj, night, course.sun, race.date]);
+  }, [proj, night, course.sun, race.date, race.timeZone]);
 
   const aidWithMi = useMemo(
     () => course.aid_stations
@@ -219,7 +219,7 @@ function ProfileChart({ course, proj, night }: {
                   fill={marginColor(proj_i?.cutoff_margin_h ?? null)}
                 >
                   <title>
-                    {s.name} cutoff {fmtRaceClock(race.date, s.cutoff_h)} ({fmtElapsed(s.cutoff_h)})
+                    {s.name} cutoff {race.clock(s.cutoff_h)} ({fmtElapsed(s.cutoff_h)})
                     {proj_i?.cutoff_margin_h != null ? ` · margin ${fmtElapsed(Math.abs(proj_i.cutoff_margin_h))} ${proj_i.cutoff_margin_h >= 0 ? "ahead" : "SHORT"}` : ""}
                   </title>
                 </rect>
@@ -300,7 +300,7 @@ function ProfileChart({ course, proj, night }: {
         ))}
       </>
     );
-  }, [width, profile, xAt, yAt, maxMi, plotH, minEle, maxEle, nights, aidWithMi, eleAt, proj, u, race.date, paceSegs]);
+  }, [width, profile, xAt, yAt, maxMi, plotH, minEle, maxEle, nights, aidWithMi, eleAt, proj, u, race, paceSegs]);
 
   // rAF-coalesced hover: at most one state update per frame, snapped to the
   // profile grid so identical points bail out entirely
@@ -382,9 +382,9 @@ function ProfileChart({ course, proj, night }: {
             {hover.next ? ` · next aid ${hover.next.s.name.toLowerCase()} in ${u.dist(Math.max(0, hover.next.mi - hover.p.mi))} ${u.distUnit}` : ""}
           </div>
           <div className="numerals" style={{ fontSize: 10, marginTop: 5, display: "grid", gridTemplateColumns: "auto auto", gap: "2px 10px" }}>
-            <span style={{ color: "var(--pine)" }}>best</span><span>{fmtRaceClock(race.date, proj.elapsedAtMile(hover.p.mi, "best"))}</span>
-            <span style={{ color: "var(--lamp)" }}>avg</span><span>{fmtRaceClock(race.date, proj.elapsedAtMile(hover.p.mi, "avg"))}</span>
-            <span style={{ color: "var(--ember)" }}>worst</span><span>{fmtRaceClock(race.date, proj.elapsedAtMile(hover.p.mi, "worst"))}</span>
+            <span style={{ color: "var(--pine)" }}>best</span><span>{race.clock(proj.elapsedAtMile(hover.p.mi, "best"))}</span>
+            <span style={{ color: "var(--lamp)" }}>avg</span><span>{race.clock(proj.elapsedAtMile(hover.p.mi, "avg"))}</span>
+            <span style={{ color: "var(--ember)" }}>worst</span><span>{race.clock(proj.elapsedAtMile(hover.p.mi, "worst"))}</span>
             {(() => {
               const seg = paceSegs.find((g) => hover.p.mi >= g.x0 && hover.p.mi <= g.x1);
               const perUnit = u.paceUnit === "/km" ? 1 / 1.609344 : 1;
@@ -450,14 +450,14 @@ export function RacePlanner() {
   }
 
   const stats: { label: string; value: string; color?: string }[] = proj ? [
-    { label: "best case", value: fmtRaceClock(race.date, proj.finish_h.best), color: "var(--pine)" },
-    { label: "expected", value: fmtRaceClock(race.date, proj.finish_h.avg), color: "var(--lamp)" },
-    { label: "worst case", value: fmtRaceClock(race.date, proj.finish_h.worst), color: "var(--ember)" },
+    { label: "best case", value: race.clock(proj.finish_h.best), color: "var(--pine)" },
+    { label: "expected", value: race.clock(proj.finish_h.avg), color: "var(--lamp)" },
+    { label: "worst case", value: race.clock(proj.finish_h.worst), color: "var(--ember)" },
     { label: "expected elapsed", value: fmtElapsed(proj.finish_h.avg) },
     { label: "time stopped", value: fmtElapsed(proj.stopped_h) },
     // proj.goal_h (not raw goalH): an infeasible typed goal reports "—"
     // here just like the table, instead of a confident header time
-    { label: "goal", value: proj.goal_h != null ? `${fmtElapsed(proj.goal_h)} → ${fmtRaceClock(race.date, proj.goal_h)}` : "—", color: "var(--creek)" },
+    { label: "goal", value: proj.goal_h != null ? `${fmtElapsed(proj.goal_h)} → ${race.clock(proj.goal_h)}` : "—", color: "var(--creek)" },
   ] : [];
 
   const numInput = (value: number, set: (n: number) => void, min: number, max: number, w = 44) => (
@@ -650,16 +650,16 @@ export function RacePlanner() {
                   )}
                 </span>
                 <span className="numerals" style={{ fontSize: 11.5, display: "grid", gridTemplateColumns: "1fr 1fr 1.15fr", gap: 8, whiteSpace: "nowrap" }}>
-                  <span style={{ color: "var(--pine)", textAlign: "right" }}>{fmtRaceClock(race.date, sp.eta_h.best)}</span>
-                  <span style={{ fontWeight: 700, textAlign: "right" }}>{fmtRaceClock(race.date, sp.eta_h.avg)}</span>
-                  <span style={{ color: "var(--ember)", textAlign: "right" }}>{fmtRaceClock(race.date, sp.eta_h.worst)}</span>
+                  <span style={{ color: "var(--pine)", textAlign: "right" }}>{race.clock(sp.eta_h.best)}</span>
+                  <span style={{ fontWeight: 700, textAlign: "right" }}>{race.clock(sp.eta_h.avg)}</span>
+                  <span style={{ color: "var(--ember)", textAlign: "right" }}>{race.clock(sp.eta_h.worst)}</span>
                 </span>
                 <span className="numerals col-goal" style={{ fontSize: 11.5, color: "var(--creek)", textAlign: "right" }}>
-                  {sp.goal_eta_h != null ? fmtRaceClock(race.date, sp.goal_eta_h) : "—"}
+                  {sp.goal_eta_h != null ? race.clock(sp.goal_eta_h) : "—"}
                 </span>
                 <span className="numerals" style={{ fontSize: 11.5, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, whiteSpace: "nowrap" }}>
                   <span style={{ textAlign: "right" }}>
-                    {s.cutoff_h != null ? fmtRaceClock(race.date, s.cutoff_h) : <span style={{ color: "var(--mist-mute)" }}>—</span>}
+                    {s.cutoff_h != null ? race.clock(s.cutoff_h) : <span style={{ color: "var(--mist-mute)" }}>—</span>}
                   </span>
                   <span style={{ color: marginColor(sp.cutoff_margin_h) }}>
                     {sp.cutoff_margin_h != null
@@ -836,7 +836,7 @@ export function RacePlanner() {
               )}
               <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)" }}>race</span>
               <span className="eyebrow" style={{ fontSize: 8.5, lineHeight: 1.9 }}>
-                cutoffs from 2025 manual · start {fmtRaceClock(race.date, 0)} · sunset {course.sun.sunset} · sunrise {course.sun.sunrise}
+                cutoffs from 2025 manual · start {race.clock(0)} · sunset {course.sun.sunset} · sunrise {course.sun.sunrise}
               </span>
             </div>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 10, flexShrink: 0 }}>

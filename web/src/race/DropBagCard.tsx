@@ -1,7 +1,6 @@
 import React, { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useBlockConfig } from "../data";
-import { fmtRaceClock } from "./pacing";
 import type { FuelPlan, NutritionConfig } from "./nutrition";
 
 /* ------------------------------------------------------------------ */
@@ -132,7 +131,7 @@ export function DropBagCard({ plan, cfg, onClose }: {
                           {bag.station === "Start" ? "Vest @ start" : bag.station}
                         </td>
                         <td style={{ ...bagCell, fontSize: "8.5px", color: MUTED }}>
-                          {bag.atH > 0 ? fmtRaceClock(race.date, bag.atH) : "—"}
+                          {bag.atH > 0 ? race.clock(bag.atH) : "—"}
                         </td>
                         <td style={{ ...bagCell, textAlign: "left", fontSize: "8.5px", color: MUTED }}>{bag.covers}</td>
                         <td style={{ ...bagCell, fontWeight: 700 }}>{bag.gels}</td>

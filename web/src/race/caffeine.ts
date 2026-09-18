@@ -1,3 +1,4 @@
+import { raceClockH } from "./pacing";
 import type { CaffeineConfig, FuelPlan } from "./nutrition";
 import type { projectRace } from "./pacing";
 import type { Course } from "./types";
@@ -86,10 +87,11 @@ export function planCaffeine(
   fuel: FuelPlan,
   raceStart: Date,
   cfg: CaffeineConfig,
+  timeZone: string,
 ): CaffeinePlan {
   const k = Math.LN2 / cfg.half_life_h;
   const finishH = proj.finish_h.avg;
-  const startH = raceStart.getHours() + raceStart.getMinutes() / 60;
+  const startH = raceClockH(raceStart, timeZone);
 
   const setClock = parseHM(course.sun.sunset);
   const riseClock = parseHM(course.sun.sunrise);
@@ -100,11 +102,13 @@ export function planCaffeine(
   // with nothing. So when the gun goes off in the dark, the window opens
   // immediately.
   //
-  // Except when that darkness is a sliver. The real race starts at 06:00
-  // against a 06:15 sunrise: technically dark, but fifteen minutes of it, and
+  // Except when that darkness is a sliver. MM100 starts at 06:00 against a
+  // 06:05 sunrise (computed by scripts/race-sun.mjs — the folder used to carry
+  // a hand-entered 06:15): technically dark, but five minutes of it, and
   // opening there would dose the fresh opening miles instead of the night 12 h
   // later. The test is therefore whether enough darkness REMAINS to be worth
-  // dosing into — one min-spacing interval — not merely whether it is dark.
+  // dosing into — one min-spacing interval — not merely whether it is dark,
+  // which is why the sliver is read from course.sun rather than assumed.
   const startsInDark = startH >= setClock || startH < riseClock;
   const darkRemainingH = startsInDark
     ? (startH >= setClock ? 24 - startH + riseClock : riseClock - startH)
@@ -314,8 +318,8 @@ export function planCaffeine(
 }
 
 /** Sunrise in elapsed race hours — exported for the chart's night band. */
-export function sunBounds(course: Course, raceStart: Date, horizonH: number) {
-  const startH = raceStart.getHours() + raceStart.getMinutes() / 60;
+export function sunBounds(course: Course, raceStart: Date, horizonH: number, timeZone: string) {
+  const startH = raceClockH(raceStart, timeZone);
   const set = parseHM(course.sun.sunset);
   const rise = parseHM(course.sun.sunrise);
   const out: Array<[number, number]> = [];

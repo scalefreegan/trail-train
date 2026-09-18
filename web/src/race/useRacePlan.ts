@@ -91,8 +91,12 @@ export type RacePlan = {
   features: ResolvedFeatures;
   panels: VisiblePanels;
   columns: VisibleColumns;
-  /** local race START instant (date + start_time), from block config */
+  /** the race START instant (date + start_time resolved in the race's zone) */
   raceStart: Date;
+  /** the race's IANA zone — every wall clock on the page reads in it */
+  timeZone: string;
+  /** an elapsed race hour on the race's wall clock ("6:00a", "2:14p+1") */
+  clock: (elapsedH: number) => string;
   settings: {
     fatigue: number; calibration: number; restraint: number; goalH: number;
     aidStopMin: number; crewStopMin: number; stopOverrides: Record<string, number>;
@@ -166,14 +170,15 @@ export function useRacePlanInstance(): RacePlan {
   );
 
   const fuelPlan = useMemo(
-    () => (course && proj ? planFuel(proj, course, race.date, nutrition) : null),
-    [course, proj, race.date, nutrition],
+    () => (course && proj ? planFuel(proj, course, race.date, nutrition, race.timeZone) : null),
+    [course, proj, race.date, race.timeZone, nutrition],
   );
 
   return {
     course, missing, error: courseError,
     paceGrade, paceGradeError, nutritionError,
-    fit, proj, nutrition, fuelPlan, raceStart: race.date,
+    fit, proj, nutrition, fuelPlan,
+    raceStart: race.date, timeZone: race.timeZone, clock: race.clock,
     raceConfig, features, panels, columns,
     settings: { fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides },
     set: {

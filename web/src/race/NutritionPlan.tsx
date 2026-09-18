@@ -4,7 +4,7 @@ import { SectionTag } from "../atoms";
 import { useRacePlan } from "./useRacePlan";
 import { planCaffeine, heatBands, sunBounds, type CaffeinePlan } from "./caffeine";
 import { fmtCarry, type FuelSegment } from "./nutrition";
-import { fmtElapsed, fmtRaceClock } from "./pacing";
+import { fmtElapsed, raceClockH } from "./pacing";
 
 /* ------------------------------------------------------------------ */
 /*  Nutrition plan — the whole intake picture in one place: race week, */
@@ -93,9 +93,9 @@ function Vital({ k, v, unit, accent }: { k: string; v: string; unit?: string; ac
 
 const CH = { h: 300, top: 18, right: 14, bottom: 40, left: 46 };
 
-function CaffeineChart({ caf, raceStart, finishH, heat, night, kg }: {
+function CaffeineChart({ caf, clock, finishH, heat, night, kg }: {
   caf: CaffeinePlan;
-  raceStart: Date;
+  clock: (elapsedH: number) => string;
   finishH: number;
   heat: Array<[number, number]>;
   night: Array<[number, number]>;
@@ -184,7 +184,7 @@ function CaffeineChart({ caf, raceStart, finishH, heat, night, kg }: {
           <g key={`x${h}`}>
             <line x1={px(h)} x2={px(h)} y1={CH.h - CH.bottom} y2={CH.h - CH.bottom + 4} stroke="var(--edge-bright)" strokeWidth={1} />
             <text x={px(h)} y={CH.h - CH.bottom + 16} textAnchor="middle" className="numerals" fontSize={9.5} fill="var(--mist-mute)">
-              {fmtRaceClock(raceStart, h)}
+              {clock(h)}
             </text>
           </g>
         ))}
@@ -222,7 +222,7 @@ function CaffeineChart({ caf, raceStart, finishH, heat, night, kg }: {
             padding: "5px 8px", fontSize: 10.5, lineHeight: 1.5, color: "var(--mist)", whiteSpace: "nowrap",
           }}
         >
-          {fmtRaceClock(raceStart, hover.h)} · {fmtElapsed(hover.h)}<br />
+          {clock(hover.h)} · {fmtElapsed(hover.h)}<br />
           {Math.round(hover.mg)} mg on board<br />
           {(hover.mg / kg).toFixed(1)} mg/kg
         </div>
@@ -247,8 +247,8 @@ function CaffeineChart({ caf, raceStart, finishH, heat, night, kg }: {
 
 /* ---- leg table ---- */
 
-function LegRow({ seg, caf, raceStart, last, show }: {
-  seg: FuelSegment; caf: number; raceStart: Date; last: boolean;
+function LegRow({ seg, caf, clock, last, show }: {
+  seg: FuelSegment; caf: number; clock: (elapsedH: number) => string; last: boolean;
   /** which of this row's optional cells the race carries */
   show: { caf: boolean; heat: boolean; night: boolean };
 }) {
@@ -265,7 +265,7 @@ function LegRow({ seg, caf, raceStart, last, show }: {
       <div style={{ ...cell, textAlign: "left", whiteSpace: "normal" }}>
         <span style={{ fontSize: 12, fontWeight: 600, color: "var(--mist)" }}>{seg.from} → {seg.to}</span>
         <span className="numerals" style={{ display: "block", fontSize: 9.5, color: "var(--mist-mute)", marginTop: 1 }}>
-          {fmtRaceClock(raceStart, seg.departH)} → {fmtRaceClock(raceStart, seg.arriveH)}
+          {clock(seg.departH)} → {clock(seg.arriveH)}
           {seg.via.length > 0 && ` · thru ${seg.via.join(", ")}`}
           {seg.water_note && ` · ${seg.water_note}`}
         </span>
@@ -315,17 +315,19 @@ function LegRow({ seg, caf, raceStart, last, show }: {
 
 export function NutritionPlan() {
   const { race } = useBlockConfig();
-  const { course, missing, error, proj, nutrition, fuelPlan, raceStart, nutritionError,
-    features, panels, raceConfig } = useRacePlan();
+  const { course, missing, error, proj, nutrition, fuelPlan, raceStart, timeZone, clock,
+    nutritionError, features, panels, raceConfig } = useRacePlan();
   const cfg = nutrition.caffeine;
 
   const caf = useMemo(
-    () => (course && proj && fuelPlan ? planCaffeine(proj, course, fuelPlan, raceStart, cfg) : null),
-    [course, proj, fuelPlan, raceStart, cfg],
+    () => (course && proj && fuelPlan ? planCaffeine(proj, course, fuelPlan, raceStart, cfg, timeZone) : null),
+    [course, proj, fuelPlan, raceStart, cfg, timeZone],
   );
 
   const finishH = proj?.finish_h.avg ?? 0;
-  const startClock = raceStart.getHours() + raceStart.getMinutes() / 60;
+  // the heat window is a race-local clock-of-day, so the start it is measured
+  // from has to be read on the race's clock too, not the browser's
+  const startClock = raceClockH(raceStart, timeZone);
   const heat = useMemo(
     () => (course && features.heat
       ? heatBands(startClock, nutrition.heat_window.start, nutrition.heat_window.end, finishH)
@@ -335,8 +337,8 @@ export function NutritionPlan() {
   // both band sets feed the caffeine chart only, and each is behind the flag
   // that gives it meaning — no bands for a window this race never enters
   const night = useMemo(
-    () => (course && features.night ? sunBounds(course, raceStart, finishH) : []),
-    [course, features.night, raceStart, finishH],
+    () => (course && features.night ? sunBounds(course, raceStart, finishH, timeZone) : []),
+    [course, features.night, raceStart, finishH, timeZone],
   );
 
   if (missing || !course) {
@@ -495,7 +497,7 @@ export function NutritionPlan() {
       </SectionTag>
 
       <div className="panel" style={{ padding: "14px 16px 12px" }}>
-        <CaffeineChart caf={caf} raceStart={raceStart} finishH={finishH} heat={heat} night={night} kg={kg} />
+        <CaffeineChart caf={caf} clock={clock} finishH={finishH} heat={heat} night={night} kg={kg} />
         <div style={{ fontSize: 11.5, color: "var(--mist-mute)", lineHeight: 1.55, marginTop: 10, maxWidth: "76ch" }}>
           Single-compartment decay at a {cfg.half_life_h} h half-life against {kg} kg, including the {cfg.pre_race_mg} mg
           race-morning coffee and {cfg.cola_cups} aid-station colas at {cfg.cola_mg} mg each. The shaded band is{" "}
@@ -518,7 +520,7 @@ export function NutritionPlan() {
               }}
             >
               <span className="numerals" style={{ fontSize: 12, color: "var(--lamp)" }}>{d.n}</span>
-              <span className="numerals" style={{ fontSize: 12, color: "var(--mist)" }}>{fmtRaceClock(raceStart, d.h)}</span>
+              <span className="numerals" style={{ fontSize: 12, color: "var(--mist)" }}>{clock(d.h)}</span>
               <span className="numerals" style={{ fontSize: 10.5, color: "var(--mist-mute)" }}>mi {d.mi.toFixed(1)}</span>
               <span style={{ fontSize: 12, color: "var(--mist-dim)" }}>
                 {d.station
@@ -538,7 +540,7 @@ export function NutritionPlan() {
         <Cards>
           <Card
             title="Nothing before nightfall"
-            meta={`first dose ${caf.doses.length ? fmtRaceClock(raceStart, caf.doses[0].h) : "—"}`}
+            meta={`first dose ${caf.doses.length ? clock(caf.doses[0].h) : "—"}`}
             why={{
               label: "why",
               body: "For a habitual coffee drinker a dose in daylight does almost nothing except raise the baseline you'll be dosing against at 3 a.m. Holding the first half dry is what makes the night doses work at all — it is the highest-leverage decision on this page.",
@@ -556,7 +558,7 @@ export function NutritionPlan() {
             }}
           >
             <Li>{cafGels} doses of <N>{cfg.gel_mg} mg</N>, never closer than <N>{cfg.min_spacing_h} h</N>.</Li>
-            <Li>Peak <N>{Math.round(caf.peak.mg)} mg</N> at {fmtRaceClock(raceStart, caf.peak.h)}.</Li>
+            <Li>Peak <N>{Math.round(caf.peak.mg)} mg</N> at {clock(caf.peak.h)}.</Li>
           </Card>
           <Card
             title="Caffeine is the first thing to drop"
@@ -638,7 +640,7 @@ export function NutritionPlan() {
         <Card
           title="Race morning"
           accent="lamp"
-          meta={`${fmtRaceClock(raceStart, -2.25)} → the gun`}
+          meta={`${clock(-2.25)} → the gun`}
           why={{
             label: "why two hours before the gun",
             body: "It leaves time for gastric emptying and one unhurried bathroom stop, and puts the insulin response from breakfast well behind you before the first climb. The fluid cutoff is the same logic applied to your bladder. The coffee goes with breakfast so its peak has passed by the start — you do not want caffeine sharpening your legs at mile two.",
@@ -727,7 +729,7 @@ export function NutritionPlan() {
               key={`${seg.from}-${seg.to}-${i}`}
               seg={seg}
               caf={caf.perSegment[i] ?? 0}
-              raceStart={raceStart}
+              clock={clock}
               last={i === fuelPlan.segments.length - 1}
               show={legShow}
             />
@@ -773,7 +775,7 @@ export function NutritionPlan() {
               key={bag.station}
               title={bag.station === "Start" ? "Vest at start" : bag.station}
               accent={bagCaf > 0 ? "lamp" : undefined}
-              meta={bag.atH > 0 ? fmtRaceClock(raceStart, bag.atH) : "mi 0"}
+              meta={bag.atH > 0 ? clock(bag.atH) : "mi 0"}
               why={{
                 label: lastBag ? "last bag — no resupply after this" : "covers",
                 body: lastBag
@@ -859,7 +861,7 @@ export function NutritionPlan() {
         <Card
           title="First 60 minutes"
           accent="lamp"
-          meta={fmtRaceClock(raceStart, finishH)}
+          meta={clock(finishH)}
           why={{
             label: "why this hour specifically",
             body: "Glycogen resynthesis runs fastest in the first hour or two while the muscle is still insulin-sensitive. Protein alongside it blunts the breakdown cascade. You will not be hungry — appetite is suppressed after long efforts and usually doesn't return until day two — so this has to be deliberate rather than intuitive.",

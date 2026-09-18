@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useUnits, useBlockConfig } from "../data";
-import { fmtRaceClock, fmtElapsed, type projectRace, type StationProjection } from "./pacing";
+import { fmtElapsed, type projectRace, type StationProjection } from "./pacing";
 import type { Course, CrewBase } from "./types";
 
 /* ------------------------------------------------------------------ */
@@ -84,8 +84,8 @@ function CardFace({ side, stations, course, proj, emergency }: {
         </span>
         <span style={{ fontSize: "7px", color: MUTED, fontVariantNumeric: "tabular-nums" }}>
           {side === 1
-            ? <>start <b style={{ color: INK }}>{fmtRaceClock(race.date, 0)}</b> · cutoff {race.cutoff_h}h · {u.dist(course.official_distance_mi, 0)}{u.distUnit} {u.elev(course.official_gain_ft)}{u.elevUnit}↑</>
-            : <>finish <b style={{ color: BEST }}>{fmtRaceClock(race.date, proj.finish_h.best)}</b> <b style={{ color: INK }}>{fmtRaceClock(race.date, proj.finish_h.avg)}</b> <b style={{ color: WORST }}>{fmtRaceClock(race.date, proj.finish_h.worst)}</b>{proj.goal_h != null && <> · goal {fmtElapsed(proj.goal_h)}</>}</>}
+            ? <>start <b style={{ color: INK }}>{race.clock(0)}</b> · cutoff {race.cutoff_h}h · {u.dist(course.official_distance_mi, 0)}{u.distUnit} {u.elev(course.official_gain_ft)}{u.elevUnit}↑</>
+            : <>finish <b style={{ color: BEST }}>{race.clock(proj.finish_h.best)}</b> <b style={{ color: INK }}>{race.clock(proj.finish_h.avg)}</b> <b style={{ color: WORST }}>{race.clock(proj.finish_h.worst)}</b>{proj.goal_h != null && <> · goal {fmtElapsed(proj.goal_h)}</>}</>}
         </span>
       </div>
 
@@ -119,11 +119,11 @@ function CardFace({ side, stations, course, proj, emergency }: {
                   {stationLabel(s.name, s.crew_only)}
                 </td>
                 <td style={{ ...cell, fontWeight: 600 }}>{u.dist(s.total_mi)}</td>
-                <td style={{ ...cell, color: BEST, fontSize: "7.5px" }}>{fmtRaceClock(race.date, sp.eta_h.best)}</td>
-                <td style={{ ...cell, fontWeight: 700 }}>{fmtRaceClock(race.date, sp.eta_h.avg)}</td>
-                <td style={{ ...cell, color: WORST, fontSize: "7.5px" }}>{fmtRaceClock(race.date, sp.eta_h.worst)}</td>
+                <td style={{ ...cell, color: BEST, fontSize: "7.5px" }}>{race.clock(sp.eta_h.best)}</td>
+                <td style={{ ...cell, fontWeight: 700 }}>{race.clock(sp.eta_h.avg)}</td>
+                <td style={{ ...cell, color: WORST, fontSize: "7.5px" }}>{race.clock(sp.eta_h.worst)}</td>
                 <td style={{ ...cell, color: WORST, fontWeight: s.cutoff_h != null ? 700 : 400 }}>
-                  {s.cutoff_h != null ? fmtRaceClock(race.date, s.cutoff_h) : "—"}
+                  {s.cutoff_h != null ? race.clock(s.cutoff_h) : "—"}
                 </td>
                 <td style={cell}>{sp.seg_mi > 0 ? u.paceFmt(sp.seg_pace_s_per_mi, 1) : "—"}</td>
                 <td style={cell}>{sp.seg_mi > 0 ? u.elev(sp.seg_gain_ft) : "—"}</td>

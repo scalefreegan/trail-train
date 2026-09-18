@@ -1,3 +1,4 @@
+import { raceLocalParts } from "./clock";
 import type { Course, CourseAidStation, CourseProfilePoint } from "./types";
 
 /* ------------------------------------------------------------------ */
@@ -625,19 +626,48 @@ export function clockToH(clock: string): number {
   return h + (m || 0) / 60;
 }
 
+/**
+ * Clock-of-day of an instant in the RACE's zone, in hours (06:30 → 6.5).
+ * Every band in this app (night, heat, the caffeine window) is defined
+ * against the race's own wall clock, so this — not Date#getHours, which
+ * answers for the laptop — is what converts the start instant into the
+ * offset those bands are measured from.
+ */
+export function raceClockH(instant: Date, timeZone: string): number {
+  const { hour, minute } = raceLocalParts(instant, timeZone);
+  return hour + minute / 60;
+}
+
+/** The same clock-of-day as "HH:MM" (24 h) — what nightIntervals() takes. */
+export function raceClockHM(instant: Date, timeZone: string): string {
+  const { hour, minute } = raceLocalParts(instant, timeZone);
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
 /** Elapsed hours → Date on the race clock. */
 export function elapsedToDate(raceStart: Date, elapsedH: number): Date {
   return new Date(raceStart.getTime() + elapsedH * 3600_000);
 }
 
-/** Format an elapsed race hour as a clock time, with +1/+2 day marker. */
-export function fmtRaceClock(raceStart: Date, elapsedH: number): string {
-  const d = elapsedToDate(raceStart, elapsedH);
-  const days = Math.floor((d.getTime() - new Date(raceStart).setHours(0, 0, 0, 0)) / 86_400_000);
-  const hh = d.getHours();
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  const ampm = hh >= 12 ? "p" : "a";
-  const h12 = hh % 12 === 0 ? 12 : hh % 12;
+/**
+ * Format an elapsed race hour as a RACE-LOCAL clock time, with a +1/+2 day
+ * marker. `timeZone` is the race's IANA zone: a crew sheet printed in
+ * Albuquerque for a race in Arizona has to read in Arizona time, and a
+ * browser an hour off would otherwise shift every ETA on the page.
+ */
+export function fmtRaceClock(raceStart: Date, elapsedH: number, timeZone: string): string {
+  const at = raceLocalParts(elapsedToDate(raceStart, elapsedH), timeZone);
+  const start = raceLocalParts(raceStart, timeZone);
+  // Whole civil days between the start's race-local date and this one. Done
+  // on the calendar rather than by dividing milliseconds: inside a race that
+  // crosses a DST shift a "day" is 23 or 25 h long, and "+1" means the next
+  // date on the wall, not 24 h later.
+  const days = Math.round(
+    (Date.UTC(at.year, at.month - 1, at.day) - Date.UTC(start.year, start.month - 1, start.day)) / 86_400_000,
+  );
+  const mm = String(at.minute).padStart(2, "0");
+  const ampm = at.hour >= 12 ? "p" : "a";
+  const h12 = at.hour % 12 === 0 ? 12 : at.hour % 12;
   return `${h12}:${mm}${ampm}${days > 0 ? `+${days}` : ""}`;
 }
 
@@ -653,6 +683,8 @@ export function fmtElapsed(h: number): string {
 /**
  * Night windows in elapsed race hours: darkness = clock time past sunset or
  * before sunrise. Returns [startH, endH] intervals clipped to [0, horizonH].
+ * All three clock strings are RACE-local — `startClock` comes from
+ * raceClockH() above, never from the browser's idea of the start hour.
  */
 export function nightIntervals(
   startClock: string, sunset: string, sunrise: string, horizonH: number,

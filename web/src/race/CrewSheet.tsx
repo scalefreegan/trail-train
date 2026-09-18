@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useUnits, useBlockConfig } from "../data";
-import { fmtRaceClock, fmtElapsed, type projectRace } from "./pacing";
+import { fmtElapsed, type projectRace } from "./pacing";
 import { gmapsDirectionsUrl } from "./links";
 import type { Course, CrewBase } from "./types";
 
@@ -158,9 +158,9 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
         <div style={{ borderBottom: `3px solid ${INK}`, paddingBottom: 10, marginBottom: 14 }}>
           <div style={{ fontSize: 22, fontWeight: 700 }}>{race.name} — Crew Sheet</div>
           <div style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>
-            {race.date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
-            {" · start "}{fmtRaceClock(race.date, 0)} · {u.dist(course.official_distance_mi, 1)} {u.distUnit} · {u.elev(course.official_gain_ft)} {u.elevUnit}↑
-            {" · course closes "}{fmtRaceClock(race.date, race.cutoff_h)} ({race.cutoff_h}h)
+            {race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, weekday: "long", month: "long", day: "numeric", year: "numeric" })}
+            {" · start "}{race.clock(0)} · {u.dist(course.official_distance_mi, 1)} {u.distUnit} · {u.elev(course.official_gain_ft)} {u.elevUnit}↑
+            {" · course closes "}{race.clock(race.cutoff_h)} ({race.cutoff_h}h)
           </div>
           {base && (
             <div style={{ fontSize: 12, marginTop: 3 }}>
@@ -185,11 +185,11 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
             </div>
           )}
           <div style={{ display: "flex", gap: 26, marginTop: 10, fontSize: 12 }}>
-            <span><b style={{ color: "#3d7a48" }}>{fmtRaceClock(race.date, proj.finish_h.best)}</b> best</span>
-            <span><b style={{ color: ACCENT }}>{fmtRaceClock(race.date, proj.finish_h.avg)}</b> expected ({fmtElapsed(proj.finish_h.avg)})</span>
-            <span><b style={{ color: "#a33b2a" }}>{fmtRaceClock(race.date, proj.finish_h.worst)}</b> worst</span>
+            <span><b style={{ color: "#3d7a48" }}>{race.clock(proj.finish_h.best)}</b> best</span>
+            <span><b style={{ color: ACCENT }}>{race.clock(proj.finish_h.avg)}</b> expected ({fmtElapsed(proj.finish_h.avg)})</span>
+            <span><b style={{ color: "#a33b2a" }}>{race.clock(proj.finish_h.worst)}</b> worst</span>
             <span><b>{fmtElapsed(proj.stopped_h)}</b> planned in aid stations</span>
-            {proj.goal_h != null && <span><b>{fmtRaceClock(race.date, proj.goal_h)}</b> goal ({fmtElapsed(proj.goal_h)})</span>}
+            {proj.goal_h != null && <span><b>{race.clock(proj.goal_h)}</b> goal ({fmtElapsed(proj.goal_h)})</span>}
           </div>
         </div>
 
@@ -249,13 +249,13 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
                   <td style={{ ...cell, textAlign: "right", fontWeight: 600 }}>{u.dist(s.total_mi)}</td>
                   <td style={cell}>
                     <span style={etaGrid}>
-                      <span style={{ textAlign: "right", color: "#3d7a48" }}>{fmtRaceClock(race.date, sp.eta_h.best)}</span>
-                      <b style={{ textAlign: "right" }}>{fmtRaceClock(race.date, sp.eta_h.avg)}</b>
-                      <span style={{ textAlign: "right", color: "#a33b2a" }}>{fmtRaceClock(race.date, sp.eta_h.worst)}</span>
+                      <span style={{ textAlign: "right", color: "#3d7a48" }}>{race.clock(sp.eta_h.best)}</span>
+                      <b style={{ textAlign: "right" }}>{race.clock(sp.eta_h.avg)}</b>
+                      <span style={{ textAlign: "right", color: "#a33b2a" }}>{race.clock(sp.eta_h.worst)}</span>
                     </span>
                   </td>
-                  <td style={{ ...cell, textAlign: "right" }}>{sp.goal_eta_h != null ? fmtRaceClock(race.date, sp.goal_eta_h) : "—"}</td>
-                  <td style={{ ...cell, textAlign: "right" }}>{s.cutoff_h != null ? fmtRaceClock(race.date, s.cutoff_h) : "—"}</td>
+                  <td style={{ ...cell, textAlign: "right" }}>{sp.goal_eta_h != null ? race.clock(sp.goal_eta_h) : "—"}</td>
+                  <td style={{ ...cell, textAlign: "right" }}>{s.cutoff_h != null ? race.clock(s.cutoff_h) : "—"}</td>
                   <td style={{ ...cell, textAlign: "right" }}>{sp.stop_min > 0 ? `${sp.stop_min}m` : "—"}</td>
                   <td style={{ ...cell, fontSize: 9.5, color: crew ? ACCENT : MUTED, fontWeight: crew ? 700 : 400 }}>{access || "aid"}</td>
                   <td style={{ ...cell, fontSize: 10, textAlign: "right", whiteSpace: "nowrap", fontWeight: crew ? 700 : 400 }}>

@@ -1,4 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { isValidTimeZone, raceStart } from "./race/clock";
+import { fmtRaceClock } from "./race/pacing";
 import type { ActiveRaceResponse } from "./race/types";
 
 /* ------------------------------------------------------------------ */
@@ -169,7 +171,19 @@ export type RaceConfig = {
   elevation_ft: number;
   max_elev_ft: number;
   cutoff_h: number;
-  date: Date;           // local race start (date + start_time)
+  date: Date;           // the race START instant, resolved in `timeZone`
+  /** the race's IANA zone — the browser's only until a race folder is active */
+  timeZone: string;
+  /**
+   * An elapsed race hour formatted on the RACE's wall clock ("6:00a", "2:14p+1").
+   *
+   * Bound here rather than left to each caller because roughly forty call
+   * sites format a clock off this one race, and a single one of them passing
+   * the browser's zone is an ETA that is quietly an hour out on a printed crew
+   * sheet. Memoised with the rest of the config, so it is stable enough to sit
+   * in a useMemo dependency list.
+   */
+  clock: (elapsedH: number) => string;
   location: string;
   aid_stations: AidStation[];
 };
@@ -414,26 +428,67 @@ export function useGoogleCal() {
  * endpoint isn't there (a static preview build), which is an absence, not a
  * failure; anything else KEEPS the loaded race and surfaces `error`.
  */
-export function useActiveRace() {
+type ActiveRaceResult =
+  | { kind: "ok"; data: ActiveRaceResponse }
+  | { kind: "missing" }
+  | { kind: "error"; message: string };
+
+/**
+ * ONE in-flight GET per refresh pulse, shared by every useActiveRace() caller.
+ * useBlockConfig reads the race's zone, so this hook now mounts a dozen times
+ * on a single screen; a dozen identical requests is a dozen chances for the
+ * views to disagree mid-flight (and the same file fetched a dozen times).
+ * Keyed by the pulse so "resync everything" still refetches exactly once.
+ */
+let activeRaceRequest: { key: number; p: Promise<ActiveRaceResult> } | null = null;
+
+function requestActiveRace(key: number): Promise<ActiveRaceResult> {
+  if (!activeRaceRequest || activeRaceRequest.key !== key) {
+    activeRaceRequest = {
+      key,
+      p: fetch(`/api/race/active?t=${Date.now()}`)
+        .then(async (r): Promise<ActiveRaceResult> => {
+          if (r.status === 404) return { kind: "missing" };
+          if (!r.ok) return { kind: "error", message: `active race failed to load (HTTP ${r.status})` };
+          return { kind: "ok", data: (await r.json()) as ActiveRaceResponse };
+        })
+        // a rejected json() lands here too: unparseable is corrupt, not absent
+        .catch(() => ({ kind: "error", message: "active race config corrupt or unreadable" })),
+    };
+  }
+  return activeRaceRequest.p;
+}
+
+export type ActiveRaceState = {
+  activeRace: ActiveRaceResponse | null;
+  slug: string | null;
+  missing: boolean;
+  error: string | null;
+  /** the request has settled — before that, "no active race" is not yet a fact
+      (see the per-slug localStorage keys in race/useRacePlan.ts) */
+  resolved: boolean;
+};
+
+export function useActiveRace(): ActiveRaceState {
   const { key: refreshKey } = useRefresh();
-  const [data, setData] = useState<ActiveRaceResponse | null>(null);
-  const [missing, setMissing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [state, setState] = useState<{
+    data: ActiveRaceResponse | null; missing: boolean; error: string | null; resolved: boolean;
+  }>({ data: null, missing: false, error: null, resolved: false });
   useEffect(() => {
     let stale = false;
-    fetch(`/api/race/active?t=${Date.now()}`)
-      .then(async (r) => {
-        if (stale) return;
-        if (r.status === 404) { setData(null); setMissing(true); setError(null); return; }
-        if (!r.ok) { setMissing(false); setError(`active race failed to load (HTTP ${r.status})`); return; }
-        const d = await r.json().catch(() => { throw new Error("parse"); });
-        if (stale) return;
-        setData(d); setMissing(false); setError(null);
-      })
-      .catch(() => { if (stale) return; setMissing(false); setError("active race config corrupt or unreadable"); });
+    requestActiveRace(refreshKey).then((res) => {
+      if (stale) return;
+      if (res.kind === "ok") setState({ data: res.data, missing: false, error: null, resolved: true });
+      else if (res.kind === "missing") setState({ data: null, missing: true, error: null, resolved: true });
+      // a failed reload KEEPS the race already on screen and surfaces the error
+      else setState((prev) => ({ ...prev, missing: false, error: res.message, resolved: true }));
+    });
     return () => { stale = true; };
   }, [refreshKey]);
-  return { activeRace: data, slug: data?.active ?? null, missing, error };
+  return {
+    activeRace: state.data, slug: state.data?.active ?? null,
+    missing: state.missing, error: state.error, resolved: state.resolved,
+  };
 }
 
 /* state.json is fetched once (by StateProvider in providers.tsx) and shared
@@ -451,10 +506,13 @@ export const usePersistentState = () => useContext(PersistentStateContext);
  */
 export function useBlockConfig(): BlockConfig {
   const { data: state } = usePersistentState();
+  const { activeRace } = useActiveRace();
+  const raceJson = activeRace?.race ?? null;
   return useMemo(() => {
     const r = { ...DEFAULT_RACE, ...(state?.race ?? {}) };
     const b = state?.block;
     const targets = b?.targets?.length ? b.targets : DEFAULT_BLOCK.targets;
+    const { start, timeZone } = resolveRaceStart(raceJson, r);
     return {
       race: {
         name: r.name,
@@ -463,7 +521,9 @@ export function useBlockConfig(): BlockConfig {
         elevation_ft: r.elevation_ft,
         max_elev_ft: r.max_elev_ft ?? DEFAULT_RACE.max_elev_ft,
         cutoff_h: r.cutoff_h ?? DEFAULT_RACE.cutoff_h,
-        date: new Date(`${r.date}T${r.start_time ?? DEFAULT_RACE.start_time}:00`),
+        date: start,
+        timeZone,
+        clock: (elapsedH: number) => fmtRaceClock(start, elapsedH, timeZone),
         location: r.location ?? DEFAULT_RACE.location,
         aid_stations: r.aid_stations?.length ? r.aid_stations : DEFAULT_RACE.aid_stations,
       },
@@ -471,7 +531,40 @@ export function useBlockConfig(): BlockConfig {
       totalWeeks: b?.total_weeks ?? targets.length,
       targets,
     };
-  }, [state]);
+  }, [state, raceJson]);
+}
+
+/**
+ * The race START as an instant, plus the zone every clock on the page reads.
+ *
+ * An active race folder carries an IANA zone, so its gun time is a wall clock
+ * in THAT zone — 06:00 in Arizona is one instant whether the laptop is in
+ * Albuquerque or Auckland.
+ *
+ * The fallback is the legacy path and only the legacy path: state.json's race
+ * block has no zone at all, so `new Date("2026-09-12T06:00:00")` can only mean
+ * 06:00 wherever the browser happens to be. It stays until tt-yib.4 retires
+ * DEFAULT_RACE / state.race, and it is also what renders for the ~one frame
+ * before /api/race/active answers.
+ */
+function resolveRaceStart(
+  raceJson: { date?: string; start_time?: string; timezone?: string } | null,
+  legacy: { date: string; start_time?: string },
+): { start: Date; timeZone: string } {
+  const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  if (raceJson?.date && raceJson.start_time && isValidTimeZone(raceJson.timezone)) {
+    try {
+      const timeZone = raceJson.timezone as string;
+      return { start: raceStart(raceJson.date, raceJson.start_time, timeZone), timeZone };
+    } catch {
+      // a hand-edited race.json with a malformed date or start_time: fall
+      // through rather than blanking every view in the app
+    }
+  }
+  return {
+    start: new Date(`${legacy.date}T${legacy.start_time ?? DEFAULT_RACE.start_time}:00`),
+    timeZone: browserZone,
+  };
 }
 
 export function useAgentReadout() {
