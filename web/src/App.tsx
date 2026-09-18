@@ -14,7 +14,7 @@ import {
   daysUntil, isPast, relativeAgo, fmtDuration, isStale,
   useMeasuredWidth,
 } from "./data";
-import { RefreshProvider, UnitsProvider, StravaProvider, OuraProvider, StateProvider } from "./providers";
+import { RaceTheme, RefreshProvider, UnitsProvider, StravaProvider, OuraProvider, StateProvider } from "./providers";
 import CoachSettings from "./CoachSettings";
 import { SectionTag, Contours } from "./atoms";
 import { RacePlanner } from "./race/RacePlanner";
@@ -2756,6 +2756,8 @@ export default function App() {
   return (
     <UnitsProvider>
       <RefreshProvider>
+        {/* renders nothing — repaints :root when the race on screen changes */}
+        <RaceTheme />
         <StateProvider>
           <StravaProvider>
             <OuraProvider>

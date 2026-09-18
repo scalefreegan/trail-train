@@ -3,6 +3,7 @@
 // files). All contexts + hooks live in data.ts; the components live here.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTheme } from "./themes/useTheme";
 import {
   RefreshContext, useRefresh, type RefreshStep, type StepStatus, type RefreshCtx,
   UnitsContext, useUnits, type System, type UnitsCtx,
@@ -384,4 +385,18 @@ export function StateProvider({ children }: { children: React.ReactNode }) {
   const reload = useCallback(() => setNonce((n) => n + 1), []);
   const value = useMemo(() => ({ data, missing, reload }), [data, missing, reload]);
   return <PersistentStateContext.Provider value={value}>{children}</PersistentStateContext.Provider>;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Race theme — the race on screen wears its own palette (PRD §7)     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Renders nothing; applies the viewed race's `visual` to :root. A leaf, not
+ * a provider, so a theme swap costs eighteen setProperty calls and no
+ * re-render. Mount it once, anywhere inside RefreshProvider.
+ */
+export function RaceTheme() {
+  useTheme();
+  return null;
 }
