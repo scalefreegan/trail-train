@@ -1067,8 +1067,9 @@ function nutritionFile(): Plugin {
 
 /* ----------------------------- race intake ------------------------------ */
 
-/* Dev-only middleware backing the "New race…" dialog (PRD §8 steps 1-4):
+/* Dev-only middleware backing the "New race…" dialog (PRD §8 steps 1-5):
      POST /api/race-intake/build — { slug } → stage 2 (raceBuildApi below).
+     POST /api/race-intake/plan — { slug } → stage 3 (racePlanApi below).
      POST /api/race-intake/upload — raw file bytes plus an `X-Filename` header,
        saved under os.tmpdir(); answers { name, path } to hand to the intake.
        Raw body rather than multipart on purpose: multipart needs a parser
@@ -1189,6 +1190,138 @@ function raceBuildApi(): Plugin {
         } catch (e) {
           const message = (e as Error).message || String(e)
           console.error(`[race-build] ${message}`)
+          send('error', { message })
+          send('done', { ok: false, error: message })
+        } finally {
+          clearInterval(hb)
+          if (!res.writableEnded) res.end()
+        }
+      })
+    },
+  }
+}
+
+/* POST /api/race-intake/plan — { slug } → SSE progress, then a final `done`
+   carrying scripts/race-plan.mjs's result.
+
+   Stage 3 of the intake (PRD §8 step 5): one headless agent turn that writes
+   the folder's block.json, nutrition.json and the generated half of its
+   race.json. Unlike stage 2 this one COSTS — a `claude -p` call against the
+   coach model — so it is its own button in the review dialog rather than
+   something stage 2 chains into.
+
+   Its own plugin, registered BEFORE raceIntakeApi() for the same reason
+   raceBuildApi is: connect matches middleware by path prefix in registration
+   order, so /api/race-intake would otherwise swallow this path. Nothing here
+   touches config/active-race.json — planning a folder says nothing about which
+   race the athlete is training for. */
+function racePlanApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* A slug and a flag; a body bigger than this is not one. */
+  const BODY_MAX_BYTES = 64 * 1024
+
+  return {
+    name: 'trail-train-race-plan-api',
+    apply: 'serve',
+    configureServer(server) {
+      const json = (res: ServerResponse, code: number, payload: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify(payload))
+      }
+
+      server.middlewares.use('/api/race-intake/plan', async (req, res) => {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        if (crossSiteBlocked(req, res)) return
+
+        const chunks: Buffer[] = []
+        let total = 0
+        for await (const c of req) {
+          total += (c as Buffer).byteLength
+          if (total > BODY_MAX_BYTES) { json(res, 413, { error: 'request body too large' }); return }
+          chunks.push(c as Buffer)
+        }
+        let body: { slug?: unknown; dry_run?: unknown }
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
+        catch { json(res, 400, { error: 'bad json' }); return }
+
+        const slug = typeof body.slug === 'string' ? body.slug.trim() : ''
+        /* The slug becomes a path segment, so the kebab shape is the guard as
+           much as the schema: no dots, no separators, nothing to traverse. */
+        if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
+          json(res, 400, { error: 'slug: lowercase kebab-case required' })
+          return
+        }
+        if (!fs.existsSync(path.join(projectRoot, 'races', slug, 'race.json'))) {
+          json(res, 404, { error: `no race folder "${slug}" — races/${slug}/race.json is not there` })
+          return
+        }
+        const dryRun = body.dry_run === true
+
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        })
+        const send = (event: string, data: unknown) => {
+          if (res.writableEnded) return
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        }
+        /* The agent turn is minutes of silence; keep the stream warm the way
+           the intake and chat endpoints do. */
+        const hb = setInterval(() => send('heartbeat', { t: Date.now() }), 4000)
+        /* A disconnect is not an abort: the three files are written atomically
+           at the end and a half-planned folder helps nobody. Let it finish —
+           the agent turn has already been paid for. */
+        req.on('close', () => { clearInterval(hb) })
+
+        try {
+          const { planRace } = await import(path.join(projectRoot, 'scripts/race-plan.mjs')) as {
+            planRace: (opts: Record<string, unknown>) => Promise<{
+              slug: string
+              dir: string
+              prompt: string
+              dryRun: boolean
+              wrote: string[]
+              unresolved: string[]
+              warnings: string[]
+              skipped: string[]
+              block: unknown
+              nutrition: unknown
+              race: unknown
+              agent: unknown
+            }>
+          }
+          const result = await planRace({
+            root: projectRoot,
+            slug,
+            dryRun,
+            onProgress: (e: { step: string; status: string; label?: string; message?: string; stream?: string }) => {
+              if (e.status === 'log') send('log', { id: e.step, line: e.message ?? '', stream: e.stream })
+              else send('step', { id: e.step, status: e.status, label: e.label })
+            },
+          })
+          send('done', {
+            ok: true,
+            slug: result.slug,
+            dir: path.relative(projectRoot, result.dir),
+            dry_run: result.dryRun,
+            /* The prompt goes back only on a dry run: on a real run it is a
+               few KB the review dialog has no use for. */
+            prompt: result.dryRun ? result.prompt : undefined,
+            wrote: result.wrote,
+            unresolved: result.unresolved,
+            warnings: result.warnings,
+            kept_user_fields: result.skipped,
+            block: result.block,
+            nutrition: result.nutrition,
+            race: result.race,
+            agent: result.agent,
+          })
+        } catch (e) {
+          const message = (e as Error).message || String(e)
+          console.error(`[race-plan] ${message}`)
           send('error', { message })
           send('done', { ok: false, error: message })
         } finally {
@@ -1434,10 +1567,10 @@ function courseFiles(): Plugin {
 }
 
 export default defineConfig({
-  // raceBuildApi BEFORE raceIntakeApi: connect matches by path prefix in
-  // registration order, and /api/race-intake would otherwise swallow
-  // /api/race-intake/build.
-  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), raceIntakeApi()],
+  // raceBuildApi and racePlanApi BEFORE raceIntakeApi: connect matches by path
+  // prefix in registration order, and /api/race-intake would otherwise swallow
+  // /api/race-intake/build and /api/race-intake/plan.
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
   // Fixed, memorable, deliberately unusual port. The 5173 default collides
   // with every other Vite project on the machine, and a colliding neighbor
   // silently claims the port so this app hops to 5174+ — which breaks the
