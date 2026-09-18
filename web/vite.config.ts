@@ -939,8 +939,42 @@ function settingsApi(): Plugin {
   }
 }
 
+// Dev-only middleware: GET /api/race/active answers "which race, and what is
+// in it?" for the client — the pointer (config/active-race.json) plus the
+// folder it names, merged into one payload. `{ active: null }` is generic
+// mode. Read-only, but it still refuses cross-site callers: the reply carries
+// local config a hostile tab has no business reading.
+function raceApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  return {
+    name: 'trail-train-race-api',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/api/race/active', async (req, res) => {
+        if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+        if (crossSiteBlocked(req, res)) return
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        try {
+          // vite.config.ts can't statically import from scripts/ (it is ESM
+          // JS outside the TS project), so the loader is imported per request
+          // — same as scripts/facts.mjs in the chat endpoint.
+          const { loadActiveRace } = await import(path.join(projectRoot, 'scripts/race-config.mjs')) as {
+            loadActiveRace: (root: string) => Promise<Record<string, unknown>>
+          }
+          res.statusCode = 200
+          res.end(JSON.stringify(await loadActiveRace(projectRoot)))
+        } catch (e) {
+          res.statusCode = 500
+          res.end(JSON.stringify({ error: (e as Error).message }))
+        }
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), refreshApi(), chatApi(), settingsApi()],
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceApi()],
   // Fixed, memorable, deliberately unusual port (38 h cutoff · 100 miles).
   // The 5173 default collides with every other Vite project on the machine,
   // and a colliding neighbor silently claims the port so this app hops to

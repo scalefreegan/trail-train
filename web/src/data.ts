@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import type { ActiveRaceResponse } from "./race/types";
 
 /* ------------------------------------------------------------------ */
 /*  Contexts + hooks + helpers. The provider components live in        */
@@ -403,6 +404,36 @@ export function useGoogleCal() {
       .catch(() => setMissing(true));
   }, [refreshKey]);
   return { data, missing, connected: !!data };
+}
+
+/**
+ * The active race folder, merged: `{ active: null }` when no race is active
+ * (generic mode) — served by the dev-server's GET /api/race/active from
+ * config/active-race.json + races/<slug>/. Keyed on the refresh pulse like
+ * the other snapshot hooks, with their failure semantics: 404 means the
+ * endpoint isn't there (a static preview build), which is an absence, not a
+ * failure; anything else KEEPS the loaded race and surfaces `error`.
+ */
+export function useActiveRace() {
+  const { key: refreshKey } = useRefresh();
+  const [data, setData] = useState<ActiveRaceResponse | null>(null);
+  const [missing, setMissing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let stale = false;
+    fetch(`/api/race/active?t=${Date.now()}`)
+      .then(async (r) => {
+        if (stale) return;
+        if (r.status === 404) { setData(null); setMissing(true); setError(null); return; }
+        if (!r.ok) { setMissing(false); setError(`active race failed to load (HTTP ${r.status})`); return; }
+        const d = await r.json().catch(() => { throw new Error("parse"); });
+        if (stale) return;
+        setData(d); setMissing(false); setError(null);
+      })
+      .catch(() => { if (stale) return; setMissing(false); setError("active race config corrupt or unreadable"); });
+    return () => { stale = true; };
+  }, [refreshKey]);
+  return { activeRace: data, slug: data?.active ?? null, missing, error };
 }
 
 /* state.json is fetched once (by StateProvider in providers.tsx) and shared
