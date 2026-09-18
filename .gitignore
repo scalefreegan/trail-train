@@ -41,6 +41,11 @@ config/generic-plan.json
 # only exists locally) — never a committed one.
 config/active-race.json
 
+# Generic-mode goals (event class, phase, volume band, injury notes). Same
+# deal as the profile: goals.example.json is committed, goals.json is not and
+# is bootstrapped from the example on first run.
+config/goals.json
+
 # Athlete profile (name, location, local trails). The committed file is the
 # example with generic placeholders; copy it to profile.json and personalize.
 config/profile.json

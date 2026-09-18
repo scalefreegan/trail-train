@@ -1,0 +1,10 @@
+{
+  "event_class": "100 mi mountain race",
+  "horizon": "next A-race, roughly a year out",
+  "phase": "maintain",
+  "weekly_volume_band": {
+    "dist_mi": [20, 35],
+    "vert_ft": [2000, 5000]
+  },
+  "notes": "What the coach should know while no race is active: injuries and their reassessment dates, the reason for the current phase, anything that caps the week."
+}
