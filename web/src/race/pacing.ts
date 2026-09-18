@@ -27,6 +27,14 @@ export type PacingFit = {
   effN: number;
   /** human-readable description of what was fit */
   basis: string;
+  /** the long-run reference distance (mi) this fit is to be READ at — the
+      athlete's `physiology.long_run_ref_mi` from config/profile.json, or
+      D_REF when no profile is available. Carried on the fit rather than
+      passed alongside it: every consumer that evaluates fitness pace
+      (projectRace, makeGradeFn, calibration's anchor band) must use the SAME
+      distance the fit was handed, and a second parameter is a second chance
+      to disagree. */
+  dRefMi: number;
 };
 
 type FitInput = {
@@ -43,7 +51,14 @@ const RECENCY_TAU_DAYS = 75;
 /** Distance at (and beyond) which a run gets full distance weight. */
 const FULL_WEIGHT_DIST_MI = 13;
 
-export function fitPacing(acts: FitInput[], nowMs: number = Date.now()): PacingFit | null {
+export function fitPacing(
+  acts: FitInput[],
+  nowMs: number = Date.now(),
+  /** athlete's long-run reference distance, mi (profile physiology). It does
+      not change the fitted COEFFICIENTS — it is the distance downstream
+      consumers evaluate them at — so it rides along on the result. */
+  dRefMi: number = D_REF,
+): PacingFit | null {
   const all = acts.filter((a) => a.distance_mi >= 2 && a.moving_s > 0 && a.elevation_ft != null);
 
   // Longer efforts only — raise the distance floor as far as sample size allows.
@@ -114,6 +129,7 @@ export function fitPacing(acts: FitInput[], nowMs: number = Date.now()): PacingF
     n: rows.length,
     effN: Math.round(effN),
     basis: `${rows.length} runs ≥${minDist}mi · weighted long/recent/aerobic`,
+    dRefMi: Number.isFinite(dRefMi) && dRefMi > 0 ? dRefMi : D_REF,
   };
 }
 
@@ -165,7 +181,8 @@ export type ProjectOptions = {
       pace. e.g. 6 → every pace ×1.06 */
   calibrationPct?: number;
   /** deliberate first-half restraint, % slower than model pace through mile
-      RESTRAINT_FULL_MI (tapering to 0 by RESTRAINT_END_MI). Restrained miles
+      RESTRAINT_FULL_FRAC of the race (tapering to 0 by RESTRAINT_END_FRAC).
+      Restrained miles
       also age the athlete less: they count (1 − payoff·restraint) miles on the
       fatigue clock, so holding back early buys a flatter late-race fade. */
   restraintPct?: number;
@@ -231,7 +248,7 @@ function interpPairs(table: [number, number][], g: number): number {
  *   the athlete's aggregate climb cost); downhill is the standard shape.
  */
 function makeGradeFn(fit: PacingFit, personal: PaceGradeCurve | undefined): { f: (g: number) => number; basis: string } {
-  const pFlat = fit.base + fit.kDist * D_REF;
+  const pFlat = fit.base + fit.kDist * fit.dRefMi;
   const fb = (g: number) =>
     g >= 0 ? 1 + (fit.kVert * FT_PER_MI_PER_PCT * g) / pFlat : interpPairs(DOWNHILL_FALLBACK, g);
   // require a usable curve that SPANS 0% — without near-zero bins the F(0)=1
@@ -269,18 +286,43 @@ function gainBetween(profile: CourseProfilePoint[], fromMi: number, toMi: number
   return gain;
 }
 
-/** Reference distance (mi) at which the fitted fitness pace is evaluated — the
-    athlete's long-run regime. See projectRace's note on why kDist isn't
-    extrapolated to total_mi. Exported so calibration.ts derives its anchor
-    band from the SAME constant instead of a hand-typed copy that drifts. */
+/** DEFAULT reference distance (mi) at which the fitted fitness pace is
+    evaluated — the athlete's long-run regime. See projectRace's note on why
+    kDist isn't extrapolated to total_mi.
+
+    Since tt-yib.9 this is only the fallback: the live value is the athlete's
+    `physiology.long_run_ref_mi` from config/profile.json, handed to fitPacing
+    and carried on the fit as `dRefMi`. Read `fit.dRefMi`, not this constant,
+    anywhere a number is shown or used in arithmetic — someone whose long runs
+    are 30 mi should not have their projection anchored at 20. */
 export const D_REF = 20;
 
-/** First-half restraint window: full hold-back through mile 50, tapering
-    linearly to zero by mile 60 (no pace cliff at an aid station boundary).
-    Exported so UI copy (footer, slider tooltips) interpolates the real
-    constants instead of re-typing them. */
-export const RESTRAINT_FULL_MI = 50;
-export const RESTRAINT_END_MI = 60;
+/** First-half restraint window, as FRACTIONS of the race distance: full
+    hold-back through the half-way point, tapering linearly to zero by 60% (no
+    pace cliff at an aid station boundary).
+
+    These were miles 50 and 60 until tt-yib.9 — MM100's answer, hard-coded.
+    On a 50k that window covered the whole race and restraint never faded; on
+    a 200 it expired in the first quarter. The SHAPE is what generalizes
+    ("ease off through the first half, be racing by 60%"), so the fractions
+    are the constants and the miles are derived per race. */
+export const RESTRAINT_FULL_FRAC = 0.5;
+export const RESTRAINT_END_FRAC = 0.6;
+
+/** The restraint window in miles for a race of `raceMi`. Exported so UI copy
+    (footer, slider tooltips) interpolates the real numbers instead of
+    re-typing them, and so the planner and the projection can never disagree
+    about where the taper ends. */
+export function restraintWindowMi(raceMi: number): { fullMi: number; endMi: number } {
+  const mi = Number.isFinite(raceMi) && raceMi > 0 ? raceMi : 0;
+  return { fullMi: mi * RESTRAINT_FULL_FRAC, endMi: mi * RESTRAINT_END_FRAC };
+}
+
+/** The distance the restraint window is measured against: the OFFICIAL race
+    distance when published (the number on the entrant's bib and the one the
+    athlete thinks in), falling back to the measured GPX distance. */
+export const raceDistanceMi = (course: Course): number =>
+  course.official_distance_mi ?? course.distance_mi;
 
 /** How strongly restraint pays down the fatigue clock: each restrained mile
     counts (1 − PAYOFF·restraint) fatigue-miles. At 8% restraint each early
@@ -288,21 +330,21 @@ export const RESTRAINT_END_MI = 60;
 export const RESTRAINT_FATIGUE_PAYOFF = 2;
 
 /** Restraint weight at a course mile: 1 through the full window, linear taper
-    to 0 across the taper zone. */
-function restraintWeight(mi: number): number {
-  if (mi <= RESTRAINT_FULL_MI) return 1;
-  if (mi >= RESTRAINT_END_MI) return 0;
-  return (RESTRAINT_END_MI - mi) / (RESTRAINT_END_MI - RESTRAINT_FULL_MI);
+    to 0 across the taper zone. `w` is the window from restraintWindowMi. */
+function restraintWeight(mi: number, w: { fullMi: number; endMi: number }): number {
+  if (mi <= w.fullMi) return 1;
+  if (mi >= w.endMi) return 0;
+  return (w.endMi - mi) / (w.endMi - w.fullMi);
 }
 
 /** Integral of restraintWeight from 0 to mi (closed form for the piecewise
     linear shape) — used to compute cumulative fatigue-miles. */
-function restraintWeightIntegral(mi: number): number {
-  const full = Math.min(mi, RESTRAINT_FULL_MI);
+function restraintWeightIntegral(mi: number, w: { fullMi: number; endMi: number }): number {
+  const full = Math.min(mi, w.fullMi);
   let s = full;
-  if (mi > RESTRAINT_FULL_MI) {
-    const m1 = Math.min(mi, RESTRAINT_END_MI);
-    s += ((restraintWeight(RESTRAINT_FULL_MI) + restraintWeight(m1)) / 2) * (m1 - RESTRAINT_FULL_MI);
+  if (mi > w.fullMi) {
+    const m1 = Math.min(mi, w.endMi);
+    s += ((restraintWeight(w.fullMi, w) + restraintWeight(m1, w)) / 2) * (m1 - w.fullMi);
   }
   return s;
 }
@@ -320,13 +362,14 @@ function restraintWeightIntegral(mi: number): number {
  * - kDist is fitted on training runs, which are a fraction of race distance
  *   however long they get. Linearly extrapolating it to mile 100
  *   double-counts fatigue and explodes, so the fitness pace is evaluated at a
- *   fixed reference distance (D_REF = 20 mi, the athlete's long-run regime)
+ *   fixed reference distance (fit.dRefMi — the athlete's long-run regime,
+ *   `physiology.long_run_ref_mi`, default 20 mi)
  *   and ALL ultra-distance slowdown comes from the explicit fatigue
  *   multiplier. Don't "fix" this back to kDist·total_mi.
  *   How far that extrapolation actually reaches is not a constant to assert
  *   in a comment — it moves every time a longer run lands. calibration.ts
  *   computes it from the data and the model-check panel flags it, along with
- *   whether the fit is biased in the band D_REF reads from.
+ *   whether the fit is biased in the band dRefMi reads from.
  * - Fatigue COMPOUNDS: mult(mi) = (1 + f)^(fatigueMiles(mi)/10). Ultra fade is
  *   nonlinear — mild through 50, heavy after 80 (at 5%: ×1.28 @50mi, ×1.63
  *   @100mi). With restraint, fatigue-miles accrue slower than course miles
@@ -335,8 +378,8 @@ function restraintWeightIntegral(mi: number): number {
  * - calibrationPct multiplies every pace: the fit comes from training runs
  *   that are stronger efforts than race-sustainable pace, so raw fit paces
  *   read optimistic for a 100.
- * - restraintPct slows miles 0–50 on purpose (tapering to 0 by 60): banking
- *   energy for a relatively stronger second 50.
+ * - restraintPct slows the first half on purpose (tapering to 0 by 60% of
+ *   the race): banking energy for a relatively stronger second half.
  * - Station stops scale with the same fatigue curve (you linger longer at
  *   mile 80 than mile 20), capped at 2× the fresh stop.
  */
@@ -351,9 +394,12 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   const aidStopS = Math.max(0, opts.aidStopMin ?? 5) * 60;
   const crewStopS = Math.max(0, opts.crewStopMin ?? 10) * 60;
   const stations = course.aid_stations;
-  const fatigueMiles = (mi: number) => mi - RESTRAINT_FATIGUE_PAYOFF * r * restraintWeightIntegral(mi);
+  // The restraint window is a fraction of THIS race, not miles 50/60 of a
+  // hundred — see RESTRAINT_FULL_FRAC.
+  const window = restraintWindowMi(raceDistanceMi(course));
+  const fatigueMiles = (mi: number) => mi - RESTRAINT_FATIGUE_PAYOFF * r * restraintWeightIntegral(mi, window);
   const mult = (mi: number) => Math.pow(1 + f, fatigueMiles(mi) / 10);
-  const effort = (mi: number) => 1 + r * restraintWeight(mi);
+  const effort = (mi: number) => 1 + r * restraintWeight(mi, window);
 
   const segs = stations.map((st, i) => {
     const prev = i === 0 ? null : stations[i - 1];
@@ -372,7 +418,7 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   // fatigue/restraint at that mile and the segment's technicality factor —
   // no more "average gain rate over a 10-mile split".
   const { f: rawGradeF, basis: rawBasis } = makeGradeFn(fit, opts.gradeCurve);
-  const pFlat = fit.base + fit.kDist * D_REF;
+  const pFlat = fit.base + fit.kDist * fit.dRefMi;
   const paceShift: Record<Scenario, number> = { best: -fit.residStd, avg: 0, worst: fit.residStd };
 
   // Anchor the curve's AGGREGATE to the fitted climb cost. The personal

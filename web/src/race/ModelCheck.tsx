@@ -2,8 +2,8 @@ import { useMemo } from "react";
 import { useStrava, useMeasuredWidth, useUnits } from "../data";
 import { SectionTag } from "../atoms";
 import { useRacePlan } from "./useRacePlan";
-import { ANCHOR_HI_MI, ANCHOR_LO_MI, BIAS_WORTH_ACTING_ON, calibrate, type Band, type Flag } from "./calibration";
-import { D_REF, fmtElapsed } from "./pacing";
+import { BIAS_WORTH_ACTING_ON, calibrate, type Band, type Flag } from "./calibration";
+import { fmtElapsed } from "./pacing";
 
 /* ------------------------------------------------------------------ */
 /*  Model check — how much to trust the number above.                  */
@@ -248,11 +248,11 @@ export function ModelCheck() {
                 </span>
               </span>
               <span className="eyebrow numerals" style={{ fontSize: 9, color: cal.anchor_n < THIN_BAND_N ? "var(--lamp)" : undefined }}>
-                n{cal.anchor_n} · {ANCHOR_LO_MI}–{ANCHOR_HI_MI} mi{cal.anchor_n < THIN_BAND_N ? " · thin sample" : ""}
+                n{cal.anchor_n} · {cal.anchor_lo_mi.toFixed(0)}–{cal.anchor_hi_mi.toFixed(0)} mi{cal.anchor_n < THIN_BAND_N ? " · thin sample" : ""}
               </span>
             </div>
             <p style={{ fontSize: 11.5, color: "var(--mist-dim)", lineHeight: 1.6, margin: "6px 0 0", maxWidth: "72ch" }}>
-              The projection evaluates its fitness pace at a single {D_REF}-mile reference point; past it the
+              The projection evaluates its fitness pace at a single {cal.d_ref_mi.toFixed(0)}-mile reference point; past it the
               slowdown comes from the fatigue curve and your restraint setting. This band is the held-out check
               on how the model behaves around that point, so error here scales into the race time.{" "}
               {Math.abs(anchor) < BIAS_WORTH_ACTING_ON

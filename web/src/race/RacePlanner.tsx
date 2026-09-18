@@ -14,7 +14,7 @@ import type { VisibleColumns } from "./features";
 import {
   projectRace, nightIntervals,
   fmtElapsed, raceClockHM,
-  RESTRAINT_FULL_MI, RESTRAINT_END_MI, RESTRAINT_FATIGUE_PAYOFF,
+  restraintWindowMi, raceDistanceMi, RESTRAINT_FATIGUE_PAYOFF,
   type StationProjection,
 } from "./pacing";
 import type { Course } from "./types";
@@ -423,7 +423,7 @@ export function RacePlanner() {
   // useRacePlan.ts. Both views must agree to the minute, so there is exactly
   // one projectRace/planFuel call and one set of persisted sliders.
   const { course, missing, error, fit, proj, nutrition, fuelPlan, settings, set,
-    paceGrade, paceGradeError, nutritionError, features, panels, columns } = useRacePlan();
+    paceGrade, paceGradeError, nutritionError, physiologyError, features, panels, columns } = useRacePlan();
   const { fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides } = settings;
   const { fatigue: setFatigue, calibration: setCalibration, restraint: setRestraint,
     goalH: setGoalH, aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
@@ -431,6 +431,9 @@ export function RacePlanner() {
   // one printable document at a time — the print-isolation body classes
   // (crew-printing / card-printing) must never coexist
   const [openDoc, setOpenDoc] = useState<null | "crew" | "card" | "fuel" | "drops">(null);
+  // the hold-back window is a fraction of THIS race (tt-yib.9), so the copy
+  // that names its miles has to be computed, not typed
+  const restraintWin = course ? restraintWindowMi(raceDistanceMi(course)) : null;
 
   if (missing || !course) {
     return (
@@ -489,7 +492,7 @@ export function RacePlanner() {
               />
             </label>
             <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-              title="deliberate first-half hold-back — this much slower than model pace through mile 50 (tapering off by 60); restrained miles also age the fatigue clock less, flattening the late-race fade">
+              title={`deliberate first-half hold-back — this much slower than model pace through mile ${restraintWin?.fullMi.toFixed(0) ?? "?"} (tapering off by ${restraintWin?.endMi.toFixed(0) ?? "?"}); restrained miles also age the fatigue clock less, flattening the late-race fade`}>
               hold-back +{restraint.toFixed(1)}%
               <input
                 type="range" min={0} max={15} step={0.5} value={restraint}
@@ -693,7 +696,7 @@ export function RacePlanner() {
                   <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
                     {stationFlags(s, columns).map((f) => <FlagChip key={f.label} label={f.label} color={f.color} />)}
                   </span>
-                  {columns.crew && crewBase?.drives[s.name] && (
+                  {columns.crew && crewBase?.base && crewBase.drives[s.name] && (
                     s.lat != null && s.lon != null ? (
                       <a
                         className="numerals"
@@ -805,11 +808,14 @@ export function RacePlanner() {
                     {paceGrade?.fitted_at && ` (fitted ${relativeAgo(new Date(paceGrade.fitted_at).getTime())}${paceGrade.runs_pending_time ? `, ${paceGrade.runs_pending_time} runs awaiting time streams` : ""})`}
                     {paceGradeError && <span style={{ color: "var(--ember)" }}> · {paceGradeError}</span>}
                     {nutritionError && <span style={{ color: "var(--ember)" }}> · {nutritionError}</span>}
-                    {" "}· tech: {course.aid_stations.filter((s) => (s.tech_pct ?? 0) > 0).map((s) => `${s.name.toLowerCase()} +${s.tech_pct}%`).join(", ") || "none"} · race-cal +{calibration}% all paces · restraint +{restraint}% thru mi {RESTRAINT_FULL_MI} (fades by {RESTRAINT_END_MI}, restrained miles age ×{(1 - RESTRAINT_FATIGUE_PAYOFF * restraint / 100).toFixed(2)} on the fatigue clock) · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}{(columns.crew || columns.drop_bag) && `/${crewStopMin}`}m fresh
+                    {physiologyError && <span style={{ color: "var(--ember)" }}> · {physiologyError}</span>}
+                    {" "}· tech: {course.aid_stations.filter((s) => (s.tech_pct ?? 0) > 0).map((s) => `${s.name.toLowerCase()} +${s.tech_pct}%`).join(", ") || "none"} · race-cal +{calibration}% all paces · restraint +{restraint}% thru mi {restraintWin?.fullMi.toFixed(0)} (fades by {restraintWin?.endMi.toFixed(0)}, restrained miles age ×{(1 - RESTRAINT_FATIGUE_PAYOFF * restraint / 100).toFixed(2)} on the fatigue clock) · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}{(columns.crew || columns.drop_bag) && `/${crewStopMin}`}m fresh
                   </span>
                 </>
               )}
-              {columns.crew && crewBase && (
+              {/* a crew-base.json with no `base` is normal — the folder has
+                  emergency numbers but no race-week lodging (tt-yib.9) */}
+              {columns.crew && crewBase?.base && (
                 <>
                   <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)" }}>base</span>
                   <span className="eyebrow" style={{ fontSize: 8.5, lineHeight: 1.9, color: "var(--creek)" }}>

@@ -2,7 +2,8 @@
 // Opened from the "⚙ settings" chip in the command bar. Edits:
 //   - scalar preferences + free-text context sections + dated temporary
 //     notes  → state.json preferences (via PUT /api/settings)
-//   - childcare markers + calendar keywords → config/profile.json
+//   - childcare markers + calendar keywords + athlete physiology (body mass,
+//     long-run reference distance) → config/profile.json
 //   - generic-mode goals (event class, phase, volume band, notes)
 //     → config/goals.json
 // Dev-only like chat/resync: the endpoints live in vite dev middleware.
@@ -28,6 +29,29 @@ type GoalsForm = Omit<Goals, "weekly_volume_band"> & {
   weekly_volume_band: { dist_mi: (number | "")[]; vert_ft: (number | "")[] };
 };
 
+/** PRD §5.4 — the athlete's own numbers. KEEP THE BOUNDS IN SYNC with
+    PHYSIOLOGY_BOUNDS in web/vite.config.ts and PHYSIOLOGY_FIELDS in
+    scripts/profile.mjs; the server rejects anything outside them. */
+const PHYSIOLOGY_META = [
+  {
+    key: "body_kg" as const,
+    label: "body mass (kg)",
+    hint: "every mg/kg caffeine figure in the race plan scales with this — it lives here, not in a race folder, so a race can be shared without it",
+    min: 30, max: 200, step: 0.1,
+  },
+  {
+    key: "long_run_ref_mi" as const,
+    label: "long-run reference (mi)",
+    hint: "the distance the pacing fit is read at: your own long-run regime, not the race distance. The projection evaluates fitness pace here and lets the fatigue curve carry everything past it",
+    min: 5, max: 50, step: 1,
+  },
+];
+
+type PhysiologyKey = (typeof PHYSIOLOGY_META)[number]["key"];
+// "" while a field is being retyped — the save refuses rather than committing
+// a 0 the athlete didn't mean (same rule as the volume band)
+type PhysiologyForm = Record<PhysiologyKey, number | "">;
+
 type SettingsPayload = {
   preferences: {
     training_philosophy?: string;
@@ -40,6 +64,10 @@ type SettingsPayload = {
   calendar_error?: string | null;
   goals?: Partial<Goals> | null;
   goals_error?: string | null;
+  physiology?: Partial<Record<PhysiologyKey, number>> | null;
+  /** what the loader substituted, and why — shown so a plan built on the
+      impersonal defaults says so instead of looking personal */
+  physiology_warnings?: string[] | null;
   today: string;
 };
 
@@ -55,6 +83,7 @@ type FormState = {
   childcare_markers: string[];
   calendar_keywords: Record<string, string[]>;
   goals: GoalsForm;
+  physiology: PhysiologyForm;
 };
 
 const SECTION_META: { key: keyof CoachContext["sections"]; label: string; hint: string }[] = [
@@ -171,6 +200,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [calendarError, setCalendarError] = useState<string | null>(null);
   const [goalsError, setGoalsError] = useState<string | null>(null);
+  const [physiologyNote, setPhysiologyNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [newNote, setNewNote] = useState({ text: "", expires: "" });
@@ -214,6 +244,9 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
         setToday(d.today);
         setCalendarError(d.calendar_error ?? null);
         setGoalsError(d.goals_error ?? null);
+        // the server already fell back to defaults; the dialog shows them as
+        // real values and explains, once, that they are stand-ins
+        setPhysiologyNote(d.physiology_warnings?.length ? d.physiology_warnings.join(" · ") : null);
         setNewNote({ text: "", expires: plusDays(d.today, 30) });
         knownIdsRef.current = (p.context?.temporary ?? []).map((t) => t.id);
         sectionsBaselineRef.current = {
@@ -234,6 +267,10 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
           temporary: p.context?.temporary ?? [],
           childcare_markers: d.calendar?.childcare_markers ?? [],
           calendar_keywords: d.calendar?.calendar_keywords ?? {},
+          physiology: {
+            body_kg: d.physiology?.body_kg ?? "",
+            long_run_ref_mi: d.physiology?.long_run_ref_mi ?? "",
+          },
           goals: {
             event_class: d.goals?.event_class ?? "",
             horizon: d.goals?.horizon ?? "",
@@ -264,10 +301,23 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
     return null;
   };
 
+  /** Which physiology field is blank or out of the server's range. Checked
+      here so the dialog names the field instead of relaying a 400. */
+  const physiologyProblem = (ph: PhysiologyForm): string | null => {
+    for (const { key, label, min, max } of PHYSIOLOGY_META) {
+      const v = ph[key];
+      if (v === "") return `${label}: needs a number`;
+      if (!Number.isFinite(v) || v < min || v > max) return `${label}: must be between ${min} and ${max}`;
+    }
+    return null;
+  };
+
   const save = async () => {
     if (!form || saving) return;
     const bandProblem = goalsBandProblem(form.goals);
     if (bandProblem) { setSaveError(bandProblem); return; }
+    const physProblem = physiologyProblem(form.physiology);
+    if (physProblem) { setSaveError(physProblem); return; }
     setSaving(true);
     setSaveError(null);
     try {
@@ -295,12 +345,16 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
               vert_ft: form.goals.weekly_volume_band.vert_ft as number[],
             },
           },
-          // a corrupt profile.json makes calendar edits refusable server-side;
-          // don't send them at all in that case
+          // a corrupt profile.json makes every profile-owned edit refusable
+          // server-side; don't send them at all in that case
           ...(calendarError ? {} : {
             calendar: {
               childcare_markers: form.childcare_markers,
               calendar_keywords: form.calendar_keywords,
+            },
+            physiology: {
+              body_kg: form.physiology.body_kg as number,
+              long_run_ref_mi: form.physiology.long_run_ref_mi as number,
             },
           }),
         }),
@@ -388,6 +442,35 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                   onChange={(e) => patch({ heat_threshold_c: e.target.value === "" ? "" : Number(e.target.value) })} />
               </label>
             </div>
+          </div>
+        </Block>
+
+        <Block>
+          <Eyebrow>physiology · yours, not the race's</Eyebrow>
+          <Hint style={{ marginTop: 0, marginBottom: 12 }}>
+            the two numbers the race plan needs about your body (config/profile.json, gitignored) ·
+            they used to be hard-coded in a race folder and in the pacing model
+          </Hint>
+          {calendarError && (
+            <p style={{ fontSize: 11.5, color: "var(--ember)", marginBottom: 10 }}>
+              config/profile.json could not be parsed — physiology edits are disabled until it is fixed by hand
+            </p>
+          )}
+          {physiologyNote && (
+            <p style={{ fontSize: 11.5, color: "var(--lamp)", marginBottom: 10 }}>{physiologyNote}</p>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            {PHYSIOLOGY_META.map(({ key, label, hint, min, max, step }) => (
+              <label key={key}>
+                <Hint style={{ marginTop: 0, marginBottom: 4 }}>{label}</Hint>
+                <input type="number" min={min} max={max} step={step} className="numerals" disabled={!!calendarError}
+                  style={{ ...inputStyle, width: "100%" }} value={form.physiology[key]}
+                  onChange={(e) => patch({
+                    physiology: { ...form.physiology, [key]: e.target.value === "" ? "" : Number(e.target.value) },
+                  })} />
+                <Hint>{hint}</Hint>
+              </label>
+            ))}
           </div>
         </Block>
 

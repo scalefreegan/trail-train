@@ -611,8 +611,8 @@ function chatApi(): Plugin {
 //                   a coach saveState landing inside it is lost — accepted
 //                   for a single-user local app; scripts/coach.mjs
 //                   symmetrically re-loads before its merge)
-//     profile.json: childcare_markers + calendar_keywords only (race_base,
-//                   calendar_ids etc. are never rewritten)
+//     profile.json: childcare_markers + calendar_keywords + physiology only
+//                   (calendar_ids etc. are never rewritten)
 //     goals.json:   the whole generic-mode goals object (PRD §5.3) — it is
 //                   small, wholly settings-owned, and nothing else writes it
 function settingsApi(): Plugin {
@@ -642,6 +642,14 @@ function settingsApi(): Plugin {
   }
 
   const SECTION_KEYS = ['about_me', 'calendar_conventions', 'training_preferences']
+  // KEEP IN SYNC with PHYSIOLOGY_FIELDS in scripts/profile.mjs — same reason
+  // as GOAL_PHASES below: vite.config.ts can't statically import from
+  // scripts/. The loader normalizes reads; this validates writes, and the
+  // bounds have to agree or the dialog can save a value the loader rejects.
+  const PHYSIOLOGY_BOUNDS: Record<string, [number, number]> = {
+    body_kg: [30, 200],
+    long_run_ref_mi: [5, 50],
+  }
   // KEEP IN SYNC with GOAL_PHASES in scripts/goals.mjs — vite.config.ts
   // can't statically import from scripts/ (its tsconfig has no allowJs), and
   // an unvalidated phase would reach the coach prompt verbatim.
@@ -670,6 +678,7 @@ function settingsApi(): Plugin {
       knownIds: string[] | null
     }
     calendar?: { childcare_markers: string[]; calendar_keywords: Record<string, string[]> }
+    physiology?: Record<string, number>
     goals?: Record<string, unknown>
   } => {
     const prefs: Record<string, unknown> = {}
@@ -758,6 +767,25 @@ function settingsApi(): Plugin {
       }
       calendar = { childcare_markers: normMarkers, calendar_keywords: keywords }
     }
+    // physiology: the athlete's own numbers (tt-yib.9). A partial block is
+    // fine — only the keys sent are written, so a dialog that learns a third
+    // field later can't blank the two it already knew.
+    let physiology
+    if (body.physiology !== undefined) {
+      if (!isPlainObject(body.physiology)) return { error: 'physiology: object required' }
+      const ph = body.physiology as Record<string, unknown>
+      const next: Record<string, number> = {}
+      for (const [key, v] of Object.entries(ph)) {
+        const bounds = PHYSIOLOGY_BOUNDS[key]
+        if (!bounds) return { error: `physiology.${key}: unknown field` }
+        const [lo, hi] = bounds
+        if (typeof v !== 'number' || !Number.isFinite(v) || v < lo || v > hi) {
+          return { error: `physiology.${key}: number in [${lo}, ${hi}] required` }
+        }
+        next[key] = v
+      }
+      physiology = next
+    }
     let goals
     if (body.goals !== undefined) {
       if (!isPlainObject(body.goals)) return { error: 'goals: object required' }
@@ -791,7 +819,7 @@ function settingsApi(): Plugin {
       next.weekly_volume_band = band
       goals = next
     }
-    return { prefs, context, calendar, goals }
+    return { prefs, context, calendar, physiology, goals }
   }
 
   return {
@@ -813,12 +841,20 @@ function settingsApi(): Plugin {
             loadGoals: (root: string) => Promise<{ goals: Record<string, unknown>; errors: string[] }>
             saveGoals: (root: string, g: unknown) => Promise<string>
           }
+          const profileMod = await import(path.join(projectRoot, 'scripts/profile.mjs')) as {
+            normalizePhysiology: (raw: unknown) => { physiology: Record<string, number>; warnings: string[] }
+          }
           if (req.method === 'GET') {
             const state = await stateMod.loadState(projectRoot)
             const { profile, corrupt } = readProfile()
             // bootstraps config/goals.json from the example on first open —
             // the dialog is the surface the athlete edits it through
             const { goals, errors: goalsErrors } = await goalsMod.loadGoals(projectRoot)
+            // Physiology is always complete on the way out: the loader's
+            // documented defaults fill the gaps, and `physiology_warnings`
+            // says which numbers are stand-ins — the race plan reads these
+            // through this same endpoint (web/src/race/useRaceData.ts).
+            const { physiology, warnings: physiologyWarnings } = profileMod.normalizePhysiology(profile.physiology)
             json(200, {
               preferences: state.preferences ?? {},
               goals,
@@ -832,6 +868,8 @@ function settingsApi(): Plugin {
               calendar_error: corrupt
                 ? 'config/profile.json exists but failed to parse — calendar edits are disabled until it is fixed by hand'
                 : null,
+              physiology,
+              physiology_warnings: physiologyWarnings,
               today: localToday(),
             })
             return
@@ -844,12 +882,12 @@ function settingsApi(): Plugin {
           try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
           catch { json(400, { error: 'bad json' }); return }
 
-          const { error, prefs, context, calendar, goals } = validate(body)
+          const { error, prefs, context, calendar, physiology, goals } = validate(body)
           if (error) { json(400, { error }); return }
 
-          // refuse the whole write BEFORE touching anything if the calendar
-          // edit would be based on a corrupt profile.json
-          if (calendar && readProfile().corrupt) {
+          // refuse the whole write BEFORE touching anything if a profile.json
+          // edit (calendar or physiology) would be based on a corrupt file
+          if ((calendar || physiology) && readProfile().corrupt) {
             json(409, { error: 'config/profile.json exists but could not be parsed — fix it by hand first; refusing to overwrite it' })
             return
           }
@@ -890,22 +928,36 @@ function settingsApi(): Plugin {
           fresh.preferences = { ...freshPrefs, ...prefs, ...(nextContext !== undefined ? { context: nextContext } : {}) }
           const saved = await stateMod.saveState(projectRoot, fresh)
 
+          // both profile-owned sections go out in ONE write: two sequential
+          // writeJsonAtomic calls would each be built from a stale read, and
+          // the second would silently drop the first's edit
           let savedCalendar = null
-          if (calendar) {
+          let savedPhysiology = null
+          if (calendar || physiology) {
             try {
               const { writeJsonAtomic } = await import(path.join(projectRoot, 'scripts/lib.mjs')) as {
                 writeJsonAtomic: (p: string, v: unknown) => Promise<void>
               }
               // gitignored — creating it from the example content is safe
-              const nextProfile = { ...readProfile().profile, ...calendar }
+              const current = readProfile().profile
+              const nextProfile: Record<string, unknown> = { ...current, ...(calendar ?? {}) }
+              let mergedPhysiology: Record<string, number> | null = null
+              if (physiology) {
+                // merge, don't replace: a PUT that only carries body_kg must
+                // not blank long_run_ref_mi
+                const prev = (current.physiology ?? {}) as Record<string, number>
+                mergedPhysiology = { ...prev, ...physiology }
+                nextProfile.physiology = mergedPhysiology
+              }
               await writeJsonAtomic(profilePath, nextProfile)
-              savedCalendar = calendar
+              savedCalendar = calendar ?? null
+              savedPhysiology = mergedPhysiology
             } catch (e) {
               // state.json already committed — report the partial write
               // honestly instead of a blanket failure
               console.warn(`[settings] profile.json write failed: ${(e as Error).message}`)
               json(500, {
-                error: `preferences were saved, but writing calendar config to config/profile.json failed: ${(e as Error).message}`,
+                error: `preferences were saved, but writing config/profile.json failed: ${(e as Error).message}`,
                 preferences: saved.preferences,
               })
               return
@@ -924,11 +976,12 @@ function settingsApi(): Plugin {
                 error: `preferences were saved, but writing config/goals.json failed: ${(e as Error).message}`,
                 preferences: saved.preferences,
                 calendar: savedCalendar,
+                physiology: savedPhysiology,
               })
               return
             }
           }
-          json(200, { preferences: saved.preferences, calendar: savedCalendar, goals: savedGoals })
+          json(200, { preferences: saved.preferences, calendar: savedCalendar, physiology: savedPhysiology, goals: savedGoals })
         } catch (e) {
           json(500, { error: (e as Error).message })
         }

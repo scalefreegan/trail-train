@@ -1,6 +1,6 @@
 import { createContext, useContext, useMemo, useState } from "react";
 import { useStrava, useActiveRace, type RaceView } from "../data";
-import { useCourse, usePaceGrade } from "./useRaceData";
+import { useCourse, usePaceGrade, usePhysiology, type Physiology } from "./useRaceData";
 import { planFuel, useNutrition, type FuelPlan, type NutritionConfig } from "./nutrition";
 import { fitPacing, projectRace, type PacingFit, type PaceGradeCurve } from "./pacing";
 import {
@@ -138,6 +138,14 @@ export type RacePlan = {
       and the planner footer reports them individually */
   paceGradeError: string | null;
   nutritionError: string | null;
+  /** the athlete's own numbers (config/profile.json) — body mass for every
+      mg/kg caffeine figure, long-run reference for the pacing fit. Shared
+      here for the same reason the projection is: the planner's model footer
+      and the fuel page's caffeine curve must be reading ONE body weight. */
+  physiology: Physiology;
+  /** set when the plan fell back to the impersonal defaults (no dev settings
+      endpoint, or a profile with no usable physiology) */
+  physiologyError: string | null;
   fit: PacingFit | null;
   proj: ReturnType<typeof projectRace> | null;
   nutrition: NutritionConfig;
@@ -210,6 +218,7 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
   const { course, missing, error: courseError } = useCourse();
   const { paceGrade, error: paceGradeError } = usePaceGrade();
   const { nutrition, error: nutritionError } = useNutrition();
+  const { physiology, error: physiologyError } = usePhysiology();
 
   // Knobs are namespaced by race: a goal set for a 38 h hundred means nothing
   // on a 50k, and switching the active race used to inherit the last race's
@@ -240,7 +249,12 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
   const panels = useMemo(() => visiblePanels(raceConfig), [raceConfig]);
   const columns = useMemo(() => visibleColumns(raceConfig), [raceConfig]);
 
-  const fit = useMemo(() => fitPacing(activities), [activities]);
+  // The reference distance is the athlete's, not the model's — it rides on
+  // the fit so every consumer evaluates the same one (see PacingFit.dRefMi).
+  const fit = useMemo(
+    () => fitPacing(activities, undefined, physiology.long_run_ref_mi),
+    [activities, physiology.long_run_ref_mi],
+  );
 
   const proj = useMemo(
     () => (course && fit ? projectRace(course, fit, {
@@ -261,7 +275,7 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
   return {
     course, missing, error: courseError,
     paceGrade, paceGradeError, nutritionError,
-    fit, proj, nutrition, fuelPlan,
+    fit, proj, nutrition, fuelPlan, physiology, physiologyError,
     raceStart: race.date, timeZone: race.timeZone, clock: race.clock,
     raceConfig, race, features, panels, columns,
     settings: { fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides },
