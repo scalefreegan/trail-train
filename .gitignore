@@ -91,3 +91,6 @@ web/public/pace-grade.json
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Gas City residue (orchestrator dropped 2026-09-18; something still recreates an empty events log)
+.gc/
