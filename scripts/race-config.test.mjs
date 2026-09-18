@@ -16,6 +16,7 @@ import {
   validateRaceJson,
   validateSingleActive,
 } from "./race-config.mjs";
+import { draftValidationErrors } from "./race-intake.mjs";
 
 /** A minimal race.json that validates — tests mutate a copy of it. */
 function validRace(over = {}) {
@@ -239,8 +240,12 @@ test("the committed race folders validate", async () => {
   assert.ok(races.length > 0, "expected at least one committed race folder");
   for (const r of races) {
     assert.equal(r.error, null, `${r.slug}: ${r.error}`);
-    const { ok, errors } = validateRaceJson(r.race);
-    assert.ok(ok, `${r.slug}/race.json: ${errors.join("; ")}`);
+    // A draft may carry known unknowns (null + named in unresolved[]) until the
+    // review dialog fills them; archived/active folders must validate outright.
+    const { errors } = r.race.status === "draft"
+      ? draftValidationErrors(r.race, r.race.unresolved ?? [])
+      : validateRaceJson(r.race);
+    assert.equal(errors.length, 0, `${r.slug}/race.json: ${errors.join("; ")}`);
   }
   assert.equal(validateSingleActive(races).ok, true);
   assert.ok(races.some((r) => r.slug === "mogollon-monster-100-2026"), "MM100 folder is missing");
