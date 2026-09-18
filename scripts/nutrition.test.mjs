@@ -50,7 +50,7 @@ test("the defaults carry no body mass either", () => {
 });
 
 test("a legacy file's caffeine.body_kg is stripped, not merged through", () => {
-  const cfg = normalizeNutrition(minimal({ caffeine: { body_kg: 79.4, gels: 4 } }));
+  const cfg = normalizeNutrition(minimal({ caffeine: { body_kg: 70, gels: 4 } }));
   assert.notEqual(cfg, null);
   assert.equal("body_kg" in cfg.caffeine, false, "a leftover key must not ride along in the merged config");
   // everything else in the same block is still honoured

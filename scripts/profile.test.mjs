@@ -91,7 +91,7 @@ test("out-of-band, non-finite and non-numeric values fall back with a warning", 
 });
 
 test("a physiology that isn't an object is reported, not spread", () => {
-  const { physiology, warnings } = normalizePhysiology("79.4");
+  const { physiology, warnings } = normalizePhysiology("70");
   assert.deepEqual(physiology, { body_kg: DEFAULT_BODY_KG, long_run_ref_mi: DEFAULT_LONG_RUN_REF_MI });
   assert.ok(warnings.some((w) => w.includes("not an object")));
 });

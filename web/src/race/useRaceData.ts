@@ -118,7 +118,8 @@ export function useClimbs() {
 /*  The defaults below then carry the page, and `error` says which     */
 /*  numbers the plan is actually built on — a caffeine band against a  */
 /*  stand-in body mass looks exactly like one against the athlete's,   */
-/*  which is the whole reason this stopped being a hard-coded 79.4.    */
+/*  which is the whole reason this stopped being a hard-coded literal  */
+/*  in a committed race folder.                                        */
 /* ------------------------------------------------------------------ */
 
 export type Physiology = {
