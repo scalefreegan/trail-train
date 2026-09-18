@@ -223,8 +223,28 @@ async function resolveFolder(argv) {
   return loadRaceFolder(ROOT, requested);
 }
 
-async function main() {
-  const folder = await resolveFolder(process.argv.slice(2));
+/**
+ * Build ONE race folder: races/<slug>/build/course.json, plus crew-base.json
+ * when the folder carries a crew base.
+ *
+ * Exported since tt-yib.12 so the intake's stage-2 build (scripts/race-build.mjs)
+ * runs this exact pipeline in-process instead of shelling out — the CLI below
+ * is now only argument resolution, and its output is unchanged.
+ *
+ * @param {string} root repo root
+ * @param {string} slug the folder under races/
+ * @param {{log?: (line: string) => void, warn?: (line: string) => void}} [opts]
+ *   Where the progress lines go. Default console; the SSE build endpoint passes
+ *   its own so the per-station snap table reaches the browser. Errors are
+ *   thrown, never exited on — this runs inside the dev server now.
+ * @returns {Promise<{slug: string, out: string, aid_stations: number,
+ *                    race_climbs: number, profile_points: number,
+ *                    measured_mi: number, measured_gain_ft: number}>}
+ */
+export async function buildCourse(root, slug, opts = {}) {
+  const log = opts.log ?? ((line) => console.log(line));
+  const warn = opts.warn ?? ((line) => console.warn(line));
+  const folder = await loadRaceFolder(root, slug);
   const buildDir = path.join(folder.dir, "build");
   const outPath = path.join(buildDir, "course.json");
   const gpxPath = path.join(folder.dir, "course.gpx");
@@ -245,17 +265,17 @@ async function main() {
   const officialGain = race.gain_ft;
   const scale = measuredDist / officialDist; // measured miles per official mile
 
-  console.log(`── ${race.name} (${folder.slug}) · course build ──`);
-  console.log(
+  log(`── ${race.name} (${folder.slug}) · course build ──`);
+  log(
     `distance: measured ${measuredDist.toFixed(2)} mi vs official ${officialDist} mi ` +
       `(${((measuredDist / officialDist - 1) * 100).toFixed(1)}%)`
   );
-  console.log(
+  log(
     `gain:     measured ${Math.round(measuredGain).toLocaleString()} ft vs official ` +
       `${officialGain.toLocaleString()} ft (${((measuredGain / officialGain - 1) * 100).toFixed(1)}%)`
   );
-  console.log(`track points: ${track.length} · grid points: ${grid.length}`);
-  console.log("");
+  log(`track points: ${track.length} · grid points: ${grid.length}`);
+  log("");
 
   // ── Aid stations: resolve to a waypoint, then snap to the track ─────────
   // The authored gpx_wpt is still authoritative when it names a real waypoint;
@@ -308,14 +328,14 @@ async function main() {
       base.gpx_mi = +measuredDist.toFixed(3);
       base.lat = +end.lat.toFixed(5);
       base.lon = +end.lon.toFixed(5);
-      console.log(`  ${a.name.padEnd(16)} official ${a.total_mi.toFixed(1)} → track end ${measuredDist.toFixed(2)} mi (finish)`);
+      log(`  ${a.name.padEnd(16)} official ${a.total_mi.toFixed(1)} → track end ${measuredDist.toFixed(2)} mi (finish)`);
       return base;
     }
 
     const match = matches[i];
     const resolved = match.confidence >= LOW_CONFIDENCE ? match.gpx_wpt : null;
     if (resolved && resolved !== a.gpx_wpt) {
-      console.warn(
+      warn(
         `⚠︎ ${a.name}: gpx_wpt ${a.gpx_wpt ? `"${a.gpx_wpt}" is not in this GPX` : "is unset"} — ` +
           `matched "${resolved}" by ${match.method} (confidence ${match.confidence})`
       );
@@ -326,7 +346,7 @@ async function main() {
       // measured along the track. Lat/lon come from that track point, so the
       // crew sheet's GPS link still lands on the course rather than nowhere.
       const cand = match.candidates?.[0];
-      console.warn(
+      warn(
         `⚠︎ ${a.name}: no confident GPX waypoint` +
           `${cand ? ` (best candidate "${cand.wpt}", score ${cand.score})` : ""}` +
           ` — snapping to the charted mile ${a.total_mi.toFixed(1)} along the track`
@@ -336,7 +356,7 @@ async function main() {
       base.lat = +at.lat.toFixed(5);
       base.lon = +at.lon.toFixed(5);
       base.gpx_match = { method: match.method, confidence: match.confidence, snapped: "track-distance" };
-      console.log(`  ${a.name.padEnd(16)} official ${a.total_mi.toFixed(1)} → track ${at.mi.toFixed(2)} mi (distance snap)`);
+      log(`  ${a.name.padEnd(16)} official ${a.total_mi.toFixed(1)} → track ${at.mi.toFixed(2)} mi (distance snap)`);
       return base;
     }
     if (match.method !== "exact") {
@@ -351,18 +371,18 @@ async function main() {
     const officialMi = snap.mi / scale;
     const delta = officialMi - a.total_mi;
     const flag = Math.abs(delta) > 1.5 ? "  ⚠︎ >1.5 mi off" : "";
-    console.log(
+    log(
       `  ${a.name.padEnd(16)} official ${a.total_mi.toFixed(1)} → gpx ${snap.mi.toFixed(2)} mi ` +
         `(≈${officialMi.toFixed(1)} official, Δ${delta >= 0 ? "+" : ""}${delta.toFixed(2)} mi, ` +
         `snap ${(snap.d * 5280).toFixed(0)} ft)${flag}`
     );
     return base;
   });
-  console.log("");
+  log("");
 
   // ── Race climbs: detect, then match to the authored windows ────────────
   const detected = detectClimbs(grid, { minGainFt: 300, minAvgGradePct: 3 });
-  console.log(`detected ${detected.length} climbs ≥300 ft / ≥3% over the course`);
+  log(`detected ${detected.length} climbs ≥300 ft / ≥3% over the course`);
 
   // Extend a matched climb's start back toward its authored window when the
   // approach is genuinely part of the climb — net uphill, and never giving back
@@ -420,7 +440,7 @@ async function main() {
       // relief; the ±10 ft hysteresis alone handles noise (see climb-lib).
       const gain = gainBetween(rawGrid, startMi, match.end_mi);
       if (startMi < match.start_mi) {
-        console.log(`    ↳ ${rc.label}: start extended ${match.start_mi.toFixed(2)} → ${startMi.toFixed(2)} mi (uphill approach)`);
+        log(`    ↳ ${rc.label}: start extended ${match.start_mi.toFixed(2)} → ${startMi.toFixed(2)} mi (uphill approach)`);
       }
       stats = {
         start_mi: +startMi.toFixed(3),
@@ -449,7 +469,7 @@ async function main() {
     }
 
     const profile = downsample(grid.slice(s, p + 1), 80);
-    console.log(
+    log(
       `  ${rc.label.padEnd(15)} ${match ? "matched" : "FALLBACK"} ` +
         `${stats.start_mi.toFixed(1)}–${stats.end_mi.toFixed(1)} mi · ` +
         `${stats.gain_ft} ft · ${stats.avg_grade_pct}% avg · ${stats.max_grade_pct}% max`
@@ -457,7 +477,7 @@ async function main() {
 
     return { id: rc.id, label: rc.label, ...stats, profile };
   });
-  console.log("");
+  log("");
 
   // ── Course profile at ~0.05 mi grid ─────────────────────────────────────
   const everyN = Math.max(1, Math.round(OUT_GRID_MI / (grid[1].mi - grid[0].mi)));
@@ -486,14 +506,13 @@ async function main() {
   // from it ends up in course.json.
   let personal = null;
   try {
-    personal = JSON.parse(await fs.readFile(path.join(ROOT, "config", "profile.json"), "utf8"));
+    personal = JSON.parse(await fs.readFile(path.join(root, "config", "profile.json"), "utf8"));
   } catch (e) {
     // Fresh checkout: no personal profile — crew-base.json just isn't written.
     // But a hand-edited profile.json with bad JSON (e.g. a trailing comma) must
     // NOT be swallowed, or crew-base.json silently keeps stale data. Fail loud.
     if (e.code !== "ENOENT") {
-      console.error(`✗ config/profile.json is present but unreadable: ${e.message}`);
-      process.exit(1);
+      throw new Error(`config/profile.json is present but unreadable: ${e.message}`);
     }
   }
   // tt-yib.2: the crew base and the emergency numbers now live in the race
@@ -504,8 +523,7 @@ async function main() {
     crewPrivate = JSON.parse(await fs.readFile(path.join(folder.dir, "crew.private.json"), "utf8"));
   } catch (e) {
     if (e.code !== "ENOENT") {
-      console.error(`✗ ${folder.slug}/crew.private.json is present but unreadable: ${e.message}`);
-      process.exit(1);
+      throw new Error(`${folder.slug}/crew.private.json is present but unreadable: ${e.message}`);
     }
   }
   const emergency = Array.isArray(crewPrivate?.emergency) ? crewPrivate.emergency : [];
@@ -518,7 +536,7 @@ async function main() {
   )) {
     // Present but malformed: writing it would give CourseMap NaN geometry and
     // fire OSRM fetches with `undefined` in the URL. Warn and skip, same as absent.
-    console.warn(
+    warn(
       "⚠︎ config/profile.json race_base missing/invalid finite lat, lon, or non-empty " +
         "label — skipping crew-base.json"
     );
@@ -530,9 +548,9 @@ async function main() {
       const d = await osrmDrive(base, startPt);
       base.drive_to_start_min = d.min;
       base.drive_to_start_mi = d.mi;
-      console.log(`drive base → start: ${d.min} min · ${d.mi} mi`);
+      log(`drive base → start: ${d.min} min · ${d.mi} mi`);
     } catch (e) {
-      console.warn(`⚠︎ drive base → start failed: ${e.message}`);
+      warn(`⚠︎ drive base → start failed: ${e.message}`);
     }
     for (const s of aid_stations) {
       if (!(s.crew || s.crew_only) || s.lat == null) continue;
@@ -540,9 +558,9 @@ async function main() {
         await new Promise((r) => setTimeout(r, 300));
         const d = await osrmDrive(base, s);
         drives[s.name] = { min: d.min, mi: d.mi };
-        console.log(`drive base → ${s.name}: ${d.min} min · ${d.mi} mi`);
+        log(`drive base → ${s.name}: ${d.min} min · ${d.mi} mi`);
       } catch (e) {
-        console.warn(`⚠︎ drive base → ${s.name} failed: ${e.message}`);
+        warn(`⚠︎ drive base → ${s.name} failed: ${e.message}`);
       }
     }
     await fs.mkdir(buildDir, { recursive: true });
@@ -555,7 +573,7 @@ async function main() {
       // are out of course.json.
       emergency,
     });
-    console.log(`✓ wrote races/${folder.slug}/build/crew-base.json (gitignored — lodging address + emergency numbers)\n`);
+    log(`✓ wrote races/${folder.slug}/build/crew-base.json (gitignored — lodging address + emergency numbers)\n`);
   }
 
   // ── Overview-map polyline: track lat/lon downsampled to ~400 points ─────
@@ -603,13 +621,31 @@ async function main() {
   };
   await fs.mkdir(buildDir, { recursive: true });
   await writeJsonAtomic(outPath, payload);
-  console.log(
+  log(
     `✓ wrote course.json → races/${folder.slug}/build/course.json\n` +
       `  profile ${profile.length} pts · ${aid_stations.length} aid stations · ${race_climbs.length} climbs`
   );
+  return {
+    slug: folder.slug,
+    out: outPath,
+    aid_stations: aid_stations.length,
+    race_climbs: race_climbs.length,
+    profile_points: profile.length,
+    measured_mi: payload.distance_mi,
+    measured_gain_ft: payload.gain_ft,
+  };
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+/** The CLI's own entry: resolve --race / the active race, then build it. */
+async function main() {
+  const folder = await resolveFolder(process.argv.slice(2));
+  await buildCourse(ROOT, folder.slug);
+}
+
+// Only the CLI path runs on import — buildCourse above is used by race-build.mjs.
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

@@ -200,8 +200,21 @@ export type RaceVisual = {
   overrides?: Record<string, string>;
 };
 
-/** Who last set a top-level field — re-intake keeps `by: "user"` fields. */
-export type RaceProvenanceEntry = { by: "user" | "agent"; at: string; source?: string };
+/**
+ * Who last set a field — re-intake keeps `by: "user"` fields. Keyed by field
+ * path, so a matcher entry can be about one station ("aid_stations[3].gpx_wpt").
+ * "computed" is scripts/race-sun.mjs; "matcher" is the aid-station ↔ GPX
+ * waypoint match in scripts/race-build.mjs, which also reports how it decided.
+ */
+export type RaceProvenanceEntry = {
+  by: "user" | "agent" | "computed" | "matcher";
+  at: string;
+  source?: string;
+  /** matcher only: 0..1 — below aid-match's LOW_CONFIDENCE it is never written. */
+  confidence?: number;
+  /** matcher only: how the waypoint was found. */
+  method?: "exact" | "fuzzy" | "distance" | null;
+};
 
 export type RaceSource = { kind: "url" | "pdf" | "gpx"; ref: string; fetched_at?: string };
 
