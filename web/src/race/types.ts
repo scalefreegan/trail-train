@@ -82,9 +82,14 @@ export type Course = {
 };
 
 /** crew-base.json — gitignored (contains the lodging address); written by
-    build-course.mjs from config/profile.json's `race_base`. */
+    build-course.mjs from `races/<slug>/crew.private.json`. The file exists
+    whenever that private file does; the two things in it are independent, so
+    a race with emergency numbers and no race-week lodging still gets one
+    (tt-yib.9). */
 export type CrewBase = {
   generated_at: string;
+  /** null when the folder carries no race-week lodging — every consumer has
+      to render without it rather than assume a base exists. */
   base: {
     label: string;
     address: string;
@@ -92,8 +97,9 @@ export type CrewBase = {
     lon: number;
     drive_to_start_min: number | null;
     drive_to_start_mi: number | null;
-  };
-  /** OSRM driving estimates from the base, keyed by station name */
+  } | null;
+  /** OSRM driving estimates from the base, keyed by station name (empty with
+      no base — there is nowhere to drive from) */
   drives: Record<string, { min: number; mi: number }>;
   /** Race-day emergency contacts, from races/<slug>/crew.private.json — they
       are personal, so they ride in this gitignored file, not course.json. */

@@ -32,7 +32,9 @@ export function useCourse() {
   return { course: data, missing, error };
 }
 
-/** Optional — crew-base.json only exists where profile.json has race_base. */
+/** Optional — crew-base.json exists wherever the race folder has a
+    crew.private.json (tt-yib.9). Its `base` may still be null: emergency
+    numbers and race-week lodging are independent. */
 export function useCrewBase() {
   const { key: refreshKey } = useRefresh();
   const [data, setData] = useState<CrewBase | null>(null);

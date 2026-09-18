@@ -224,6 +224,57 @@ async function resolveFolder(argv) {
 }
 
 /**
+ * The crew-base.json payload's personal halves, read from a race folder's
+ * gitignored `crew.private.json`. Pure: no network, no filesystem — the
+ * caller adds drive times (which need OSRM and the course track) and writes
+ * the file, so a move of the output path doesn't touch this validation.
+ *
+ * The two halves are INDEPENDENT on purpose. Until tt-yib.9 the file was
+ * written only when a valid base existed, so a folder that carried emergency
+ * numbers but no race-week lodging — the normal case for a race you are
+ * driving to on the morning — silently lost the crew sheet's emergency strip.
+ *
+ * @param {object} privateJson parsed crew.private.json
+ * @returns {{ base: object|null, emergency: {label: string, phone: string}[], warnings: string[] }}
+ */
+export function crewBaseFromPrivate(privateJson) {
+  const warnings = [];
+
+  let emergency = [];
+  if (Array.isArray(privateJson?.emergency)) {
+    emergency = privateJson.emergency.filter(
+      (e) => e && typeof e.label === "string" && e.label.trim() !== "" && typeof e.phone === "string" && e.phone.trim() !== "",
+    );
+    const dropped = privateJson.emergency.length - emergency.length;
+    if (dropped > 0) {
+      warnings.push(`crew.private.json: ${dropped} emergency contact(s) missing a label or phone — skipped`);
+    }
+  } else if (privateJson?.emergency !== undefined) {
+    warnings.push("crew.private.json: `emergency` is not an array — no emergency contacts written");
+  }
+
+  let base = null;
+  const raw = privateJson?.base;
+  if (raw && typeof raw === "object") {
+    // Present but malformed: writing it would give CourseMap NaN geometry and
+    // fire OSRM fetches with `undefined` in the URL. Warn and drop the base —
+    // the emergency numbers still go out.
+    if (Number.isFinite(raw.lat) && Number.isFinite(raw.lon) && typeof raw.label === "string" && raw.label.trim() !== "") {
+      base = { ...raw, drive_to_start_min: null, drive_to_start_mi: null };
+    } else {
+      warnings.push(
+        "crew.private.json `base` needs a finite lat, a finite lon and a non-empty label — " +
+          "writing crew-base.json without a base",
+      );
+    }
+  } else if (raw !== undefined && raw !== null) {
+    warnings.push("crew.private.json: `base` is not an object — writing crew-base.json without a base");
+  }
+
+  return { base, emergency, warnings };
+}
+
+/**
  * Build ONE race folder: races/<slug>/build/course.json, plus crew-base.json
  * when the folder carries a crew base.
  *
@@ -500,67 +551,56 @@ export async function buildCourse(root, slug, opts = {}) {
   }
 
   // ── Crew base + drive times → build/crew-base.json ──────────────────────
-  // The base is the athlete's race-week lodging: it lives in the race folder's
-  // gitignored crew.private.json (or config/profile.json's `race_base`) and the
-  // output goes to a separate file, so neither the address nor anything derived
-  // from it ends up in course.json.
-  let personal = null;
-  try {
-    personal = JSON.parse(await fs.readFile(path.join(root, "config", "profile.json"), "utf8"));
-  } catch (e) {
-    // Fresh checkout: no personal profile — crew-base.json just isn't written.
-    // But a hand-edited profile.json with bad JSON (e.g. a trailing comma) must
-    // NOT be swallowed, or crew-base.json silently keeps stale data. Fail loud.
-    if (e.code !== "ENOENT") {
-      throw new Error(`config/profile.json is present but unreadable: ${e.message}`);
-    }
-  }
-  // tt-yib.2: the crew base and the emergency numbers now live in the race
-  // folder's gitignored crew.private.json (race.json must never carry them).
-  // config/profile.json race_base stays as the fallback until tt-yib.9 drops it.
+  // Everything personal about race week — the lodging address and the
+  // emergency numbers — lives in the race folder's gitignored
+  // crew.private.json, and the output goes to a separate gitignored file in
+  // build/, so none of it ends up in course.json.
+  //
+  // tt-yib.9 dropped the old config/profile.json `race_base` fallback: one
+  // source, per race. A base in the profile was a hundred-miler's assumption
+  // (there is only ever one race) and it made the file the next race would
+  // have had to fight.
   let crewPrivate = null;
   try {
     crewPrivate = JSON.parse(await fs.readFile(path.join(folder.dir, "crew.private.json"), "utf8"));
   } catch (e) {
+    // Fresh checkout / a race nobody is crewing: no private file, so
+    // crew-base.json just isn't written. But a hand-edited file with bad JSON
+    // (a trailing comma) must NOT be swallowed, or crew-base.json silently
+    // keeps stale data. Fail loud.
     if (e.code !== "ENOENT") {
       throw new Error(`${folder.slug}/crew.private.json is present but unreadable: ${e.message}`);
     }
   }
-  const emergency = Array.isArray(crewPrivate?.emergency) ? crewPrivate.emergency : [];
-  const raceBase = crewPrivate?.base ?? personal?.race_base;
-  if (raceBase && !(
-    Number.isFinite(raceBase.lat) &&
-    Number.isFinite(raceBase.lon) &&
-    typeof raceBase.label === "string" &&
-    raceBase.label.trim() !== ""
-  )) {
-    // Present but malformed: writing it would give CourseMap NaN geometry and
-    // fire OSRM fetches with `undefined` in the URL. Warn and skip, same as absent.
-    warn(
-      "⚠︎ config/profile.json race_base missing/invalid finite lat, lon, or non-empty " +
-        "label — skipping crew-base.json"
-    );
-  } else if (raceBase) {
-    const base = { ...raceBase, drive_to_start_min: null, drive_to_start_mi: null };
+  if (crewPrivate) {
+    const { base, emergency, warnings } = crewBaseFromPrivate(crewPrivate);
+    for (const w of warnings) warn(`⚠︎ ${w}`);
+    // Drive times only exist when there is somewhere to drive FROM. The
+    // emergency numbers don't depend on that, which is the whole point of
+    // writing the file whenever the private one exists (tt-yib.9): a folder
+    // with numbers and no lodging used to lose the crew sheet's emergency
+    // strip entirely.
     const drives = {};
-    const startPt = { lat: track[0].lat, lon: track[0].lon };
-    try {
-      const d = await osrmDrive(base, startPt);
-      base.drive_to_start_min = d.min;
-      base.drive_to_start_mi = d.mi;
-      log(`drive base → start: ${d.min} min · ${d.mi} mi`);
-    } catch (e) {
-      warn(`⚠︎ drive base → start failed: ${e.message}`);
-    }
-    for (const s of aid_stations) {
-      if (!(s.crew || s.crew_only) || s.lat == null) continue;
+    if (base) {
+      const startPt = { lat: track[0].lat, lon: track[0].lon };
       try {
-        await new Promise((r) => setTimeout(r, 300));
-        const d = await osrmDrive(base, s);
-        drives[s.name] = { min: d.min, mi: d.mi };
-        log(`drive base → ${s.name}: ${d.min} min · ${d.mi} mi`);
+        const d = await osrmDrive(base, startPt);
+        base.drive_to_start_min = d.min;
+        base.drive_to_start_mi = d.mi;
+        log(`drive base → start: ${d.min} min · ${d.mi} mi`);
       } catch (e) {
-        warn(`⚠︎ drive base → ${s.name} failed: ${e.message}`);
+        warn(`⚠︎ drive base → start failed: ${e.message}`);
+      }
+      for (const s of aid_stations) {
+        if (!(s.crew || s.crew_only) || s.lat == null) continue;
+        try {
+          await new Promise((r) => setTimeout(r, 300));
+          const d = await osrmDrive(base, s);
+          drives[s.name] = { min: d.min, mi: d.mi };
+          log(`drive base → ${s.name}: ${d.min} min · ${d.mi} mi`);
+        } catch (e) {
+          warn(`⚠︎ drive base → ${s.name} failed: ${e.message}`);
+        }
       }
     }
     await fs.mkdir(buildDir, { recursive: true });
@@ -573,7 +613,11 @@ export async function buildCourse(root, slug, opts = {}) {
       // are out of course.json.
       emergency,
     });
-    log(`✓ wrote races/${folder.slug}/build/crew-base.json (gitignored — lodging address + emergency numbers)\n`);
+    log(
+      `✓ wrote races/${folder.slug}/build/crew-base.json (gitignored — ` +
+        `${base ? "lodging address + " : ""}` +
+        `${emergency.length} emergency contact${emergency.length === 1 ? "" : "s"})\n`,
+    );
   }
 
   // ── Overview-map polyline: track lat/lon downsampled to ~400 points ─────
@@ -642,7 +686,9 @@ async function main() {
   await buildCourse(ROOT, folder.slug);
 }
 
-// Only the CLI path runs on import — buildCourse above is used by race-build.mjs.
+// Only the CLI path runs on import — buildCourse above is used by race-build.mjs,
+// and crewBaseFromPrivate by scripts/crew-base.test.mjs, so importing this file
+// must never rebuild a course or fire a few dozen OSRM requests.
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   main().catch((e) => {
     console.error(e);

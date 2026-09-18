@@ -696,7 +696,7 @@ export function RacePlanner() {
                   <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
                     {stationFlags(s, columns).map((f) => <FlagChip key={f.label} label={f.label} color={f.color} />)}
                   </span>
-                  {columns.crew && crewBase?.drives[s.name] && (
+                  {columns.crew && crewBase?.base && crewBase.drives[s.name] && (
                     s.lat != null && s.lon != null ? (
                       <a
                         className="numerals"
@@ -813,7 +813,9 @@ export function RacePlanner() {
                   </span>
                 </>
               )}
-              {columns.crew && crewBase && (
+              {/* a crew-base.json with no `base` is normal — the folder has
+                  emergency numbers but no race-week lodging (tt-yib.9) */}
+              {columns.crew && crewBase?.base && (
                 <>
                   <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)" }}>base</span>
                   <span className="eyebrow" style={{ fontSize: 8.5, lineHeight: 1.9, color: "var(--creek)" }}>
