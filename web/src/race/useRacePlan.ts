@@ -213,7 +213,10 @@ export function useRacePlan(): RacePlan {
  * @param raceConfig the folder's race.json behind it
  */
 export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): RacePlan {
-  const { slug: activeSlug, resolved: raceResolved } = useActiveRace();
+  // The slug ON SCREEN, not the training target: a goal time set while
+  // browsing an archived race belongs to THAT race's knobs, and must not
+  // leak into the next race the athlete actually trains for.
+  const { viewing: activeSlug, resolved: raceResolved } = useActiveRace();
   const { activities } = useStrava();
   const { course, missing, error: courseError } = useCourse();
   const { paceGrade, error: paceGradeError } = usePaceGrade();

@@ -206,6 +206,10 @@ export const daysUntil = (d: Date) => {
   return Math.max(0, Math.ceil((d.getTime() - now) / 86400000));
 };
 
+/** daysUntil clamps at 0, so it cannot tell "today" from "last September".
+    The read-only race ribbon needs that difference to pick its tense. */
+export const isPast = (d: Date) => d.getTime() < Date.now();
+
 export function isStale(iso: string, hours = 24) {
   return Date.now() - new Date(iso).getTime() > hours * 3600_000;
 }

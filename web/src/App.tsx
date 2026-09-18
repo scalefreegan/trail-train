@@ -11,7 +11,7 @@ import {
   useBlockConfig,
   computeCoachFacts, type CoachFacts, type Flag,
   type Activity, type AgentReadout, type PlanBlock, type GCalEvent,
-  daysUntil, relativeAgo, fmtDuration, isStale,
+  daysUntil, isPast, relativeAgo, fmtDuration, isStale,
   useMeasuredWidth,
 } from "./data";
 import { RefreshProvider, UnitsProvider, StravaProvider, OuraProvider, StateProvider } from "./providers";
@@ -407,8 +407,15 @@ const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, ...rest }
       opacity: disabled ? 0.5 : 1,
       background: "transparent",
     }}
-    onFocus={(e) => { e.currentTarget.style.background = "var(--edge)"; }}
-    onBlur={(e) => { e.currentTarget.style.background = "transparent"; }}
+    onFocus={(e) => {
+      e.currentTarget.style.background = "var(--edge)";
+      e.currentTarget.style.outline = "1px solid var(--lamp)";
+      e.currentTarget.style.outlineOffset = "-1px";
+    }}
+    onBlur={(e) => {
+      e.currentTarget.style.background = "transparent";
+      e.currentTarget.style.outline = "none";
+    }}
   >
     <span aria-hidden style={{ width: 8, color: "var(--lamp)", fontSize: 10 }}>{current ? "•" : ""}</span>
     <span style={{ fontSize: 12.5, color: "var(--mist)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -756,11 +763,15 @@ function ElevationRibbon({ race }: { race: RaceView }) {
   );
 }
 
-/* Rendered only with a race active — AppBody does the gating, so the ribbon
-   takes the race as a prop rather than re-deriving "is there one". */
-function RaceRibbon({ race }: { race: RaceView }) {
+/* Rendered only with a race on screen — AppBody does the gating, so the
+   ribbon takes the race as a prop rather than re-deriving "is there one".
+   `readOnly` is a race being BROWSED (view mode): it has no countdown, and
+   "race in 000 days" on a race run last September would be a lie told in
+   64px type. */
+function RaceRibbon({ race, readOnly }: { race: RaceView; readOnly?: boolean }) {
   const u = useUnits();
   const dleft = daysUntil(race.date);
+  const past = isPast(race.date);
   const nameWords = race.name.split(" ");
   // both read in the RACE's zone: "sep 12 · 06:00" is a fact about Arizona,
   // and on a laptop an hour ahead the browser's own zone would print 07:00
@@ -791,11 +802,23 @@ function RaceRibbon({ race }: { race: RaceView }) {
           </div>
         </div>
         <div style={{ textAlign: "right" }}>
-          <div className="eyebrow">race in</div>
-          <div className="numerals" style={{ fontSize: 64, fontWeight: 600, lineHeight: 0.95, letterSpacing: "-0.05em", color: "var(--lamp)" }}>
-            {String(dleft).padStart(3, "0")}
-          </div>
-          <div className="eyebrow">days · {Math.floor(dleft / 7)} long runs left</div>
+          {readOnly ? (
+            <>
+              <div className="eyebrow">{past ? "raced" : "scheduled"}</div>
+              <div className="numerals" style={{ fontSize: 34, fontWeight: 600, lineHeight: 1.05, letterSpacing: "-0.03em", color: "var(--lamp)" }}>
+                {race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, year: "numeric", month: "short", day: "numeric" }).toLowerCase()}
+              </div>
+              <div className="eyebrow">read-only · not the training target</div>
+            </>
+          ) : (
+            <>
+              <div className="eyebrow">race in</div>
+              <div className="numerals" style={{ fontSize: 64, fontWeight: 600, lineHeight: 0.95, letterSpacing: "-0.05em", color: "var(--lamp)" }}>
+                {String(dleft).padStart(3, "0")}
+              </div>
+              <div className="eyebrow">days · {Math.floor(dleft / 7)} long runs left</div>
+            </>
+          )}
         </div>
       </div>
       <div style={{ position: "relative", height: 96, marginTop: 6 }}>
@@ -2579,7 +2602,7 @@ function SetupDrawer() {
 
 function AppBody() {
   const { key } = useRefresh();
-  const { race } = useBlockConfig();
+  const { race, viewing } = useBlockConfig();
   const [view, setViewState] = useState<AppView>(() => {
     // validate rather than cast — a stale or hand-edited key would otherwise
     // render an empty main column with no way back except clearing storage
@@ -2619,7 +2642,7 @@ function AppBody() {
               <>
                 {/* no race, no ribbon: there is no course, countdown or
                     elevation profile to put in it (PRD §6) */}
-                {race && <RaceRibbon race={race} />}
+                {race && <RaceRibbon race={race} readOnly={!!viewing} />}
                 <div key={`vitals-${key}`}><VitalsBand /></div>
                 <div key={`traj-${key}`}><Trajectory /></div>
                 <div key={`road-${key}`}><RoadAhead /></div>
