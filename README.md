@@ -106,10 +106,12 @@ npm run course:build                                # the active race
 npm run course:build -- --race <slug>               # a specific folder
 ```
 
-It writes `races/<slug>/build/course.json` (and `build/crew-base.json` when a
-crew base is configured) — generated output, gitignored. The dev server serves
-them at `/course.json` and `/crew-base.json`. With no active race and no
-`--race`, the command lists the slugs it could have built rather than guessing.
+It writes `races/<slug>/build/course.json` (and `build/crew-base.json` whenever
+the folder has a `crew.private.json` — the race-week lodging in it is optional,
+the emergency numbers stand on their own) — generated output, gitignored. The
+dev server serves them at `/course.json` and `/crew-base.json`. With no active
+race and no `--race`, the command lists the slugs it could have built rather
+than guessing.
 
 Aid stations are resolved to GPX waypoints by the authored `gpx_wpt` first,
 then by name, then by charted mile. A station the matcher can't place
@@ -120,12 +122,21 @@ race site never fails the build.
 
 The agent uses your name, location, local trail names and the title words you
 give your long runs (`long_run_name_patterns`) in its prompts and in Strava
-classification. Copy the example and personalize — this file is gitignored:
+classification. The race planner uses the `physiology` block: `body_kg` drives
+every mg/kg caffeine figure and `long_run_ref_mi` is the distance the pacing
+fit is read at (your own long-run regime, not the race distance). All of it is
+yours rather than any race's, so a race folder can be shared without it. Copy
+the example and personalize — this file is gitignored:
 
 ```bash
 cp config/profile.example.json config/profile.json
 $EDITOR config/profile.json
 ```
+
+The physiology numbers are also editable in the dashboard's ⚙ settings dialog.
+Leave them out and the plan still builds, against impersonal defaults (75 kg,
+20 mi) it tells you it is using. Race-week lodging and emergency numbers are
+NOT here — they live in `races/<slug>/crew.private.json`.
 
 The dashboard initially shows empty states. Connect each data source:
 

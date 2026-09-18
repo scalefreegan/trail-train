@@ -20,8 +20,8 @@ web/public/state.json
 web/public/state.v2.backup.json
 web/public/google-cal.json
 web/public/climbs.json
-# crew-base.json holds the race-week lodging address + drive times (from
-# profile.json race_base) — personal, never commit.
+# crew-base.json holds the race-week lodging address + drive times and the
+# emergency numbers (from races/<slug>/crew.private.json) — never commit.
 web/public/crew-base.json
 
 # Race folders — the configs themselves are committed; these are not.
