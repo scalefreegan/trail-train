@@ -1,0 +1,69 @@
+{
+  "name": "Cinder Cone 50K",
+  "short": "CC50K",
+  "edition_year": 2027,
+  "date": null,
+  "start_time": "06:30",
+  "timezone": "America/Denver",
+  "location": "Cinder Flats Trailhead · Flagstaff, AZ",
+  "format": "loop",
+  "distance_mi": 31.4,
+  "gain_ft": 5200,
+  "elevation": { "min_ft": 6900, "max_ft": 9100, "avg_ft": 7600, "altitude_significant": true },
+  "cutoff_h": 11,
+  "features": {
+    "crew": true,
+    "drop_bags": false,
+    "pacers": false,
+    "night": false,
+    "heat": true,
+    "altitude": true,
+    "water_crossings": false
+  },
+  "aid_stations": [
+    { "name": "Start · Cinder Flats", "total_mi": 0, "seg_mi": 0, "cutoff_h": null, "cutoff_clock": null,
+      "crew": true, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": false,
+      "menu": "full", "notes": "Bag drop closes 06:00." },
+    { "name": "Lava Tube", "total_mi": 8.6, "seg_mi": 8.6, "cutoff_h": 3, "cutoff_clock": "09:30",
+      "crew": false, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": true,
+      "menu": "backcountry", "notes": "Water only — 4wd access." },
+    { "name": "Saddle", "total_mi": 19.2, "seg_mi": 10.6, "cutoff_h": 7, "cutoff_clock": "13:30",
+      "crew": true, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": false,
+      "menu": "full", "notes": "Only crew point on the loop." },
+    { "name": "Finish · Cinder Flats", "total_mi": 31.4, "seg_mi": 12.2, "cutoff_h": 11, "cutoff_clock": "17:30",
+      "crew": true, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": false,
+      "menu": "full", "notes": "" }
+  ],
+  "race_climbs": [
+    { "id": "cone", "label": "The Cone", "approx_mi": [12.4, 17.8] }
+  ],
+  "crew_info": {
+    "rules": ["Crew at Saddle only.", "One vehicle per runner."],
+    "cell_strategy": "No service past mile 8; text from the Saddle turnoff.",
+    "station_notes": { "Saddle": "Forest road 552, 25 min from the start." },
+    "start_notes": "Parking fills by 05:45.",
+    "driving": { "Saddle": "25 min" }
+  },
+  "coach_notes": {
+    "terrain": "Loose cinder and lava rock; the descents eat quads.",
+    "climate": "Dry high desert, exposed above 8,000 ft by mid-morning.",
+    "altitude": "Start at 6,900 ft, high point 9,100 ft — arrive two days early.",
+    "key_demands": "Heat management and quad durability on cinder descents.",
+    "race_week": "Travel Thursday, shake out Friday at altitude."
+  },
+  "links": {
+    "site": "https://example.org/cinder-cone-50k",
+    "manual": "https://example.org/cinder-cone-50k/manual-2026.pdf",
+    "gpx": "",
+    "tracking": "",
+    "results": "https://example.org/cinder-cone-50k/results",
+    "map": ""
+  },
+  "visual": { "theme_preset": "desert" },
+  "field_sources": {
+    "aid_stations": "manual-2026.pdf p4 (image chart)",
+    "cutoff_h": "example.org/cinder-cone-50k/course"
+  },
+  "unresolved": ["date", "links.gpx"],
+  "review_notes": "The aid chart is an image on page 4 of the 2026 manual and was transcribed from the page render. The 2027 date is announced only as \"late September\" on the site, so date is null."
+}
