@@ -10,8 +10,12 @@ import type { RaceConfig } from "./types";
    other until remount. Component-only file so react-refresh stays happy. */
 export function RacePlanProvider({ children }: { children: React.ReactNode }) {
   const { race, loading } = useBlockConfig();
-  const { activeRace } = useActiveRace();
-  const raceConfig = activeRace?.active ? activeRace.race ?? null : null;
+  const { activeRace, viewing } = useActiveRace();
+  // The folder ON SCREEN, which in view mode is an archived or draft race
+  // being browsed: its course, cutoffs and fuel plan are exactly what the
+  // athlete opened it to read. Whether it is the TRAINING target is a
+  // different question, answered by the banner above this view.
+  const raceConfig = activeRace?.active || viewing ? activeRace?.race ?? null : null;
   // The race gate lives HERE rather than in every consumer: below this line
   // the race is resolved, so the planner, the cards and the fuel plan can
   // read race.short and race.clock() without a null check apiece. The view

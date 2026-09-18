@@ -184,3 +184,72 @@ test("a draft race with no block.json: no block, and the client gets no window",
   assert.equal(payload.active, slug);
   assert.equal(payload.block, null, "no block.json — the client must not invent one");
 });
+
+/* --------------------------- view mode (PRD §7) -------------------------- */
+
+test("view mode: the browsed folder on screen, the rolling window underneath", async (t) => {
+  const root = await tempRoot(t);
+  const slug = "mogollon-monster-100-2026";
+  const dir = path.join(root, "races", slug);
+  await fs.mkdir(dir, { recursive: true });
+  const block = { start_date: "2026-05-11", total_weeks: 18, targets: [{ wk: 1, target_dist: 40, target_elev: 6000 }] };
+  const racePlan = { plan_blocks: [{ wk: 1, label: "Base", dist_mi: 40, elev_ft: 6000, focus: "aerobic" }] };
+  await writeJson(path.join(dir, "race.json"), validRace({ slug, status: "archived" }));
+  await writeJson(path.join(dir, "block.json"), block);
+  await writeJson(path.join(dir, "plan.json"), racePlan);
+  await writeJson(path.join(dir, "nutrition.json"), { kcal_per_hour: 240 });
+  await writeJson(path.join(root, "config", "active-race.json"), { slug, mode: "view" });
+  await writeJson(path.join(root, "config", "goals.json"), GOALS);
+  // the athlete's actual plan, which the coach is writing in generic mode
+  const generic = { plan_blocks: [{ wk: 12, label: "Return", dist_mi: 18, elev_ft: 2400, focus: "easy" }] };
+  await writeJson(path.join(root, "config", "generic-plan.json"), generic);
+
+  const payload = await activeRacePayload(root, NOW);
+
+  // on screen: the archived folder, whole
+  assert.equal(payload.mode, "view");
+  assert.equal(payload.viewing, slug);
+  assert.equal(payload.race.status, "archived");
+  assert.equal(payload.block.mode, "race");
+  assert.deepEqual(payload.block.targets, block.targets);
+  assert.deepEqual(payload.plan, racePlan, "the VIEWED race's plan, not the athlete's");
+  assert.deepEqual(payload.nutrition, { kcal_per_hour: 240 });
+
+  // underneath: nothing is being trained for, and the coach's own window and
+  // plan ride along so the rail can say what it is actually coaching toward
+  assert.equal(payload.active, null, "browsing is not training");
+  assert.deepEqual(payload.training.goals, GOALS);
+  assert.deepEqual(payload.training.block, rollingBlock(GOALS, generic.plan_blocks, NOW));
+  assert.deepEqual(payload.training.plan, generic);
+});
+
+test("view mode on a draft: no block.json, still browsable", async (t) => {
+  const root = await tempRoot(t);
+  const slug = "san-juan-softie-100-2027";
+  const dir = path.join(root, "races", slug);
+  await fs.mkdir(dir, { recursive: true });
+  await writeJson(path.join(dir, "race.json"), validRace({ status: "draft" }));
+  await writeJson(path.join(root, "config", "active-race.json"), { slug, mode: "view" });
+
+  const payload = await activeRacePayload(root, NOW);
+  assert.equal(payload.viewing, slug);
+  assert.equal(payload.race.status, "draft");
+  assert.equal(payload.block, null, "no block.json — the client must not invent one");
+  assert.deepEqual(payload.plan, { plan_blocks: [] });
+  assert.equal(payload.training.block.mode, "rolling");
+});
+
+test("train mode names the same folder it views, and carries no training aside", async (t) => {
+  const root = await tempRoot(t);
+  const slug = "san-juan-softie-100-2027";
+  const dir = path.join(root, "races", slug);
+  await fs.mkdir(dir, { recursive: true });
+  await writeJson(path.join(dir, "race.json"), validRace());
+  await writeJson(path.join(root, "config", "active-race.json"), { slug, mode: "train" });
+
+  const payload = await activeRacePayload(root, NOW);
+  assert.equal(payload.mode, "train");
+  assert.equal(payload.active, slug);
+  assert.equal(payload.viewing, slug);
+  assert.equal(payload.training, null);
+});

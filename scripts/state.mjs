@@ -19,7 +19,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { writeJsonAtomic } from "./lib.mjs";
-import { RACE_SCHEMA_VERSION, getActiveRace, raceDir } from "./race-config.mjs";
+import { RACE_SCHEMA_VERSION, getTrainingSlug, raceDir } from "./race-config.mjs";
 
 export const STATE_VERSION = 3;
 
@@ -450,12 +450,15 @@ function genericPlanPath(projectRoot) {
 }
 
 /**
- * The file the agent's plan_blocks belong in right now: the active race's
- * plan.json, or config/generic-plan.json in generic mode.
+ * The file the agent's plan_blocks belong in right now: the race being
+ * TRAINED for (pointer in train mode), or config/generic-plan.json in generic
+ * mode. Deliberately the training slug and not the pointed-at one: browsing
+ * an archived race (mode "view") leaves the coach in generic mode, so the
+ * plan it writes must not land in that finished race's plan.json.
  * @returns {Promise<string>} absolute path (the file may not exist yet)
  */
 export async function planBlocksPath(projectRoot) {
-  const slug = await getActiveRace(projectRoot);
+  const slug = await getTrainingSlug(projectRoot);
   return slug ? path.join(raceDir(projectRoot, slug), "plan.json") : genericPlanPath(projectRoot);
 }
 

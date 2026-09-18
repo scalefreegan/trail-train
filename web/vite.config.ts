@@ -990,6 +990,96 @@ function settingsApi(): Plugin {
   }
 }
 
+// Dev-only middleware: the race switcher's two endpoints (PRD §7).
+//   GET  /api/races          — every folder under races/, as the menu shows
+//                              them: slug, name, short, status, date.
+//   POST /api/race/activate  — { slug: string|null, mode?: "train"|"view" }
+//                              moves config/active-race.json. The rules live
+//                              in scripts/race-config.mjs's validateActivation
+//                              (node --test covers them), so "one race in
+//                              train mode, and only an active folder" is
+//                              enforced HERE and not merely in the menu.
+// Both refuse cross-site callers: the list carries local config, and the POST
+// changes what the coach trains for.
+function raceSwitchApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* A slug and a mode; a body bigger than this is not one. */
+  const BODY_MAX_BYTES = 16 * 1024
+  type RaceConfigMod = {
+    listRaces: (root: string) => Promise<{ slug: string; race: Record<string, unknown> | null; error: string | null }[]>
+    setActivePointer: (root: string, req: unknown) => Promise<{ slug: string | null; mode: string }>
+    readActivePointer: (root: string) => Promise<{ slug: string | null; mode: string }>
+  }
+  return {
+    name: 'trail-train-race-switch-api',
+    apply: 'serve',
+    configureServer(server) {
+      const raceConfig = () =>
+        // vite.config.ts can't statically import from scripts/ (it is ESM JS
+        // outside the TS project), so the loader is imported per request.
+        import(path.join(projectRoot, 'scripts/race-config.mjs')) as Promise<RaceConfigMod>
+      const json = (res: ServerResponse, code: number, body: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(JSON.stringify(body))
+      }
+
+      server.middlewares.use('/api/races', async (req, res) => {
+        if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+        if (crossSiteBlocked(req, res)) return
+        try {
+          const { listRaces, readActivePointer } = await raceConfig()
+          const [races, pointer] = await Promise.all([listRaces(projectRoot), readActivePointer(projectRoot)])
+          json(res, 200, {
+            races: races.map((r) => ({
+              slug: r.slug,
+              // A folder whose race.json is broken still appears, named after
+              // itself and carrying its error: hiding it would look like the
+              // race was deleted.
+              name: (r.race?.name as string) ?? r.slug,
+              short: (r.race?.short as string) ?? r.slug,
+              status: (r.race?.status as string) ?? null,
+              date: (r.race?.date as string) ?? null,
+              error: r.error,
+            })),
+            pointer,
+          })
+        } catch (e) {
+          json(res, 500, { error: (e as Error).message })
+        }
+      })
+
+      server.middlewares.use('/api/race/activate', async (req, res) => {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        if (crossSiteBlocked(req, res)) return
+        try {
+          const chunks: Buffer[] = []
+          let size = 0
+          for await (const c of req) {
+            size += (c as Buffer).length
+            if (size > BODY_MAX_BYTES) { json(res, 413, { error: 'body too large' }); return }
+            chunks.push(c as Buffer)
+          }
+          let body: unknown
+          try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
+          catch { json(res, 400, { error: 'bad json' }); return }
+
+          const { setActivePointer } = await raceConfig()
+          const pointer = await setActivePointer(projectRoot, body)
+          json(res, 200, { pointer })
+        } catch (e) {
+          // validateActivation tags its refusals; anything untagged is ours.
+          const code = (e as { code?: string }).code
+          if (code === 'not_found') { json(res, 404, { error: (e as Error).message }); return }
+          if (code === 'bad_request') { json(res, 400, { error: (e as Error).message }); return }
+          json(res, 500, { error: (e as Error).message })
+        }
+      })
+    },
+  }
+}
+
 // Dev-only middleware: GET /api/race/active answers "which race, and what is
 // in it?" for the client — the pointer (config/active-race.json) plus the
 // folder it names, merged into one payload. `active: null` is generic mode,
@@ -1569,8 +1659,11 @@ function courseFiles(): Plugin {
 export default defineConfig({
   // raceBuildApi and racePlanApi BEFORE raceIntakeApi: connect matches by path
   // prefix in registration order, and /api/race-intake would otherwise swallow
-  // /api/race-intake/build and /api/race-intake/plan.
-  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
+  // /api/race-intake/build and /api/race-intake/plan. raceSwitchApi sits
+  // before raceApi for the same reason (/api/race/activate vs
+  // /api/race/active) — connect's own boundary check makes that safe either
+  // way, but the order says the intent.
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
   // Fixed, memorable, deliberately unusual port. The 5173 default collides
   // with every other Vite project on the machine, and a colliding neighbor
   // silently claims the port so this app hops to 5174+ — which breaks the

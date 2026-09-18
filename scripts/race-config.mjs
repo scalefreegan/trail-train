@@ -3,9 +3,20 @@
 //
 // A race lives in races/<slug>/ (race.json + optional block.json, plan.json,
 // nutrition.json — see docs/PRD-modular-races.md §5). config/active-race.json
-// is a LOCAL pointer at one of them: { "slug": "..." | null }. null means
-// generic mode, and that is the only state this module ever bootstraps to —
-// a fresh checkout must never silently adopt somebody else's race.
+// is a LOCAL pointer at one of them:
+//     { "slug": "..." | null, "mode": "train" | "view" }
+// null means generic mode, and that is the only state this module ever
+// bootstraps to — a fresh checkout must never silently adopt somebody else's
+// race.
+//
+// The mode is what separates "what am I training for" from "what am I
+// looking at" (PRD §4, §7). `train` is the training target and is only legal
+// for a folder whose race.json status is "active"; `view` is read-only
+// browsing and is how an archived or draft folder gets on screen without the
+// coach adopting it. Everything that answers "what is the athlete training
+// for" — facts.mjs, the coach prompt, the plan file — goes through
+// loadActiveRaceFolder/getTrainingSlug, which require train mode; everything
+// that answers "which folder is on screen" goes through resolveViewedRace.
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -16,6 +27,9 @@ export const RACE_SCHEMA_VERSION = 1;
 
 /** At most one folder may be "active" — see validateSingleActive. */
 export const RACE_STATUSES = ["draft", "active", "archived"];
+
+/** config/active-race.json's `mode` — see the header. */
+export const ACTIVE_MODES = ["train", "view"];
 
 /**
  * Who last set a field. "computed" and "matcher" are third parties alongside
@@ -106,26 +120,65 @@ export async function listRaces(root) {
 }
 
 /**
- * Read the active-race pointer, creating it as { "slug": null } when absent.
- * Never bootstraps to a race: with no pointer the app is in generic mode.
- * @returns {Promise<string|null>} the active slug, or null for generic mode
+ * Read the active-race pointer, creating it as { slug: null, mode: "train" }
+ * when absent. Never bootstraps to a race: with no pointer the app is in
+ * generic mode.
+ *
+ * A pointer written before modes existed ({ slug } alone) reads as train
+ * mode — that is what it meant, and it is the only mode the old writer could
+ * produce. A null slug always normalizes to train: "no race" is not something
+ * you can be browsing.
+ * @returns {Promise<{slug: string|null, mode: "train"|"view"}>}
  */
-export async function getActiveRace(root) {
+export async function readActivePointer(root) {
   const p = activeRacePointerPath(root);
   const pointer = await readJson(p, { optional: true });
   if (pointer === null) {
-    await writeJsonAtomic(p, { slug: null });
-    return null;
+    const fresh = { slug: null, mode: "train" };
+    await writeJsonAtomic(p, fresh);
+    return fresh;
   }
   if (typeof pointer !== "object" || Array.isArray(pointer) || !("slug" in pointer)) {
     throw new Error(`${p} must be an object with a "slug" key`);
   }
-  const { slug } = pointer;
-  if (slug === null) return null;
+  const { slug, mode = "train" } = pointer;
+  if (!ACTIVE_MODES.includes(mode)) {
+    throw new Error(`${p}: mode must be one of ${ACTIVE_MODES.join(" | ")} (got ${JSON.stringify(mode)})`);
+  }
+  if (slug === null) return { slug: null, mode: "train" };
   if (typeof slug !== "string" || !slug.trim()) {
     throw new Error(`${p}: slug must be a non-empty string or null`);
   }
-  return slug;
+  return { slug, mode };
+}
+
+/**
+ * The slug the pointer NAMES, whatever the mode — "which folder is the app
+ * pointed at?". Callers that mean "which race is the athlete training for"
+ * want getTrainingSlug or loadActiveRaceFolder instead.
+ * @returns {Promise<string|null>} the pointed-at slug, or null for generic mode
+ */
+export async function getActiveRace(root) {
+  return (await readActivePointer(root)).slug;
+}
+
+/**
+ * The slug whose folder OWNS the athlete's training — the pointer's slug in
+ * train mode, null in view mode. This is the question state.mjs's
+ * planBlocksPath asks: a coach run while the athlete is browsing an archived
+ * race must write its plan_blocks to config/generic-plan.json, not into the
+ * finished race's plan.json.
+ *
+ * Status is deliberately NOT checked here: a pointer on a folder that is not
+ * yet (or no longer) "active" can only be hand-made — setActivePointer
+ * refuses it — and for the plan file the pointer is still the better answer
+ * than silently splitting a race's plan across two files mid-status-change.
+ * loadActiveRaceFolder is where status gates the coach.
+ * @returns {Promise<string|null>}
+ */
+export async function getTrainingSlug(root) {
+  const { slug, mode } = await readActivePointer(root);
+  return mode === "train" ? slug : null;
 }
 
 /**
@@ -159,19 +212,94 @@ export async function loadActiveRace(root) {
 }
 
 /**
- * The ACTIVE race folder, or null when the app is in generic mode.
+ * The TRAINING TARGET's folder, or null when the app is in generic mode.
  *
- * "Active" needs both halves to agree: the pointer names a folder AND that
- * folder's race.json carries status "active". A pointer left on a draft, or
- * on the race the athlete just finished and archived, is generic mode — an
- * archived race must not keep coaching anybody past its finish line.
+ * Three things have to agree: the pointer names a folder, it is in train
+ * mode, and that folder's race.json carries status "active". A pointer left
+ * on a draft, on the race the athlete just finished and archived, or on a
+ * folder merely being browsed is generic mode — an archived race must not
+ * keep coaching anybody past its finish line.
  * @returns {Promise<{slug, dir, race, block, plan, nutrition}|null>}
  */
 export async function loadActiveRaceFolder(root) {
-  const slug = await getActiveRace(root);
-  if (!slug) return null;
+  const { folder, training } = await resolveViewedRace(root);
+  return training ? folder : null;
+}
+
+/**
+ * What the app is LOOKING AT: the pointed-at folder, the mode it is pointed
+ * at in, and whether that combination is the training target.
+ *
+ * This is the read behind GET /api/race/active (scripts/race-payload.mjs) and
+ * the one place the pointer's two halves are put together. Throws if the
+ * pointer names a folder that isn't there — a dangling pointer is a bug to
+ * surface, not a silent fall back to generic mode; the payload catches it and
+ * degrades with a warning.
+ * @returns {Promise<{slug: string|null, mode: "train"|"view", folder: object|null, training: boolean}>}
+ */
+export async function resolveViewedRace(root) {
+  const { slug, mode } = await readActivePointer(root);
+  if (!slug) return { slug: null, mode: "train", folder: null, training: false };
   const folder = await loadRaceFolder(root, slug);
-  return folder.race?.status === "active" ? folder : null;
+  return { slug, mode, folder, training: mode === "train" && folder.race?.status === "active" };
+}
+
+/**
+ * Can the pointer be moved to this {slug, mode}? Pure, so the dev server's
+ * POST /api/race/activate and `node --test` ask it the same question.
+ *
+ * `code` tells the endpoint which HTTP status the refusal deserves:
+ * "not_found" for a slug with no folder, "bad_request" for everything else
+ * (a malformed body, or train mode on a race that is not active).
+ * @param {{slug: string|null, mode?: string}} req
+ * @param {{slug: string, race: object|null}[]} races output of listRaces
+ * @returns {{ok: boolean, errors: string[], code: string|null, pointer: {slug: string|null, mode: string}|null}}
+ */
+export function validateActivation(req, races) {
+  const fail = (code, msg) => ({ ok: false, errors: [msg], code, pointer: null });
+  if (typeof req !== "object" || req === null || Array.isArray(req)) {
+    return fail("bad_request", "body must be an object with a \"slug\" key");
+  }
+  const { slug = undefined, mode = "train" } = req;
+  if (!ACTIVE_MODES.includes(mode)) {
+    return fail("bad_request", `mode must be one of ${ACTIVE_MODES.join(" | ")} (got ${JSON.stringify(mode)})`);
+  }
+  // Generic mode. The mode field is meaningless without a race, so it is
+  // normalized away rather than refused — "no race, view" is a typo, not a
+  // request the athlete could have meant differently.
+  if (slug === null) return { ok: true, errors: [], code: null, pointer: { slug: null, mode: "train" } };
+  if (typeof slug !== "string" || !slug.trim()) {
+    return fail("bad_request", "slug: non-empty string or null required");
+  }
+  const found = races.find((r) => r.slug === slug);
+  if (!found) return fail("not_found", `no race folder races/${slug}/`);
+  if (!found.race) {
+    return fail("bad_request", `races/${slug}/race.json is unreadable${found.error ? ` (${found.error})` : ""}`);
+  }
+  if (mode === "train" && found.race.status !== "active") {
+    // The fix is to activate the FOLDER (its race.json status), which is the
+    // archive/activate bead's job — the pointer must not be able to promote a
+    // draft behind the schema's back.
+    return fail(
+      "bad_request",
+      `${slug} has status "${found.race.status}" — only an "active" race can be trained for; open it in view mode instead`,
+    );
+  }
+  return { ok: true, errors: [], code: null, pointer: { slug, mode } };
+}
+
+/**
+ * Move the pointer. Validates against the folders on disk (see
+ * validateActivation) and writes atomically; the error it throws carries the
+ * validator's `code` so the caller can pick a status.
+ * @param {{slug: string|null, mode?: string}} req
+ * @returns {Promise<{slug: string|null, mode: string}>} the pointer written
+ */
+export async function setActivePointer(root, req) {
+  const { ok, errors, code, pointer } = validateActivation(req, await listRaces(root));
+  if (!ok) throw Object.assign(new Error(errors.join("; ")), { code });
+  await writeJsonAtomic(activeRacePointerPath(root), pointer);
+  return pointer;
 }
 
 /**
