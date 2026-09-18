@@ -210,6 +210,8 @@ function daysBetween(isoA, isoB) {
  * @param {number} [o.radiusM]
  * @param {object} [o.activity] injected log row (tests); otherwise looked up
  * @param {object} [o.streams] injected latlng+time (tests); otherwise fetched
+ * @param {object} [o.course] an already-loaded build/course.json — for a
+ *        backfill run against a checkout that never built one, and for tests
  * @param {string} [o.now] ISO timestamp for provenance, injectable
  * @returns {Promise<{slug: string, result: object, pointer: {slug: string|null, mode: string}}>}
  */
@@ -246,7 +248,7 @@ export async function archiveRace(o) {
   // ── splits ──────────────────────────────────────────────────────────────
   // Station coordinates live in the BUILT course, not race.json: they are the
   // GPX-snapped points, which is what a 150 m radius is meaningful against.
-  const course = await readJsonOptional(path.join(raceDir(root, slug), "build", "course.json"));
+  const course = o.course ?? (await readJsonOptional(path.join(raceDir(root, slug), "build", "course.json")));
   if (!course) {
     throw tagged(
       "bad_request",
