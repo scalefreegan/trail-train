@@ -314,9 +314,19 @@ export type ActiveBlock = (RaceBlock & { mode: "race" }) | RollingBlock;
 
 /** GET /api/race/active — `active: null` is generic mode (no race), and it is
     described just as fully as a race: goals, the rolling block, the generic
-    plan. Assembled by scripts/race-payload.mjs. */
+    plan. Assembled by scripts/race-payload.mjs.
+
+    Two questions, one payload (PRD §4, §7): `active` is what the athlete is
+    TRAINING for and `viewing` is the folder ON SCREEN. They are the same slug
+    in train mode; in view mode `active` is null, `viewing` names an archived
+    or draft race being browsed read-only, and `training` carries the
+    goals-based window the coach is really working from. */
 export type ActiveRaceResponse = {
   active: string | null;
+  /** "train" = `viewing` is the training target; "view" = read-only browsing. */
+  mode?: "train" | "view";
+  /** the folder whose race/block/plan/nutrition this payload carries */
+  viewing?: string | null;
   race?: RaceConfig | null;
   /** null whenever a race IS active — then the race is the goal. */
   goals?: Goals | null;
@@ -325,6 +335,14 @@ export type ActiveRaceResponse = {
   block?: ActiveBlock | null;
   plan?: RacePlan | null;
   nutrition?: NutritionConfig | null;
+  /** View mode only: what the athlete is ACTUALLY training toward while the
+      browsed race is on screen — the goals, the rolling window and the
+      generic plan. null in train mode, where the race above is the answer. */
+  training?: {
+    goals: Goals | null;
+    block: ActiveBlock | null;
+    plan: RacePlan | null;
+  } | null;
   /** local config was broken and the server fell back to generic mode */
   warning?: string;
 };

@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { isValidTimeZone, raceStart } from "./race/clock";
 import { fmtRaceClock } from "./race/pacing";
-import type { ActiveBlock, ActiveRaceResponse, RaceConfig as RaceJson } from "./race/types";
+import type { ActiveBlock, ActiveRaceResponse, RaceConfig as RaceJson, RaceStatus } from "./race/types";
 
 /* ------------------------------------------------------------------ */
 /*  Contexts + hooks + helpers. The provider components live in        */
@@ -22,11 +22,20 @@ export type RefreshCtx = {
   currentStep: RefreshStep | null;
   lastLog: string;
   refresh: () => void;
+  /**
+   * The same pulse `refresh` ends on — bump the key so every snapshot hook
+   * refetches — WITHOUT running the sync scripts. What the race switcher
+   * needs: changing which race is on screen changes what /api/race/active,
+   * /nutrition.json and course.json answer, but nothing about Strava, Oura or
+   * the calendar, and a menu click must not spawn five subprocesses and a
+   * coach turn.
+   */
+  reload: () => void;
 };
 export const RefreshContext = createContext<RefreshCtx>({
   key: 0, syncing: false, lastSync: 0,
   status: {}, currentStep: null, lastLog: "",
-  refresh: () => {},
+  refresh: () => {}, reload: () => {},
 });
 export const useRefresh = () => useContext(RefreshContext);
 
@@ -152,6 +161,15 @@ export type BlockConfig = {
       "rolling" = generic mode's trailing 12-week window. Same discriminator
       the payload and scripts/facts.mjs use. */
   mode: "race" | "rolling";
+  /**
+   * Set only when a race is on screen that is NOT being trained for — the
+   * pointer in view mode on an archived or draft folder (PRD §7). `race`
+   * above is then that folder's, so its course, aid chart and fueling are
+   * browsable, but the block and plan are the athlete's own rolling window:
+   * the app shows the race, it does not train for it. Every "is there a race"
+   * gate stays false, so the countdown and the coach's target don't move.
+   */
+  viewing: { slug: string; status: RaceStatus } | null;
   /** true until the first /api/race/active response. The views render the
       generic layout while it holds rather than flashing race furniture. */
   loading: boolean;
@@ -428,7 +446,12 @@ function requestActiveRace(key: number): Promise<ActiveRaceResult> {
 
 export type ActiveRaceState = {
   activeRace: ActiveRaceResponse | null;
+  /** the TRAINING target's slug — null in generic mode and in view mode */
   slug: string | null;
+  /** the slug ON SCREEN: the same as `slug` in train mode, an archived or
+      draft folder being browsed in view mode, null in generic mode */
+  viewing: string | null;
+  mode: "train" | "view";
   missing: boolean;
   error: string | null;
   /** the request has settled — before that, "no active race" is not yet a fact
@@ -454,6 +477,8 @@ export function useActiveRace(): ActiveRaceState {
   }, [refreshKey]);
   return {
     activeRace: state.data, slug: state.data?.active ?? null,
+    viewing: state.data?.viewing ?? state.data?.active ?? null,
+    mode: state.data?.mode === "view" ? "view" : "train",
     missing: state.missing, error: state.error, resolved: state.resolved,
   };
 }
@@ -477,13 +502,23 @@ export const usePersistentState = () => useContext(PersistentStateContext);
  */
 export function useBlockConfig(): BlockConfig {
   const { activeRace, resolved } = useActiveRace();
-  // `active` is the pointer AND the folder's status agreeing (the server
-  // resolves that); a draft or an archived race is generic mode.
-  const raceJson = activeRace?.active ? activeRace.race ?? null : null;
-  const block: ActiveBlock | null = activeRace?.block ?? null;
-  const planBlocks = activeRace?.plan?.plan_blocks ?? null;
+  // `active` is the pointer AND the mode AND the folder's status agreeing
+  // (the server resolves all three); a draft or an archived race is only ever
+  // on screen in view mode.
+  const view = activeRace?.mode === "view" && activeRace.race ? activeRace : null;
+  const raceJson = view ? view.race ?? null : activeRace?.active ? activeRace.race ?? null : null;
+  // In view mode the WINDOW is the athlete's, not the browsed race's: those
+  // weeks were (or would be) run for a race nobody is training for, and the
+  // trajectory plots this month's mileage against them.
+  const block: ActiveBlock | null = (view ? view.training?.block : activeRace?.block) ?? null;
+  const planBlocks = (view ? view.training?.plan?.plan_blocks : activeRace?.plan?.plan_blocks) ?? null;
+  // primitives, so the memo below is not invalidated by a fresh object on
+  // every render
+  const viewSlug = view?.viewing ?? null;
+  const viewStatus = view?.race?.status ?? null;
   return useMemo(() => ({
     race: raceJson ? raceView(raceJson) : null,
+    viewing: viewSlug && viewStatus ? { slug: viewSlug, status: viewStatus } : null,
     // Before the payload lands — and for a race folder with no block.json
     // yet — the window is the rolling one, so the layout that renders is the
     // generic layout rather than a flash of race furniture.
@@ -495,7 +530,7 @@ export function useBlockConfig(): BlockConfig {
     planBlocks: planBlocks ?? [],
     mode: block?.mode === "race" ? "race" : "rolling",
     loading: !resolved,
-  }), [raceJson, block, planBlocks, resolved]);
+  }), [raceJson, block, planBlocks, viewSlug, viewStatus, resolved]);
 }
 
 /**

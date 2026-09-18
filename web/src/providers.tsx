@@ -101,9 +101,15 @@ export function RefreshProvider({ children }: { children: React.ReactNode }) {
     }
   }, [syncing, system]);
 
+  // The pulse without the sync: every snapshot hook is keyed on `key`, so a
+  // bump is all it takes to make the whole dashboard re-read its files. The
+  // race switcher uses it — a different race means different race/course/
+  // nutrition files, and nothing at all about Strava, Oura or the calendar.
+  const reload = useCallback(() => setKey((k) => k + 1), []);
+
   const value = useMemo<RefreshCtx>(() => ({
-    key, syncing, lastSync, status, currentStep, lastLog, refresh,
-  }), [key, syncing, lastSync, status, currentStep, lastLog, refresh]);
+    key, syncing, lastSync, status, currentStep, lastLog, refresh, reload,
+  }), [key, syncing, lastSync, status, currentStep, lastLog, refresh, reload]);
 
   return <RefreshContext.Provider value={value}>{children}</RefreshContext.Provider>;
 }

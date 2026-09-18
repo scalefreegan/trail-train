@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
   useRefresh, REFRESH_STEPS,
+  useActiveRace,
   useUnits,
   useStrava,
   useOura, type OuraDay,
@@ -127,17 +129,386 @@ function appViews(race: RaceView | null): AppView[] {
 
 const VIEW_LABEL: Record<AppView, string> = { training: "training", race: "race", nutrition: "fuel" };
 
+/* ------------------------------------------------------------------ */
+/*  Race switcher — config/active-race.json as a menu (PRD §7)         */
+/* ------------------------------------------------------------------ */
+
+/** One row of GET /api/races. `status` and `date` are null for a folder
+    whose race.json would not parse — it is still listed, because hiding it
+    would look like the race had been deleted. */
+type RaceListEntry = {
+  slug: string;
+  name: string;
+  short: string;
+  status: "draft" | "active" | "archived" | null;
+  date: string | null;
+  error: string | null;
+};
+
+/** The groups, in menu order. A folder with an unreadable race.json falls
+    through all three and lands in its own group at the bottom. */
+const RACE_GROUPS: { status: RaceListEntry["status"]; label: string }[] = [
+  { status: "active", label: "active" },
+  { status: "draft", label: "drafts" },
+  { status: "archived", label: "archived" },
+];
+
+/** The only mode a folder may be pointed at in — mirrors validateActivation
+    in scripts/race-config.mjs, which is what actually enforces it. Picking it
+    here rather than offering both keeps the menu one click deep: an active
+    race is trained for, anything else is browsed. */
+const modeFor = (status: RaceListEntry["status"]) => (status === "active" ? "train" : "view");
+
+/** The races in menu order — grouped by status, unreadable folders last.
+    The roving-focus index counts these after the "No race" row, so this
+    order and the render order below are the same list. */
+function orderedRaces(list: RaceListEntry[]): RaceListEntry[] {
+  const known = RACE_GROUPS.flatMap((g) => list.filter((r) => r.status === g.status));
+  return [...known, ...list.filter((r) => !RACE_GROUPS.some((g) => g.status === r.status))];
+}
+
+/** The three kinds of row in the menu, in order: "No race (generic)", one
+    per race folder, then "New race…". */
+type SwitcherItemKind = "generic" | "race" | "new";
+
+/**
+ * The short code in the command bar, as a menu over every race folder.
+ *
+ * Selecting one POSTs the pointer and then bumps the refresh pulse — NOT a
+ * full resync: a different race means different race/course/nutrition files
+ * and nothing about Strava, Oura or the calendar, and a menu click must not
+ * spawn five subprocesses and a coach turn.
+ */
+function RaceSwitcher() {
+  const { race, viewing } = useBlockConfig();
+  const { slug: trainingSlug } = useActiveRace();
+  const { reload } = useRefresh();
+
+  const [open, setOpen] = useState(false);
+  const [races, setRaces] = useState<RaceListEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [newRaceOpen, setNewRaceOpen] = useState(false);
+  const [cursor, setCursor] = useState(0);
+
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const currentSlug = viewing?.slug ?? trainingSlug;
+
+  // Flat, in render order — the roving-focus index is an index into THIS.
+  const groups = useMemo(() => {
+    const list = races ?? [];
+    const known = RACE_GROUPS.map((g) => ({ label: g.label, entries: list.filter((r) => r.status === g.status) }));
+    // a folder whose race.json would not parse belongs to no status
+    const broken = list.filter((r) => !RACE_GROUPS.some((g) => g.status === r.status));
+    return [...known, { label: "unreadable", entries: broken }].filter((g) => g.entries.length > 0);
+  }, [races]);
+
+  /** menu length: "No race", every race, "New race…" */
+  const itemCount = (races?.length ?? 0) + 2;
+
+  const close = useCallback((restoreFocus = true) => {
+    setOpen(false);
+    setError(null);
+    if (restoreFocus) triggerRef.current?.focus();
+  }, []);
+
+  // Load on every open: a draft the intake just wrote has to show up without
+  // a page reload. The cursor lands ON the current race as the list arrives,
+  // so the first Enter is a no-op rather than a surprise.
+  useEffect(() => {
+    if (!open) return;
+    let stale = false;
+    fetch(`/api/races?t=${Date.now()}`)
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`races failed to load (HTTP ${r.status})`);
+        return (await r.json()) as { races: RaceListEntry[] };
+      })
+      .then((d) => {
+        if (stale) return;
+        setRaces(d.races);
+        const at = orderedRaces(d.races).findIndex((r) => r.slug === currentSlug);
+        setCursor(at >= 0 ? at + 1 : 0);
+      })
+      .catch((e: Error) => { if (!stale) { setRaces([]); setError(e.message); } });
+    return () => { stale = true; };
+  }, [open, currentSlug]);
+
+  useEffect(() => {
+    if (open) itemRefs.current[cursor]?.focus();
+  }, [open, cursor, itemCount]);
+
+  // Click anywhere else closes — without stealing focus back, since the click
+  // has already moved it somewhere the athlete chose.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!menuRef.current?.contains(t) && !triggerRef.current?.contains(t)) close(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open, close]);
+
+  const choose = useCallback(async (slug: string | null, mode: "train" | "view") => {
+    setBusy(slug ?? "__generic__");
+    setError(null);
+    try {
+      const res = await fetch("/api/race/activate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, mode }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+      }
+      close();
+      // the pulse every panel is keyed on — race, course, fuel all refetch
+      reload();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }, [close, reload]);
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") { e.preventDefault(); close(); return; }
+    if (e.key === "Tab") { close(false); return; }
+    const last = itemCount - 1;
+    if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => (c >= last ? 0 : c + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setCursor((c) => (c <= 0 ? last : c - 1)); }
+    else if (e.key === "Home") { e.preventDefault(); setCursor(0); }
+    else if (e.key === "End") { e.preventDefault(); setCursor(last); }
+  };
+
+  // The label: the race on screen, or "no race" in generic mode.
+  const label = race ? race.short : "no race";
+  const sub = viewing ? viewing.status : race ? "ops" : "generic";
+
+  // Roving focus: exactly one item is tabbable, the arrow keys move it, and
+  // the render order below has to stay in step with `items` above.
+  let index = 0;
+  const itemProps = (kind: SwitcherItemKind, slug?: string) => {
+    const i = index++;
+    const common = {
+      ref: (el: HTMLButtonElement | null) => { itemRefs.current[i] = el; },
+      tabIndex: cursor === i ? 0 : -1,
+      onMouseEnter: () => setCursor(i),
+    };
+    return kind === "new"
+      ? { ...common, role: "menuitem" as const }
+      : { ...common, role: "menuitemradio" as const, "aria-checked": kind === "generic" ? currentSlug == null : slug === currentSlug };
+  };
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        ref={triggerRef}
+        className="chip"
+        onClick={() => (open ? close() : (setCursor(0), setOpen(true)))}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown" && !open) { e.preventDefault(); setCursor(0); setOpen(true); }
+        }}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="switch race — active, drafts, archived, or no race at all"
+        style={{
+          fontSize: 8.5, padding: "3px 7px", display: "inline-flex", alignItems: "center", gap: 5,
+          borderColor: viewing ? "var(--lamp)" : "var(--edge-bright)",
+          color: viewing ? "var(--lamp)" : "var(--mist-mute)",
+        }}
+      >
+        <span style={{ letterSpacing: "0.18em" }}>{label}</span>
+        <span style={{ opacity: 0.6 }}>{sub}</span>
+        <span aria-hidden style={{ fontSize: 7, transform: open ? "rotate(180deg)" : undefined, transition: "transform 160ms" }}>▼</span>
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            ref={menuRef}
+            role="menu"
+            aria-label="race"
+            onKeyDown={onKeyDown}
+            initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.14 }}
+            className="panel"
+            style={{
+              position: "absolute", top: "calc(100% + 8px)", left: 0, zIndex: 60,
+              minWidth: 280, maxWidth: 360, maxHeight: "70vh", overflowY: "auto",
+              background: "var(--night-deep)", padding: "8px 0",
+            }}
+          >
+            <SwitcherRow
+              {...itemProps("generic")}
+              label="No race (generic)"
+              hint="train toward your goals"
+              busy={busy === "__generic__"}
+              onSelect={() => choose(null, "train")}
+            />
+            {races === null && (
+              <div className="eyebrow" style={{ padding: "8px 14px", fontSize: 8.5, color: "var(--mist-mute)" }}>loading races…</div>
+            )}
+            {groups.map((g) => (
+              <div key={g.label}>
+                <div className="eyebrow" style={{ padding: "10px 14px 4px", fontSize: 8, color: "var(--mist-dim)" }}>{g.label}</div>
+                {g.entries.map((entry) => (
+                  <SwitcherRow
+                    key={entry.slug}
+                    {...itemProps("race", entry.slug)}
+                    label={entry.name}
+                    hint={entry.error
+                      ? "race.json unreadable"
+                      : `${entry.short}${entry.date ? ` · ${entry.date}` : ""}${entry.status === "active" ? "" : " · read-only"}`}
+                    disabled={!!entry.error}
+                    busy={busy === entry.slug}
+                    current={entry.slug === currentSlug}
+                    onSelect={() => choose(entry.slug, modeFor(entry.status))}
+                  />
+                ))}
+              </div>
+            ))}
+            <div style={{ borderTop: "1px solid var(--edge)", margin: "8px 0 0", paddingTop: 6 }}>
+              <SwitcherRow
+                {...itemProps("new")}
+                label="New race…"
+                hint="build a race folder from its website"
+                onSelect={() => { setOpen(false); setNewRaceOpen(true); }}
+              />
+            </div>
+            {error && (
+              <div style={{ padding: "8px 14px 2px", fontSize: 11, color: "var(--ember)", lineHeight: 1.4 }}>{error}</div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {newRaceOpen && <NewRaceDialog onClose={() => { setNewRaceOpen(false); triggerRef.current?.focus(); }} />}
+    </div>
+  );
+}
+
+const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, ...rest }: {
+  label: string; hint: string; onSelect: () => void;
+  current?: boolean; disabled?: boolean; busy?: boolean;
+} & React.ButtonHTMLAttributes<HTMLButtonElement> & { ref?: React.Ref<HTMLButtonElement> }) => (
+  <button
+    {...rest}
+    onClick={disabled ? undefined : onSelect}
+    disabled={disabled || busy}
+    style={{
+      width: "100%", textAlign: "left", padding: "7px 14px",
+      display: "flex", alignItems: "baseline", gap: 8,
+      cursor: disabled ? "not-allowed" : "pointer",
+      opacity: disabled ? 0.5 : 1,
+      background: "transparent",
+    }}
+    onFocus={(e) => { e.currentTarget.style.background = "var(--edge)"; }}
+    onBlur={(e) => { e.currentTarget.style.background = "transparent"; }}
+  >
+    <span aria-hidden style={{ width: 8, color: "var(--lamp)", fontSize: 10 }}>{current ? "•" : ""}</span>
+    <span style={{ fontSize: 12.5, color: "var(--mist)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+      {label}
+    </span>
+    <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)", whiteSpace: "nowrap" }}>
+      {busy ? "switching…" : hint}
+    </span>
+  </button>
+);
+
+/** Placeholder until tt-yib.14 wires the intake dialog to
+    POST /api/race-intake — the endpoints behind it already exist. */
+function NewRaceDialog({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const backdropMouseDown = useRef(false);
+  return createPortal(
+    <div
+      onMouseDown={(e) => { backdropMouseDown.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (e.target === e.currentTarget && backdropMouseDown.current) onClose(); }}
+      style={{
+        position: "fixed", inset: 0, zIndex: 100, background: "rgba(4, 8, 12, 0.78)",
+        display: "flex", padding: "clamp(12px, 3vh, 32px)",
+      }}
+    >
+      <div
+        className="panel notch"
+        role="dialog"
+        aria-modal="true"
+        aria-label="new race"
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: "min(560px, 100%)", margin: "auto", display: "flex", flexDirection: "column" }}
+      >
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          borderBottom: "1px solid var(--edge)", padding: "16px 24px",
+        }}>
+          <div className="eyebrow" style={{ color: "var(--mist-dim)" }}>new race</div>
+          <button className="chip" onClick={onClose} autoFocus style={{ fontSize: 9 }}>close esc</button>
+        </div>
+        <div style={{ padding: "20px 24px 22px", fontSize: 12.5, lineHeight: 1.6, color: "var(--mist-mute)" }}>
+          <p style={{ margin: "0 0 12px" }}>
+            The intake dialog isn't built yet — it arrives with tt-yib.14. It will take a race's
+            website, any PDFs or GPX you have, and a year, then write a draft folder under
+            <span className="numerals" style={{ color: "var(--mist)" }}> races/</span> for you to review.
+          </p>
+          <p style={{ margin: 0 }}>
+            Until then a race folder is made by hand (or by asking the coach) — see
+            <span className="numerals" style={{ color: "var(--mist)" }}> docs/PRD-modular-races.md §5</span>.
+            Any draft that exists shows up in this menu, ready to browse.
+          </p>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** "you are looking at a race you are not training for" — on every view, so
+    it can't be missed by switching tabs (PRD §7). */
+function ViewingBanner() {
+  const { race, viewing } = useBlockConfig();
+  if (!viewing || !race) return null;
+  const when = race.date.toLocaleDateString("en-US", {
+    timeZone: race.timeZone, year: "numeric", month: "short", day: "numeric",
+  }).toLowerCase();
+  return (
+    <div style={{
+      display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap",
+      borderLeft: "2px solid var(--lamp)", background: "rgba(198, 143, 62, 0.07)",
+      padding: "9px 14px", margin: "18px 0 0",
+    }}>
+      <span className="eyebrow" style={{ color: "var(--lamp)", whiteSpace: "nowrap" }}>
+        {viewing.status === "archived" ? `archived · ${when} · read-only` : "draft · not activated"}
+      </span>
+      <span style={{ fontSize: 11.5, color: "var(--mist-mute)", lineHeight: 1.45 }}>
+        viewing {race.name}. Training, the trajectory and the coach still work from your current
+        goals — nothing here is being trained for.
+      </span>
+    </div>
+  );
+}
+
 function CommandBar({ view, setView, railOpen, toggleRail }: {
   view: AppView; setView: (v: AppView) => void;
   railOpen: boolean; toggleRail: () => void;
 }) {
   const { syncing, lastSync, refresh, currentStep, lastLog, status } = useRefresh();
   const { fetchedAt, currentWeek } = useStrava();
-  const { race, totalWeeks } = useBlockConfig();
+  const { race, viewing, totalWeeks } = useBlockConfig();
   const views = appViews(race);
   const stamp = fetchedAt ? fetchedAt.getTime() : lastSync;
-  // null in generic mode — every countdown below is gated on it, not faked
-  const dleft = race ? daysUntil(race.date) : null;
+  // null in generic mode — every countdown below is gated on it, not faked —
+  // and null while browsing, where "race in -371 days" is both useless and a
+  // claim that this race is the one being trained for.
+  const dleft = race && !viewing ? daysUntil(race.date) : null;
   const failedSteps = REFRESH_STEPS.filter((s) => status[s] === "error");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [, force] = useState(0);
@@ -162,7 +533,7 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
           <span className="display" style={{ fontSize: 17, letterSpacing: "-0.02em" }}>
             Basecamp
           </span>
-          {race && <span className="eyebrow" style={{ fontSize: 8, marginTop: 3 }}>{race.short} ops</span>}
+          <RaceSwitcher />
         </div>
 
         {/* view switcher */}
@@ -1708,6 +2079,7 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
 
         {/* scrollable body: flags + readout + chat thread */}
         <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <ViewingNotice />
           <FlagsRow flags={facts.flags} />
           <ReadoutBlock agent={agent} missing={agentMissing} open={readoutOpen} setOpen={setReadoutOpen} facts={facts} />
 
@@ -1773,6 +2145,26 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
         </div>
       </div>
     </aside>
+  );
+}
+
+/** The coach reads goals, not the browsed race — facts.mjs takes its race
+    from loadActiveRaceFolder, which requires train mode. Say so where the
+    coach speaks, rather than letting an archived course on screen imply the
+    readout is about it. */
+function ViewingNotice() {
+  const { race, viewing } = useBlockConfig();
+  if (!viewing || !race) return null;
+  return (
+    <div style={{ padding: "10px 18px", borderBottom: "1px solid var(--edge)", background: "rgba(198, 143, 62, 0.06)" }}>
+      <div className="eyebrow" style={{ fontSize: 8.5, color: "var(--lamp)", marginBottom: 4 }}>
+        viewing {race.short} · {viewing.status}
+      </div>
+      <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "var(--mist-mute)" }}>
+        This readout, the flags and the plan are your CURRENT training — the coach works from your
+        goals while {race.short} is open read-only, and was not told to train you for it.
+      </div>
+    </div>
   );
 }
 
@@ -2221,6 +2613,8 @@ function AppBody() {
         <div className={"ops-grid" + (railOpen ? "" : " rail-hidden")}>
           {/* main column */}
           <main style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
+            {/* on every view: the race on screen is not the one being trained for */}
+            <ViewingBanner />
             {activeView === "training" ? (
               <>
                 {/* no race, no ribbon: there is no course, countdown or
