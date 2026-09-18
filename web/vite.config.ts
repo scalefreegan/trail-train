@@ -1012,7 +1012,8 @@ function nutritionFile(): Plugin {
 
 /* ----------------------------- race intake ------------------------------ */
 
-/* Dev-only middleware backing the "New race…" dialog (PRD §8 steps 1-3):
+/* Dev-only middleware backing the "New race…" dialog (PRD §8 steps 1-4):
+     POST /api/race-intake/build — { slug } → stage 2 (raceBuildApi below).
      POST /api/race-intake/upload — raw file bytes plus an `X-Filename` header,
        saved under os.tmpdir(); answers { name, path } to hand to the intake.
        Raw body rather than multipart on purpose: multipart needs a parser
@@ -1026,6 +1027,123 @@ const UPLOAD_MAX_BYTES = 64 * 1024 * 1024
 /* What the intake can actually use. An upload endpoint that accepts anything
    is a file-drop service; this one takes race sources. */
 const UPLOAD_EXTS = new Set(['.pdf', '.gpx', '.kml', '.txt', '.html', '.htm'])
+
+/* POST /api/race-intake/build — { slug } → SSE progress, then a final `done`
+   carrying scripts/race-build.mjs's result.
+
+   Stage 2 of the intake, and the only half a human can ask for again: it
+   validates the folder, matches its aid stations to the course GPX, computes
+   sun and rebuilds build/course.json. Deterministic — no agent turn, so no
+   cost and no `claude` CLI — but slow enough (a GPX fetch, a 6k-point profile)
+   to want the same streamed progress the agent stage has.
+
+   Registered from its OWN plugin, placed BEFORE raceIntakeApi() in the plugins
+   array: connect matches middleware by path prefix in registration order, so
+   /api/race-intake would otherwise swallow this path the way it would an
+   upload. Nothing here touches config/active-race.json — rebuilding a folder
+   says nothing about which race the athlete is training for. */
+function raceBuildApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* A slug and nothing else; a body bigger than this is not one. */
+  const BODY_MAX_BYTES = 64 * 1024
+
+  return {
+    name: 'trail-train-race-build-api',
+    apply: 'serve',
+    configureServer(server) {
+      const json = (res: ServerResponse, code: number, payload: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify(payload))
+      }
+
+      server.middlewares.use('/api/race-intake/build', async (req, res) => {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        if (crossSiteBlocked(req, res)) return
+
+        const chunks: Buffer[] = []
+        let total = 0
+        for await (const c of req) {
+          total += (c as Buffer).byteLength
+          if (total > BODY_MAX_BYTES) { json(res, 413, { error: 'request body too large' }); return }
+          chunks.push(c as Buffer)
+        }
+        let body: { slug?: unknown }
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
+        catch { json(res, 400, { error: 'bad json' }); return }
+
+        const slug = typeof body.slug === 'string' ? body.slug.trim() : ''
+        /* The slug becomes a path segment, so the kebab shape is the guard as
+           much as the schema: no dots, no separators, nothing to traverse. */
+        if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
+          json(res, 400, { error: 'slug: lowercase kebab-case required' })
+          return
+        }
+        if (!fs.existsSync(path.join(projectRoot, 'races', slug, 'race.json'))) {
+          json(res, 404, { error: `no race folder "${slug}" — races/${slug}/race.json is not there` })
+          return
+        }
+
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        })
+        const send = (event: string, data: unknown) => {
+          if (res.writableEnded) return
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        }
+        /* The course build is one long quiet stretch of CPU; keep the stream
+           warm the way the intake and chat endpoints do. */
+        const hb = setInterval(() => send('heartbeat', { t: Date.now() }), 4000)
+        /* A disconnect is not an abort: race.json and build/ are written
+           atomically and a half-finished build helps nobody. Let it finish. */
+        req.on('close', () => { clearInterval(hb) })
+
+        try {
+          const { buildRace } = await import(path.join(projectRoot, 'scripts/race-build.mjs')) as {
+            buildRace: (opts: Record<string, unknown>) => Promise<{
+              slug: string
+              dir: string
+              unresolved: string[]
+              warnings: string[]
+              matched: unknown[]
+              course: unknown
+              sun: unknown
+            }>
+          }
+          const result = await buildRace({
+            root: projectRoot,
+            slug,
+            onProgress: (e: { step: string; status: string; label?: string; message?: string; stream?: string }) => {
+              if (e.status === 'log') send('log', { id: e.step, line: e.message ?? '', stream: e.stream })
+              else send('step', { id: e.step, status: e.status, label: e.label })
+            },
+          })
+          send('done', {
+            ok: true,
+            slug: result.slug,
+            dir: path.relative(projectRoot, result.dir),
+            unresolved: result.unresolved,
+            warnings: result.warnings,
+            matched: result.matched,
+            course: result.course,
+            sun: result.sun,
+          })
+        } catch (e) {
+          const message = (e as Error).message || String(e)
+          console.error(`[race-build] ${message}`)
+          send('error', { message })
+          send('done', { ok: false, error: message })
+        } finally {
+          clearInterval(hb)
+          if (!res.writableEnded) res.end()
+        }
+      })
+    },
+  }
+}
 
 function raceIntakeApi(): Plugin {
   const projectRoot = path.resolve(__dirname, '..')
@@ -1261,7 +1379,10 @@ function courseFiles(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceApi(), nutritionFile(), courseFiles(), raceIntakeApi()],
+  // raceBuildApi BEFORE raceIntakeApi: connect matches by path prefix in
+  // registration order, and /api/race-intake would otherwise swallow
+  // /api/race-intake/build.
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), raceIntakeApi()],
   // Fixed, memorable, deliberately unusual port. The 5173 default collides
   // with every other Vite project on the machine, and a colliding neighbor
   // silently claims the port so this app hops to 5174+ — which breaks the
