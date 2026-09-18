@@ -61,3 +61,9 @@ lerna-debug.log*
 web/.claude/
 web/.shots/
 web/public/pace-grade.json
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
