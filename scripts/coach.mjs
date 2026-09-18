@@ -14,7 +14,6 @@
 // Usage:  node scripts/coach.mjs [--max-turns 8] [--timeout 240]
 //         node scripts/coach.mjs --print-prompt [path]   (dry run, no session)
 
-import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -22,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { loadFactsFromRoot } from "./facts.mjs";
 import { loadState, saveState, mergeAgentUpdate } from "./state.mjs";
 import { arg, writeJsonAtomic } from "./lib.mjs";
+import { runClaudeJson, extractJson, agentModel } from "./agent-run.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const OUT_PATH = path.join(ROOT, "web", "public", "coach.json");
@@ -39,15 +39,12 @@ const TIMEOUT   = Number(arg("timeout",  300));
 // Model for the headless CLI. Pinned rather than inherited: without --model
 // the CLI silently uses whatever ~/.claude/settings.json happens to say, so
 // the readout's provenance depends on an unrelated global setting.
-// KEEP IN SYNC with COACH_MODEL in web/vite.config.ts (the chat endpoint) —
-// vite.config.ts can't import from scripts/ (its tsconfig has no allowJs).
+// The default lives in scripts/agent-run.mjs so every spawn site agrees.
 // arg() returns boolean true for a valueless flag (`--model`, or `--model
 // --timeout 5`), which String()'d to "true" and got spawned as an unknown
 // model. Fall back rather than pass a value the CLI is guaranteed to reject.
-// The env-var half must resolve identically to COACH_MODEL in vite.config.ts —
-// hence the same trim-then-default. Only this file also honours --model; the
-// chat endpoint has no CLI to read one from.
-const MODEL_DEFAULT = (process.env.TRAIL_COACH_MODEL || "").trim() || "claude-opus-5";
+// Only this file also honours --model; the endpoints have no CLI to read one from.
+const MODEL_DEFAULT = agentModel();
 const MODEL_ARG = arg("model", null);
 const MODEL = typeof MODEL_ARG === "string" && MODEL_ARG.trim() ? MODEL_ARG.trim() : MODEL_DEFAULT;
 // Narrative units for the readout — "metric" (default) or "imperial".
@@ -61,30 +58,10 @@ const UNITS = String(arg("units", process.env.TRAIL_UNITS || "metric")) === "imp
 const PRINT_PROMPT = arg("print-prompt", null);
 
 
-/* -------- Claude Code CLI subprocess (pattern from agent-trade) -------- */
-
-// Recognize known headless-CLI failures (API-key and OAuth/subscription auth
-// phrasings, usage limits, API overload) so the resync panel says what to do
-// instead of dumping a raw exit code.
-const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in again|login expired|oauth token.{0,40}(expired|revoked|invalid)|authentication[_ ]?error|credentials?.{0,20}(expired|invalid|missing)|unauthorized|re-?authenticate/i;
-// No bare status codes (429/529) here: on failure paths the classified text
-// includes the full stdout JSON wrapper, whose numeric fields (durations,
-// token counts) can contain them as substrings.
-const LIMIT_ERROR_RE = /usage limit reached|session limit|hit your .{0,20}limit|limit will reset|limit .{0,15}resets|out of (extra )?usage|rate.?limit(ed|_error)?|too many requests/i;
-// Bare "overloaded" is normal coaching vocabulary ("legs are overloaded") —
-// require the error-token or api-context form.
-const OVERLOAD_ERROR_RE = /overloaded_error|api.{0,20}(overloaded|unavailable|internal server error)/i;
-const AUTH_HINT = "Claude Code sign-in has expired — open a terminal, run `claude`, type `/login` and finish the browser sign-in, then resync.";
-function failureHint(text) {
-  if (AUTH_ERROR_RE.test(text)) return AUTH_HINT;
-  if (LIMIT_ERROR_RE.test(text)) {
-    const m = text.match(/limit reached\|(\d{9,13})/i);
-    const reset = m ? new Date(Number(m[1]) * (m[1].length <= 10 ? 1000 : 1)).toLocaleString() : null;
-    return `Claude usage limit reached — not an auth problem. Wait for the limit to reset${reset ? ` (~${reset})` : ""} and resync.`;
-  }
-  if (OVERLOAD_ERROR_RE.test(text)) return "Claude API is overloaded right now — transient; resync again in a minute.";
-  return null;
-}
+/* -------- Claude Code CLI subprocess -------- */
+// The spawn, the watchdog and the failure classification live in
+// scripts/agent-run.mjs — shared with the chat endpoint and the race intake,
+// which hit exactly the same auth / usage-limit / turn-budget failures.
 
 /**
  * The parts of the prompt that depend on WHAT the athlete is training for.
@@ -330,99 +307,6 @@ For new_context_items:
   set a realistic expires date. Existing context.temporary is visible in the facts file —
   never duplicate an item. [] is the norm.`;
 
-function runClaude({ prompt, systemPrompt, maxTurns, timeoutSec, cwd, allowedTools }) {
-  return new Promise((resolve, reject) => {
-    const args = [
-      "-p", prompt,
-      "--output-format", "json",
-      "--model", MODEL,
-      "--max-turns", String(maxTurns),
-    ];
-    for (const t of allowedTools) args.push("--allowedTools", t);
-    if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
-
-    const proc = spawn("claude", args, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: true,
-    });
-
-    let stdout = "", stderr = "";
-    proc.stdout.on("data", (d) => { stdout += d; });
-    proc.stderr.on("data", (d) => { stderr += d; });
-
-    const timer = setTimeout(() => {
-      try { process.kill(-proc.pid, "SIGKILL"); } catch {}
-      reject(new Error(`claude timed out after ${timeoutSec}s`));
-    }, timeoutSec * 1000);
-
-    proc.on("error", (err) => {
-      clearTimeout(timer);
-      if (err.code === "ENOENT") {
-        reject(new Error("`claude` CLI not found in PATH — install Claude Code (https://claude.com/claude-code) or add it to PATH, then re-run"));
-        return;
-      }
-      reject(err);
-    });
-    proc.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        // stderr is often empty — the real message tends to land in the
-        // stdout JSON wrapper's `result`, so surface whichever detail exists
-        let resultText = "";
-        let wrapperSubtype = "";
-        // null = stdout wasn't a wrapper (unparseable, array, or no boolean
-        // is_error field) — only an explicit is_error:false counts as a
-        // confirmed valid readout
-        let wrapperIsError = null;
-        try {
-          const w = JSON.parse(stdout);
-          if (w && typeof w === "object" && !Array.isArray(w)) {
-            if (typeof w.is_error === "boolean") wrapperIsError = w.is_error;
-            if (typeof w.result === "string") resultText = w.result.trim();
-            if (typeof w.subtype === "string") wrapperSubtype = w.subtype;
-          }
-        } catch { /* stdout wasn't the JSON wrapper */ }
-        // A confirmed NON-error wrapper holds coaching prose, not an error
-        // message — keep it away from the classifier ("overloaded",
-        // "hit your … limit" are normal coach vocabulary) and out of the
-        // surfaced detail. A confirmed error wrapper's result outranks
-        // stderr noise; its subtype outranks the raw wrapper JSON.
-        const hint = failureHint(wrapperIsError === false ? stderr : `${stderr}\n${stdout}`);
-        if (hint) return reject(new Error(hint));
-        const detail = wrapperIsError === true
-          ? (resultText || wrapperSubtype || stderr.trim())
-          : wrapperIsError === false
-            ? stderr.trim()
-            : (stderr.trim() || stdout.trim());
-        return reject(new Error(detail
-          ? `claude exited ${code}: ${detail.slice(0, 800)}`
-          : wrapperIsError === false
-            ? `claude exited ${code} after producing a normal readout (likely a teardown error) — re-run.`
-            : `claude exited ${code} with no error output — this is most often an expired sign-in: open a terminal, run \`claude\`, type \`/login\` and finish the browser sign-in, then resync.`));
-      }
-      resolve({ stdout, stderr });
-    });
-  });
-}
-
-function extractJson(text) {
-  const tryParse = (s) => {
-    const v = JSON.parse(s);
-    if (typeof v !== "object" || v === null) throw new Error("not an object");
-    return v;
-  };
-  // direct
-  try { return tryParse(text); } catch {}
-  // fenced ```json ... ``` (anywhere)
-  const fence = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-  if (fence) { try { return tryParse(fence[1]); } catch {} }
-  // first bare {
-  const i = text.indexOf("{");
-  if (i >= 0) { try { return tryParse(text.slice(i)); } catch {} }
-  throw new Error(`agent returned non-JSON: ${text.slice(0, 240)}`);
-}
-
 async function main() {
   console.log("• computing facts from snapshots…");
   let facts;
@@ -472,33 +356,20 @@ next 14 days ${focus.user_horizon}. Anchor every claim in real numbers from the 
   console.log(`• spawning claude -p (model ${MODEL}, max-turns ${MAX_TURNS}, timeout ${TIMEOUT}s)…`);
   const t0 = Date.now();
   if (!facts.pacing) console.warn("• facts.pacing null (< 8 usable runs) — agent will estimate durations without a pacing model");
-  const { stdout } = await runClaude({
+  // runClaudeJson owns the watchdog and the auth / usage-limit / turn-budget
+  // classification; anything it rejects with is already a sentence for a human.
+  const { text: agentText, wrapper } = await runClaudeJson({
     prompt,
     systemPrompt,
     maxTurns: MAX_TURNS,
     timeoutSec: TIMEOUT,
     cwd: ROOT,
+    model: MODEL,
     allowedTools: ["Read"],
   });
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-
-  // `claude -p --output-format json` wraps as { type, result, ... }
-  let wrapper;
-  try { wrapper = JSON.parse(stdout); }
-  catch (e) {
-    throw new Error(`malformed wrapper from claude: ${stdout.slice(0, 240)}`);
-  }
-  const agentText = (wrapper && wrapper.result) ? wrapper.result : stdout;
-  // Some CLI versions exit 0 with is_error + the real message (auth expiry,
-  // usage limit, …) in result. `result` can be empty on some error subtypes;
-  // fall back to the subtype, never the raw wrapper JSON.
-  if (wrapper?.is_error) {
-    const errText = typeof wrapper.result === "string" ? wrapper.result.trim() : "";
-    const hint = failureHint(errText || stdout);
-    throw new Error(hint ?? `coach failed: ${errText.slice(0, 800) || wrapper.subtype || "no detail from claude"}`);
-  }
-  const numTurns = wrapper?.num_turns ?? null;
-  const cost = wrapper?.total_cost_usd ?? null;
+  const numTurns = wrapper.numTurns;
+  const cost = wrapper.costUsd;
 
   const readout = extractJson(agentText);
 

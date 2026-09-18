@@ -139,29 +139,25 @@ function refreshApi(): Plugin {
   }
 }
 
-// Recognize known headless-CLI failures so the UI can say what to actually do
-// ("sign in again", "wait for the limit to reset") instead of surfacing a
-// cryptic exit code. Matches the CLI's known phrasings (API-key auth and
-// OAuth/subscription auth, usage limits, API overload).
-const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in again|login expired|oauth token.{0,40}(expired|revoked|invalid)|authentication[_ ]?error|credentials?.{0,20}(expired|invalid|missing)|unauthorized|re-?authenticate/i
-// No bare status codes (429/529) here: on failure paths the classified text
-// includes the full stdout JSON wrapper, whose numeric fields (durations,
-// token counts) can contain them as substrings.
-const LIMIT_ERROR_RE = /usage limit reached|session limit|hit your .{0,20}limit|limit will reset|limit .{0,15}resets|out of (extra )?usage|rate.?limit(ed|_error)?|too many requests/i
-// Bare "overloaded" is normal coaching vocabulary ("legs are overloaded") —
-// require the error-token or api-context form.
-const OVERLOAD_ERROR_RE = /overloaded_error|api.{0,20}(overloaded|unavailable|internal server error)/i
+/* Known headless-CLI failures ("sign in again", "wait for the limit to
+   reset") are classified in scripts/agent-run.mjs, shared with the resync
+   coach and the race intake so all three say the same thing about the same
+   failure. vite.config.ts cannot statically import from scripts/ (ESM JS
+   outside the TS project), so it is loaded per request like the other script
+   imports here. */
+type FailureHint = (text: string) => string | null
 const AUTH_FIX = 'open a terminal, run `claude`, type `/login` and finish the browser sign-in, then retry here.'
-const failureHint = (text: string): string | null => {
-  if (AUTH_ERROR_RE.test(text)) return `Claude Code sign-in has expired — ${AUTH_FIX}`
-  if (LIMIT_ERROR_RE.test(text)) {
-    // the CLI phrases it "Claude AI usage limit reached|<epoch-seconds>"
-    const m = text.match(/limit reached\|(\d{9,13})/i)
-    const reset = m ? new Date(Number(m[1]) * (m[1].length <= 10 ? 1000 : 1)).toLocaleString() : null
-    return `Claude usage limit reached — not an auth problem. Wait for the limit to reset${reset ? ` (~${reset})` : ''} and retry.`
+async function loadFailureHint(projectRoot: string): Promise<FailureHint> {
+  try {
+    const m = await import(path.join(projectRoot, 'scripts/agent-run.mjs')) as { failureHint: FailureHint }
+    return m.failureHint
+  } catch (e) {
+    // Losing the classifier degrades the MESSAGE, not the answer — but it
+    // would silently turn "your sign-in expired" back into "exited 1", so say
+    // so in the server log rather than swallowing it.
+    console.error(`[chat] scripts/agent-run.mjs failed to load — CLI failures will be reported unclassified: ${(e as Error).message}`)
+    return () => null
   }
-  if (OVERLOAD_ERROR_RE.test(text)) return 'Claude API is overloaded right now — transient; retry in a minute.'
-  return null
 }
 
 /* Turn budget for the headless coach.
@@ -328,6 +324,9 @@ function chatApi(): Plugin {
           return
         }
         const coachPath = path.join(projectRoot, 'web', 'public', 'coach.json')
+        // loaded before the spawn so the close handlers below can classify
+        // synchronously
+        const failureHint = await loadFailureHint(projectRoot)
 
         // SSE start
         res.writeHead(200, {
@@ -1082,8 +1081,205 @@ function nutritionFile(): Plugin {
   }
 }
 
+/* ----------------------------- race intake ------------------------------ */
+
+/* Dev-only middleware backing the "New race…" dialog (PRD §8 steps 1-3):
+     POST /api/race-intake/upload — raw file bytes plus an `X-Filename` header,
+       saved under os.tmpdir(); answers { name, path } to hand to the intake.
+       Raw body rather than multipart on purpose: multipart needs a parser
+       dependency, and this endpoint carries exactly one file and no fields.
+     POST /api/race-intake — { site_url, extra_urls[], year, uploads[], notes,
+       refresh } → SSE progress like /api/refresh, then a final `done` with the
+       slug and the unresolved-field list the review dialog works from.
+   The intake writes ONLY races/<slug>/: never config/active-race.json, never
+   web/public. The draft is inert until a human activates it. */
+const UPLOAD_MAX_BYTES = 64 * 1024 * 1024
+/* What the intake can actually use. An upload endpoint that accepts anything
+   is a file-drop service; this one takes race sources. */
+const UPLOAD_EXTS = new Set(['.pdf', '.gpx', '.kml', '.txt', '.html', '.htm'])
+
+function raceIntakeApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* The intake call takes absolute upload paths from the client, so pin them
+     to the dirs the upload endpoint writes to (plus the repo, for a file the
+     owner already keeps in the project). Without this, a POST could ask the
+     server to copy any file on the disk into a race folder. */
+  const safeRoots = [os.tmpdir(), '/tmp', '/private/tmp', projectRoot].map((p) => {
+    try { return fs.realpathSync(p) } catch { return p }
+  })
+  const insideSafeRoot = (p: string): boolean => {
+    let real: string
+    try { real = fs.realpathSync(p) } catch { return false }
+    return safeRoots.some((root) => real === root || real.startsWith(root + path.sep))
+  }
+
+  const readBody = async (req: IncomingMessage, limit: number): Promise<Buffer | null> => {
+    const chunks: Buffer[] = []
+    let total = 0
+    for await (const c of req) {
+      total += (c as Buffer).byteLength
+      if (total > limit) return null
+      chunks.push(c as Buffer)
+    }
+    return Buffer.concat(chunks)
+  }
+
+  return {
+    name: 'trail-train-race-intake-api',
+    apply: 'serve',
+    configureServer(server) {
+      const json = (res: ServerResponse, code: number, payload: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify(payload))
+      }
+
+      // Registered BEFORE /api/race-intake: connect matches by prefix in
+      // registration order, so the intake handler never sees an upload.
+      server.middlewares.use('/api/race-intake/upload', async (req, res) => {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        if (crossSiteBlocked(req, res)) return
+        const raw = String(req.headers['x-filename'] ?? '')
+        // basename first, then a character whitelist: neither alone stops
+        // "..%2f..%2fetc%2fpasswd" from becoming a path once decoded
+        const name = path.basename(decodeURIComponent(raw)).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120)
+        if (!name || name.startsWith('.')) { json(res, 400, { error: 'X-Filename header with a plain file name required' }); return }
+        const ext = path.extname(name).toLowerCase()
+        if (!UPLOAD_EXTS.has(ext)) {
+          json(res, 415, { error: `${ext || 'that file type'} is not an intake source — expected one of ${[...UPLOAD_EXTS].join(', ')}` })
+          return
+        }
+        const body = await readBody(req, UPLOAD_MAX_BYTES)
+        if (body === null) { json(res, 413, { error: `upload exceeds ${UPLOAD_MAX_BYTES / (1024 * 1024)} MB` }); return }
+        if (body.byteLength === 0) { json(res, 400, { error: 'empty upload' }); return }
+        try {
+          // One dir per upload: two manuals named manual.pdf must not collide,
+          // and the intake copies out of here rather than moving.
+          const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'basecamp-intake-upload-'))
+          const dest = path.join(dir, name)
+          fs.writeFileSync(dest, body)
+          json(res, 200, { name, path: dest, bytes: body.byteLength })
+        } catch (e) {
+          json(res, 500, { error: `could not save the upload: ${(e as Error).message}` })
+        }
+      })
+
+      server.middlewares.use('/api/race-intake', async (req, res) => {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        if (crossSiteBlocked(req, res)) return
+        const raw = await readBody(req, 1024 * 1024)
+        if (raw === null) { json(res, 413, { error: 'request body too large' }); return }
+        let body: {
+          site_url?: string
+          extra_urls?: unknown
+          year?: unknown
+          uploads?: unknown
+          notes?: unknown
+          refresh?: unknown
+          slug?: unknown
+        }
+        try { body = JSON.parse(raw.toString('utf8') || '{}') }
+        catch { json(res, 400, { error: 'bad json' }); return }
+
+        const siteUrl = String(body.site_url ?? '').trim()
+        if (!/^https?:\/\/\S+$/i.test(siteUrl)) { json(res, 400, { error: 'site_url: an http(s) URL is required' }); return }
+        const year = String(body.year ?? '').trim()
+        if (!/^\d{4}$/.test(year)) { json(res, 400, { error: 'year: a 4-digit edition year is required' }); return }
+        const extraUrls = Array.isArray(body.extra_urls)
+          ? body.extra_urls.filter((u): u is string => typeof u === 'string' && /^https?:\/\/\S+$/i.test(u))
+          : []
+        const uploads: { name: string; path: string }[] = []
+        for (const u of Array.isArray(body.uploads) ? body.uploads : []) {
+          const up = (u ?? {}) as { name?: unknown; path?: unknown }
+          if (typeof up.path !== 'string' || !up.path) { json(res, 400, { error: 'uploads[].path: string required' }); return }
+          if (!insideSafeRoot(up.path)) {
+            json(res, 400, { error: `uploads[].path must be a file from /api/race-intake/upload (or inside the project): ${up.path}` })
+            return
+          }
+          uploads.push({ name: typeof up.name === 'string' && up.name ? path.basename(up.name) : path.basename(up.path), path: up.path })
+        }
+        const notes = typeof body.notes === 'string' ? body.notes.slice(0, 8000) : ''
+        const refresh = body.refresh === true
+        // Optional: the folder to write, when the caller already knows it (a
+        // re-intake of an existing race). Checked before the agent runs.
+        const slugHint = typeof body.slug === 'string' && body.slug ? body.slug : null
+        if (slugHint && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slugHint)) {
+          json(res, 400, { error: 'slug: lowercase kebab-case required' })
+          return
+        }
+
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        })
+        const send = (event: string, data: unknown) => {
+          if (res.writableEnded) return
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        }
+        // The intake's own steps are slow and quiet (a fetch pass, a PDF
+        // render, one long agent turn), so keep the stream warm the way the
+        // chat endpoint does or a proxy/browser can time the request out.
+        const hb = setInterval(() => send('heartbeat', { t: Date.now() }), 4000)
+        /* A disconnect is NOT an abort: the agent run is already in flight and
+           a half-written cache helps nobody. The run finishes and the draft
+           lands in races/<slug>/, where the dialog will find it. */
+        req.on('close', () => { clearInterval(hb) })
+
+        try {
+          const { runIntake } = await import(path.join(projectRoot, 'scripts/race-intake.mjs')) as {
+            runIntake: (opts: Record<string, unknown>) => Promise<{
+              slug: string
+              dir: string
+              unresolved: string[]
+              warnings: string[]
+              race: { aid_stations?: unknown[] }
+              agent: Record<string, unknown>
+            }>
+          }
+          const result = await runIntake({
+            root: projectRoot,
+            siteUrl,
+            extraUrls,
+            year,
+            uploads,
+            notes,
+            refresh,
+            slugHint,
+            onProgress: (e: { step: string; status: string; label?: string; message?: string; stream?: string }) => {
+              if (e.status === 'log') send('log', { id: e.step, line: e.message ?? '', stream: e.stream })
+              else send('step', { id: e.step, status: e.status, label: e.label })
+            },
+          })
+          send('done', {
+            ok: true,
+            slug: result.slug,
+            dir: path.relative(projectRoot, result.dir),
+            aid_stations: result.race.aid_stations?.length ?? 0,
+            unresolved: result.unresolved,
+            warnings: result.warnings,
+            agent: result.agent,
+          })
+        } catch (e) {
+          // runIntake rejects with a sentence meant for a human — the shared
+          // classifier in scripts/agent-run.mjs has already turned an expired
+          // sign-in or a spent usage limit into what to do about it.
+          const message = (e as Error).message || String(e)
+          console.error(`[race-intake] ${message}`)
+          send('error', { message })
+          send('done', { ok: false, error: message })
+        } finally {
+          clearInterval(hb)
+          if (!res.writableEnded) res.end()
+        }
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceApi(), nutritionFile()],
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceApi(), nutritionFile(), raceIntakeApi()],
   // Fixed, memorable, deliberately unusual port (38 h cutoff · 100 miles).
   // The 5173 default collides with every other Vite project on the machine,
   // and a colliding neighbor silently claims the port so this app hops to
