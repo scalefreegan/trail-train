@@ -147,23 +147,41 @@ watch-outs, recommendations, and 6 weeks of `plan_blocks` with key sessions).
 
 ## Persistent agentic state
 
-`web/public/state.json` (gitignored) holds the parts of the system that should
-survive across syncs and server restarts:
+State is split in two: what is true about the **athlete** stays in
+`web/public/state.json` (gitignored, v3), and what is true about a **race**
+lives in that race's folder under `races/<slug>/`.
 
-- **race meta** — name, date, distance, elevation, course notes
-- **block targets** — 20 weeks of planned mileage + vert
-- **plan_blocks** — the agent's current 6-week recommendations (focus, key
-  session, quality count). Persists across runs — the agent **modifies**
-  this rather than regenerating from scratch each time.
+`state.json` (v3):
+
 - **agent_notes** — running list of observations the coach has made and
   wants to remember (capped at 30, newest kept).
 - **preferences** — athlete-set rules (training philosophy, weekly rest
-  day, fueling target, heat threshold). Agent reads but doesn't modify.
+  day, fueling target, heat threshold, coach context sections and dated
+  temporary constraints). Agent reads them and may only APPEND context.
 
-Bootstrapped from defaults the first time `sync-strava` or `coach` runs.
-After that the file is the source of truth — edit it directly to change
+`races/<slug>/` (see `docs/PRD-modular-races.md` §5):
+
+- **race.json** — name, date, timezone, distance, elevation, the aid chart,
+  climbs, crew info, coach notes, links. Committed.
+- **block.json** — the block's weekly mileage + vert targets. Committed.
+- **course.gpx**, **nutrition.json** — committed; `plan.json` (the agent's
+  current 6-week recommendations), `result.json` and `crew.private.json`
+  (crew base address, emergency numbers) are gitignored.
+
+`config/active-race.json` points at the folder in play (`{"slug": null}` =
+generic mode, the default in a fresh checkout).
+
+`state.json` is bootstrapped from defaults the first time `sync-strava` or
+`coach` runs. A v2 file (race + block + plan_blocks inside state.json) is
+migrated on first load: it is copied to `web/public/state.v2.backup.json`
+first — the split refuses to run if that backup cannot be written — and the
+race data is written into the folder, never overwriting a file already there.
+After that the files are the source of truth — edit them directly to change
 block targets, preferences, etc. `coach.mjs` merges agent updates atomically
-(write-then-rename) so a malformed agent response can never corrupt state.
+(write-then-rename) so a malformed agent response can never corrupt state;
+plan_blocks land in the active race's `plan.json`, or `config/generic-plan.json`
+when no race is active. A fuller README pass comes with the rest of the
+modular-races work.
 
 ## Weather
 
