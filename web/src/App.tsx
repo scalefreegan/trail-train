@@ -24,7 +24,8 @@ import { ModelCheck } from "./race/ModelCheck";
 import { RacePlanProvider } from "./race/RacePlanProvider";
 import { RaceDayRoute } from "./race/RaceDay";
 import { RACE_DAY_HASH, useHashRoute } from "./race/hashRoute";
-import { useCourse } from "./race/useRaceData";
+import { useCourse, useRaceResult } from "./race/useRaceData";
+import { ArchiveRace } from "./race/ArchiveRace";
 import type { RaceView } from "./data";
 import { raceClockHM } from "./race/pacing";
 
@@ -169,9 +170,10 @@ function orderedRaces(list: RaceListEntry[]): RaceListEntry[] {
   return [...known, ...list.filter((r) => !RACE_GROUPS.some((g) => g.status === r.status))];
 }
 
-/** The three kinds of row in the menu, in order: "No race (generic)", one
-    per race folder, then "New race…". */
-type SwitcherItemKind = "generic" | "race" | "new";
+/** The kinds of row in the menu, in order: "No race (generic)", one per race
+    folder, then — when there is a race to retire — "Archive with result…",
+    then "New race…". */
+type SwitcherItemKind = "generic" | "race" | "archive" | "new";
 
 /**
  * The short code in the command bar, as a menu over every race folder.
@@ -191,6 +193,7 @@ function RaceSwitcher() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [newRaceOpen, setNewRaceOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState<RaceListEntry | null>(null);
   const [cursor, setCursor] = useState(0);
 
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -208,8 +211,28 @@ function RaceSwitcher() {
     return [...known, { label: "unreadable", entries: broken }].filter((g) => g.entries.length > 0);
   }, [races]);
 
-  /** menu length: "No race", every race, "New race…" */
-  const itemCount = (races?.length ?? 0) + 2;
+  // An archived race with no activity linked still has a result to capture —
+  // MM100 was archived by the migration long before its Strava run was.
+  const { result: viewedResult } = useRaceResult(viewing?.status === "archived" ? viewing.slug : null);
+
+  /**
+   * The race an "Archive with result…" would act on: the one being trained
+   * for (archiving it is how a race ends), or — with nothing in training —
+   * the archived race on screen that never got its activity linked.
+   * Null while the menu has not loaded the list yet: the row needs the
+   * folder's name and date, not just its slug.
+   */
+  const archiveTarget = useMemo(() => {
+    const list = races ?? [];
+    if (trainingSlug) return list.find((r) => r.slug === trainingSlug) ?? null;
+    if (viewing?.status === "archived" && viewedResult?.strava_activity_id == null) {
+      return list.find((r) => r.slug === viewing.slug) ?? null;
+    }
+    return null;
+  }, [races, trainingSlug, viewing, viewedResult]);
+
+  /** menu length: "No race", every race, maybe "Archive with result…", "New race…" */
+  const itemCount = (races?.length ?? 0) + 2 + (archiveTarget ? 1 : 0);
 
   const close = useCallback((restoreFocus = true) => {
     setOpen(false);
@@ -301,7 +324,7 @@ function RaceSwitcher() {
       tabIndex: cursor === i ? 0 : -1,
       onMouseEnter: () => setCursor(i),
     };
-    return kind === "new"
+    return kind === "new" || kind === "archive"
       ? { ...common, role: "menuitem" as const }
       : { ...common, role: "menuitemradio" as const, "aria-checked": kind === "generic" ? currentSlug == null : slug === currentSlug };
   };
@@ -375,6 +398,16 @@ function RaceSwitcher() {
               </div>
             ))}
             <div style={{ borderTop: "1px solid var(--edge)", margin: "8px 0 0", paddingTop: 6 }}>
+              {archiveTarget && (
+                <SwitcherRow
+                  {...itemProps("archive")}
+                  label={trainingSlug ? "Archive with result…" : "Link result…"}
+                  hint={trainingSlug
+                    ? `${archiveTarget.short} · link the Strava run`
+                    : `${archiveTarget.short} · no activity linked`}
+                  onSelect={() => { setOpen(false); setArchiveOpen(archiveTarget); }}
+                />
+              )}
               <SwitcherRow
                 {...itemProps("new")}
                 label="New race…"
@@ -390,6 +423,22 @@ function RaceSwitcher() {
       </AnimatePresence>
 
       {newRaceOpen && <NewRaceDialog onClose={() => { setNewRaceOpen(false); triggerRef.current?.focus(); }} />}
+      {archiveOpen && (
+        <ArchiveRace
+          slug={archiveOpen.slug}
+          name={archiveOpen.name}
+          raceDate={archiveOpen.date}
+          linkedActivityId={archiveOpen.slug === viewing?.slug ? viewedResult?.strava_activity_id ?? null : null}
+          onClose={() => { setArchiveOpen(null); triggerRef.current?.focus(); }}
+          onArchived={() => {
+            setArchiveOpen(null);
+            triggerRef.current?.focus();
+            // same pulse as a switch: the pointer, the race and the result all
+            // just changed under every panel
+            reload();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1729,6 +1778,10 @@ const SPORT_ABBREV: Record<string, string> = {
 };
 const sportLabel = (sport?: string) => (sport && SPORT_ABBREV[sport]) ?? (sport ?? "").slice(0, 5).toUpperCase();
 
+/** The one run that IS the race being viewed — identified by result.json's
+    linked activity, not by any classifier. */
+const RACE_META = { label: "RACE", color: "var(--lamp)" };
+
 const durFmt = (s: number) => {
   // round to whole minutes FIRST — rounding the remainder yields "1:60h"
   const mins = Math.round(s / 60);
@@ -1752,6 +1805,10 @@ function LogTable() {
   const [tab, setTab] = useState<"runs" | "other">("runs");
   const { activities, cross, crossError, crossSynced, crossLoading, loading, error } = useStrava();
   const { syncing } = useRefresh();
+  // the archived race on screen labels its own run in the log
+  const { viewing } = useBlockConfig();
+  const { result: raceResult } = useRaceResult(viewing?.status === "archived" ? viewing.slug : null);
+  const raceActivityId = raceResult?.strava_activity_id ?? null;
   const u = useUnits();
   const runsTab = tab === "runs";
   const visible = activities.slice(0, limit);
@@ -1871,9 +1928,14 @@ function LogTable() {
               </span>
             </div>
             <span className="col-type">
-              <span className="eyebrow" style={{ fontSize: 8.5, color: TYPE_META[a.type].color, border: `1px solid ${TYPE_META[a.type].color}`, padding: "2px 5px" }}>
-                {TYPE_META[a.type].label}
-              </span>
+              {(() => {
+                const meta = a.id === raceActivityId ? RACE_META : TYPE_META[a.type];
+                return (
+                  <span className="eyebrow" style={{ fontSize: 8.5, color: meta.color, border: `1px solid ${meta.color}`, padding: "2px 5px" }}>
+                    {meta.label}
+                  </span>
+                );
+              })()}
             </span>
             <span className="numerals col-dist" style={{ fontSize: 14, fontWeight: 600, textAlign: "right" }}>{u.dist(a.distance_mi)}</span>
             <span className="numerals col-elev" style={{ fontSize: 14, fontWeight: 600, textAlign: "right", color: "var(--mist-dim)" }}>{u.elev(a.elevation_ft)}</span>

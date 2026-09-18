@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { useUnits, useMeasuredWidth, relativeAgo } from "../data";
 import { SectionTag, Contours } from "../atoms";
-import { useCrewBase } from "./useRaceData";
+import { useCrewBase, useRaceResult } from "./useRaceData";
 import { useRacePlan } from "./useRacePlan";
 import { gmapsDirectionsUrl } from "./links";
 import { CrewSheet } from "./CrewSheet";
@@ -423,7 +423,21 @@ export function RacePlanner() {
   // useRacePlan.ts. Both views must agree to the minute, so there is exactly
   // one projectRace/planFuel call and one set of persisted sliders.
   const { course, missing, error, fit, proj, nutrition, fuelPlan, settings, set,
-    paceGrade, paceGradeError, nutritionError, physiologyError, features, panels, columns } = useRacePlan();
+    paceGrade, paceGradeError, nutritionError, physiologyError, features, panels, columns,
+    raceConfig } = useRacePlan();
+  // An archived race has a result: what actually happened, station by station
+  // (PRD §10). Only then does the table grow an "actual" column — a race that
+  // has not been run has nothing to put in it.
+  const { result } = useRaceResult(raceConfig?.status === "archived" ? raceConfig.slug : null);
+  const actualByStation = useMemo(() => {
+    const m = new Map<string, { h: number; source: string }>();
+    for (const sp of result?.splits ?? []) {
+      if (sp.elapsed_h != null) m.set(sp.station, { h: sp.elapsed_h, source: sp.source });
+    }
+    return m;
+  }, [result]);
+  const hasActual = actualByStation.size > 0;
+  const gridClass = "race-grid" + (hasActual ? " has-actual" : "");
   const { fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides } = settings;
   const { fatigue: setFatigue, calibration: setCalibration, restraint: setRestraint,
     goalH: setGoalH, aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
@@ -566,7 +580,7 @@ export function RacePlanner() {
       {/* station table */}
       {proj && (
         <div className="panel race-table" style={{ marginTop: 14 }}>
-          <div className="race-grid" style={{ padding: "10px 18px", borderBottom: "1px solid var(--edge-bright)" }}>
+          <div className={gridClass} style={{ padding: "10px 18px", borderBottom: "1px solid var(--edge-bright)" }}>
             <span className="eyebrow" style={{ fontSize: 8.5 }}>station</span>
             <span className="eyebrow" style={{ fontSize: 8.5, textAlign: "right" }}>{u.distUnit}</span>
             <span className="eyebrow col-seg" style={{ fontSize: 8.5, textAlign: "right" }}>{u.elevUnit}↑ seg</span>
@@ -580,6 +594,12 @@ export function RacePlanner() {
               <span style={{ textAlign: "right" }}>eta</span>
               <span style={{ textAlign: "right", color: "var(--ember)" }}>worst</span>
             </span>
+            {hasActual && (
+              <span className="eyebrow col-actual" style={{ fontSize: 8.5, textAlign: "right", color: "var(--mist)" }}
+                title="when you actually reached this station — the linked Strava track's first pass within 150 m, or the official split where one was entered">
+                actual
+              </span>
+            )}
             <span className="eyebrow col-goal" style={{ fontSize: 8.5, textAlign: "right" }}>goal</span>
             <span className="eyebrow" style={{ fontSize: 8.5, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <span style={{ textAlign: "right" }}>cutoff</span>
@@ -597,7 +617,7 @@ export function RacePlanner() {
             return (
               <div
                 key={s.name}
-                className="race-grid"
+                className={gridClass}
                 style={{
                   padding: "10px 18px",
                   borderTop: i > 0 ? "1px solid var(--edge)" : "none",
@@ -657,6 +677,31 @@ export function RacePlanner() {
                   <span style={{ fontWeight: 700, textAlign: "right" }}>{race.clock(sp.eta_h.avg)}</span>
                   <span style={{ color: "var(--ember)", textAlign: "right" }}>{race.clock(sp.eta_h.worst)}</span>
                 </span>
+                {hasActual && (() => {
+                  const actual = actualByStation.get(s.name);
+                  // vs the EXPECTED arrival — the one number in the band that
+                  // claims to be the answer rather than an edge
+                  const delta = actual ? actual.h - sp.eta_h.avg : null;
+                  return (
+                    <span className="numerals col-actual" style={{ fontSize: 11.5, textAlign: "right", whiteSpace: "nowrap" }}
+                      title={actual
+                        ? `reached at ${fmtElapsed(actual.h)} elapsed (${actual.source}) · expected ${fmtElapsed(sp.eta_h.avg)}`
+                        : "the linked track never came within 150 m of this station"}>
+                      {actual ? (
+                        <>
+                          <span style={{ display: "block", fontWeight: 600 }}>{race.clock(actual.h)}</span>
+                          {delta != null && (
+                            <span style={{ display: "block", fontSize: 9.5, color: delta <= 0 ? "var(--pine)" : "var(--ember)" }}>
+                              {delta >= 0 ? "+" : "−"}{fmtElapsed(Math.abs(delta))}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span style={{ color: "var(--mist-mute)" }}>—</span>
+                      )}
+                    </span>
+                  );
+                })()}
                 <span className="numerals col-goal" style={{ fontSize: 11.5, color: "var(--creek)", textAlign: "right" }}>
                   {sp.goal_eta_h != null ? race.clock(sp.goal_eta_h) : "—"}
                 </span>

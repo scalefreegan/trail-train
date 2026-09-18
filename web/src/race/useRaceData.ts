@@ -212,3 +212,50 @@ export function usePhysiology() {
   }, [refreshKey]);
   return { physiology: data, error };
 }
+
+/** races/<slug>/result.json (PRD §10), as GET /api/races/:slug/result serves
+    it. KEEP IN SYNC with scripts/race-result.mjs, which writes it. */
+export type RaceResult = {
+  status: "finished" | "dnf" | "dns";
+  strava_activity_id: string | null;
+  finish_h: number | null;
+  official_time: string | null;
+  placement: string | null;
+  splits: { station: string; elapsed_h: number | null; source: "track" | "official" | "manual" }[];
+  notes: string | null;
+};
+
+/**
+ * The result of an archived race — null while the race has none, which is
+ * every race that has not been run yet and every archived one whose activity
+ * was never linked. Pass `null` for the slug to fetch nothing at all, which
+ * is what a live race wants: the endpoint would 200 with `result: null`, but
+ * asking is noise.
+ *
+ * Same failure semantics as the snapshot hooks above: an absent result is a
+ * `null`, not an error, and a real failure keeps whatever was loaded.
+ */
+export function useRaceResult(slug: string | null) {
+  const { key: refreshKey } = useRefresh();
+  const [data, setData] = useState<RaceResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!slug) return;
+    let stale = false;
+    fetch(`/api/races/${encodeURIComponent(slug)}/result?t=${Date.now()}`)
+      .then(async (r) => {
+        if (stale) return;
+        if (r.status === 404) { setData(null); setError(null); return; }
+        if (!r.ok) { setError(`result.json failed to load (HTTP ${r.status})`); return; }
+        const d = await r.json().catch(() => { throw new Error("parse"); });
+        if (stale) return;
+        setData(((d as { result?: RaceResult | null }).result) ?? null);
+        setError(null);
+      })
+      .catch(() => { if (!stale) setError("result.json corrupt or unreadable"); });
+    return () => { stale = true; };
+  }, [slug, refreshKey]);
+  // With no slug there is nothing to report — including whatever the last
+  // slug left behind, which belonged to a different race.
+  return { result: slug ? data : null, error: slug ? error : null };
+}
