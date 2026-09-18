@@ -332,9 +332,11 @@ export function NutritionPlan() {
       : []),
     [course, features.heat, startClock, nutrition.heat_window, finishH],
   );
+  // both band sets feed the caffeine chart only, and each is behind the flag
+  // that gives it meaning — no bands for a window this race never enters
   const night = useMemo(
-    () => (course ? sunBounds(course, raceStart, finishH) : []),
-    [course, raceStart, finishH],
+    () => (course && features.night ? sunBounds(course, raceStart, finishH) : []),
+    [course, features.night, raceStart, finishH],
   );
 
   if (missing || !course) {
