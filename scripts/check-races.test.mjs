@@ -133,7 +133,8 @@ function softieFixture(overrides = {}) {
     elevation: { min_ft: null, max_ft: 12438, avg_ft: 10282, altitude_significant: true },
     features: { crew: true, drop_bags: true, pacers: true, night: true, heat: false, altitude: true },
     links: { results: "https://www.opensplittime.org/events/2026-san-juan-softie-100/spread" },
-    unresolved: ["date"],
+    unresolved: ["links.tracking"],
+    unresolved_acknowledged: true,
     review_notes: "The aid chart is an image in the PDF and was transcribed cell by cell.",
     aid_stations: [
       station("Start", 0, true),
@@ -190,12 +191,23 @@ test("each expectation fails on its own when the draft drifts", () => {
 
 test("a draft with nothing flagged for review fails the transcription check", () => {
   assert.deepEqual(
-    failing(softieFixture({ unresolved: [], review_notes: "" })),
+    failing(softieFixture({ unresolved: [], unresolved_acknowledged: false, review_notes: "" })),
     ["image-chart transcription flagged for review"]
   );
-  // Either signal on its own is enough — unresolved[] alone, or prose alone.
-  assert.deepEqual(failing(softieFixture({ review_notes: "" })), []);
-  assert.deepEqual(failing(softieFixture({ unresolved: [] })), []);
+  // Any one of the three signals on its own is enough. In particular a draft
+  // whose holes have all been filled and acknowledged (tt-yib.14 prunes the
+  // key, so unresolved[] empties as the review progresses) is still flagged.
+  assert.deepEqual(failing(softieFixture({ review_notes: "", unresolved_acknowledged: false })), []);
+  assert.deepEqual(failing(softieFixture({ unresolved: [], review_notes: "" })), []);
+  assert.deepEqual(failing(softieFixture({ unresolved: [], unresolved_acknowledged: false })), []);
+});
+
+test("a filled-in date is not a regression", () => {
+  // The draft started with date null in unresolved[]; tt-yib.14's review
+  // dialog filled it. Nothing in §12 pins the date, and the check must not
+  // read a resolved hole as one.
+  assert.deepEqual(failing(softieFixture({ date: "2027-08-13", unresolved: ["links.tracking"] })), []);
+  assert.deepEqual(failing(softieFixture({ date: null, unresolved: ["date", "links.tracking"] })), []);
 });
 
 test("dropping a station is caught as both a row count and a station count", () => {
