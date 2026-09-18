@@ -534,10 +534,21 @@ ${CONTRACT}`;
  * @returns {string}
  */
 function buildPrompt({ siteUrl, extraUrls, year, notes, manifest, images, gpxSummary, sourcesDir }) {
-  const cached = manifest
-    .filter((m) => m.file)
-    .map((m) => `  · ${m.role}: ${m.ref}\n      cached at ${path.join(sourcesDir, m.file)}`)
-    .join("\n");
+  // Split the cache by how the agent should actually open it. A cached page
+  // is RAW site source — a Squarespace homepage is ~700 KB of boilerplate and
+  // reading it costs several turns for nothing, whereas WebFetch returns the
+  // same page already reduced to text. Files (PDF, GPX) are the opposite:
+  // they are on disk, and fetching them again would only re-download them.
+  const pages = manifest.filter((m) => m.file && m.kind === "url");
+  const files = manifest.filter((m) => m.file && m.kind !== "url");
+  const cached = [
+    pages.length
+      ? `  WebFetch these (cached raw HTML is at the path in brackets if a fetch fails):\n${pages.map((m) => `    · ${m.role}: ${m.ref}  [${path.join(sourcesDir, m.file)}]`).join("\n")}`
+      : "",
+    files.length
+      ? `  Files already on disk (Read these — do not re-download):\n${files.map((m) => `    · ${m.role}: ${m.ref}\n        ${path.join(sourcesDir, m.file)}`).join("\n")}`
+      : "",
+  ].filter(Boolean).join("\n");
   const failed = manifest.filter((m) => !m.file).map((m) => `  · ${m.ref} — ${m.error}`).join("\n");
   const imgList = images.length
     ? images.map((g) => `  · ${g.label} (${g.images.length} page image${g.images.length === 1 ? "" : "s"}):\n${g.images.map((p) => `      ${p}`).join("\n")}`).join("\n")
@@ -545,7 +556,7 @@ function buildPrompt({ siteUrl, extraUrls, year, notes, manifest, images, gpxSum
   return `Build the race.json draft for the ${year} edition of the race at ${siteUrl}.
 
 ${extraUrls.length ? `Additional URLs the owner supplied:\n${extraUrls.map((u) => `  · ${u}`).join("\n")}\n` : ""}
-SOURCES ALREADY FETCHED AND CACHED (Read these files — they are on disk, no fetch needed):
+SOURCES ALREADY FETCHED AND CACHED:
 ${cached || "  (nothing cached — fetch the site yourself with WebFetch)"}
 ${failed ? `\nSOURCES THAT FAILED TO FETCH (use WebFetch on them yourself if they matter):\n${failed}\n` : ""}
 PDF PAGE IMAGES — Read these to transcribe charts that are images rather than text:
