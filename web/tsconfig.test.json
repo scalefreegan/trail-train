@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "esnext",
+    "types": ["node"],
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* tests/launch.mjs and tests/fixtures/*.mjs are plain ESM — the launcher
+       runs under node, not through vite, so it is not TypeScript. Allowed in
+       so the specs' imports of it resolve; not type-checked itself, since its
+       JSDoc is documentation rather than a type contract. */
+    "allowJs": true,
+    "checkJs": false,
+
+    /* Linting */
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["tests"]
+}
