@@ -1,5 +1,6 @@
 import { useBlockConfig, useActiveRace } from "../data";
 import { RacePlanContext, useRacePlanInstance } from "./useRacePlan";
+import { useRaceStateBeacon } from "./raceState";
 import type { RaceView } from "../data";
 import type { RaceConfig } from "./types";
 
@@ -31,6 +32,10 @@ function RacePlanScope({ race, raceConfig, children }: {
   race: RaceView; raceConfig: RaceConfig; children: React.ReactNode;
 }) {
   const plan = useRacePlanInstance(race, raceConfig);
+  // Publish the plan's summary for the coach rail, which sits outside this
+  // provider (App.tsx) and so cannot read the context itself — see
+  // race/raceState.ts. Mounted HERE, once, rather than in each consumer.
+  useRaceStateBeacon(plan);
   return <RacePlanContext.Provider value={plan}>{children}</RacePlanContext.Provider>;
 }
 

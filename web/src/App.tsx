@@ -23,6 +23,7 @@ import { ClimbComparison } from "./race/ClimbComparison";
 import { NutritionPlan } from "./race/NutritionPlan";
 import { ModelCheck } from "./race/ModelCheck";
 import { RacePlanProvider } from "./race/RacePlanProvider";
+import { buildRaceState } from "./race/raceState";
 import { RaceErrorBoundary } from "./race/RaceErrorBoundary";
 import { RaceDayRoute } from "./race/RaceDay";
 import { RACE_DAY_HASH, useHashRoute } from "./race/hashRoute";
@@ -2581,6 +2582,10 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
   const { data: agent, missing: agentMissing } = useAgentReadout();
   const { system } = useUnits();
   const facts = useFacts();
+  // What the athlete has on screen, for the race_state each chat turn carries
+  // (PRD-v2 §6). Free here: useActiveRace shares one in-flight request per
+  // refresh key, and the rail is already mounted beside the views that use it.
+  const { mode: raceMode, viewing: onScreenSlug, activeRace } = useActiveRace();
   const [readoutOpen, setReadoutOpen] = useState(true);
 
   /* chat state */
@@ -2623,6 +2628,16 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
     const t0 = Date.now();
 
     try {
+      /* The planner's own numbers for the race on screen — projection, knobs,
+         fuel, review status, last stated position. Null in generic mode, and
+         then the key is omitted entirely rather than sent as null: the server
+         renders no block at all for a turn with no race (PRD-v2 §6). Never
+         allowed to fail the turn — buildRaceState swallows its own fetch
+         error and returns what it has. */
+      const raceState = await buildRaceState(
+        { mode: raceMode, slug: onScreenSlug, name: activeRace?.race?.name },
+        ctrl.signal,
+      ).catch(() => null);
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2631,6 +2646,7 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
           messages: newHistory.map((m) => ({ role: m.role, content: m.content })),
           // the coach answers in the dashboard's selected unit system
           units: system,
+          ...(raceState ? { race_state: raceState } : {}),
         }),
       });
       if (!res.body) throw new Error("no body");
@@ -2684,7 +2700,7 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
       setStatusLine("");
       abortRef.current = null;
     }
-  }, [messages, pending, system]);
+  }, [messages, pending, system, raceMode, onScreenSlug, activeRace]);
 
   const cancel = () => {
     abortRef.current?.abort();
