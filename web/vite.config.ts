@@ -1414,7 +1414,7 @@ function raceResultApi(): Plugin {
   /* An activity id, a handful of official splits and a note. */
   const BODY_MAX_BYTES = 64 * 1024
   type RaceResultMod = {
-    archiveRace: (o: Record<string, unknown>) => Promise<{ slug: string; result: unknown; pointer: unknown }>
+    archiveRace: (o: Record<string, unknown>) => Promise<{ slug: string; result: unknown; pointer: unknown; warning?: string }>
     loadResult: (root: string, slug: string) => Promise<unknown>
   }
   return {
@@ -1485,7 +1485,7 @@ function raceResultApi(): Plugin {
           catch { json(res, 400, { error: 'bad json' }); return }
 
           const { archiveRace } = await raceResult()
-          const { result, pointer } = await archiveRace({
+          const { result, pointer, warning } = await archiveRace({
             root: projectRoot,
             slug,
             activityId: body.activity_id,
@@ -1493,7 +1493,7 @@ function raceResultApi(): Plugin {
             notes: body.notes,
             status: body.status,
           })
-          json(res, 200, { slug, result, pointer })
+          json(res, 200, { slug, result, pointer, ...(warning ? { warning } : {}) })
         } catch (e) {
           fail(res, e)
         } finally {

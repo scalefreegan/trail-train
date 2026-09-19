@@ -200,7 +200,13 @@ function daysBetween(isoA, isoB) {
  * @param {object} o
  * @param {string} o.root project root
  * @param {string} o.slug race folder
- * @param {string|number} o.activityId Strava activity to link
+ * @param {string|number|null} [o.activityId] Strava activity to link. May be
+ *        omitted/null for a DNS/DNF with nothing on Strava, or a finish
+ *        recorded only by the race's own timing (a watch that never synced,
+ *        an activity more than a day outside the race window) — in which
+ *        case `status` (dns/dnf) or `official.finish_h`/`official_time` must
+ *        say what happened instead, and splits come back `[]` (there is no
+ *        track to derive them from) unless `official.splits` supplies its own.
  * @param {{finish_h?: number, official_time?: string, placement?: string,
  *          splits?: {station: string, elapsed_h: number|null}[]}} [o.official]
  *        the official results, overriding what the track says
@@ -213,13 +219,26 @@ function daysBetween(isoA, isoB) {
  * @param {object} [o.course] an already-loaded build/course.json — for a
  *        backfill run against a checkout that never built one, and for tests
  * @param {string} [o.now] ISO timestamp for provenance, injectable
- * @returns {Promise<{slug: string, result: object, pointer: {slug: string|null, mode: string}}>}
+ * @returns {Promise<{slug: string, result: object, pointer: {slug: string|null, mode: string}, warning?: string}>}
  */
 export async function archiveRace(o) {
   const { root, slug, activityId, official = null, notes, status, radiusM = DEFAULT_RADIUS_M } = o;
   if (!slug) throw tagged("bad_request", "slug required");
-  if (activityId === undefined || activityId === null || String(activityId).trim() === "") {
-    throw tagged("bad_request", "activity_id required");
+  const hasActivity = activityId !== undefined && activityId !== null && String(activityId).trim() !== "";
+  // No Strava activity at all is fine PROVIDED the athlete is recording the
+  // result some other way: a DNS/DNF needs no finish time, and a genuine
+  // finish with no (or an out-of-window) activity needs the official clock
+  // instead (PR #23 review round 2, draft finding 4 — the dialog already
+  // advertised this route; the server just refused it outright). Anything
+  // short of that is still "which activity is this?" with nothing to answer.
+  const hasOfficialFinish = official != null
+    && (isNum(official.finish_h) || (typeof official.official_time === "string" && official.official_time.trim() !== ""));
+  const hasManualResult = status === "dns" || status === "dnf" || hasOfficialFinish;
+  if (!hasActivity && !hasManualResult) {
+    throw tagged(
+      "bad_request",
+      "activity_id required (or record a manual result instead: status dns/dnf, or an official finish time)",
+    );
   }
   if (status !== undefined && !RESULT_STATUSES.includes(status)) {
     throw tagged("bad_request", `status must be one of ${RESULT_STATUSES.join(" | ")}`);
@@ -244,44 +263,58 @@ export async function archiveRace(o) {
     );
   }
 
-  // ── race day, in the race's own zone ────────────────────────────────────
-  const activity = o.activity ?? (await findLoggedActivity(root, activityId));
-  const localIso = raceLocalParts(activityStart(activity), race.timezone).iso;
-  const off = daysBetween(localIso, race.date);
-  if (Math.abs(off) > DATE_SLACK_DAYS) {
-    throw tagged(
-      "bad_request",
-      `activity ${activityId} is from ${localIso} (${race.timezone}) — ${race.name} was ${race.date}; ` +
-        `only an activity within ±${DATE_SLACK_DAYS} day can be its result`,
-    );
-  }
+  // ── race day, in the race's own zone, and the track-derived splits ─────
+  // Both only apply when there IS an activity: a manual result has no track
+  // to check against race day or to derive a split from.
+  let activity = null;
+  let trackSplits = [];
+  if (hasActivity) {
+    activity = o.activity ?? (await findLoggedActivity(root, activityId));
+    const localIso = raceLocalParts(activityStart(activity), race.timezone).iso;
+    const off = daysBetween(localIso, race.date);
+    if (Math.abs(off) > DATE_SLACK_DAYS) {
+      throw tagged(
+        "bad_request",
+        `activity ${activityId} is from ${localIso} (${race.timezone}) — ${race.name} was ${race.date}; ` +
+          `only an activity within ±${DATE_SLACK_DAYS} day can be its result`,
+      );
+    }
 
-  // ── splits ──────────────────────────────────────────────────────────────
-  // Station coordinates live in the BUILT course, not race.json: they are the
-  // GPX-snapped points, which is what a 150 m radius is meaningful against.
-  const course = o.course ?? (await readJsonOptional(path.join(raceDir(root, slug), "build", "course.json")));
-  if (!course) {
-    throw tagged(
-      "bad_request",
-      `races/${slug}/build/course.json not found — run \`npm run course:build -- --race ${slug}\` ` +
-        "first; the station coordinates the splits are measured against come from it",
-    );
+    // Station coordinates live in the BUILT course, not race.json: they are
+    // the GPX-snapped points, which is what a 150 m radius is meaningful
+    // against.
+    const course = o.course ?? (await readJsonOptional(path.join(raceDir(root, slug), "build", "course.json")));
+    if (!course) {
+      throw tagged(
+        "bad_request",
+        `races/${slug}/build/course.json not found — run \`npm run course:build -- --race ${slug}\` ` +
+          "first; the station coordinates the splits are measured against come from it",
+      );
+    }
+    const streams = o.streams ?? (await fetchActivityStreams(activityId));
+    trackSplits = splitsFromStream(streams, course.aid_stations ?? [], { radiusM });
   }
-  const streams = o.streams ?? (await fetchActivityStreams(activityId));
-  const splits = mergeOfficialSplits(
-    splitsFromStream(streams, course.aid_stations ?? [], { radiusM }),
-    official?.splits,
-  );
+  const splits = mergeOfficialSplits(trackSplits, official?.splits);
+  // A linked activity whose track never comes near any station usually means
+  // the wrong row was picked (two races on the same weekend, hundreds of km
+  // apart) rather than a genuinely untimed course — round 2, draft finding 8:
+  // 13 silent nulls read as "it worked" until someone counts them. Only when
+  // there IS a track to have failed against; a manual-only result has no
+  // splits to begin with and that is not a warning, it is the expected shape.
+  const allNull = trackSplits.length > 0 && trackSplits.every((s) => s.elapsed_h === null);
+  const warning = allNull
+    ? `the linked activity's track never comes within ${radiusM} m of any of the ${trackSplits.length} aid stations — every split is null; check this is the right activity`
+    : undefined;
 
   // ── result.json ─────────────────────────────────────────────────────────
   // Merged onto whatever is already there: a migration wrote MM100's finish
   // and notes long before its activity was linked, and re-archiving to fix a
   // split must not quietly erase the rest.
   const prev = (await loadResult(root, slug)) ?? {};
-  const elapsedH = isNum(activity.elapsed_s) ? +(activity.elapsed_s / 3600).toFixed(2) : null;
+  const elapsedH = activity && isNum(activity.elapsed_s) ? +(activity.elapsed_s / 3600).toFixed(2) : null;
   const result = {
     status: status ?? prev.status ?? "finished",
-    strava_activity_id: String(activityId),
+    strava_activity_id: hasActivity ? String(activityId) : (prev.strava_activity_id ?? null),
     finish_h: official?.finish_h ?? prev.finish_h ?? elapsedH,
     official_time: official?.official_time ?? prev.official_time ?? null,
     placement: official?.placement ?? prev.placement ?? null,
@@ -314,7 +347,7 @@ export async function archiveRace(o) {
     pointer = await setActivePointer(root, { slug: null, mode: "train" });
   }
 
-  return { slug, result, pointer };
+  return { slug, result, pointer, ...(warning ? { warning } : {}) };
 }
 
 async function main() {

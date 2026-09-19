@@ -101,6 +101,11 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
   const [splitsText, setSplitsText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set only when the server answers 200 WITH a warning attached — a linked
+  // activity whose track never comes near any station (round 2, draft
+  // finding 8: 13 silent nulls). The archive already happened; this is a
+  // second beat before the dialog hands off to onArchived(), not a refusal.
+  const [resultWarning, setResultWarning] = useState<string | null>(null);
 
   // The server enforces ±1 day (RACE-local time) and refuses anything wider
   // — the picker's own ±PICKER_SLACK_DAYS window (or the 20-row fallback) is
@@ -121,7 +126,12 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
     return null;
   }, [candidates, linkedActivityId, raceDate]);
   const activityId = picked ?? defaultId;
-  const { titleId, dialogProps } = useDialog({ onClose, locked: busy });
+  // Once the archive has actually succeeded (resultWarning set), every way of
+  // leaving the dialog — Escape, the header button, the backdrop — hands off
+  // to onArchived() instead of a bare onClose(): the pointer and race.json
+  // already changed, and the caller's reload() is what picks that up.
+  const finish = resultWarning ? onArchived : onClose;
+  const { titleId, dialogProps } = useDialog({ onClose: finish, locked: busy });
   // Can't tell locally (no parseable race date) → don't block; the server
   // guard is still the one that actually enforces this.
   const selectedActivity = candidates.find((a) => a.id === activityId) ?? null;
@@ -131,8 +141,19 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
   const finishH = parseElapsedH(finishText);
   const finishBad = finishText.trim() !== "" && finishH === null;
 
+  // Same shape the server checks (scripts/race-result.mjs's hasManualResult):
+  // a DNS/DNF needs no finish time, a genuine finish with nothing on Strava
+  // needs the official clock instead. Mirrored here so ARCHIVE can enable
+  // without a picked activity at all (round 2, draft finding 4 — the dialog
+  // already told the athlete this route existed; the button just never
+  // agreed).
+  const hasManualResult = status === "dns" || status === "dnf" || (officialOpen && (finishH !== null || finishText.trim() !== ""));
+  const canSubmit = !busy && !finishBad && (
+    (activityId != null && selectedQualifies) || (activityId == null && hasManualResult)
+  );
+
   const submit = async () => {
-    if (!activityId || busy) return;
+    if (!canSubmit) return;
     setBusy(true);
     setError(null);
     const official = officialOpen && (finishH !== null || placement.trim() || parsedSplits.splits.length > 0)
@@ -154,11 +175,14 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
           official,
         }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
-      }
-      onArchived();
+      const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+      // The archive already happened — a warning here is a heads-up about the
+      // SPLITS (the track never reached any station), not a refusal, so it
+      // gets its own beat instead of being lost the instant the dialog closes.
+      const warning = (body as { warning?: string }).warning;
+      if (warning) setResultWarning(warning);
+      else onArchived();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -170,7 +194,7 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
   return createPortal(
     <div
       onMouseDown={(e) => { backdropMouseDown.current = e.target === e.currentTarget; }}
-      onClick={(e) => { if (e.target === e.currentTarget && backdropMouseDown.current && !busy) onClose(); }}
+      onClick={(e) => { if (e.target === e.currentTarget && backdropMouseDown.current && !busy) finish(); }}
       style={{
         position: "fixed", inset: 0, zIndex: 100, background: "rgba(4, 8, 12, 0.78)",
         display: "flex", padding: "clamp(12px, 3vh, 32px)",
@@ -187,11 +211,38 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
           borderBottom: "1px solid var(--edge)", padding: "16px 24px",
         }}>
           <div id={titleId} className="eyebrow" style={{ color: "var(--mist-dim)" }}>
-            {linkedActivityId ? "link result" : "archive with result"}
+            {resultWarning ? "archived — one thing to check" : linkedActivityId ? "link result" : "archive with result"}
           </div>
-          <button className="chip" onClick={onClose} disabled={busy} style={{ fontSize: 9 }}>close esc</button>
+          <button className="chip" onClick={finish} disabled={busy} style={{ fontSize: 9 }}>close esc</button>
         </div>
 
+        {resultWarning ? (
+          <>
+            <div style={{ padding: "16px 24px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
+              <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.6, color: "var(--mist)" }}>
+                <span style={{ color: "var(--pine)" }}>✓</span> {name} is archived and its result is saved.
+              </p>
+              <div
+                className="numerals"
+                style={{
+                  fontSize: 12, lineHeight: 1.6, color: "var(--lamp)",
+                  border: "1px solid var(--lamp-deep, var(--edge-bright))", padding: "10px 12px",
+                }}
+              >
+                {resultWarning}
+              </div>
+            </div>
+            <div style={{
+              borderTop: "1px solid var(--edge)", padding: "12px 24px",
+              display: "flex", justifyContent: "flex-end",
+            }}>
+              <button className="chip" onClick={finish} style={{ fontSize: 9, background: "var(--lamp)", color: "var(--night)", borderColor: "var(--lamp)" }}>
+                ok
+              </button>
+            </div>
+          </>
+        ) : (
+        <>
         <div style={{ padding: "16px 24px 20px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
           <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.6, color: "var(--mist-mute)" }}>
             Pick the Strava activity that is <span style={{ color: "var(--mist)" }}>{name}</span>
@@ -211,21 +262,32 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
               <>
                 {noneWithinDay && (
                   <div style={{ fontSize: 12, color: "var(--lamp)", lineHeight: 1.5, marginBottom: 6 }}>
-                    No activity within ±1 day of race day — the server will refuse any of these as the result.
-                    Pick the closest below to enter it manually, or add the official time and splits under
-                    "official results".
+                    No activity within ±1 day of race day — none below can be the result (the server
+                    would refuse it). Record it manually instead: set DNS/DNF above, or open "official
+                    results" below for a finish time.
                   </div>
                 )}
                 <div style={{ border: "1px solid var(--edge-bright)", maxHeight: 190, overflowY: "auto" }}>
-                  {candidates.map((a) => (
-                    <ActivityRow
-                      key={a.id}
-                      activity={a}
-                      offset={raceDate ? dayOffset(a.date, raceDate) : null}
-                      selected={a.id === activityId}
-                      onSelect={() => setPicked(a.id)}
-                    />
-                  ))}
+                  {candidates.map((a) => {
+                    // A row more than ±1 day out can never be the result (the
+                    // server enforces the same window) — disabled rather than
+                    // omitted, so the athlete can still see what Strava has
+                    // nearby, but round 2 draft finding 7's dead end (picking
+                    // it left ARCHIVE disabled with no way to know why) is
+                    // gone: the row itself says so, and it is not offered as
+                    // a live choice.
+                    const qualifies = raceDate == null || withinDay(a);
+                    return (
+                      <ActivityRow
+                        key={a.id}
+                        activity={a}
+                        offset={raceDate ? dayOffset(a.date, raceDate) : null}
+                        selected={a.id === activityId}
+                        disabled={!qualifies}
+                        onSelect={() => setPicked(a.id)}
+                      />
+                    );
+                  })}
                 </div>
               </>
             )}
@@ -309,31 +371,50 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
           borderTop: "1px solid var(--edge)", padding: "12px 24px",
           display: "flex", justifyContent: "flex-end", gap: 10, alignItems: "center",
         }}>
-          <button className="chip" onClick={onClose} disabled={busy} style={{ fontSize: 9 }}>cancel</button>
+          <button className="chip" onClick={finish} disabled={busy} style={{ fontSize: 9 }}>cancel</button>
           <button
             className="chip"
             onClick={submit}
-            disabled={!activityId || busy || finishBad || !selectedQualifies}
-            title={!selectedQualifies ? "the picked activity is more than 1 day from race day — the server will refuse it" : undefined}
+            disabled={!canSubmit}
+            title={
+              // Only name a REASON once there is something to explain — with
+              // nothing picked and no manual result yet, the button is simply
+              // waiting, not refusing anything (round 2, generic finding 5: a
+              // stray "more than 1 day" tooltip sat on the disabled button
+              // before any row had even been clicked).
+              canSubmit ? undefined
+                : activityId != null && !selectedQualifies
+                  ? "the picked activity is more than 1 day from race day — the server will refuse it"
+                  : activityId == null && !hasManualResult
+                    ? "pick a qualifying activity, or record dns/dnf/an official finish below"
+                    : undefined
+            }
             style={{
               fontSize: 9,
-              background: activityId && !busy && !finishBad && selectedQualifies ? "var(--lamp)" : "transparent",
-              borderColor: activityId && !busy && !finishBad && selectedQualifies ? "var(--lamp)" : "var(--edge-bright)",
-              color: activityId && !busy && !finishBad && selectedQualifies ? "var(--night)" : "var(--mist-mute)",
-              cursor: activityId && !busy && !finishBad && selectedQualifies ? "pointer" : "not-allowed",
+              background: canSubmit ? "var(--lamp)" : "transparent",
+              borderColor: canSubmit ? "var(--lamp)" : "var(--edge-bright)",
+              color: canSubmit ? "var(--night)" : "var(--mist-mute)",
+              cursor: canSubmit ? "pointer" : "not-allowed",
             }}
           >
             {busy ? "archiving…" : linkedActivityId ? "link result" : "archive race"}
           </button>
         </div>
+        </>
+        )}
       </div>
     </div>,
     document.body,
   );
 }
 
-function ActivityRow({ activity, offset, selected, onSelect }: {
-  activity: Activity; offset: number | null; selected: boolean; onSelect: () => void;
+function ActivityRow({ activity, offset, selected, disabled, onSelect }: {
+  activity: Activity; offset: number | null; selected: boolean;
+  /** more than ±1 day from race day — the server will refuse it as the
+      result, so the row is shown (Strava DOES have something nearby) but
+      cannot be picked, with its own reason instead of a global tooltip. */
+  disabled?: boolean;
+  onSelect: () => void;
 }) {
   const hours = Math.floor(activity.moving_s / 3600);
   const mins = Math.round((activity.moving_s % 3600) / 60);
@@ -341,10 +422,14 @@ function ActivityRow({ activity, offset, selected, onSelect }: {
     <button
       role="radio"
       aria-checked={selected}
-      onClick={onSelect}
+      aria-disabled={disabled}
+      disabled={disabled}
+      onClick={disabled ? undefined : onSelect}
+      title={disabled ? "more than 1 day from race day — the server will refuse this as the result" : undefined}
       style={{
         width: "100%", textAlign: "left", display: "flex", alignItems: "baseline", gap: 10,
-        padding: "7px 10px", cursor: "pointer",
+        padding: "7px 10px", cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.45 : 1,
         background: selected ? "var(--edge)" : "transparent",
         borderLeft: `2px solid ${selected ? "var(--lamp)" : "transparent"}`,
       }}
@@ -360,6 +445,9 @@ function ActivityRow({ activity, offset, selected, onSelect }: {
       </span>
       {offset === 0 && (
         <span className="eyebrow" style={{ fontSize: 8, color: "var(--lamp)", whiteSpace: "nowrap" }}>race day</span>
+      )}
+      {disabled && (
+        <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)", whiteSpace: "nowrap" }}>too far out</span>
       )}
     </button>
   );

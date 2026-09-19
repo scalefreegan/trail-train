@@ -372,3 +372,108 @@ test("archiveRace: race.json is archived before result.json is written, so a cra
   assert.equal(result.status, "finished");
   assert.equal(JSON.parse(await fs.readFile(path.join(dir, "race.json"), "utf8")).status, "archived");
 });
+
+/* ------------------ manual result, no Strava activity at all ------------- */
+/* PR #23 review round 2, draft finding 4: a DNS, a DNF, or a finish recorded
+   only on a watch that never reached Strava used to be un-archivable — the
+   dialog advertised "add the official time and splits" but the server always
+   demanded activity_id. These never call findLoggedActivity/fetchActivityStreams
+   (no `activity`/`streams` injected, and no web/public/strava.json on disk) —
+   if the manual path accidentally touched either, these would throw for the
+   wrong reason instead of asserting on the result. */
+
+test("archiveRace: a DNS with no Strava activity at all still archives, splits empty", async (t) => {
+  const root = await tempRace(t, { pointer: { slug: "test-race-2026", mode: "train" } });
+  const { result, pointer, warning } = await archiveRace({
+    root, slug: "test-race-2026", status: "dns", notes: "sick the morning of",
+  });
+  assert.equal(result.status, "dns");
+  assert.equal(result.strava_activity_id, null);
+  assert.equal(result.finish_h, null);
+  assert.deepEqual(result.splits, []);
+  assert.equal(result.notes, "sick the morning of");
+  assert.equal(warning, undefined);
+  assert.deepEqual(pointer, { slug: null, mode: "train" }); // still retires the pointer
+  const race = JSON.parse(await fs.readFile(path.join(root, "races", "test-race-2026", "race.json"), "utf8"));
+  assert.equal(race.status, "archived");
+});
+
+test("archiveRace: a DNF with no activity archives the same way", async (t) => {
+  const root = await tempRace(t);
+  const { result } = await archiveRace({ root, slug: "test-race-2026", status: "dnf" });
+  assert.equal(result.status, "dnf");
+  assert.equal(result.strava_activity_id, null);
+  assert.deepEqual(result.splits, []);
+});
+
+test("archiveRace: a finish with no activity but an official time archives, splits empty unless official supplies its own", async (t) => {
+  const root = await tempRace(t);
+  const { result } = await archiveRace({
+    root, slug: "test-race-2026",
+    official: { finish_h: 33.27, official_time: "33:16:12", placement: "12 / 90" },
+  });
+  assert.equal(result.status, "finished"); // default, same as the activity path
+  assert.equal(result.strava_activity_id, null);
+  assert.equal(result.finish_h, 33.27);
+  assert.equal(result.official_time, "33:16:12");
+  assert.deepEqual(result.splits, []);
+
+  // official.splits still land even with no track to lay them over
+  const root2 = await tempRace(t);
+  const { result: result2 } = await archiveRace({
+    root: root2, slug: "test-race-2026",
+    official: { official_time: "33:16:12", splits: [{ station: "Finish", elapsed_h: 33.27 }] },
+  });
+  assert.deepEqual(result2.splits, [{ station: "Finish", elapsed_h: 33.27, source: "official" }]);
+});
+
+test("archiveRace: a bare official_time (no finish_h) is enough to skip the activity requirement", async (t) => {
+  const root = await tempRace(t);
+  await assert.doesNotReject(
+    archiveRace({ root, slug: "test-race-2026", official: { official_time: "33:16" } }),
+  );
+});
+
+test("archiveRace: no activity and no manual result (no dns/dnf, no official finish) is refused", async (t) => {
+  const root = await tempRace(t);
+  await assert.rejects(
+    archiveRace({ root, slug: "test-race-2026" }),
+    (e) => e.code === "bad_request" && /activity_id required/.test(e.message) && /manual result/.test(e.message),
+  );
+  // an official block with neither finish_h nor official_time doesn't count either
+  await assert.rejects(
+    archiveRace({ root, slug: "test-race-2026", official: { placement: "12 / 90" } }),
+    (e) => e.code === "bad_request",
+  );
+  assert.equal(await loadResult(root, "test-race-2026"), null);
+});
+
+/* --------------- linked activity whose track never arrives --------------- */
+
+test("archiveRace: an activity that never comes near any station still writes the (null) splits, but warns instead of doing it silently", async (t) => {
+  const root = await tempRace(t);
+  // 40 km north of the stations — the whole track stays outside the radius
+  const farAway = track(ramp(40000, 45000));
+  const { result, warning } = await archiveRace({
+    root, slug: "test-race-2026", activityId: "20165079124",
+    activity: raceDayActivity(), streams: farAway,
+  });
+  assert.ok(result.splits.length > 0 && result.splits.every((s) => s.elapsed_h === null));
+  assert.match(warning, /never comes within/);
+  assert.match(warning, /2 aid stations/);
+});
+
+test("archiveRace: no warning when at least one station is actually reached", async (t) => {
+  const root = await tempRace(t);
+  const { warning } = await archiveRace({
+    root, slug: "test-race-2026", activityId: "20165079124",
+    activity: raceDayActivity(), streams: streams(),
+  });
+  assert.equal(warning, undefined);
+});
+
+test("archiveRace: a manual-only result (no track at all) is not a 'never arrives' warning", async (t) => {
+  const root = await tempRace(t);
+  const { warning } = await archiveRace({ root, slug: "test-race-2026", status: "dns" });
+  assert.equal(warning, undefined);
+});
