@@ -26,6 +26,7 @@ import { buildRaceJson } from "./race-intake.mjs";
 import {
   SHADOW,
   acceptRefresh,
+  loadShadowRace,
   readRefresh,
   refreshSources,
   rejectRefresh,
@@ -200,6 +201,25 @@ test("a refresh writes nothing outside .refresh/", async (t) => {
   assert.ok((await fs.readdir(path.join(dir, SHADOW))).includes("diff.json"));
   const shadowRace = await readJson(path.join(dir, SHADOW, "race.json"));
   assert.equal(shadowRace.distance_mi, 32.8);
+});
+
+/* ------------------------- loadShadowRace (finding #3) ------------------- */
+
+test("loadShadowRace: no race.json at all reads as null — the ENOENT case runRefresh reports as no diff", async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-shadow-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const shadow = path.join(tmp, SHADOW);
+  await fs.mkdir(shadow, { recursive: true });
+  assert.equal(await loadShadowRace(shadow, SLUG), null);
+});
+
+test("loadShadowRace: a race.json that is not valid JSON propagates instead of reading as \"nothing to diff\"", async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-shadow-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const shadow = path.join(tmp, SHADOW);
+  await fs.mkdir(shadow, { recursive: true });
+  await fs.writeFile(path.join(shadow, "race.json"), "{ not json");
+  await assert.rejects(loadShadowRace(shadow, SLUG), /race\.json is not valid JSON/);
 });
 
 test("the diff names what Accept would change, and nothing else", async (t) => {

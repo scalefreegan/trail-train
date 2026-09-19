@@ -79,6 +79,24 @@ async function readJsonIfPresent(p) {
   }
 }
 
+/**
+ * The shadow's race.json, or null when stage 1-3 never wrote one — the ONLY
+ * case that should read as "nothing to diff". race-config.mjs's readJson has
+ * no error code to distinguish that from a truncated write or a race.json
+ * that is not valid JSON (it throws a plain Error either way), so this keys
+ * off the message shape listRaces (race-config.mjs) already uses for the same
+ * distinction. A parse or schema error must propagate: swallowing it here
+ * would report the misleading "the refresh produced no race.json to diff"
+ * for what is actually a broken shadow folder the owner needs to see.
+ * @returns {Promise<{slug: string, dir: string, race: object, block: object|null, plan: object|null, nutrition: object|null}|null>}
+ */
+export async function loadShadowRace(shadow, slug) {
+  return loadRaceFolderAt(shadow, slug).catch((e) => {
+    if (/not found$/.test(e.message)) return null;
+    throw e;
+  });
+}
+
 /** YYYY-MM-DD-HHMM, the dated name the promoted source cache takes. */
 export function sourceStamp(at = new Date()) {
   const iso = at.toISOString();
@@ -239,7 +257,7 @@ export async function runRefresh({
 
   /* 4. the merge — deterministic, no agent, nothing written to the live folder */
   step("merge", "start", { label: "diffing against the race on disk" });
-  const incoming = await loadRaceFolderAt(shadow, slug).catch(() => null);
+  const incoming = await loadShadowRace(shadow, slug);
   if (!incoming) throw new Error(`the refresh produced no ${SHADOW}/race.json to diff`);
   const merged = mergeRaceFolder(
     { race: current.race, block: current.block, nutrition: current.nutrition },
