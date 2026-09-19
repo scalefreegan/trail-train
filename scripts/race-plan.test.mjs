@@ -131,6 +131,22 @@ test("no plannable block: no date, a past date, and a race too close", () => {
   assert.equal(blockUnavailableReason({ date: "2026-10-10" }, { today }), null);
 });
 
+test("a date still listed in unresolved counts as no date — an agent guess is not a confirmed race day", () => {
+  const today = new Date(2026, 8, 18);
+  const guessed = { date: "2026-10-10", unresolved: ["date"] };
+  assert.equal(planWindow(guessed, { today }), null, "a well-formed but unconfirmed date must not compute a window");
+  assert.match(blockUnavailableReason(guessed, { today }), /date unconfirmed/);
+  assert.match(blockUnavailableReason(guessed, { today }), /still listed in unresolved/);
+
+  // once acknowledged/confirmed (unresolved no longer lists it), it plans normally
+  const confirmed = { date: "2026-10-10", unresolved: [] };
+  assert.equal(planWindow(confirmed, { today }).total_weeks, 3);
+  assert.equal(blockUnavailableReason(confirmed, { today }), null);
+
+  // a race with no `unresolved` array at all behaves exactly as before
+  assert.equal(planWindow({ date: "2026-10-10" }, { today }).total_weeks, 3);
+});
+
 test("weekRoles: race week last, two taper weeks, the rest build", () => {
   assert.deepEqual(weekRoles(20).build, Array.from({ length: 17 }, (_, i) => i + 1));
   assert.deepEqual(weekRoles(20).taper, [18, 19]);
@@ -496,6 +512,27 @@ test("a field the owner authored is never overwritten", () => {
   assert.ok(written.includes("links.tracking") && !written.includes("links.site"));
 });
 
+test("review_notes goes through mergeRaceUpdates like every other agent field — stamped, and protected once user-owned", () => {
+  const at = "2026-09-18T12:00:00.000Z";
+  const race = { slug: "r", provenance: {} };
+  const { race: next, written } = mergeRaceUpdates(race, { review_notes: "  three loading cycles, peak at week 9  " }, { at });
+  assert.equal(next.review_notes, "three loading cycles, peak at week 9");
+  assert.equal(next.provenance.review_notes.by, "agent");
+  assert.equal(next.provenance.review_notes.at, at);
+  assert.ok(written.includes("review_notes"));
+
+  // once the owner has claimed it, a later re-plan leaves it alone — the
+  // same protection every other field written through this function gets
+  const owned = {
+    slug: "r",
+    review_notes: "the owner's own note",
+    provenance: { review_notes: { by: "user", at: "2026-01-01T00:00:00Z" } },
+  };
+  const { race: keptNext, skipped } = mergeRaceUpdates(owned, { review_notes: "agent's replacement" }, { at });
+  assert.equal(keptNext.review_notes, "the owner's own note");
+  assert.ok(skipped.includes("review_notes"));
+});
+
 /* -------------------------------- prompt --------------------------------- */
 
 /** The MM100 folder + the EXAMPLE profile — no personal values anywhere. */
@@ -617,6 +654,45 @@ test("the style reference is shown as shape, with the athlete's mass stripped ou
   assert.ok(!/body_kg/.test(p), "the style reference must not teach the agent to write body_kg");
 });
 
+test("a style reference that exists but is unreadable warns instead of planning silently unguided", async (t) => {
+  const mm = await mm100();
+  if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+
+  const slug = "future-race-2027";
+  await fs.cp(path.join(ROOT, "races", MM100), path.join(tmp, "races", slug), { recursive: true });
+  const race = { ...mm.race, slug, status: "draft", date: "2027-08-13" };
+  await fs.writeFile(path.join(tmp, "races", slug, "race.json"), JSON.stringify(race, null, 2));
+  // the style reference folder exists but its race.json does not parse —
+  // corrupt, not merely absent
+  await fs.mkdir(path.join(tmp, "races", MM100), { recursive: true });
+  await fs.writeFile(path.join(tmp, "races", MM100, "race.json"), "{ not json");
+
+  const result = await planRace({ root: tmp, slug, dryRun: true, today: new Date(2027, 5, 1), allowDateless: true });
+  assert.ok(
+    result.warnings.some((w) => /style reference/.test(w) && /could not be read/.test(w)),
+    result.warnings.join(" | "),
+  );
+  // and it did not crash the whole run — a dry run still produces a prompt
+  assert.ok(result.prompt.length > 0);
+});
+
+test("a checkout with no style-reference folder at all plans silently — that is the ordinary, expected case", async (t) => {
+  const mm = await mm100();
+  if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const slug = "future-race-2027";
+  await fs.cp(path.join(ROOT, "races", MM100), path.join(tmp, "races", slug), { recursive: true });
+  const race = { ...mm.race, slug, status: "draft", date: "2027-08-13" };
+  await fs.writeFile(path.join(tmp, "races", slug, "race.json"), JSON.stringify(race, null, 2));
+  // no races/mogollon-monster-100-2026/ folder at all in this temp root
+
+  const result = await planRace({ root: tmp, slug, dryRun: true, today: new Date(2027, 5, 1), allowDateless: true });
+  assert.ok(!result.warnings.some((w) => /style reference/.test(w)));
+});
+
 test("an undated race is told there is no block, and still asked for the rest", async (t) => {
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
@@ -644,6 +720,11 @@ test("planRace --dry-run assembles the prompt and writes nothing", async (t) => 
   await fs.cp(path.join(ROOT, "races", MM100), path.join(tmp, "races", slug), { recursive: true });
   const race = { ...mm.race, slug, status: "draft", date: "2027-08-13" };
   await fs.writeFile(path.join(tmp, "races", slug, "race.json"), JSON.stringify(race, null, 2));
+  // This test's own claim is "no course build yet" — true of a fresh draft,
+  // but the MM100 folder this copies from may carry a real build/course.json
+  // if the owner has run `npm run course:build` in this checkout. Remove it
+  // from the copy so the assertion below holds regardless of that.
+  await fs.rm(path.join(tmp, "races", slug, "build", "course.json"), { force: true });
   const before = (await fs.readdir(path.join(tmp, "races", slug))).sort();
 
   const steps = [];
@@ -784,6 +865,42 @@ test("user-owned block targets survive a re-plan — the agent's proposal is a w
   );
 });
 
+test("a failure partway through the three-file write says which files already landed", async (t) => {
+  const mm = await mm100();
+  if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+
+  const slug = "future-race-2027";
+  const dir = path.join(tmp, "races", slug);
+  await fs.cp(path.join(ROOT, "races", MM100), dir, { recursive: true });
+  const race = { ...mm.race, slug, status: "draft", date: "2027-08-13", distance_mi: 104, gain_ft: 19000 };
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(race, null, 2));
+
+  // writeJsonAtomic (scripts/lib.mjs) writes race.json via a
+  // `race.json.tmp.<pid>` file and renames it into place; pre-occupying
+  // that exact path with a directory makes ONLY the third write fail —
+  // block.json and nutrition.json (different tmp paths) land for real.
+  const raceTmp = path.join(dir, `race.json.tmp.${process.pid}`);
+  await fs.mkdir(raceTmp);
+  t.after(() => fs.rm(raceTmp, { recursive: true, force: true }));
+
+  const reply = await goodOutput();
+  const err = await planRace({
+    root: tmp,
+    slug,
+    today: new Date(2027, 4, 18),
+    runAgent: async () => ({ text: JSON.stringify(reply), wrapper: {}, retried: false }),
+  }).then(() => null, (e) => e);
+
+  assert.ok(err);
+  assert.match(err.message, new RegExp(`races/${slug}/block\\.json, races/${slug}/nutrition\\.json`));
+  assert.match(err.message, /landed/);
+  // and the files it says landed are actually there
+  await fs.access(path.join(dir, "block.json"));
+  await fs.access(path.join(dir, "nutrition.json"));
+});
+
 test("a race with no date gets its nutrition and notes, but no block.json", async (t) => {
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
@@ -829,18 +946,54 @@ test("output that breaks the contract writes nothing at all", async (t) => {
   const reply = await goodOutput();
   reply.visual.theme_preset = "san-juan";
   reply.nutrition.caffeine.body_kg = 79.4;
-  await assert.rejects(
-    planRace({
-      root: tmp,
-      slug,
-      today: new Date(2027, 4, 18),
-      runAgent: async () => ({ text: JSON.stringify(reply), wrapper: {}, retried: false }),
-    }),
-    (e) => /failed the contract/.test(e.message) && /theme_preset/.test(e.message) && /body_kg/.test(e.message),
+  const err = await planRace({
+    root: tmp,
+    slug,
+    today: new Date(2027, 4, 18),
+    runAgent: async () => ({ text: JSON.stringify(reply), wrapper: {}, retried: false }),
+  }).then(() => null, (e) => e);
+  assert.ok(err);
+  assert.match(err.message, /failed the contract/);
+  assert.match(err.message, /theme_preset/);
+  assert.match(err.message, /body_kg/);
+  // the paid turn's raw reply is not just discarded — race-intake.mjs parks
+  // a failed stage-1 draft the same way, under sources/agent-output.json.
+  assert.match(err.message, /raw agent output saved to races\/future-race-2027\/build\/plan-agent-output\.json/);
+  assert.deepEqual(
+    JSON.parse(await fs.readFile(path.join(dir, "build", "plan-agent-output.json"), "utf8")),
+    reply,
   );
+  assert.match(await fs.readFile(path.join(dir, "build", "plan-agent-output-error.txt"), "utf8"), /theme_preset/);
 
   const after = await Promise.all(["block.json", "nutrition.json", "race.json"].map((f) => fs.readFile(path.join(dir, f), "utf8")));
   assert.deepEqual(after, before, "a rejected plan must leave the folder byte-identical");
+});
+
+test("a stage-3 reply that isn't JSON at all is parked the same way, not silently dropped", async (t) => {
+  const mm = await mm100();
+  if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+
+  const slug = "future-race-2027";
+  const dir = path.join(tmp, "races", slug);
+  await fs.cp(path.join(ROOT, "races", MM100), dir, { recursive: true });
+  const race = { ...mm.race, slug, status: "draft", date: "2027-08-13", distance_mi: 104, gain_ft: 19000 };
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(race, null, 2));
+
+  const err = await planRace({
+    root: tmp,
+    slug,
+    today: new Date(2027, 4, 18),
+    runAgent: async () => ({ text: "I could not finish this in time.", wrapper: {}, retried: false }),
+  }).then(() => null, (e) => e);
+  assert.ok(err);
+  assert.match(err.message, /plan agent did not return JSON/);
+  assert.match(err.message, /raw agent output saved to races\/future-race-2027\/build\/plan-agent-output\.json/);
+  assert.equal(
+    await fs.readFile(path.join(dir, "build", "plan-agent-output.json"), "utf8"),
+    "I could not finish this in time.",
+  );
 });
 
 test("a dateless race is refused before the agent turn unless the caller opts in", async (t) => {
@@ -861,4 +1014,36 @@ test("a dateless race is refused before the agent turn unless the caller opts in
   const dry = await planRace({ root: tmp, slug, today: new Date(2026, 8, 18), runAgent, dryRun: true });
   assert.equal(dry.dryRun, true);
   assert.equal(calls, 0);
+});
+
+test("planRace refuses a real-looking but unconfirmed date the same as no date at all", async (t) => {
+  const mm = await mm100();
+  if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const slug = "guessed-date-race-2027";
+  const dir = path.join(tmp, "races", slug);
+  await fs.cp(path.join(ROOT, "races", MM100), dir, { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "race.json"),
+    JSON.stringify({ ...mm.race, slug, status: "draft", date: "2027-08-13", unresolved: ["date"] }, null, 2),
+  );
+
+  let calls = 0;
+  const runAgent = async () => { calls++; return { text: "{}", wrapper: {}, retried: false }; };
+  await assert.rejects(
+    planRace({ root: tmp, slug, today: new Date(2026, 8, 18), runAgent }),
+    /still listed in unresolved/,
+  );
+  assert.equal(calls, 0, "a guessed date must not spend the paid turn either");
+
+  // allowDateless opts into exactly the same thing it always did: nutrition
+  // and notes, no block, computed from the window being null.
+  const reply = await goodOutput();
+  const out = await planRace({
+    root: tmp, slug, today: new Date(2026, 8, 18), allowDateless: true,
+    runAgent: async () => ({ text: JSON.stringify(reply), wrapper: {}, retried: false }),
+  });
+  assert.equal(out.block, null);
+  assert.ok(!out.wrote.includes(`races/${slug}/block.json`));
 });

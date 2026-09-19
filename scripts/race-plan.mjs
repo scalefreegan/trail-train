@@ -137,6 +137,10 @@ function mondayOf(iso) {
  */
 export function planWindow(race, { today = new Date(), maxWeeks = MAX_BLOCK_WEEKS } = {}) {
   const date = race?.date;
+  // A date the review screen still lists as unresolved (an agent guess, not
+  // a confirmed one) counts as no date — a block periodized off it would be
+  // confidently wrong in a way nothing downstream can tell apart from real.
+  if (Array.isArray(race?.unresolved) && race.unresolved.includes("date")) return null;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date)) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) return null;
   const firstMonday = mondayOf(nextMonday(today));
   const raceMonday = mondayOf(date);
@@ -167,6 +171,9 @@ export function planWindow(race, { today = new Date(), maxWeeks = MAX_BLOCK_WEEK
  */
 export function blockUnavailableReason(race, { today = new Date() } = {}) {
   const date = race?.date;
+  if (Array.isArray(race?.unresolved) && race.unresolved.includes("date")) {
+    return `race.json's date (${JSON.stringify(date ?? null)}) is still listed in unresolved — date unconfirmed, the block's weeks are counted back from race day`;
+  }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date)) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
     return `race.json has no usable date (${JSON.stringify(date ?? null)}) — the block's weeks are counted back from race day`;
   }
@@ -678,6 +685,17 @@ export function mergeRaceUpdates(race, out, { at = new Date().toISOString() } = 
     }
   }
 
+  // review_notes is agent commentary for the human, same as every other
+  // agent-written field here — routed through the same userOwned/stamp
+  // machinery rather than assigned directly by the caller, so a reviewer who
+  // ever hand-edits it (race-edit.mjs, were it ever added to
+  // EDITABLE_RACE_KEYS) has that edit protected the next time this runs.
+  if (isStr(out.review_notes)) {
+    const field = "review_notes";
+    if (userOwned(next, field)) skipped.push(field);
+    else { next.review_notes = out.review_notes.trim(); stamp(field); }
+  }
+
   return { race: next, written, skipped };
 }
 
@@ -931,8 +949,17 @@ async function readJsonIfPresent(p) {
   }
 }
 
-/** The hand-authored folder the agent is shown as a style reference. */
-async function loadStyleReference(root, slug) {
+/**
+ * The hand-authored folder the agent is shown as a style reference.
+ * @param {string} root
+ * @param {string} slug
+ * @param {{onWarn?: (msg: string) => void}} [opts] called for anything other
+ *   than "the archive just isn't there" — a checkout with no MM100 folder is
+ *   the expected, silent case; a folder that IS there but unreadable (a
+ *   corrupt race.json, a permissions error) is a real problem the caller
+ *   should be able to surface, not something to plan around silently.
+ */
+async function loadStyleReference(root, slug, { onWarn = () => {} } = {}) {
   if (slug === STYLE_REFERENCE_SLUG) return null; // re-planning the reference itself
   try {
     const { race, block, nutrition } = await loadRaceFolder(root, STYLE_REFERENCE_SLUG);
@@ -948,8 +975,14 @@ async function loadStyleReference(root, slug) {
       if (ref.caffeine) delete ref.caffeine.body_kg;
     }
     return { name: race?.name ?? STYLE_REFERENCE_SLUG, block, nutrition: ref, coach_notes: race?.coach_notes ?? null };
-  } catch {
-    return null; // a checkout without the archive plans fine, just unguided
+  } catch (e) {
+    // race-config.mjs's readJson throws a plain Error either way; "not found"
+    // (no races/mogollon-monster-100-2026/ at all) is the only case this
+    // treats as silent — same message-shape idiom race-refresh.mjs's
+    // loadShadowRace and race-config.mjs's own listRaces use.
+    if (/not found$/.test(e.message ?? "")) return null;
+    onWarn(`style reference (races/${STYLE_REFERENCE_SLUG}/) could not be read, planning without it: ${e.message}`);
+    return null;
   }
 }
 
@@ -1046,7 +1079,9 @@ export async function planRace({
     warnings.push("no fitness snapshot (web/public/strava.json — run sync:strava) — the block's ramp is unanchored");
     say("load", warnings[warnings.length - 1], { stream: "err" });
   }
-  const style = await loadStyleReference(root, slug);
+  const style = await loadStyleReference(root, slug, {
+    onWarn: (m) => { warnings.push(m); say("load", m, { stream: "err" }); },
+  });
   if (race.status === "archived") {
     warnings.push(`races/${slug}/ is archived — planning it rewrites a finished race's block and nutrition`);
     say("load", warnings[warnings.length - 1], { stream: "err" });
@@ -1060,9 +1095,20 @@ export async function planRace({
   }
   // A dateless race gets nutrition and notes but no block — and the caller
   // paid a full agent turn for half a plan (the tt-yib.14 walk hit exactly
-  // this). Refuse up front unless the caller opts in; a dry run costs nothing.
-  if (race.date == null && !allowDateless && !dryRun) {
-    const msg = `races/${slug}/race.json has no date — fill it in the review screen first (or pass allowDateless to plan nutrition and notes without a block)`;
+  // this). Refuse up front unless the caller opts in; a dry run costs
+  // nothing. An agent-GUESSED date the review screen still lists in
+  // `unresolved` counts as no date here too: a block confidently periodized
+  // off a date nobody has confirmed is worse than no block, and the whole
+  // point of `unresolved` surviving onto race.json (see race-intake.mjs's
+  // buildRaceJson) is that callers downstream of intake can ask this
+  // question instead of trusting whatever string happens to be in `date`.
+  const dateUnresolved = Array.isArray(race.unresolved) && race.unresolved.includes("date");
+  const hasConfirmedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(race.date)) &&
+    !Number.isNaN(Date.parse(`${race.date}T00:00:00Z`)) && !dateUnresolved;
+  if (!hasConfirmedDate && !allowDateless && !dryRun) {
+    const msg = race.date && dateUnresolved
+      ? `races/${slug}/race.json's date (${race.date}) is still listed in unresolved — confirm it in the review screen first (or pass allowDateless to plan nutrition and notes without a block)`
+      : `races/${slug}/race.json has no date — fill it in the review screen first (or pass allowDateless to plan nutrition and notes without a block)`;
     step("load", "error", { message: msg });
     throw new Error(msg);
   }
@@ -1104,12 +1150,32 @@ export async function planRace({
 
   /* 4. validate */
   step("validate", "start", { label: "validating the plan" });
-  const out = extractJson(text);
+  // A failed/malformed reply is otherwise discarded with no trace — unlike
+  // race-intake.mjs, which parks a failing stage-1 draft under
+  // sources/agent-output.json before throwing, a bad stage-3 reply here just
+  // threw, and the paid turn's raw text went nowhere a human could read it.
+  const parkFailedPlan = async (reason) => {
+    const outDir = path.join(dir, "build");
+    await fs.mkdir(outDir, { recursive: true });
+    await fs.writeFile(path.join(outDir, "plan-agent-output.json"), text ?? "");
+    await fs.writeFile(path.join(outDir, "plan-agent-output-error.txt"), `${new Date().toISOString()}\n${reason}\n`);
+    return `races/${slug}/build/plan-agent-output.json`;
+  };
+  let out;
+  try {
+    out = extractJson(text);
+  } catch (e) {
+    const where = await parkFailedPlan(e.message);
+    step("validate", "error", { message: e.message });
+    throw new Error(`plan agent did not return JSON: ${e.message}\n(raw agent output saved to ${where})`);
+  }
   const check = validatePlanOutput(out, race, { window });
   warnings.push(...check.warnings);
   for (const w of check.warnings) say("validate", w, { stream: "err" });
   if (!check.ok) {
-    throw new Error(`plan agent output failed the contract:\n  · ${check.errors.join("\n  · ")}`);
+    const where = await parkFailedPlan(check.errors.join("; "));
+    step("validate", "error", { message: check.errors.join("; ") });
+    throw new Error(`plan agent output failed the contract:\n  · ${check.errors.join("\n  · ")}\n(raw agent output saved to ${where})`);
   }
   step("validate", "done", { unresolved: check.unresolved.length });
 
@@ -1117,43 +1183,55 @@ export async function planRace({
   step("write", "start", { label: "writing the folder" });
   const wrote = [];
   let block = null;
+  let nutrition = null;
   // block.json carries its own provenance (stamped by race-edit.mjs's
   // applyBlockTargetsEdit when the review dialog's owner hand-edits a week's
   // numbers). That is the same "by: user survives a re-plan" invariant every
   // other field in this app gets — checked here, not on race.provenance,
   // because block.json is the file whose targets are actually at stake.
   const blockTargetsUserOwned = folder.block?.provenance?.targets?.by === "user";
-  if (window && blockTargetsUserOwned) {
-    block = folder.block;
-    const proposed = out.block.targets
-      .map((t) => `wk${t.wk} ${t.target_dist}mi/${t.target_elev}ft`)
-      .join("  ");
-    warnings.push(`races/${slug}/block.json targets are user-owned — kept as authored; the agent proposed: ${proposed}`);
-    say("write", warnings[warnings.length - 1], { stream: "err" });
-  } else if (window) {
-    block = {
-      start_date: window.start_date,
-      total_weeks: window.total_weeks,
-      // WeekTarget in web/src/data.ts is exactly these three keys; anything
-      // else the agent attached is review-dialog material, not block data.
-      targets: out.block.targets.map((t) => ({ wk: t.wk, target_dist: t.target_dist, target_elev: t.target_elev })),
-    };
-    await writeJsonAtomic(path.join(dir, "block.json"), block);
-    wrote.push(`races/${slug}/block.json`);
-    say("write", `races/${slug}/block.json — ${block.total_weeks} weeks from ${block.start_date}`);
-  } else {
-    say("write", "no block.json — the race has no date", { stream: "err" });
+  // Three independent atomic writes, no rollback across them: a failure on
+  // the second or third leaves the ones before it landed for real, and the
+  // thrown error says exactly which — "race.json failed to write" alone
+  // would leave the caller guessing whether block.json/nutrition.json are
+  // now stale beside an untouched race.json or freshly written beside it.
+  let merged = null;
+  try {
+    if (window && blockTargetsUserOwned) {
+      block = folder.block;
+      const proposed = out.block.targets
+        .map((t) => `wk${t.wk} ${t.target_dist}mi/${t.target_elev}ft`)
+        .join("  ");
+      warnings.push(`races/${slug}/block.json targets are user-owned — kept as authored; the agent proposed: ${proposed}`);
+      say("write", warnings[warnings.length - 1], { stream: "err" });
+    } else if (window) {
+      block = {
+        start_date: window.start_date,
+        total_weeks: window.total_weeks,
+        // WeekTarget in web/src/data.ts is exactly these three keys; anything
+        // else the agent attached is review-dialog material, not block data.
+        targets: out.block.targets.map((t) => ({ wk: t.wk, target_dist: t.target_dist, target_elev: t.target_elev })),
+      };
+      await writeJsonAtomic(path.join(dir, "block.json"), block);
+      wrote.push(`races/${slug}/block.json`);
+      say("write", `races/${slug}/block.json — ${block.total_weeks} weeks from ${block.start_date}`);
+    } else {
+      say("write", "no block.json — the race has no date", { stream: "err" });
+    }
+
+    nutrition = nutritionFile(out.nutrition);
+    await writeJsonAtomic(path.join(dir, "nutrition.json"), nutrition);
+    wrote.push(`races/${slug}/nutrition.json`);
+    say("write", `races/${slug}/nutrition.json — ${Object.keys(nutrition.drop_bag_gear ?? {}).length} drop-bag entries`);
+
+    merged = mergeRaceUpdates(race, out, { at });
+    await writeJsonAtomic(path.join(dir, "race.json"), merged.race);
+    wrote.push(`races/${slug}/race.json`);
+  } catch (e) {
+    const msg = `writing races/${slug}/ failed after ${wrote.length ? wrote.join(", ") : "nothing"} landed: ${e.message}`;
+    step("write", "error", { message: msg, wrote });
+    throw new Error(msg);
   }
-
-  const nutrition = nutritionFile(out.nutrition);
-  await writeJsonAtomic(path.join(dir, "nutrition.json"), nutrition);
-  wrote.push(`races/${slug}/nutrition.json`);
-  say("write", `races/${slug}/nutrition.json — ${Object.keys(nutrition.drop_bag_gear ?? {}).length} drop-bag entries`);
-
-  const merged = mergeRaceUpdates(race, out, { at });
-  if (isStr(out.review_notes)) merged.race.review_notes = out.review_notes.trim();
-  await writeJsonAtomic(path.join(dir, "race.json"), merged.race);
-  wrote.push(`races/${slug}/race.json`);
   say("write", `races/${slug}/race.json — ${merged.written.length} fields stamped${merged.skipped.length ? `, ${merged.skipped.length} left as the owner authored them` : ""}`);
   for (const f of merged.skipped) say("write", `kept user-authored ${f}`);
   step("write", "done", { files: wrote.length });
