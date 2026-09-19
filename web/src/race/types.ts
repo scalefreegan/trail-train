@@ -124,12 +124,26 @@ export type TrainingClimb = {
   strava_url?: string;
 };
 
+/** One run's distance-weighted mean elevation, out of its cached altitude
+    stream. The streams themselves live in a gitignored cache the browser
+    cannot read, so this one number rides along in climbs.json for the
+    altitude back-test (web/src/race/calibration.ts). */
+export type ActivityElevation = {
+  activity_id: string | number;
+  date: string;
+  mean_ele_ft: number;
+};
+
 export type ClimbsSnapshot = {
   fetched_at: string;
   window_days: number;
   activities_scanned: number;
   activities_pending: number;
   climbs: TrainingClimb[];
+  /** Optional: a climbs.json written before PRD-v2 §2 has none, and the
+      back-test then reports "no per-activity elevations yet" rather than
+      treating every run as low. */
+  activity_elevations?: ActivityElevation[];
 };
 
 /* ------------------------------------------------------------------ */

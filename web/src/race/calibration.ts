@@ -1,4 +1,5 @@
 import { fitPacing, type PacingFit, type PaceGradeCurve } from "./pacing";
+import { altitudeSlowdown } from "./altitude";
 import type { Course } from "./types";
 
 /* ------------------------------------------------------------------ */
@@ -50,6 +51,88 @@ export type Flag = {
   detail: string;
 };
 
+/* ------------------------------------------------------------------ */
+/*  Altitude back-test (PRD-v2 §2).                                    */
+/*                                                                    */
+/*  The rest of this file asks "does the pacing fit predict this       */
+/*  athlete". This part asks a narrower question the fit cannot answer */
+/*  about itself: when this athlete runs HIGH, are they slower by the  */
+/*  amount scripts/altitude.mjs's published curve says they should be? */
+/*                                                                    */
+/*  The baseline is deliberately NOT the ordinary leave-one-out fit    */
+/*  above. That fit is trained on every run including the high ones,   */
+/*  so it has already absorbed some average altitude cost into its     */
+/*  coefficients and would under-report the penalty it is being used   */
+/*  to measure. Instead the baseline is a fit over the LOW runs only — */
+/*  "what this athlete does near home" — and the high runs are         */
+/*  predicted out of sample from it. Each high run is out of sample by */
+/*  construction, so no leave-one-out pass is needed.                  */
+/*                                                                    */
+/*  What this CANNOT separate: altitude from the terrain that comes    */
+/*  with it. High runs are usually also rockier, colder and further    */
+/*  from the car. The grade term absorbs the vert, nothing absorbs the */
+/*  rest, so the observed excess is an upper bound on the altitude     */
+/*  cost. The suggestion is a suggestion; the label says so.           */
+/* ------------------------------------------------------------------ */
+
+/** How far above home a run has to average before it is "at altitude".
+    2,000 ft: far enough that the curve is charging something real at a
+    5,000 ft threshold, close enough that a Front Range athlete has some. */
+export const HIGH_ALTITUDE_MARGIN_FT = 2000;
+
+/** Minimum high runs before a scale suggestion is worth making. Same
+    reasoning as MIN_COHORT: below this one cold, rocky day sets the knob. */
+export const MIN_ALTITUDE_COHORT = 5;
+
+/** The altitude_pct knob's range on the planner — a suggestion outside it
+    would be unsettable, so it is clamped and reported as clamped. */
+export const ALTITUDE_PCT_MAX = 150;
+
+export type AltitudeRun = {
+  date: string;
+  title: string;
+  distance_mi: number;
+  mean_ele_ft: number;
+  /** out-of-sample prediction from the LOW-altitude fit, s/mi */
+  predicted_s_per_mi: number;
+  actual_s_per_mi: number;
+  /** (actual − predicted)/predicted as a %: how much slower than the
+      near-home baseline this run actually was */
+  err_pct: number;
+  /** what altitudeSlowdown() charges at this run's mean elevation, at 100 %
+      of the curve and with no acclimation (a day trip from home) */
+  modeled_pct: number;
+};
+
+export type AltitudeCalibration = {
+  /** what happened, so the UI never has to infer it from null-ness:
+      `no-home`      the athlete has not set home elevation — "2,000 ft above
+                     home" has no meaning yet
+      `no-elevations` climbs.json carries no per-activity mean elevations
+                     (sync:streams has not run since this shipped)
+      `uncalibrated` fewer than MIN_ALTITUDE_COHORT high runs
+      `calibrated`   a suggestion was computed */
+  status: "no-home" | "no-elevations" | "uncalibrated" | "calibrated";
+  /** high-altitude runs found */
+  n: number;
+  min_n: number;
+  /** mean elevation a run has to beat to count, ft (null without a home) */
+  threshold_ft: number | null;
+  home_ft: number | null;
+  runs: AltitudeRun[];
+  /** median observed excess over the near-home baseline, % */
+  observed_pct: number | null;
+  /** median penalty the published curve charges these same runs, % */
+  modeled_pct: number | null;
+  /** observed/modeled as a percentage — the altitude_pct the data asks for.
+      null whenever the gate is not met or the curve charges nothing. */
+  suggested_altitude_pct: number | null;
+  /** true when the raw suggestion was outside the knob's range */
+  suggestion_clamped: boolean;
+  /** one honest line, ready to print */
+  label: string;
+};
+
 export type Calibration = {
   runs: BackTestRun[];
   by_distance: Band[];
@@ -78,6 +161,10 @@ export type Calibration = {
       honest answer is "the fit is accurate, the margin is your call". */
   suggested_calibration_pct: number | null;
   extrapolation: { longest_mi: number; race_mi: number; factor: number };
+  /** the altitude back-test — always present, `status` says whether it could
+      say anything. Never null: "we could not check this" is a result the
+      model check has to show, not an absence it can skip. */
+  altitude: AltitudeCalibration;
   flags: Flag[];
 };
 
@@ -114,23 +201,178 @@ const MIN_ANCHOR = 4;
     is not worth moving a deliberate margin for. */
 export const BIAS_WORTH_ACTING_ON = 3;
 
+export type CalibrationActivity = {
+  /** Strava activity id — the join key into the per-activity mean
+      elevations. Absent on an activity the elevation map cannot describe. */
+  id?: string | number;
+  date?: string;
+  title?: string;
+  type?: string;
+  distance_mi: number;
+  elevation_ft: number;
+  moving_s: number;
+};
+
 export type CalibrationInput = {
   fit: PacingFit | null;
   course: Course | null;
-  activities: Array<{
-    date?: string;
-    title?: string;
-    type?: string;
-    distance_mi: number;
-    elevation_ft: number;
-    moving_s: number;
-  }>;
+  activities: CalibrationActivity[];
   gradeCurve: PaceGradeCurve;
   /** the calibration currently applied in the planner, percent */
   currentCalibrationPct: number;
   /** now, injectable so the result is deterministic in tests */
   nowMs?: number;
+  /** mean elevation per activity id, ft — climbs.json's
+      `activity_elevations`, written by scripts/sync-streams.mjs from the
+      cached altitude streams. Absent/empty = the back-test reports
+      "no-elevations" rather than guessing. */
+  meanElevationFtById?: Record<string, number>;
+  /** the athlete's acclimated elevation, ft (profile physiology). null =
+      not set, and the back-test says so instead of assuming sea level and
+      calling every run in the mountains "at altitude". */
+  homeElevationFt?: number | null;
+  /** the altitude_pct currently applied in the planner, for the "you are at
+      X, the data asks for Y" comparison */
+  currentAltitudePct?: number;
 };
+
+/**
+ * The altitude back-test on its own — exported because it is the piece with
+ * a testable numeric claim (bias direction, and the >= 5 gate), and because
+ * calibrate() needs a fit and a course it does not.
+ */
+export function calibrateAltitude(input: {
+  activities: CalibrationActivity[];
+  meanElevationFtById?: Record<string, number>;
+  homeElevationFt?: number | null;
+  dRefMi: number;
+  nowMs?: number;
+  currentAltitudePct?: number;
+}): AltitudeCalibration {
+  const { activities, dRefMi } = input;
+  const eleById = input.meanElevationFtById ?? {};
+  const home = Number.isFinite(input.homeElevationFt) ? (input.homeElevationFt as number) : null;
+  const nowMs = input.nowMs ?? Date.now();
+  const empty = {
+    n: 0,
+    min_n: MIN_ALTITUDE_COHORT,
+    runs: [] as AltitudeRun[],
+    observed_pct: null,
+    modeled_pct: null,
+    suggested_altitude_pct: null,
+    suggestion_clamped: false,
+  };
+
+  if (home == null) {
+    return {
+      ...empty, status: "no-home", threshold_ft: null, home_ft: null,
+      label: "uncalibrated — set your home elevation in the coach settings and this back-test can run",
+    };
+  }
+  const threshold = home + HIGH_ALTITUDE_MARGIN_FT;
+
+  // Only runs the back-test could place. An activity with no mean elevation
+  // is not "low" — it is unknown, and putting it in the baseline would let a
+  // 12,000 ft run define what near-home looks like.
+  const placed = activities
+    .map((a) => ({ a, ele: a.id != null ? eleById[String(a.id)] : undefined }))
+    .filter((r): r is { a: CalibrationActivity; ele: number } =>
+      Number.isFinite(r.ele) && r.a.distance_mi >= MIN_BACKTEST_MI && r.a.moving_s > 0);
+
+  if (!placed.length) {
+    return {
+      ...empty, status: "no-elevations", threshold_ft: threshold, home_ft: home,
+      label: "uncalibrated — no per-activity elevations yet; run `npm run sync:streams`",
+    };
+  }
+
+  const low = placed.filter((r) => r.ele <= threshold);
+  const high = placed.filter((r) => r.ele > threshold);
+
+  const baseline = fitPacing(low.map((r) => r.a), nowMs, dRefMi);
+  if (!baseline) {
+    return {
+      ...empty, status: "uncalibrated", n: high.length, threshold_ft: threshold, home_ft: home,
+      label:
+        `uncalibrated — not enough runs below ${Math.round(threshold).toLocaleString()} ft to build a near-home ` +
+        `baseline to compare the ${high.length} high one${high.length === 1 ? "" : "s"} against`,
+    };
+  }
+
+  const runs: AltitudeRun[] = high
+    .map(({ a, ele }) => {
+      const vfpm = a.elevation_ft / a.distance_mi;
+      const predicted = baseline.base + baseline.kVert * vfpm + baseline.kDist * a.distance_mi;
+      const actual = a.moving_s / a.distance_mi;
+      return {
+        date: (a.date ?? "").slice(0, 10),
+        title: a.title ?? "untitled",
+        distance_mi: a.distance_mi,
+        mean_ele_ft: ele,
+        predicted_s_per_mi: predicted,
+        actual_s_per_mi: actual,
+        err_pct: predicted > 0 ? ((actual - predicted) / predicted) * 100 : NaN,
+        // the curve as published, at the knob's 100 % and with no
+        // acclimation: a training run is a day trip from home
+        modeled_pct: altitudeSlowdown({ elevationFt: ele, homeElevationFt: home, acclimationDays: 0 }) * 100,
+      };
+    })
+    .filter((r) => Number.isFinite(r.err_pct))
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  const observed_pct = runs.length ? median(runs.map((r) => r.err_pct)) : null;
+  const modeled_pct = runs.length ? median(runs.map((r) => r.modeled_pct)) : null;
+
+  if (runs.length < MIN_ALTITUDE_COHORT) {
+    return {
+      ...empty,
+      status: "uncalibrated",
+      n: runs.length,
+      threshold_ft: threshold,
+      home_ft: home,
+      runs,
+      observed_pct,
+      modeled_pct,
+      label:
+        `uncalibrated (${runs.length} high-altitude run${runs.length === 1 ? "" : "s"}, need ${MIN_ALTITUDE_COHORT}) — ` +
+        `nothing above ${Math.round(threshold).toLocaleString()} ft in enough quantity to check the curve against you`,
+    };
+  }
+
+  // The curve charging nothing means every "high" run sat under the
+  // threshold the curve itself uses — there is no penalty to scale.
+  if (!(modeled_pct != null && modeled_pct > 0)) {
+    return {
+      ...empty, status: "uncalibrated", n: runs.length, threshold_ft: threshold, home_ft: home,
+      runs, observed_pct, modeled_pct,
+      label: `uncalibrated — the curve charges nothing at these elevations, so there is no scale to fit`,
+    };
+  }
+
+  const rawSuggestion = ((observed_pct as number) / modeled_pct) * 100;
+  const clamped = Math.max(0, Math.min(ALTITUDE_PCT_MAX, rawSuggestion));
+  const suggestion = Math.round(clamped / 5) * 5;
+  const current = input.currentAltitudePct;
+
+  return {
+    status: "calibrated",
+    n: runs.length,
+    min_n: MIN_ALTITUDE_COHORT,
+    threshold_ft: threshold,
+    home_ft: home,
+    runs,
+    observed_pct,
+    modeled_pct,
+    suggested_altitude_pct: suggestion,
+    suggestion_clamped: Math.abs(clamped - rawSuggestion) > 0.5,
+    label:
+      `${runs.length} runs above ${Math.round(threshold).toLocaleString()} ft ran ` +
+      `${Math.abs(observed_pct as number).toFixed(1)}% ` +
+      `${(observed_pct as number) >= 0 ? "slower" : "faster"} than your near-home baseline; the curve charges ` +
+      `${modeled_pct.toFixed(1)}% there — altitude ${suggestion}%` +
+      (current != null ? ` (you are at ${Math.round(current)}%)` : ""),
+  };
+}
 
 export function calibrate(input: CalibrationInput): Calibration | null {
   const { fit, course, activities, gradeCurve, currentCalibrationPct } = input;
@@ -289,6 +531,15 @@ export function calibrate(input: CalibrationInput): Calibration | null {
     flags.push({ id: "grade-curve", severity: "watch", label: "no personal grade curve", detail: "Climb cost falls back to a generic model; run the stream sync to fit your own." });
   }
 
+  const altitude = calibrateAltitude({
+    activities,
+    meanElevationFtById: input.meanElevationFtById,
+    homeElevationFt: input.homeElevationFt,
+    dRefMi: dRef,
+    nowMs,
+    currentAltitudePct: input.currentAltitudePct,
+  });
+
   return {
     runs: rows,
     by_distance,
@@ -302,6 +553,7 @@ export function calibrate(input: CalibrationInput): Calibration | null {
     anchor_hi_mi: anchorHi,
     suggested_calibration_pct,
     extrapolation,
+    altitude,
     flags,
   };
 }

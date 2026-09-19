@@ -61,6 +61,33 @@ const GRADE_RANGE_PCT = 30;
 const GRADE_MIN_BIN_N = 25;
 const RECENCY_TAU_DAYS = 75; // matches web/src/race/pacing.ts fitPacing
 
+/**
+ * Distance-weighted mean elevation of a run, ft — the same ruler
+ * web/src/race/pacing.ts's meanEleBetween() prices a race segment with, so
+ * the altitude back-test compares like with like. Distance-weighted, not a
+ * plain average of the samples: streams are sampled in TIME, so a plain mean
+ * overweights the slow (climbing) parts and reads high by a few hundred feet
+ * on a steep run — which is exactly the bias the back-test is trying to
+ * measure.
+ *
+ * @param {number[]} distance metres, cumulative
+ * @param {number[]} altitude metres
+ * @returns {number|null} ft, or null when the stream covers no distance
+ */
+function meanElevationFt(distance, altitude) {
+  const n = Math.min(distance?.length ?? 0, altitude?.length ?? 0);
+  if (n < 2) return null;
+  let num = 0, den = 0;
+  for (let i = 1; i < n; i++) {
+    const w = distance[i] - distance[i - 1];
+    if (!(w > 0)) continue;
+    num += ((altitude[i] + altitude[i - 1]) / 2) * w;
+    den += w;
+  }
+  if (!(den > 0)) return null;
+  return (num / den) / M_PER_FT;
+}
+
 function movingAvg(arr, w) {
   const half = Math.floor(w / 2);
   const out = new Array(arr.length);
@@ -384,6 +411,12 @@ async function main() {
 
   // ── Detection pass: every qualifying activity with a cached altitude stream ─
   const climbs = [];
+  // Per-activity mean elevation, for the altitude back-test in
+  // web/src/race/calibration.ts (PRD-v2 §2). The streams live in a gitignored
+  // cache the browser cannot read, so the ONE number the back-test needs out
+  // of each of them rides along in climbs.json — which the race view already
+  // fetches — rather than becoming a second endpoint.
+  const activityElevations = [];
   let scanned = 0;
   let pending = 0;
   let noAltitude = 0;
@@ -404,6 +437,14 @@ async function main() {
     const raw = [];
     for (let i = 0; i < n; i++) {
       raw.push({ mi: distance[i] / M_PER_MI, ele_ft: altitude[i] / M_PER_FT });
+    }
+    const meanEleFt = meanElevationFt(distance, altitude);
+    if (meanEleFt != null) {
+      activityElevations.push({
+        activity_id: a.id,
+        date: a.date,
+        mean_ele_ft: Math.round(meanEleFt),
+      });
     }
     const { grid, rawGrid } = smoothProfile(raw);
     for (const c of detectClimbs(grid)) {
@@ -432,6 +473,7 @@ async function main() {
     activities_scanned: scanned,
     activities_pending: pending,
     climbs,
+    activity_elevations: activityElevations.sort((x, y) => y.date.localeCompare(x.date)),
   };
   await writeJsonAtomic(OUT_PATH, payload);
 
