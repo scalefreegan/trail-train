@@ -192,8 +192,17 @@ function CaffeineChart({ caf, clock, finishH, heat, night, kg }: {
           </g>
         ))}
 
-        <path d={`${path} L${px(x1).toFixed(1)} ${py(0).toFixed(1)} L${px(x0).toFixed(1)} ${py(0).toFixed(1)} Z`} fill="var(--lamp)" opacity={0.13} />
-        <path d={path} fill="none" stroke="var(--lamp)" strokeWidth={1.8} strokeLinejoin="round" />
+        {/* caf.curve is [] when sun is unknown (planCaffeine hands back an
+            empty, honest schedule rather than guessing — see caffeine.ts).
+            `path` is then "", and closing it into a fill/stroke would emit
+            a moveto-less "d" (" L… L… Z") that Chromium rejects outright —
+            skip both curve paths rather than draw from an empty point list. */}
+        {path && (
+          <>
+            <path d={`${path} L${px(x1).toFixed(1)} ${py(0).toFixed(1)} L${px(x0).toFixed(1)} ${py(0).toFixed(1)} Z`} fill="var(--lamp)" opacity={0.13} />
+            <path d={path} fill="none" stroke="var(--lamp)" strokeWidth={1.8} strokeLinejoin="round" />
+          </>
+        )}
 
         {caf.doses.map((d) => {
           const y = py(caf.curve[Math.min(caf.curve.length - 1, Math.round((d.h + 0.02 - x0) / (caf.curve[1].h - caf.curve[0].h)))]?.mg ?? 0);
