@@ -6,6 +6,16 @@ import fs from 'node:fs'
 import os from 'node:os'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
+// Every request-time `import(path.join(projectRoot, 'scripts/*.mjs'))` below
+// goes through Node's ESM loader cache, which is per-process: the first
+// request after the dev server starts loads and caches the module, and every
+// later request — even one made after you've saved a change to that
+// scripts/*.mjs file — keeps running the cached copy for the rest of that
+// `vite` process's life. There is no cache-busting query string on any of
+// these imports (PR #23 review round 1, finding 5). Restart the dev server
+// after editing anything under scripts/ or the "fix" you're testing may just
+// be the old code running again.
+
 // Cross-site request guard for the state-changing dev endpoints. These
 // middlewares spawn subprocesses (the `claude` CLI, the sync scripts) and
 // write files, with no auth — fine for a localhost tool, EXCEPT that a
@@ -79,6 +89,50 @@ function crossSiteBlocked(req: IncomingMessage, res: ServerResponse): boolean {
   }
   return false
 }
+
+// Every race slug becomes a filesystem path segment under races/<slug>/, so
+// the kebab shape IS the traversal guard: no dots, no separators, nothing to
+// escape the folder. This is the one check that has to run on every slug a
+// client supplies, wherever it arrives from — a URL segment (raceResultApi)
+// or a JSON body field (raceBuildApi, racePlanApi, raceIntakeApi, the
+// /api/race-intake/refresh leg of raceRefreshApi) — before that string
+// touches raceDir/loadResult/archiveRace/buildRace/planRace/runIntake or a
+// path.join. PR #23 review round 1, finding 1: raceResultApi shipped without
+// this because it rolled its own ad hoc slug capture instead of sharing one
+// helper with its siblings. Decodes first, so a slug arriving pre-encoded
+// (`..%2f..`) is judged on what it decodes to, not on the encoded literal;
+// malformed percent-encoding fails closed. Returns the decoded, validated
+// slug, or null — callers still choose the response: 400 for a request that
+// was clearly meant to name a slug (raceResultApi, the body-slug endpoints),
+// or next() for a route that plainly belongs to a different plugin (raceEditApi
+// and the /api/races/:slug/refresh review mount in raceRefreshApi instead
+// fold this same shape check directly into their own route-matching regex,
+// so a non-kebab segment never matches their route at all).
+const KEBAB_SLUG_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/
+function parseSlugParam(raw: string): string | null {
+  let slug: string
+  try {
+    slug = decodeURIComponent(raw)
+  } catch {
+    return null
+  }
+  return KEBAB_SLUG_RE.test(slug) ? slug : null
+}
+
+// PR #23 review round 1, finding 4: raceBuildApi, racePlanApi, raceIntakeApi
+// and raceRefreshApi each spawn a paid `claude -p` turn (plan/intake/refresh)
+// or run a long CPU pass (build), and write races/<slug>/*.json atomically at
+// the end. A double-click, or two browser tabs open to the same race, fires
+// two concurrent requests: two concurrent agent turns silently double the
+// bill, and two concurrent writers to the same file interleave via
+// writeJsonAtomic (whichever settles last wins, silently discarding the
+// other run's result) instead of erroring. One Set for the dev server's
+// lifetime, keyed "<endpoint>:<slug>" (raceIntakeApi, which may not have a
+// slug yet for a brand-new race, keys on its derived slug hint or else the
+// site_url) — a request for a key already in the Set gets 409 instead of
+// starting a second run, and every acquirer releases its key in `finally`,
+// including on a thrown error or a client disconnect.
+const inFlightSlugs = new Set<string>()
 
 // Dev-only middleware: POST /api/refresh runs the three sync scripts in
 // sequence and streams progress lines back as Server-Sent Events.
