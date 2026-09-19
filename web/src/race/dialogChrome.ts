@@ -170,6 +170,19 @@ export function useDialog({ onClose, locked, label }: {
   };
 }
 
+/** A network-level fetch failure (dev server unreachable — killed, crashed,
+    a phone that lost the LAN) throws a bare `TypeError: Failed to
+    fetch`/`Load failed`, which is a JS runtime detail, not something to put
+    in front of an athlete (PR #23 review round 2, draft finding 5 /
+    resilience finding 6). An HTTP error response is a real `Error` carrying
+    the server's own message and passes through unchanged. Shared by every
+    dialog that hits the dev API directly (RaceIntake's save/activate, the
+    race switcher) rather than each re-deriving its own copy. */
+export function friendlyFetchError(e: unknown): string {
+  if (e instanceof TypeError) return "server unreachable — is Basecamp running?";
+  return e instanceof Error ? e.message : String(e);
+}
+
 export const inputStyle: CSSProperties = {
   background: "var(--night-deep)", border: "1px solid var(--edge-bright)",
   color: "var(--mist)", fontSize: 12.5, padding: "7px 10px", outline: "none",

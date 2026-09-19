@@ -28,7 +28,7 @@ import { RaceDayRoute } from "./race/RaceDay";
 import { RACE_DAY_HASH, useHashRoute } from "./race/hashRoute";
 import { useCourse, useRaceResult } from "./race/useRaceData";
 import { ArchiveRace } from "./race/ArchiveRace";
-import { runStage } from "./race/dialogChrome";
+import { friendlyFetchError, runStage } from "./race/dialogChrome";
 import type { RaceView } from "./data";
 import { raceClockHM } from "./race/pacing";
 import { ThemePreview } from "./themes/ThemePreview";
@@ -218,17 +218,6 @@ function cursorForSlug(list: RaceListEntry[], slug: string | null): number {
     i += rowsFor(r);
   }
   return 0;
-}
-
-/** A network-level fetch failure (the dev server unreachable — killed,
-    crashed, or a phone that lost the LAN) throws a bare `TypeError: Failed
-    to fetch`/`Load failed`, which is a JS runtime detail, not something to
-    show an athlete (PR #23 review round 2, resilience finding 6). An HTTP
-    error response is a real `Error` with the server's own message and
-    should pass through unchanged. */
-function friendlyFetchError(e: unknown): string {
-  if (e instanceof TypeError) return "server unreachable — is Basecamp running?";
-  return e instanceof Error ? e.message : String(e);
 }
 
 /** The kinds of row in the menu, in order: "No race (generic)", one per race

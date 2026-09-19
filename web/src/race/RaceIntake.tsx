@@ -30,7 +30,7 @@ import { THEME_PRESET_NAMES } from "../themes/presets";
 import { ThemePreview } from "../themes/ThemePreview";
 import type { Course, RaceAidStation, RaceBlock, RaceConfig } from "./types";
 import type { NutritionConfig } from "./nutrition-config";
-import { cellStyle, inputStyle, runStage, useDialog, type StageEvent, type StageRow, type StageState } from "./dialogChrome";
+import { cellStyle, friendlyFetchError, inputStyle, runStage, useDialog, type StageEvent, type StageRow, type StageState } from "./dialogChrome";
 
 
 /* ------------------------------------------------------------------ */
@@ -170,7 +170,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   const [themePreset, setThemePreset] = useState<string>(() => readNewRaceDraft(openAt)?.themePreset ?? "");
   const [uploads, setUploads] = useState<{ name: string; path: string; bytes: number }[]>(() => readNewRaceDraft(openAt)?.uploads ?? []);
   const [uploading, setUploading] = useState(false);
-  const [restoredDraft] = useState(() => readNewRaceDraft(openAt) !== null);
+  const [restoredDraft, setRestoredDraft] = useState(() => readNewRaceDraft(openAt) !== null);
 
   // run
   const [running, setRunning] = useState(false);
@@ -208,6 +208,21 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
     } catch { /* private browsing / storage disabled — best-effort only */ }
   }, [openAt, siteUrl, extraUrls, year, notes, themePreset, uploads]);
 
+  // The fix for round 1's data-loss bug (D8, above) had no escape hatch of
+  // its own — ESC, backdrop, CANCEL and even a reload all now RESTORE a
+  // half-typed form, but nothing could ever CLEAR one short of blanking
+  // every field and removing every upload by hand (PR #23 review round 2,
+  // draft finding 10). True whenever there is something a reopen would
+  // bring back — restored on open, or typed since — not only right after a
+  // restore, so the control stays available for the rest of this session too.
+  const hasDraftContent = draftHasContent({ siteUrl, extraUrls, notes, uploads });
+  const discardDraft = () => {
+    setSiteUrl(""); setExtraUrls(""); setYear(String(new Date().getFullYear() + 1));
+    setNotes(""); setThemePreset(""); setUploads([]);
+    setRestoredDraft(false); // otherwise the "restored your unsent form" copy outlives the form it described
+    try { localStorage.removeItem(NEW_RACE_DRAFT_KEY); } catch { /* best-effort */ }
+  };
+
   const upload = async (files: FileList | null) => {
     if (!files?.length) return;
     setUploading(true);
@@ -225,7 +240,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
         setUploads((prev) => [...prev.filter((u) => u.path !== saved.path), saved]);
       }
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyFetchError(e));
     } finally {
       setUploading(false);
     }
@@ -294,7 +309,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
         for (const s of STAGES) if (next[s.id] === "pending") next[s.id] = "skipped";
         return next;
       });
-      setRunError((e as Error).message);
+      setRunError(friendlyFetchError(e));
     } finally {
       setRunning(false);
       abortRef.current = null;
@@ -348,9 +363,24 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
         ) : (
           <>
             <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "24px 28px 8px" }}>
-              {restoredDraft && (
-                <p style={{ fontSize: 11, color: "var(--lamp)", margin: "0 0 16px", lineHeight: 1.5 }}>
-                  restored your unsent form — closing this dialog kept what you had typed and any file already uploaded
+              {(restoredDraft || hasDraftContent) && (
+                <p style={{
+                  fontSize: 11, color: "var(--lamp)", margin: "0 0 16px", lineHeight: 1.5,
+                  display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 10,
+                }}>
+                  <span>
+                    {restoredDraft
+                      ? "restored your unsent form — closing this dialog kept what you had typed and any file already uploaded"
+                      : "this form is saved as you type — closing the dialog will bring it back"}
+                  </span>
+                  <button
+                    type="button"
+                    className="chip"
+                    onClick={discardDraft}
+                    style={{ fontSize: 8.5, flexShrink: 0 }}
+                  >
+                    discard draft
+                  </button>
                 </p>
               )}
               <Block>
@@ -837,7 +867,12 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setFills({}); setAcked({});
       onReload();
     } catch (e) {
-      setSaveError((e as { errors?: string[] }).errors ?? [(e as Error).message]);
+      // `put()`'s own refusals carry `.errors` (the server's per-field
+      // messages); anything else — most commonly a network-level failure —
+      // gets the same friendly mapping the stage path already had (round 2,
+      // draft finding 5: a killed dev server rendered the bare `Failed to
+      // fetch` here instead).
+      setSaveError((e as { errors?: string[] }).errors ?? [friendlyFetchError(e)]);
     } finally {
       setBusy(null);
     }
@@ -884,7 +919,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       }
       onDone();
     } catch (e) {
-      load((e as { errors?: string[] }).errors ?? [(e as Error).message]);
+      load((e as { errors?: string[] }).errors ?? [friendlyFetchError(e)]);
     } finally {
       setBusy(null);
     }
