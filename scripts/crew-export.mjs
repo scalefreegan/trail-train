@@ -37,12 +37,12 @@ import { existsSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { fileURLToPath } from "node:url";
 
-import { arg } from "./lib.mjs";
+import { arg, projectRoot } from "./lib.mjs";
 import { loadRaceFolder } from "./race-config.mjs";
 import { raceLocalParts, raceStart } from "./clock.mjs";
 import { DEFAULT_LONG_RUN_REF_MI, loadProfile } from "./profile.mjs";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = projectRoot();
 
 /** Strava's snapshot is metric; the pacing fit is imperial. Same constants as
     web/src/providers.tsx and scripts/facts.mjs — the fit must be given exactly

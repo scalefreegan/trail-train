@@ -27,6 +27,31 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 // missing Origin is allowed — that is a non-browser caller (curl, an internal
 // call), which is not the CSRF threat model (a local process needs no CSRF).
 // The Host is also pinned to loopback as cheap defense against DNS-rebinding.
+// The repo root the dev API reads and writes under: config/, races/ and
+// web/public/*.json, plus every scripts/*.mjs this file imports at request
+// time. Normally the parent of web/ — the checkout this config lives in.
+//
+// TRAIL_PROJECT_ROOT overrides it with an absolute path. That is what lets
+// the Playwright suite (web/tests/) run the REAL app against a throwaway temp
+// root of synthetic fixtures: without it a UI test would read — and the save
+// and acknowledge flows would WRITE — the developer's own gitignored
+// snapshots and race folders. The scripts honour the same variable through
+// scripts/lib.mjs `projectRoot()`, so a request that reaches one of them
+// lands in the same place this file does.
+//
+// A relative or empty value is ignored (it would resolve against whatever cwd
+// vite happened to start in), with a warning so a typo cannot masquerade as a
+// test quietly passing against the real repo.
+function resolveProjectRoot(): string {
+  const raw = (process.env.TRAIL_PROJECT_ROOT ?? '').trim()
+  if (raw) {
+    if (path.isAbsolute(raw)) return path.resolve(raw)
+    console.warn(`[dev-api] ignoring TRAIL_PROJECT_ROOT="${raw}" — it must be an absolute path`)
+  }
+  return path.resolve(__dirname, '..')
+}
+const PROJECT_ROOT = resolveProjectRoot()
+
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
 
 // Race-day mode (`#/race-day`) is read on a phone, which means the dev
@@ -230,7 +255,7 @@ function normalizeUrlForLock(url: string): string {
 // sequence and streams progress lines back as Server-Sent Events.
 // The dashboard's resync button hits this endpoint.
 function refreshApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   return {
     name: 'trail-train-refresh-api',
     apply: 'serve',
@@ -397,7 +422,7 @@ const RETRY_MIN_RUNWAY_MS = 60_000
 const RETRY_NUDGE = '\n\nIMPORTANT: a previous attempt at this exact question ran out of tool calls before answering. Do NOT open any files this time. Answer now, directly, from what you already know, and say plainly which data you could not consult.'
 
 function chatApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   return {
     name: 'trail-train-chat-api',
     apply: 'serve',
@@ -804,7 +829,7 @@ function chatApi(): Plugin {
 //     goals.json:   the whole generic-mode goals object (PRD §5.3) — it is
 //                   small, wholly settings-owned, and nothing else writes it
 function settingsApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   const profilePath = path.join(projectRoot, 'config', 'profile.json')
   // Local calendar date (en-CA formats as YYYY-MM-DD) — must match the
   // local-date expiry semantics in scripts/state.mjs, not UTC, or items
@@ -1201,7 +1226,7 @@ function settingsApi(): Plugin {
 // It shares the /api/races mount with the race LIST, so it must be registered
 // BEFORE raceSwitchApi and hand anything that is not an asset path to next().
 function raceAssetApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   type AssetMod = {
     parseAssetUrl: (rest: string) => { slug: string; name: string } | null
     checkAssetRequest: (root: string, slug: string, name: string) =>
@@ -1312,7 +1337,7 @@ function raceAssetApi(): Plugin {
    not a POST to the bare prefix is handed straight on — the slug sub-paths
    belong to the result / asset / refresh / edit plugins. */
 function raceCreateApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   /* Five fields and a file path; a body bigger than this is not one. */
   const BODY_MAX_BYTES = 64 * 1024
   /* Same rule as the intake's uploads: a path the server will read has to be
@@ -1459,7 +1484,7 @@ function raceCreateApi(): Plugin {
 // Both refuse cross-site callers: the list carries local config, and the POST
 // changes what the coach trains for.
 function raceSwitchApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   /* A slug and a mode; a body bigger than this is not one. */
   const BODY_MAX_BYTES = 16 * 1024
   type RaceRow = {
@@ -1595,7 +1620,7 @@ function raceSwitchApi(): Plugin {
 // race LIST. Anything under /api/races that is not one of these two routes is
 // passed straight through to it.
 function raceResultApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   /* An activity id, a handful of official splits and a note. */
   const BODY_MAX_BYTES = 64 * 1024
   type RaceResultMod = {
@@ -1714,7 +1739,7 @@ function raceResultApi(): Plugin {
    would otherwise answer this with the race LIST. It next()s anything that
    is not its own route. */
 function raceTrackerApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   type TrackersMod = {
     pollTracker: (o: Record<string, unknown>) => Promise<unknown>
     createTrackerCache: () => Map<string, unknown>
@@ -1798,7 +1823,7 @@ function raceTrackerApi(): Plugin {
    nothing about which race the athlete trains for, and the review dialog moves
    the pointer through POST /api/race/activate like everything else does. */
 function raceEditApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   /* A folder's editable subset: an aid table, a block and a few scalars. */
   const BODY_MAX_BYTES = 512 * 1024
 
@@ -1986,7 +2011,7 @@ function raceEditApi(): Plugin {
 // already computed. Read-only, but it still refuses cross-site callers: the
 // reply carries local config a hostile tab has no business reading.
 function raceApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   return {
     name: 'trail-train-race-api',
     apply: 'serve',
@@ -2028,7 +2053,7 @@ function raceApi(): Plugin {
 // The client (useNutrition, race/nutrition.ts) always sends it now; the
 // pointer-based fallback stays for any caller that doesn't (a bare curl).
 function nutritionFile(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   return {
     name: 'trail-train-nutrition-file',
     apply: 'serve',
@@ -2104,7 +2129,7 @@ const UPLOAD_EXTS = new Set(['.pdf', '.gpx', '.kml', '.txt', '.html', '.htm'])
    upload. Nothing here touches config/active-race.json — rebuilding a folder
    says nothing about which race the athlete is training for. */
 function raceBuildApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   /* A slug and nothing else; a body bigger than this is not one. */
   const BODY_MAX_BYTES = 64 * 1024
 
@@ -2228,7 +2253,7 @@ function raceBuildApi(): Plugin {
    touches config/active-race.json — planning a folder says nothing about which
    race the athlete is training for. */
 function racePlanApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   /* A slug and a flag; a body bigger than this is not one. */
   const BODY_MAX_BYTES = 64 * 1024
 
@@ -2373,7 +2398,7 @@ function racePlanApi(): Plugin {
    otherwise swallow it), and /api/races/<slug>/refresh before raceSwitchApi,
    whose GET /api/races answers the race LIST for anything on that prefix. */
 function raceRefreshApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   /* A slug, a note and a handful of upload paths; a body bigger than this is
      not one. */
   const BODY_MAX_BYTES = 1024 * 1024
@@ -2574,7 +2599,7 @@ function raceRefreshApi(): Plugin {
 }
 
 function raceIntakeApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   /* The intake call takes absolute upload paths from the client, so pin them
      to the dirs the upload endpoint writes to (plus the repo, for a file the
      owner already keeps in the project). Without this, a POST could ask the
@@ -2795,7 +2820,7 @@ function raceIntakeApi(): Plugin {
 // offline). Pinning the read to an explicit slug closes the race outright:
 // the response can no longer depend on when the pointer happened to change.
 function courseFiles(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   const serve = (name: 'course.json' | 'crew-base.json') =>
     async (req: IncomingMessage, res: ServerResponse) => {
       if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
@@ -2909,7 +2934,7 @@ function courseFiles(): Plugin {
    would export a sheet half from one course and half from another. Nothing
    here writes race.json. */
 function crewExportApi(): Plugin {
-  const projectRoot = path.resolve(__dirname, '..')
+  const projectRoot = PROJECT_ROOT
   /* Seven knobs and a handful of per-station stop overrides. */
   const BODY_MAX_BYTES = 64 * 1024
 
@@ -3070,6 +3095,13 @@ export default defineConfig({
   // hands on everything else, so the slug-path plugins above are unaffected by
   // where it sits among them.
   plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceTrackerApi(), crewExportApi(), raceAssetApi(), raceRefreshApi(), raceEditApi(), raceCreateApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
+  // The snapshots the dashboard fetches statically (/strava.json, /state.json,
+  // /oura.json, /coach.json, …) live in web/public, so the static side has to
+  // follow TRAIL_PROJECT_ROOT exactly like the API side does — otherwise a
+  // Playwright run pointed at a temp root would still serve the developer's
+  // real snapshots to the page. Identical to vite's default (<root>/public)
+  // whenever the variable is unset.
+  publicDir: path.join(PROJECT_ROOT, 'web', 'public'),
   // Two entries. index.html is the app; crew.html is the crew export's shell
   // (PRD v2 §5) — built here so `npm run build` type-checks and bundles it
   // like everything else, and built AGAIN as one inlined file by

@@ -2,6 +2,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * Read a `--name value` CLI argument. Returns `true` for bare flags
@@ -63,3 +64,39 @@ export const UNDER_TEST = Boolean(process.env.NODE_TEST_CONTEXT);
 export function note(...args) {
   if (!UNDER_TEST) console.log(...args);
 }
+
+/**
+ * The repo root every script reads and writes under.
+ *
+ * Normally that is the parent of scripts/ — the checkout the file lives in.
+ * `TRAIL_PROJECT_ROOT` overrides it with an absolute path, which is how the
+ * Playwright suite (web/tests/) points the whole app — dev server and every
+ * scripts/*.mjs the dev server imports at request time — at a throwaway temp
+ * root full of synthetic fixtures instead of the developer's real, gitignored
+ * snapshots. Without it a UI test would read (and the save/acknowledge flows
+ * would WRITE) `config/`, `races/` and `web/public/*.json` in the working
+ * checkout.
+ *
+ * The override is deliberately process-wide and read on every call rather
+ * than cached at module load: the dev server imports these modules lazily,
+ * long after startup, and a cached value would silently pin whichever root
+ * happened to be current at first import.
+ *
+ * A relative or empty value is ignored (an override that resolved against an
+ * unknown cwd would be worse than no override), with one warning so a typo
+ * does not look like the test silently passing against the real repo.
+ * @returns {string} absolute path to the project root
+ */
+export function projectRoot() {
+  const raw = (process.env.TRAIL_PROJECT_ROOT ?? "").trim();
+  if (raw) {
+    if (path.isAbsolute(raw)) return path.resolve(raw);
+    if (!warnedRelativeRoot) {
+      warnedRelativeRoot = true;
+      console.warn(`[trail] ignoring TRAIL_PROJECT_ROOT="${raw}" — it must be an absolute path`);
+    }
+  }
+  return DEFAULT_ROOT;
+}
+let warnedRelativeRoot = false;
+const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");

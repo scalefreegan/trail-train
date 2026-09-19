@@ -28,7 +28,6 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { listRaces, loadRaceFolder, raceKind, validateRaceJson, validateSingleActive } from "./race-config.mjs";
 import { draftValidationErrors } from "./race-intake.mjs";
@@ -36,8 +35,9 @@ import { validateBlockTargets, validateNutrition } from "./race-plan.mjs";
 import { isBlockStale } from "./race-edit.mjs";
 import { normalizeNutrition } from "../web/src/race/nutrition-config.ts";
 import { buildRace } from "./race-build.mjs";
+import { projectRoot } from "./lib.mjs";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = projectRoot();
 
 /** The reference folder every determinism assertion is made against. */
 export const REFERENCE_SLUG = "mogollon-monster-100-2026";

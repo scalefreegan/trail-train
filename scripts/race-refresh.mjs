@@ -41,7 +41,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { arg, note, writeJsonAtomic } from "./lib.mjs";
+import { arg, note, projectRoot, writeJsonAtomic } from "./lib.mjs";
 import { APPLYING_MARKER, SHADOW, applyingPath, diffPath, loadRaceFolder, loadRaceFolderAt, raceDir, shadowDir } from "./race-config.mjs";
 import { runIntake } from "./race-intake.mjs";
 import { buildRace } from "./race-build.mjs";
@@ -57,7 +57,7 @@ import { mergeRaceFolder } from "./race-merge.mjs";
 // working unchanged.
 export { SHADOW, shadowDir, diffPath, APPLYING_MARKER, applyingPath };
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = projectRoot();
 
 /** The files a refresh may ever rewrite. plan.json and result.json are not
     here and are not an oversight — see the header. */

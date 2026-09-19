@@ -10,6 +10,7 @@
 // No I/O beyond the subprocess: the callers own their prompts and their files.
 
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 /** The CLI's structured subtype for "ran out of tool calls before answering". */
 export const MAX_TURNS_SUBTYPE = "error_max_turns";
@@ -141,6 +142,45 @@ export function extractJson(text) {
 const RETRY_MIN_RUNWAY_MS = 60_000;
 
 /**
+ * Test seam: `TRAIL_FAKE_AGENT=<file>` makes every headless exchange resolve
+ * with that file's contents instead of spawning the `claude` CLI.
+ *
+ * The agent-backed flows (resync, chat, race intake) are the slowest and
+ * least deterministic parts of the app — a real spawn costs tens of seconds,
+ * needs a live sign-in, and returns different prose every run. The Playwright
+ * suite (web/tests/) sets this so those flows can be driven end to end, through
+ * the same parse/merge/write code the real reply goes through, in milliseconds.
+ *
+ * Deliberately a FILE rather than an inline string: the canned replies are
+ * multi-kilobyte JSON documents, and a test that wants a different one per
+ * request only has to rewrite the file between requests.
+ *
+ * Read synchronously, per call, on purpose — the file is small, the caller is
+ * already async, and a cached read would stop a test from swapping replies
+ * mid-run. A missing or unreadable file is a hard error: silently falling back
+ * to a real spawn would turn a typo in a test into a live `claude` invocation.
+ *
+ * @returns {Promise<{text: string, wrapper: object, retried: boolean, elapsedMs: number}>|null}
+ *   the canned result, or null when the variable is not set (spawn for real)
+ */
+function fakeAgentReply() {
+  const file = (process.env.TRAIL_FAKE_AGENT || "").trim();
+  if (!file) return null;
+  let text;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (e) {
+    return Promise.reject(new Error(`TRAIL_FAKE_AGENT=${file} could not be read: ${e.message}`));
+  }
+  return Promise.resolve({
+    text: text.trim(),
+    wrapper: { ...parseWrapper(""), isError: false, result: text.trim(), subtype: "success" },
+    retried: false,
+    elapsedMs: 0,
+  });
+}
+
+/**
  * Spawn `claude -p --output-format json` and resolve with its result text.
  *
  * Running out of tool calls is the one failure the caller can do something
@@ -174,6 +214,8 @@ export function runClaudeJson({
   retryMaxTurns = 3,
   onNotice = () => {},
 }) {
+  const canned = fakeAgentReply();
+  if (canned !== null) return canned;
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     let proc = null;
