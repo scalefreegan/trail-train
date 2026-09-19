@@ -88,7 +88,7 @@ async function overflow(page: Page) {
 }
 
 test.describe('no horizontal scroll', () => {
-  test.beforeEach(async ({ page, request }) => {
+  test.beforeEach(async ({ request }) => {
     // A race is active throughout: the "race" and "fuel" tabs only exist with
     // one, and race-day mode needs the 100-miler's live clock.
     await setActiveRace(request, MM.slug, 'train')

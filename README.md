@@ -186,10 +186,12 @@ cd web
 npm run check:races                       # the whole harness
 TRAIL_CHECK_QUIET=1 npm run check:races   # one line per section
 npm run check:races -- --live             # + re-fetch a draft's sources
+npm run check:races -- --no-ui            # without the browser flows
 ```
 
-The regression harness for the race pipeline. Five sections, each printing
-PASS, FAIL or SKIP with a reason; any FAIL exits non-zero.
+The regression harness for the race pipeline. Six sections, each printing
+PASS, FAIL or SKIP with a reason; any FAIL exits non-zero. The run prints its
+own wall time at the end of the summary.
 
 1. **Race literals** — the grep gate. A race is a folder, so no race's name,
    short code, trailhead town or aid-station name may appear in code again.
@@ -222,6 +224,12 @@ PASS, FAIL or SKIP with a reason; any FAIL exits non-zero.
    flagged for a human. The draft is uncommitted, so this section SKIPs with
    a notice in a fresh checkout.
 5. **Build and tests** — `npm run build` and `npm test`, with their tails.
+6. **Browser flows** — `npm run test:ui`, the Playwright suite below, with its
+   tail and its wall time. It is the only section that drives a browser, so it
+   is the only one that can be turned off: `--no-ui`, or `TRAIL_CHECK_NO_UI=1`
+   where nobody is there to pass a flag. Either way it reports SKIP *with the
+   switch that skipped it* — a check that quietly does not run is worse than
+   one that fails.
 
 `--live` adds one thing to section 4: each source the draft cites is
 re-fetched and hashed against the cached copy in its `sources/`, so an
@@ -234,13 +242,45 @@ it is off by default, and it is not a re-intake — re-running the agent is what
 
 ```bash
 cd web
-npm run test:ui                    # the four core flows, ~12 s
+npm run test:ui                    # every flow, ~30 s
 npx playwright test -c tests/playwright.config.ts --headed    # watch them
+npx playwright test -c tests/playwright.config.ts print.spec  # one file
 ```
 
-`web/tests/` drives the real app in a real browser: the generic dashboard,
-the race switcher (generic → a race → back), the review dialog's fill /
-acknowledge / save, and race-day's position hold.
+`web/tests/` drives the real app in a real browser, one flow per spec file:
+
+| spec | what it drives |
+| --- | --- |
+| `generic.spec.ts` | the dashboard with no race active, every panel, clean console |
+| `switcher.spec.ts` | generic → a race → back, and an archive opening read-only |
+| `review.spec.ts` | the review dialog's fill / acknowledge / save round trip |
+| `race-day.spec.ts` | race-day mode's position hold (phone viewport) |
+| `print.spec.ts` | what the three 3×5 cards and the crew sheet put on paper |
+| `a11y.spec.ts` | every dialog: role, name, initial focus, Tab trap, Escape |
+| `archive.spec.ts` | the archive dialog's activity picker and its ±1-day rule |
+| `offline.spec.ts` | race day with the laptop gone, and no browsed archive in it |
+| `refresh.spec.ts` | refresh from sources: the diff, then Accept and Reject |
+| `crew-export.spec.ts` | exporting the crew page and opening it with no network |
+| `widths.spec.ts` | 320 / 390 / 768 / 1024 / 1280, four views, no sideways scroll |
+| `b-race.spec.ts` | the tune-up quick form — skipped until bead 04 lands |
+
+Two of them are worth knowing about before you read them.
+
+**`print.spec.ts` does not assert on the DOM.** The printable documents are
+light-paper components in a dark app, and everything that makes them come out
+right lives in `@media print` — invisible on screen, which is how it rots. So
+it prints the page the way a printer would (`page.pdf()` renders in print
+media), rasterises each sheet with **ghostscript** and counts light pixels. A
+card that has fallen back to the dark palette prints at under 20 % light
+against a bar of 88 %. Without `gs` on `PATH` the section skips, loudly.
+
+**`refresh.spec.ts` reaches no further than 127.0.0.1.** `scripts/race-intake
+.mjs` really fetches a race's `links.site`, so the launcher points one fixture
+race at a synthetic race website this same vite serves (`web/tests/fixtures/
+site/`), and `TRAIL_FAKE_AGENT` answers the agent turn from
+`web/tests/fixtures/agent/`. Everything between those two — the validation,
+the course build, the merge, `diff.json`, Accept and Reject — is the real
+code.
 
 It runs against a **throwaway project root**, never your checkout.
 `web/tests/launch.mjs` builds a temp directory with synthetic config, race
@@ -262,7 +302,13 @@ that possible, and both are inert when unset:
   the agent-backed flows can be driven without a live sign-in. A missing file
   is a hard error, never a quiet fall-through to a real spawn. The dashboard's
   streaming `/api/chat` endpoint spawns the CLI directly and is *not* covered
-  by it.
+  by it. Global setup sets it for the whole run, so no test can reach a real
+  spawn even by accident.
+- **`TRAIL_CREW_SHELL=<file>`** — the prebuilt single-file crew shell the crew
+  export renders into, instead of running `vite build` per request. The suite
+  builds it once from the checkout's `web/` (~25 ms) and passes it down, since
+  a temp project root has no `crew.html`, no vite config and no
+  `node_modules` to build one with.
 
 The fixtures are synthetic by construction and stay that way:
 `scripts/ui-fixtures.test.mjs` greps every committed fixture — and the

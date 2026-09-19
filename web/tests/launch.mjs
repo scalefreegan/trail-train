@@ -151,7 +151,12 @@ function mondayOf(iso) {
  * a countdown that expires: leaving them alone would mean the race-day spec
  * quietly stops testing race day the first time the fixture's year goes by.
  *
- * @param {{now?: Date}} [opts]
+ * @param {{now?: Date, siteBase?: string|null}} [opts] `siteBase` is the base
+ *   URL the server will answer on — the fixture race whose `siteFixture` is
+ *   set has its links.site pointed at a page under it, so "refresh from
+ *   sources" fetches this server rather than the internet. Global setup picks
+ *   the port before calling this, which is the only reason it can be known
+ *   here.
  * @returns {Promise<string>} the absolute temp root
  */
 export async function makeProjectRoot({ now = new Date(), siteBase = null } = {}) {

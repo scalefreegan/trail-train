@@ -30,6 +30,9 @@ import {
   softieChecks,
   sunWithin,
   tail,
+  SECTIONS,
+  formatDuration,
+  uiSkipReason,
 } from "./check-races.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
@@ -376,4 +379,47 @@ test("checkFolders catches a tune-up whose parent folder is not there", async (t
 test("tail keeps the last non-blank lines", () => {
   assert.deepEqual(tail("a\n\nb\nc\n\n", 2), ["b", "c"]);
   assert.deepEqual(tail("only", 5), ["only"]);
+});
+
+/* ---------------------- 6. the browser-flows section -------------------- */
+
+test("the UI section runs unless it is explicitly turned off", () => {
+  assert.equal(uiSkipReason([], {}), null);
+  assert.equal(uiSkipReason(["node", "check-races.mjs"], {}), null);
+  assert.equal(uiSkipReason(["node", "check-races.mjs", "--live"], {}), null);
+});
+
+test("--no-ui and TRAIL_CHECK_NO_UI each name themselves as the reason", () => {
+  // The reason is printed, so a skipped section says which switch skipped it
+  // rather than leaving the reader to guess between the two.
+  assert.equal(uiSkipReason(["--no-ui"], {}), "--no-ui");
+  assert.equal(uiSkipReason([], { TRAIL_CHECK_NO_UI: "1" }), "TRAIL_CHECK_NO_UI=1");
+  // The flag wins when both are set — it is the more deliberate of the two.
+  assert.equal(uiSkipReason(["--no-ui"], { TRAIL_CHECK_NO_UI: "1" }), "--no-ui");
+});
+
+test("an empty or blank TRAIL_CHECK_NO_UI is not a skip", () => {
+  // `TRAIL_CHECK_NO_UI= npm run check:races` is how a shell UNSETS it for one
+  // command; reading that as "skip" would be the opposite of what was asked.
+  assert.equal(uiSkipReason([], { TRAIL_CHECK_NO_UI: "" }), null);
+  assert.equal(uiSkipReason([], { TRAIL_CHECK_NO_UI: "   " }), null);
+  assert.equal(uiSkipReason([], { TRAIL_CHECK_NO_UI: undefined }), null);
+});
+
+test("durations read as seconds under a minute and as minutes above it", () => {
+  assert.equal(formatDuration(0), "0.0s");
+  assert.equal(formatDuration(29_300), "29.3s");
+  assert.equal(formatDuration(59_940), "59.9s");
+  assert.equal(formatDuration(60_000), "1m 00s");
+  assert.equal(formatDuration(72_400), "1m 12s");
+  assert.equal(formatDuration(3_600_000), "60m 00s");
+});
+
+test("the browser flows are their own section of the gate, after the harness", () => {
+  // Its own section, not folded into `harness`: it is the one part that needs
+  // a browser and the one part that can be skipped, and a section that can be
+  // skipped has to be separately reportable.
+  const ids = SECTIONS.map((s) => s.id);
+  assert.deepEqual(ids, ["literals", "folders", "reference", "draft", "harness", "ui"]);
+  assert.equal(ids.indexOf("ui"), ids.length - 1);
 });
