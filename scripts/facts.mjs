@@ -47,6 +47,34 @@ const weekIndexFor = (date, blockStart) => {
 };
 
 /**
+ * Warnings already printed by this process, for the same reason
+ * profile.mjs's `warned` Set exists: trainingContext()/computeFacts() are
+ * called on every coach-chat message and every loadFactsFromRoot call, and a
+ * race whose timezone stays unconfirmed for the length of a draft reprints
+ * this warning on EVERY one of those — noise that trains the reader to skip
+ * it, and, per profile.mjs's own comment, enough interleaved child-process
+ * writes to intermittently corrupt `node --test`'s message framing.
+ */
+const daysUntilRaceWarned = new Set();
+
+/** Forget what has been printed — for tests that assert on the warnings. */
+export function resetDaysUntilRaceWarnings() {
+  daysUntilRaceWarned.clear();
+}
+
+/** Each distinct warning printed once per process. Keyed on the race
+    identity + timezone value rather than the message text, so a race whose
+    slug/date stays the same but whose timezone is corrected mid-session
+    warns again — the whole point is to stop repeating the SAME diagnosis,
+    not to permanently silence a race that later has a real, different problem. */
+function warnDaysUntilRaceOnce(race, message) {
+  const key = `${race?.slug ?? race?.date}:${race?.timezone}`;
+  if (daysUntilRaceWarned.has(key)) return;
+  daysUntilRaceWarned.add(key);
+  console.warn(message);
+}
+
+/**
  * Days remaining until race day, counted against the race's OWN wall clock
  * (scripts/clock.mjs's raceStart) rather than the machine's zone — a race
  * whose timezone differs from the athlete's laptop must not read as "started"
@@ -55,9 +83,10 @@ const weekIndexFor = (date, blockStart) => {
  * Falls back to a naive local-machine parse of `race.date` (the pre-fix
  * behavior) only when the timezone is missing, not a zone this runtime
  * recognizes, or the race's date/start_time can't be parsed as race-local
- * wall clock — with a console.warn either way, since a silent fallback here
- * is exactly the bug this function replaces (facts.mjs:251-253 in the
- * review: a Phoenix race trained for from Denver read as already started).
+ * wall clock — with a console.warn either way (deduped per race+timezone,
+ * see warnDaysUntilRaceOnce), since a silent fallback here is exactly the
+ * bug this function replaces (facts.mjs:251-253 in the review: a Phoenix
+ * race trained for from Denver read as already started).
  * @param {{date?:string, start_time?:string, timezone?:string}|null} race
  * @param {number} now epoch ms
  * @returns {number|null}
@@ -65,7 +94,8 @@ const weekIndexFor = (date, blockStart) => {
 function computeDaysUntilRace(race, now) {
   if (!race?.date) return null;
   if (!race.timezone || !isValidTimeZone(race.timezone)) {
-    console.warn(
+    warnDaysUntilRaceOnce(
+      race,
       `• race.timezone ${JSON.stringify(race.timezone)} missing/invalid — ` +
         `days_until computed in the machine's local zone, not the race's`,
     );
@@ -74,7 +104,8 @@ function computeDaysUntilRace(race, now) {
       const startMs = raceStart(race.date, race.start_time ?? "00:00", race.timezone).getTime();
       return Math.ceil((startMs - now) / 86400000);
     } catch (e) {
-      console.warn(
+      warnDaysUntilRaceOnce(
+        race,
         `• race ${JSON.stringify(race.date)} ${JSON.stringify(race.start_time)} in zone ` +
           `${race.timezone} unparseable (${e.message}) — days_until computed in the machine's local zone`,
       );

@@ -9,7 +9,21 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { ROLLING_WEEKS, computeFacts, loadFactsFromRoot } from "./facts.mjs";
+import { ROLLING_WEEKS, computeFacts, loadFactsFromRoot, resetDaysUntilRaceWarnings } from "./facts.mjs";
+
+/** Run `fn` with console.warn captured, returning what it printed — same
+    helper profile.test.mjs uses for its own once-per-process warning. */
+async function captureWarn(fn) {
+  const lines = [];
+  const orig = console.warn;
+  console.warn = (...args) => lines.push(args.join(" "));
+  try {
+    const value = await fn();
+    return { value, lines };
+  } finally {
+    console.warn = orig;
+  }
+}
 
 const M_PER_MI = 1609.344;
 const M_PER_FT = 0.3048;
@@ -151,6 +165,23 @@ test("days_until is computed in the race's own zone, not the process's", () => {
   const f = computeFacts({ activities: [] }, null, ctx, now);
   assert.equal(f.days_until, 1, `process TZ was ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
   assert.equal(f.race.days_until, 1);
+});
+
+test("the missing/invalid-timezone warning is printed once per race per process, not on every call", async (t) => {
+  resetDaysUntilRaceWarnings();
+  t.after(resetDaysUntilRaceWarnings);
+  const raceA = { name: "San Juan Softie 100", date: "2026-10-16" }; // no timezone
+  const raceB = { name: "Draft Race", date: "2027-06-05" }; // different race, also no timezone
+
+  const { lines } = await captureWarn(() => {
+    computeFacts({ activities: [] }, null, { race: raceA }, NOW);
+    computeFacts({ activities: [] }, null, { race: raceA }, NOW); // same race again — trainingContext()
+    computeFacts({ activities: [] }, null, { race: raceA }, NOW); // feeds this on every coach-chat message
+    computeFacts({ activities: [] }, null, { race: raceB }, NOW); // a DIFFERENT race still warns its own once
+  });
+
+  assert.equal(lines.length, 2, `expected exactly 2 warnings (one per distinct race), got: ${JSON.stringify(lines)}`);
+  assert.ok(lines.every((l) => /timezone.*missing\/invalid/.test(l)), lines.join(" | "));
 });
 
 test("race mode without a usable block.json falls back to the rolling window", () => {
