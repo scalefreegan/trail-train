@@ -125,6 +125,50 @@ test("altitude_significant adds the acclimation demand and the projection caveat
   assert.match(p, /caveat every projected pace, split and finish time as optimistic/);
 });
 
+/* -------- (b2) tune-up races inside the block (PRD-v2 §3) -------- */
+
+test("two tune-up races: the paragraph names both and says to plan around them", async () => {
+  const { race } = await loadRaceFolder(ROOT, "_fixtures/crewless-50k");
+  const p = raceParagraph({
+    ...race,
+    b_races: [
+      { slug: "cinder-cone-25k-2027", name: "Cinder Cone 25K", date: "2027-02-27", distance_mi: 15.5, gain_ft: 2200, weeks_out: 11 },
+      { slug: "jemez-mountain-50k-2027", name: "Jemez Mountain 50K", date: "2027-05-08", distance_mi: 31, gain_ft: 5000, weeks_out: 1 },
+    ],
+  }, { daysUntil: 240 });
+
+  assert.match(
+    p,
+    /Tune-up races already entered inside this block: Cinder Cone 25K on 2027-02-27, 11 weeks out \(15\.5 mi \/ 2,200 ft\); Jemez Mountain 50K on 2027-05-08, 1 week out \(31 mi \/ 5,000 ft\)\./,
+  );
+  assert.match(p, /real race efforts on fixed dates, not sessions you can move/);
+  assert.match(p, /short taper into each one and a recovery week out of it/);
+  assert.match(p, /count its distance and vert inside that week's volume rather than on top of it/);
+  assert.match(p, /facts\.race\.b_races/);
+  // and the race's own sentences are untouched by the addition
+  assert.match(p, /Its 5 aid stations —/);
+});
+
+test("a tune-up on race week, and one stranded after race day, both read correctly", async () => {
+  const { race } = await loadRaceFolder(ROOT, "_fixtures/crewless-50k");
+  const p = raceParagraph({
+    ...race,
+    b_races: [
+      { slug: "shakeout-10k-2027", name: "Shakeout 10K", date: "2027-05-15", distance_mi: 6.2, gain_ft: 400, weeks_out: 0 },
+      { slug: "late-50k-2027", name: "Late 50K", date: "2027-06-12", distance_mi: 31, gain_ft: 3000, weeks_out: -4 },
+    ],
+  });
+  assert.match(p, /Shakeout 10K on 2027-05-15, race week \(6\.2 mi \/ 400 ft\)/);
+  assert.match(p, /Late 50K on 2027-06-12, 4 weeks AFTER race day — it is outside this block/);
+});
+
+test("no tune-ups: the paragraph says nothing about them at all", async () => {
+  const { race } = await loadRaceFolder(ROOT, "_fixtures/crewless-50k");
+  for (const b_races of [undefined, [], null]) {
+    assert.doesNotMatch(raceParagraph({ ...race, b_races }), /Tune-up races/);
+  }
+});
+
 /* -------- (c) generic mode -------- */
 
 test("generic mode: a goals paragraph, a rolling window, no race week", () => {

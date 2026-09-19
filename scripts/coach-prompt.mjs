@@ -88,6 +88,42 @@ function raceWeekday(race) {
   try { return weekdayName(race.date, race.timezone); } catch { return null; }
 }
 
+/**
+ * The tune-up races entered inside this block (PRD-v2 §3), as sentences for
+ * the race paragraph.
+ *
+ * A B-race is not a workout the coach prescribed — it is a date the athlete
+ * has already paid for and will run at race effort — so the calendar has to
+ * bend around it: a short taper in, a recovery week out, and the week's
+ * volume counted with the race in it. Saying that explicitly is the whole
+ * point of the list; without it the coach plans a 40-mile week on top of a
+ * 50k the athlete is going to race anyway.
+ * @param {{slug, name, date, distance_mi, gain_ft, weeks_out}[]} bRaces
+ * @returns {string[]}
+ */
+function bRaceSentences(bRaces) {
+  const list = Array.isArray(bRaces) ? bRaces.filter((b) => b && (b.name || b.slug)) : [];
+  if (!list.length) return [];
+  const when = (b) => {
+    if (typeof b.weeks_out !== "number") return "";
+    if (b.weeks_out === 0) return ", race week";
+    if (b.weeks_out < 0) return `, ${Math.abs(b.weeks_out)} weeks AFTER race day — it is outside this block`;
+    return `, ${b.weeks_out} week${b.weeks_out === 1 ? "" : "s"} out`;
+  };
+  const spec = (b) => [
+    num(b.distance_mi) ? `${num(b.distance_mi)} mi` : null,
+    numRound(b.gain_ft) ? `${numRound(b.gain_ft)} ft` : null,
+  ].filter(Boolean).join(" / ");
+  const entries = list.map((b) => {
+    const s = spec(b);
+    return `${b.name || b.slug} on ${b.date ?? "an unrecorded date"}${when(b)}${s ? ` (${s})` : ""}`;
+  });
+  return [
+    `Tune-up races already entered inside this block: ${entries.join("; ")}.`,
+    "These are real race efforts on fixed dates, not sessions you can move. Plan a short taper into each one and a recovery week out of it, count its distance and vert inside that week's volume rather than on top of it, and say in the plan which weeks are shaped by which tune-up. They are in facts.race.b_races.",
+  ];
+}
+
 /* -------- the two paragraphs -------- */
 
 /**
@@ -134,6 +170,8 @@ export function raceParagraph(race, opts = {}) {
   if (stations) {
     sentences.push(`Its ${stations} aid stations — mile, cutoff hour, and crew / drop-bag / pacer access for each — are in facts.race.aid_stations. Plan the race against that table, never against a remembered course.`);
   }
+
+  sentences.push(...bRaceSentences(race.b_races));
 
   // Altitude is the one feature that changes the CALENDAR, not just the
   // sessions: acclimation and arrival timing have to be decided weeks out,
