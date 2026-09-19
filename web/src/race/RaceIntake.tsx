@@ -123,14 +123,22 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
 
   const [error, setError] = useState<string | null>(null);
 
+  // The review screen (mounted below once a draft exists) runs its own
+  // stage-again / save / activate calls, on its own `busy`/`stage` state we
+  // can't see from here — it reports up through this so a close mid-activate
+  // is blocked the same way a close mid-run is (see RaceRefresh.tsx's single
+  // `locked`, which this mirrors across the two components).
+  const [reviewLocked, setReviewLocked] = useState(false);
+  const locked = running || reviewLocked;
+
   // Escape closes. The draft is on disk, so there is nothing here to lose —
-  // except mid-run, where closing would orphan a stream the server is still
-  // writing from, so the run has to be the thing that finishes.
+  // except mid-run (or mid-review-screen-write), where closing would orphan
+  // a stream or leave a second concurrent write racing a reopened dialog.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !running) onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !locked) onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, running]);
+  }, [onClose, locked]);
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const upload = async (files: FileList | null) => {
@@ -232,7 +240,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
     : "the race's own site, whatever documents you have, and one run of the three intake stages";
 
   return createPortal(
-    <Backdrop onClose={() => { if (!running) onClose(); }}>
+    <Backdrop onClose={() => { if (!locked) onClose(); }}>
       <div
         className="panel notch"
         role="dialog"
@@ -252,8 +260,8 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
             <div className="eyebrow" style={{ color: "var(--mist-dim)" }}>{header}</div>
             <div style={{ fontSize: 11.5, color: "var(--mist-mute)", marginTop: 3 }}>{subtitle}</div>
           </div>
-          <button className="chip" onClick={onClose} disabled={running} style={{ fontSize: 9 }}>
-            {running ? "running…" : "close esc"}
+          <button className="chip" onClick={onClose} disabled={locked} style={{ fontSize: 9 }}>
+            {locked ? "working…" : "close esc"}
           </button>
         </div>
 
@@ -262,6 +270,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
             slug={slug}
             onDone={() => { reload(); onClose(); }}
             onReload={reload}
+            onLockedChange={setReviewLocked}
           />
         ) : (
           <>
@@ -390,7 +399,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
                   review draft
                 </button>
               )}
-              <button className="chip" onClick={onClose} disabled={running} style={{ fontSize: 10 }}>
+              <button className="chip" onClick={onClose} disabled={locked} style={{ fontSize: 10 }}>
                 {ranAnything ? "save draft" : "cancel"}
               </button>
               <button
@@ -479,7 +488,13 @@ export function StageList({ stages, state, log }: {
     save writes what was changed and nothing else. */
 type AidEdit = Partial<Pick<RaceAidStation, "name" | "total_mi" | "cutoff_h" | "crew" | "drop_bag" | "pacers" | "gpx_wpt">>;
 
-function ReviewScreen({ slug, onDone, onReload }: { slug: string; onDone: () => void; onReload: () => void }) {
+function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
+  slug: string; onDone: () => void; onReload: () => void;
+  /** Reports "a write or a stage re-run is in flight" up to RaceIntake, whose
+      Escape/backdrop/close-button guards can't see this component's own
+      `busy`/`stage` state otherwise (PR #23 review round 1, finding 6). */
+  onLockedChange: (locked: boolean) => void;
+}) {
   const [data, setData] = useState<ReviewPayload | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string[] | null>(null);
@@ -496,6 +511,19 @@ function ReviewScreen({ slug, onDone, onReload }: { slug: string; onDone: () => 
   const [themeEdit, setThemeEdit] = useState<string | null>(null);
   const [fills, setFills] = useState<Record<string, string>>({});
   const [acked, setAcked] = useState<Record<string, boolean>>({});
+
+  // Mirrors RaceRefresh.tsx's single `locked = running || busy !== null`,
+  // split across the parent (`running`) and this component (`busy`/`stage`)
+  // — reported up on every change so the dialog's close paths see it.
+  useEffect(() => {
+    onLockedChange(busy !== null || stage !== null);
+  }, [busy, stage, onLockedChange]);
+
+  // runStageAgain's SSE stream has nothing to cancel it if the dialog closes
+  // (unmounting this component) mid-run, unlike run()'s top-level abortRef —
+  // stored here so the cleanup below can reach the CURRENT run's controller.
+  const stageAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => stageAbortRef.current?.abort(), []);
 
   // Re-read on mount, and whenever a caller bumps the pulse — the folder is
   // the source of truth and a refused write must never leave the screen
@@ -545,6 +573,7 @@ function ReviewScreen({ slug, onDone, onReload }: { slug: string; onDone: () => 
     setStageLine("");
     setSaveError(null);
     const ctrl = new AbortController();
+    stageAbortRef.current = ctrl;
     try {
       await runStage(
         which === "build" ? "/api/race-intake/build" : "/api/race-intake/plan",
@@ -562,6 +591,7 @@ function ReviewScreen({ slug, onDone, onReload }: { slug: string; onDone: () => 
       setSaveError([(e as Error).message]);
     } finally {
       setStage(null);
+      stageAbortRef.current = null;
     }
   };
 

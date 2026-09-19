@@ -38,10 +38,12 @@ export function useCourse() {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!resolved) return;
+    let stale = false;
     const cacheKey = slugKey("course", slug);
     // a load failure is not an absence: fall back to the last copy that DID
     // load (see offlineCache.ts) and label it, rather than blanking the view
     const fallback = (message: string) => {
+      if (stale) return;
       const cached = cacheGet<Course>(cacheKey);
       setMissing(false);
       if (cached) { setData(cached); setError(`${message} — showing the last saved copy`); }
@@ -49,13 +51,16 @@ export function useCourse() {
     };
     fetch(`/course.json?t=${Date.now()}`)
       .then(async (r) => {
+        if (stale) return;
         if (r.status === 404) { setData(null); setMissing(true); setError(null); return; }
         if (!r.ok) { fallback(`course.json failed to load (HTTP ${r.status})`); return; }
         const d = await r.json().catch(() => { throw new Error("parse"); });
         cachePut(cacheKey, d);
+        if (stale) return;
         setData(d); setMissing(false); setError(null);
       })
       .catch(() => fallback("course.json corrupt or unreadable"));
+    return () => { stale = true; };
   }, [refreshKey, resolved, slug]);
   return { course: data, missing, error };
 }
@@ -75,24 +80,29 @@ export function useCrewBase() {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!resolved) return;
+    let stale = false;
     // cached like course.json: race-day mode shows the crew drive and the
     // leave-by time off this file, and they are exactly what a crew captain
     // checks from a car park with one bar of signal
     const cacheKey = slugKey("crew-base", slug);
     const fallback = (message: string) => {
+      if (stale) return;
       const cached = cacheGet<CrewBase>(cacheKey);
       if (cached) { setData(cached); setError(`${message} — showing the last saved copy`); }
       else setError(message);
     };
     fetch(`/crew-base.json?t=${Date.now()}`)
       .then(async (r) => {
+        if (stale) return;
         if (r.status === 404) { setData(null); setError(null); return; }
         if (!r.ok) { fallback(`crew-base.json failed to load (HTTP ${r.status})`); return; }
         const d = await r.json().catch(() => { throw new Error("parse"); });
         cachePut(cacheKey, d);
+        if (stale) return;
         setData(d); setError(null);
       })
       .catch(() => fallback("crew-base.json corrupt or unreadable"));
+    return () => { stale = true; };
   }, [refreshKey, resolved, slug]);
   return { crewBase: data, error };
 }

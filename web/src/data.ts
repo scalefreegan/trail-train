@@ -1,6 +1,9 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { isValidTimeZone, raceStart } from "./race/clock";
-import { ACTIVE_RACE_CACHE, cacheGet, cachePut } from "./race/offlineCache";
+import {
+  activeRaceCacheKey, cacheGet, cachePut,
+  getLastCachedSlug, getLastTrainSlug, setLastCachedSlug, setLastTrainSlug,
+} from "./race/offlineCache";
 import { fmtRaceClock } from "./race/pacing";
 import type { ActiveBlock, ActiveRaceResponse, RaceConfig as RaceJson, RaceStatus } from "./race/types";
 
@@ -433,10 +436,32 @@ type ActiveRaceResult =
  *
  * A 404 never reaches here — that is the endpoint being absent (a static
  * preview build), which is an answer, not a failure.
+ *
+ * The cache is namespaced by slug (see offlineCache.ts), so this prefers the
+ * entry for the athlete's actual training target — `getLastTrainSlug()` —
+ * over whatever race the switcher happened to be pointed at last. A
+ * view-mode payload (an archived/draft race merely browsed) is never handed
+ * back AS the active plan: if the only cached copy is one of those, the
+ * fallback stays an error and says so, rather than quietly training the
+ * athlete's phone toward a race they were just looking at.
  */
 function activeRaceFallback(message: string): ActiveRaceResult {
-  const cached = cacheGet<ActiveRaceResponse>(ACTIVE_RACE_CACHE);
-  return cached ? { kind: "ok", data: cached, staleMessage: message } : { kind: "error", message };
+  const trainSlug = getLastTrainSlug();
+  if (trainSlug !== undefined) {
+    const cached = cacheGet<ActiveRaceResponse>(activeRaceCacheKey(trainSlug));
+    if (cached) return { kind: "ok", data: cached, staleMessage: message };
+  }
+  // No train-mode cache to fall back to. If the last thing cached was a
+  // browsed (view-mode) race, say so explicitly rather than leaving the
+  // athlete guessing why the plan they were training for didn't come back.
+  const lastSlug = getLastCachedSlug();
+  if (lastSlug !== undefined) {
+    const cachedAny = cacheGet<ActiveRaceResponse>(activeRaceCacheKey(lastSlug));
+    if (cachedAny?.mode === "view") {
+      return { kind: "error", message: `${message} — only a view-mode copy of "${lastSlug}" is cached offline` };
+    }
+  }
+  return { kind: "error", message };
 }
 
 /**
@@ -457,7 +482,15 @@ function requestActiveRace(key: number): Promise<ActiveRaceResult> {
           if (r.status === 404) return { kind: "missing" };
           if (!r.ok) return activeRaceFallback(`active race failed to load (HTTP ${r.status})`);
           const data = (await r.json()) as ActiveRaceResponse;
-          cachePut(ACTIVE_RACE_CACHE, data);
+          // Namespace by the payload's OWN slug (train mode: `active`; view
+          // mode: `viewing`; generic mode: null) — never a single shared key
+          // that a browsed archive could overwrite. Only a train-mode payload
+          // (mode !== "view") updates `lastTrainSlug`, so browsing an
+          // archived race can never make it the offline fallback's answer.
+          const ownSlug = data.mode === "view" ? (data.viewing ?? null) : (data.active ?? null);
+          cachePut(activeRaceCacheKey(ownSlug), data);
+          setLastCachedSlug(ownSlug);
+          if (data.mode !== "view") setLastTrainSlug(ownSlug);
           return { kind: "ok", data };
         })
         // a rejected json() lands here too: unparseable is corrupt, not absent

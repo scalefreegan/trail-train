@@ -8,6 +8,7 @@ import {
   type ResolvedFeatures, type VisibleColumns, type VisiblePanels,
 } from "./features";
 import type { Course, RaceConfig } from "./types";
+import { migrateLegacyKnobs } from "./knobMigration";
 
 /* ------------------------------------------------------------------ */
 /*  Shared race-plan wiring.                                          */
@@ -88,43 +89,12 @@ export function usePersistedStops(key: string | null) {
   return [state.v, set, clear] as const;
 }
 
-/** The knobs that belong to a race rather than to the athlete. */
-const RACE_KNOBS = [
-  "goal_h", "fatigue_pct_v2", "calibration_pct", "restraint_pct",
-  "aid_stop_min", "crew_stop_min", "stop_overrides",
-] as const;
-
 /**
  * Where the un-namespaced keys land when nothing is active: MM100 is the only
  * race that existed before race folders did, so anything stored under the bare
  * `race.*` keys was set while planning it.
  */
 const LEGACY_KNOB_SLUG = "mogollon-monster-100-2026";
-
-const migratedSlugs = new Set<string>();
-
-/**
- * One-time move of `race.<knob>` → `race.<slug>.<knob>`, then delete the old
- * key. Runs once per slug per page load (the Set), and is a no-op on the
- * second visit because the legacy keys are gone.
- *
- * An existing namespaced value always wins: it was written by this race's
- * sliders, whereas the bare key may be a leftover from a different one.
- */
-function migrateLegacyKnobs(slug: string) {
-  if (migratedSlugs.has(slug)) return;
-  migratedSlugs.add(slug);
-  if (typeof localStorage === "undefined") return;
-  try {
-    for (const knob of RACE_KNOBS) {
-      const legacy = localStorage.getItem(`race.${knob}`);
-      if (legacy == null) continue;
-      const key = `race.${slug}.${knob}`;
-      if (localStorage.getItem(key) == null) localStorage.setItem(key, legacy);
-      localStorage.removeItem(`race.${knob}`);
-    }
-  } catch { /* private mode */ }
-}
 
 export type RacePlan = {
   course: Course | null;
@@ -223,11 +193,18 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
   const { nutrition, error: nutritionError } = useNutrition();
   const { physiology, error: physiologyError } = usePhysiology();
 
+  // The bare `race.<knob>` keys only ever belonged to MM100 (LEGACY_KNOB_SLUG)
+  // — run the migration into THAT namespace unconditionally, independent of
+  // whichever race happens to be viewed first after this ships. Targeting the
+  // viewed slug here would (and once did) silently copy MM100's tuned sliders
+  // into an unrelated race's namespace on a first load that lands elsewhere
+  // (PR #23 review round 1, finding 3).
+  migrateLegacyKnobs(typeof localStorage === "undefined" ? undefined : localStorage, LEGACY_KNOB_SLUG);
+
   // Knobs are namespaced by race: a goal set for a 38 h hundred means nothing
   // on a 50k, and switching the active race used to inherit the last race's
   // sliders silently. null until the pointer resolves — see usePersistedNumber.
   const knobSlug = raceResolved ? (activeSlug ?? LEGACY_KNOB_SLUG) : null;
-  if (knobSlug) migrateLegacyKnobs(knobSlug);
   const knob = (name: string) => (knobSlug ? `race.${knobSlug}.${name}` : null);
 
   // 85 % of the cutoff, to the nearest half hour: a goal that is ambitious but
