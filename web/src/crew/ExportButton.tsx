@@ -19,7 +19,7 @@ import type { CrewKnobs } from "./crewData";
 type State = { phase: "idle" | "working" } | { phase: "error"; message: string };
 
 export function CrewExportButton() {
-  const { raceConfig, settings, physiology, features } = useRacePlan();
+  const { raceConfig, settings, physiology, features, acclimation } = useRacePlan();
   const [state, setState] = useState<State>({ phase: "idle" });
 
   const run = async () => {
@@ -35,9 +35,16 @@ export function CrewExportButton() {
       // Resolved here, from the same three inputs useRacePlan gives
       // projectRace, so the exported sheet cannot disagree with the table on
       // screen — including the feature gate, which is what a race that
-      // declares `features.altitude: false` relies on.
+      // declares `features.altitude: false` relies on, and the acclimation
+      // days, which are the calendar derivation with the athlete's override
+      // already applied (PRD-v2 §2). A hardcoded 0 here would hand the crew
+      // a sheet projected off a race the planner is not projecting.
       altitude: features.altitude
-        ? { pct: settings.altitude, homeElevationFt: physiology.home_elevation_ft, acclimationDays: 0 }
+        ? {
+            pct: settings.altitude,
+            homeElevationFt: physiology.home_elevation_ft,
+            acclimationDays: acclimation.days,
+          }
         : null,
     };
     try {
