@@ -90,12 +90,12 @@ test("it answers exactly what the real adapter answers, but says it is a fixture
   assert.deepEqual({ ...mine, source: null }, { ...real, source: null });
 });
 
-test("a runner not on the page is null, not an error", async () => {
+test("a runner not on the page is a reason-tagged null tracker, not an error", async () => {
   const miss = await fixture.fetchLastCheckpoint(
     { url: FIXTURE_URL, bib: "12345", stations: SOFTIE_STATIONS },
     fetchStub(SPREAD),
   );
-  assert.equal(miss, null);
+  assert.deepEqual(miss, { tracker: null, reason: "runner_not_found" });
 });
 
 test("a URL it does not claim is a tagged bad_request, not a crash", async () => {

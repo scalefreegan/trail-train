@@ -271,6 +271,11 @@ export type TrackerResponse = {
   /** adapter id, e.g. "opensplittime" */
   source: string;
   tracker: TrackerCheckpoint | null;
+  /** why `tracker` is null: a bib/name that matches nobody
+      ("runner_not_found") vs a matched runner with no checkpoint past the
+      start yet ("no_checkpoint"). null whenever `tracker` is not null.
+      Additive — a screen that ignores it still reads exactly as before. */
+  reason: "runner_not_found" | "no_checkpoint" | null;
   /** true when this answer came from the cache rather than a fresh poll */
   cached: boolean;
   /** how old the cached answer is, seconds; 0 on a fresh poll */

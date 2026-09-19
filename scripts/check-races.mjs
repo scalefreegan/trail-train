@@ -838,7 +838,10 @@ async function checkTrackers(root) {
       errors.push(`${fx.file}: the ${fx.adapter} adapter threw — ${e.message}`);
       continue;
     }
-    if (!hit) {
+    // A miss is now a reason-tagged {tracker: null, reason} rather than a
+    // bare null (scripts/trackers/opensplittime.mjs) — either shape means
+    // the fixture's bib no longer matches a real checkpoint row.
+    if (!hit || !hit.station) {
       errors.push(`${fx.file}: bib ${fx.bib} is no longer found on the page`);
       continue;
     }

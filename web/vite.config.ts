@@ -1928,15 +1928,22 @@ function raceTrackerApi(): Plugin {
           // does. `unsupported` is its own status rather than a 404 or a
           // 500: the tracker was RECOGNISED (MAProgress) and cannot be
           // read, which is a different thing for the client to say than
-          // "no tracker here" or "we broke".
+          // "no tracker here" or "we broke". `ambiguous` is its own status
+          // too: a name that ties across two or more entrants is a request
+          // the athlete has to resolve (set a bib), not a server failure.
           const code = (e as { code?: string }).code
           const status =
             code === 'not_found' ? 404
             : code === 'bad_request' ? 400
             : code === 'unsupported' ? 501
             : code === 'bad_gateway' ? 502
+            : code === 'ambiguous' ? 409
             : 500
-          json(res, status, { error: (e as Error).message, code: code ?? null })
+          json(res, status, {
+            error: (e as Error).message,
+            code: code ?? null,
+            ...(code === 'ambiguous' ? { candidates: (e as { candidates?: number }).candidates ?? null } : {}),
+          })
         }
       })
     },
