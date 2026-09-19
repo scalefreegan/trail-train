@@ -272,16 +272,6 @@ export function freePort() {
 }
 
 /**
- * Start `vite` on a free port against `root`, and resolve once it answers.
- *
- * Never port 38100: that is the developer's own dev server, pinned and
- * strictPort'd, and a test run must not be able to take it or be confused by
- * it. The suite's own port is picked per run.
- *
- * @param {{root: string, fakeAgentFile?: string, crewShell?: string, port?: number}} opts
- * @returns {Promise<{baseURL: string, port: number, stop: () => Promise<void>, log: () => string}>}
- */
-/**
  * Build the single-file crew shell from THIS checkout and return its path, for
  * TRAIL_CREW_SHELL.
  *
@@ -300,10 +290,15 @@ export async function buildCrewShell() {
 }
 
 /** One attempt: spawn vite on `port` and wait for it to answer. Rejects with
-    `.exitedEarly = true` when the process itself exited before ever
-    answering HTTP (as opposed to `waitForHttp`'s own readiness timeout,
-    which means vite is up but the app never became ready — a real failure,
-    not a port race, and never retried). */
+ *  `.exitedEarly = true` when the process itself exited before ever
+ *  answering HTTP (as opposed to `waitForHttp`'s own readiness timeout,
+ *  which means vite is up but the app never became ready — a real failure,
+ *  not a port race, and never retried).
+ *
+ *  @param {number} port
+ *  @param {{root: string, fakeAgentFile?: string, crewShell?: string}} opts
+ *  @returns {Promise<{baseURL: string, port: number, stop: () => Promise<void>, log: () => string}>}
+ */
 async function attemptStart(port, { root, fakeAgentFile, crewShell }) {
   const baseURL = `http://127.0.0.1:${port}`
   const proc = spawn(
@@ -349,6 +344,16 @@ async function attemptStart(port, { root, fakeAgentFile, crewShell }) {
   return { baseURL, port, stop, log: () => log }
 }
 
+/**
+ * Start `vite` on a free port against `root`, and resolve once it answers.
+ *
+ * Never port 38100: that is the developer's own dev server, pinned and
+ * strictPort'd, and a test run must not be able to take it or be confused by
+ * it. The suite's own port is picked per run.
+ *
+ * @param {{root: string, fakeAgentFile?: string, crewShell?: string, port?: number}} opts
+ * @returns {Promise<{baseURL: string, port: number, stop: () => Promise<void>, log: () => string}>}
+ */
 export async function startServer({ root, fakeAgentFile, crewShell, port: given }) {
   const port = given ?? (await freePort())
   const opts = { root, fakeAgentFile, crewShell }
