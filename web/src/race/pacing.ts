@@ -236,6 +236,10 @@ export type AltitudeSummary = {
       in this plan, measured as (this projection − the same projection with
       the term off). Stops don't move, so it is all moving time. */
   added_h: number;
+  /** what the term WOULD add at the published curve (pct 100), whatever the
+      knob is set to. Equals added_h at 100 %; at 0 % it is the sentence
+      "this is what you have switched off". */
+  added_h_at_full: number;
   /** distance-weighted mean elevation of the whole course, ft */
   mean_ele_ft: number;
   /** the highest segment mean elevation on the course, ft */
@@ -578,13 +582,19 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   const altSegs = segs.map(({ st }, i) => {
     const x0 = i === 0 ? 0 : segs[i - 1].st.gpx_mi;
     const ele_ft = meanEleBetween(course.profile, x0, st.gpx_mi);
-    const penalty = altOpt
-      ? altitudeSlowdown({ elevationFt: ele_ft, homeElevationFt: altHomeFt, acclimationDays: altDays }) * (altPct / 100)
+    // `raw` is the published curve; `penalty` is what the knob asks for.
+    // Both are integrated below so the summary can report what the term is
+    // costing AND what it would cost at 100% — the difference is the whole
+    // content of "you have altitude switched off".
+    const raw = altOpt
+      ? altitudeSlowdown({ elevationFt: ele_ft, homeElevationFt: altHomeFt, acclimationDays: altDays })
       : 0;
-    return { x0, x1: st.gpx_mi, ele_ft, penalty, factor: 1 + penalty };
+    const penalty = raw * (altPct / 100);
+    return { x0, x1: st.gpx_mi, ele_ft, raw, penalty, factor: 1 + penalty, fullFactor: 1 + raw };
   });
-  const altAt = (mi: number) => altSegs.find((t) => mi >= t.x0 && mi < t.x1)?.factor
-    ?? altSegs[altSegs.length - 1]?.factor ?? 1;
+  const altSegAt = (mi: number) => altSegs.find((t) => mi >= t.x0 && mi < t.x1) ?? altSegs[altSegs.length - 1];
+  const altAt = (mi: number) => altSegAt(mi)?.factor ?? 1;
+  const altFullAt = (mi: number) => altSegAt(mi)?.fullFactor ?? 1;
 
   const pts = course.profile;
   const nPts = pts.length;
@@ -597,6 +607,9 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   // projecting the race twice) keeps the two runs identical in every other
   // respect, including the grade-curve anchoring above.
   const cumNoAlt = new Float64Array(nPts);
+  // …and the same integral at the FULL published curve, whatever the knob
+  // says, so the summary can price the term the athlete has turned down.
+  const cumFullAlt = new Float64Array(nPts);
   for (let k = 1; k < nPts; k++) {
     const step = Math.max(0, pts[k].mi - pts[k - 1].mi);
     const midMi = (pts[k].mi + pts[k - 1].mi) / 2;
@@ -609,7 +622,10 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
     for (const sc of ["best", "avg", "worst"] as Scenario[]) {
       const freshGradePace = Math.max(300, (pFlat + paceShift[sc]) * cal * gF);
       cum[sc][k] = cum[sc][k - 1] + step * freshGradePace * lateMult;
-      if (sc === "avg") cumNoAlt[k] = cumNoAlt[k - 1] + step * freshGradePace * groundMult;
+      if (sc === "avg") {
+        cumNoAlt[k] = cumNoAlt[k - 1] + step * freshGradePace * groundMult;
+        cumFullAlt[k] = cumFullAlt[k - 1] + step * freshGradePace * groundMult * altFullAt(midMi);
+      }
     }
     pacePoint[k - 1] = step > 0 ? (cum.avg[k] - cum.avg[k - 1]) / step : pacePoint[Math.max(0, k - 2)];
   }
@@ -795,6 +811,7 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
       home_assumed: altHomeFt == null,
       acclimation_days: altDays,
       added_h: Math.max(0, cumAt("avg", finishMi) - cumArrAt(cumNoAlt, finishMi)) / 3600,
+      added_h_at_full: Math.max(0, cumArrAt(cumFullAlt, finishMi) - cumArrAt(cumNoAlt, finishMi)) / 3600,
       mean_ele_ft: eleDen > 0 ? eleNum / eleDen : 0,
       max_seg_ele_ft: altSegs.reduce((m, s) => Math.max(m, s.ele_ft), 0),
       max_penalty: altSegs.reduce((m, s) => Math.max(m, s.penalty), 0),

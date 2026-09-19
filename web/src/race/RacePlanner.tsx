@@ -18,6 +18,7 @@ import {
   restraintWindowMi, raceDistanceMi, RESTRAINT_FATIGUE_PAYOFF,
   type StationProjection,
 } from "./pacing";
+import { ALTITUDE_THRESHOLD_FT } from "./altitude";
 import type { Course } from "./types";
 
 /** m:ss from seconds — rounds to whole seconds FIRST (independent
@@ -448,10 +449,17 @@ export function RacePlanner() {
   }, [result]);
   const hasActual = actualByStation.size > 0;
   const gridClass = "race-grid" + (hasActual ? " has-actual" : "");
-  const { fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides } = settings;
+  const { fatigue, calibration, restraint, goalH, altitude, aidStopMin, crewStopMin, stopOverrides } = settings;
   const { fatigue: setFatigue, calibration: setCalibration, restraint: setRestraint,
-    goalH: setGoalH, aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
+    goalH: setGoalH, altitude: setAltitude, aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
     stopOverride: setStopOverride, clearStopOverrides } = set;
+  // The altitude slider appears only where the model would do something: a
+  // course that never gets above the threshold would give it a knob wired to
+  // nothing (same rule as the crew-stop number on a crewless race). The test
+  // is the COURSE's elevation, not the knob's value, so turning the term down
+  // to 0 doesn't make the control that did it disappear.
+  const alt = proj?.altitude ?? null;
+  const showAltitude = features.altitude && alt != null && alt.max_seg_ele_ft > ALTITUDE_THRESHOLD_FT;
   // one printable document at a time — the print-isolation body classes
   // (crew-printing / card-printing) must never coexist
   const [openDoc, setOpenDoc] = useState<null | "crew" | "card" | "fuel" | "drops">(null);
@@ -562,6 +570,17 @@ export function RacePlanner() {
                 style={{ width: 70, accentColor: "var(--lamp)" }}
               />
             </label>
+            {showAltitude && (
+              <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                title={`how much of the modeled altitude penalty to apply — 100% is the published curve (nothing below ${u.elev(ALTITUDE_THRESHOLD_FT)} ${u.elevUnit}, then a per-1,000 ft cost above your acclimated elevation), 0% switches the term off. This course peaks at a ${u.elev(alt.max_seg_ele_ft)} ${u.elevUnit} segment; at ${altitude}% the model adds ${fmtElapsed(alt.added_h)} to the expected finish.`}>
+                altitude {altitude.toFixed(0)}%
+                <input
+                  type="range" min={0} max={150} step={5} value={altitude}
+                  onChange={(e) => setAltitude(Number(e.target.value))}
+                  style={{ width: 70, accentColor: "var(--lamp)" }}
+                />
+              </label>
+            )}
             <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               fatigue +{fatigue.toFixed(1)}%/10{u.distUnit}
               <input
@@ -906,6 +925,11 @@ export function RacePlanner() {
                     )}
                     {physiologyError && <span style={{ color: "var(--ember)" }}> · {physiologyError}</span>}
                     {" "}· tech: {course.aid_stations.filter((s) => (s.tech_pct ?? 0) > 0).map((s) => `${s.name.toLowerCase()} +${s.tech_pct}%`).join(", ") || "none"} · race-cal +{calibration}% all paces · restraint +{restraint}% thru mi {restraintWin?.fullMi.toFixed(0)} (fades by {restraintWin?.endMi.toFixed(0)}, restrained miles age ×{(1 - RESTRAINT_FATIGUE_PAYOFF * restraint / 100).toFixed(2)} on the fatigue clock) · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}{(columns.crew || columns.drop_bag) && `/${crewStopMin}`}m fresh
+                    {showAltitude && (
+                      <> · altitude {altitude}%: {alt.max_penalty > 0
+                        ? <>up to +{(alt.max_penalty * 100).toFixed(1)}% pace on the high segments, {fmtElapsed(alt.added_h)} added, measured from {alt.home_assumed ? "SEA LEVEL (set your home elevation in settings)" : `${u.elev(alt.home_ft)} ${u.elevUnit} home`}</>
+                        : <>off</>}</>
+                    )}
                   </span>
                 </>
               )}

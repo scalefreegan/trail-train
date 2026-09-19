@@ -208,6 +208,10 @@ test("altitude_pct 0 is off but still reports the course", () => {
   assert.equal(OFF.altitude.added_h, 0);
   assert.equal(OFF.altitude.max_penalty, 0);
   assert.equal(OFF.altitude.pct, 0);
+  // …including what is being declined: "the model wants 41 minutes and you
+  // have it switched off" is a different statement from "this race is flat"
+  assert.ok(relClose(OFF.altitude.added_h_at_full, ON.altitude.added_h, 1e-9),
+    `${OFF.altitude.added_h_at_full} vs ${ON.altitude.added_h}`);
   // …and the description of the COURSE is independent of the knob
   assert.ok(relClose(OFF.altitude.max_seg_ele_ft, ON.altitude.max_seg_ele_ft));
   assert.ok(relClose(OFF.altitude.mean_ele_ft, ON.altitude.mean_ele_ft));
@@ -232,6 +236,15 @@ test("the knob scales the term linearly", () => {
     assert.ok(relClose(half.stations[i].alt_penalty, ON.stations[i].alt_penalty / 2, 1e-12), ON.stations[i].station.name);
   }
   assert.ok(half.finish_h.avg > OFF.finish_h.avg && half.finish_h.avg < ON.finish_h.avg);
+  assert.ok(relClose(half.altitude.added_h, ON.altitude.added_h / 2, 1e-9));
+  // added_h_at_full describes the CURVE, so the knob does not move it
+  for (const p of [OFF, half, ON, project({ pct: 150, homeElevationFt: null, acclimationDays: 0 })]) {
+    assert.ok(relClose(p.altitude.added_h_at_full, ON.altitude.added_h, 1e-9), `pct ${p.altitude.pct}`);
+  }
+  // …but acclimation and home elevation do — it is the full curve for THIS
+  // athlete, not an athlete-independent constant
+  const acclimated = project({ pct: 0, homeElevationFt: null, acclimationDays: 14 });
+  assert.ok(acclimated.altitude.added_h_at_full < ON.altitude.added_h);
 });
 
 test("acclimation and a high home elevation both cut the bill", () => {
