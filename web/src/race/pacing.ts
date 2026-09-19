@@ -878,16 +878,28 @@ export function fmtRaceClock(raceStart: Date, elapsedH: number, timeZone: string
   const mm = String(at.minute).padStart(2, "0");
   const ampm = at.hour >= 12 ? "p" : "a";
   const h12 = at.hour % 12 === 0 ? 12 : at.hour % 12;
-  return `${h12}:${mm}${ampm}${days > 0 ? `+${days}` : ""}`;
+  // A negative elapsed hour is an instant before the gun — arithmetically
+  // reachable (a clamped checkpoint can produce one) but never a real race
+  // moment, so it prints flagged rather than as an ordinary clock time. This
+  // catches same-day pre-start instants too (elapsedH < 0 but days === 0,
+  // where the +N/-N day marker alone says nothing is wrong).
+  const pre = elapsedH < 0 ? "pre-start " : "";
+  const dayMarker = days !== 0 ? `${days > 0 ? "+" : ""}${days}` : "";
+  return `${pre}${h12}:${mm}${ampm}${dayMarker}`;
 }
 
-/** Format elapsed hours as "31h 24m". */
+/** Format elapsed hours as "31h 24m", or "−0h 30m" for a negative input —
+    sign, then the magnitude, the same shape fmtSigned already prints. A
+    plain floor/mod split is only correct for h >= 0; used naively on a
+    negative value (reachable via a clamped checkpoint shift) it reads as
+    double the true magnitude, e.g. -0.499 → "-1h 30m" instead of "-0h 30m". */
 export function fmtElapsed(h: number): string {
+  const sign = h < 0 ? "-" : "";
   // round to whole minutes FIRST — independent floor/round yields "1h 60m"
-  const total = Math.round(h * 60);
+  const total = Math.round(Math.abs(h) * 60);
   const hh = Math.floor(total / 60);
   const mm = total - hh * 60;
-  return `${hh}h ${String(mm).padStart(2, "0")}m`;
+  return `${sign}${hh}h ${String(mm).padStart(2, "0")}m`;
 }
 
 /**
