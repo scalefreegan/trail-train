@@ -275,6 +275,38 @@ test("an inserted station carries the per-station provenance to its new index", 
   assert.equal(merged.provenance["aid_stations[2].gpx_wpt"], undefined, "the stale index is gone");
 });
 
+test("a station dropped from the new chart is kept when the owner hand-edited even one of its fields", () => {
+  const race = baseRace();
+  race.aid_stations[1].cutoff_h = 4.5; // Kendall
+  race.provenance["aid_stations[1].cutoff_h"] = { by: "user", at: AT };
+  const incoming = structuredClone(baseRace());
+  incoming.aid_stations.splice(1, 1); // the new chart drops Kendall entirely
+
+  const { merged, diff, conflicts } = mergeRace(race, incoming);
+  assert.deepEqual(merged.aid_stations.map((s) => s.name), ["Silverton", "Kendall", "Pinchot Camp", "Molas"]);
+  assert.equal(merged.aid_stations[1].cutoff_h, 4.5);
+  assert.ok(!diff.some((d) => d.kind === "removed"), "no field ownership means no field is safe to erase by dropping the row");
+  const kept = diff.find((d) => d.path === "aid_stations[1]" && d.kind === "kept");
+  assert.ok(kept, diff.map((d) => `${d.kind}:${d.path}`).join(" | "));
+  assert.equal(kept.key, "Kendall");
+  assert.ok(conflicts.includes(kept));
+});
+
+test("a renamed station whose name the owner claimed does not also get a misattributed 'renamed' entry", () => {
+  const race = baseRace();
+  race.provenance["aid_stations[2].name"] = { by: "user", at: AT }; // Pinchot Camp
+  const incoming = structuredClone(baseRace());
+  incoming.aid_stations[2] = { name: "Pinchot", total_mi: 38.4, cutoff_h: 13, crew: true };
+
+  const { merged, diff } = mergeRace(race, incoming);
+  assert.equal(merged.aid_stations[2].name, "Pinchot Camp", "the owner's name wins");
+  const entriesForName = diff.filter((d) => d.path === "aid_stations[2].name");
+  assert.equal(entriesForName.length, 1, diff.map((d) => `${d.kind}:${d.path}`).join(" | "));
+  assert.equal(entriesForName[0].kind, "kept");
+  // the rest of the row still merges normally
+  assert.equal(merged.aid_stations[2].cutoff_h, 13);
+});
+
 test("a user-owned aid_stations array is kept whole", () => {
   const race = baseRace();
   race.provenance.aid_stations = { by: "user", at: AT };

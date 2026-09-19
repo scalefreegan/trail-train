@@ -269,7 +269,11 @@ test("stage 3 plans into the shadow, leaving the live block and fuel plan alone"
     // Tue → week 1 is 2027-05-24 and race week is 12, which is the block the
     // canned reply carries. The clock is injected for exactly this reason.
     today: new Date(2027, 4, 18),
-    runAgent: cannedIntake(await draft({ date: "2027-08-13" })),
+    // A confirmed date, not just a filled-in one: the fixture's own
+    // `unresolved` always lists "date" (it was written for the null-date
+    // case), and race-plan.mjs now treats "date" ∈ unresolved as no date at
+    // all — this override is what makes this specific date a real one.
+    runAgent: cannedIntake(await draft({ date: "2027-08-13", unresolved: ["links.gpx"] })),
     runPlanAgent: async () => ({ text: JSON.stringify(plan), wrapper: {}, retried: false }),
   });
 
