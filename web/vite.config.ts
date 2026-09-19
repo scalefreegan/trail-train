@@ -5,6 +5,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { GOAL_PHASES, PHYSIOLOGY_FIELDS } from './src/contracts'
 
 // Every request-time `import(path.join(projectRoot, 'scripts/*.mjs'))` below
 // goes through Node's ESM loader cache, which is per-process: the first
@@ -898,19 +899,13 @@ function settingsApi(): Plugin {
   }
 
   const SECTION_KEYS = ['about_me', 'calendar_conventions', 'training_preferences']
-  // KEEP IN SYNC with PHYSIOLOGY_FIELDS in scripts/profile.mjs — same reason
-  // as GOAL_PHASES below: vite.config.ts can't statically import from
-  // scripts/. The loader normalizes reads; this validates writes, and the
-  // bounds have to agree or the dialog can save a value the loader rejects.
-  const PHYSIOLOGY_BOUNDS: Record<string, [number, number]> = {
-    body_kg: [30, 200],
-    long_run_ref_mi: [5, 50],
-    home_elevation_ft: [-300, 15000],
-  }
-  // KEEP IN SYNC with GOAL_PHASES in scripts/goals.mjs — vite.config.ts
-  // can't statically import from scripts/ (its tsconfig has no allowJs), and
-  // an unvalidated phase would reach the coach prompt verbatim.
-  const GOAL_PHASES = ['recovery', 'return_to_run', 'base', 'build', 'peak', 'taper', 'maintain']
+  // PHYSIOLOGY_FIELDS and GOAL_PHASES come from src/contracts.ts, generated
+  // from scripts/contracts.mjs: this file's tsconfig has no allowJs, so it
+  // cannot import scripts/*.mjs, and these two used to be a second copy. The
+  // loader (scripts/profile.mjs) normalizes reads against the same bounds
+  // this validates writes against — a drift meant the dialog could save a
+  // value the loader then rejected and replaced with a default. An
+  // unvalidated goal phase, likewise, would reach the coach prompt verbatim.
   // [lo, hi] ceilings, generous enough for a 100-mile build
   const BAND_BOUNDS: Record<string, number> = { dist_mi: 500, vert_ft: 200000 }
   const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
@@ -1033,9 +1028,9 @@ function settingsApi(): Plugin {
       const ph = body.physiology as Record<string, unknown>
       const next: Record<string, number> = {}
       for (const [key, v] of Object.entries(ph)) {
-        const bounds = PHYSIOLOGY_BOUNDS[key]
-        if (!bounds) return { error: `physiology.${key}: unknown field` }
-        const [lo, hi] = bounds
+        const field = (PHYSIOLOGY_FIELDS as Record<string, { lo: number; hi: number } | undefined>)[key]
+        if (!field) return { error: `physiology.${key}: unknown field` }
+        const { lo, hi } = field
         if (typeof v !== 'number' || !Number.isFinite(v) || v < lo || v > hi) {
           return { error: `physiology.${key}: number in [${lo}, ${hi}] required` }
         }
@@ -1055,7 +1050,7 @@ function settingsApi(): Plugin {
         next[key] = v.trim()
       }
       if (!next.event_class) return { error: 'goals.event_class: non-empty string required' }
-      if (!GOAL_PHASES.includes(g.phase as string)) {
+      if (!(GOAL_PHASES as readonly string[]).includes(g.phase as string)) {
         return { error: `goals.phase must be one of ${GOAL_PHASES.join(' | ')}` }
       }
       next.phase = g.phase
@@ -2148,7 +2143,9 @@ function raceApi(): Plugin {
 // static file in web/public; tt-yib.2 moved it into the race folder, so it is
 // served from the active race — or, with none active, the most recent one —
 // and the client's fetch keeps working unchanged.
-// TODO(tt-yib.5): the client should read it from /api/race/active instead.
+// Still its own endpoint rather than a field the client reads off
+// /api/race/active, which is where it belongs — one fetch, one pointer read,
+// and no second way for the two to disagree about which race is being shown.
 //
 // `?slug=<slug>` pins the read to that folder regardless of the pointer (PR
 // #23 review round 2, resilience finding 1): without it, a request that is

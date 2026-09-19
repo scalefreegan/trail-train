@@ -12,9 +12,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { createPortal } from "react-dom";
 import { useDialog } from "./race/dialogChrome";
 import { usePersistentState, type CoachContext, type TemporaryContextItem } from "./data";
-
-/** PRD §5.3 — KEEP IN SYNC with GOAL_PHASES in scripts/goals.mjs. */
-const GOAL_PHASES = ["recovery", "return_to_run", "base", "build", "peak", "taper", "maintain"] as const;
+import { GOAL_PHASES, PHYSIOLOGY_FIELDS, PHYSIOLOGY_KEYS, type PhysiologyKey } from "./contracts";
 
 type Goals = {
   event_class: string;
@@ -30,37 +28,40 @@ type GoalsForm = Omit<Goals, "weekly_volume_band"> & {
   weekly_volume_band: { dist_mi: (number | "")[]; vert_ft: (number | "")[] };
 };
 
-/** PRD §5.4 — the athlete's own numbers. KEEP THE BOUNDS IN SYNC with
-    PHYSIOLOGY_BOUNDS in web/vite.config.ts and PHYSIOLOGY_FIELDS in
-    scripts/profile.mjs; the server rejects anything outside them. */
-const PHYSIOLOGY_META = [
-  {
-    key: "body_kg" as const,
-    label: "body mass (kg)",
+/** The per-field copy and input granularity: the only part of the physiology
+    contract that is UI, and so the only part that lives here. The field's
+    label and the bounds the server enforces come from PHYSIOLOGY_FIELDS —
+    typing them out again is what let the dialog offer a value the server
+    would reject. */
+const PHYSIOLOGY_UI: Record<PhysiologyKey, { hint: string; step: number }> = {
+  body_kg: {
     hint: "every mg/kg caffeine figure in the race plan scales with this — it lives here, not in a race folder, so a race can be shared without it",
-    min: 30, max: 200, step: 0.1,
+    step: 0.1,
   },
-  {
-    key: "long_run_ref_mi" as const,
-    label: "long-run reference (mi)",
+  long_run_ref_mi: {
     hint: "the distance the pacing fit is read at: your own long-run regime, not the race distance. The projection evaluates fitness pace here and lets the fatigue curve carry everything past it",
-    min: 5, max: 50, step: 1,
+    step: 1,
   },
-  {
-    // The one physiology field with no honest default (PHYSIOLOGY_FIELDS'
-    // `optional` in scripts/profile.mjs): left unset it reads as sea level,
-    // which is the WORST case for the altitude penalty, and the planner and
-    // model check both say so in as many words rather than passing the
-    // guess off as a setting. Negative values are real — Death Valley, the
-    // Dead Sea — so the floor is below zero, not at it.
-    key: "home_elevation_ft" as const,
-    label: "home elevation (ft)",
+  // The one physiology field with no honest default (PHYSIOLOGY_FIELDS'
+  // `optional`): left unset it reads as sea level, which is the WORST case
+  // for the altitude penalty, and the planner and model check both say so in
+  // as many words rather than passing the guess off as a setting. Negative
+  // values are real — Death Valley, the Dead Sea — so the floor is below
+  // zero, not at it.
+  home_elevation_ft: {
     hint: "where you are acclimated to: the altitude penalty is measured from HERE, not from sea level, so a mountain-town athlete stops being charged for the first 5,000 ft they already live at. Blank means the model assumes sea level and flags it",
-    min: -300, max: 15000, step: 10,
+    step: 10,
   },
-];
+};
 
-type PhysiologyKey = (typeof PHYSIOLOGY_META)[number]["key"];
+/** PRD §5.4 — the athlete's own numbers, in dialog order. */
+const PHYSIOLOGY_META = PHYSIOLOGY_KEYS.map((key) => ({
+  key,
+  label: PHYSIOLOGY_FIELDS[key].label,
+  min: PHYSIOLOGY_FIELDS[key].lo,
+  max: PHYSIOLOGY_FIELDS[key].hi,
+  ...PHYSIOLOGY_UI[key],
+}));
 // "" while a field is being retyped — the save refuses rather than committing
 // a 0 the athlete didn't mean (same rule as the volume band)
 type PhysiologyForm = Record<PhysiologyKey, number | "">;

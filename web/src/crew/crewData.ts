@@ -37,9 +37,11 @@ export const CREW_DATA_ELEMENT_ID = "crew-data";
     grade curve, which rides separately because it is a snapshot of the
     athlete's fitted curve rather than a setting anyone turns.
 
-    KEEP IN SYNC with useRacePlan's `settings` (web/src/race/useRacePlan.ts):
-    the export's whole point is that the crew sheet matches the planner the
-    athlete was looking at when they pressed the button. */
+    These are the same knobs useRacePlan's `settings` carries
+    (web/src/race/useRacePlan.ts) — the export's whole point is that the crew
+    sheet matches the planner the athlete was looking at when they pressed the
+    button, so a knob added there has to be added here too or it silently
+    stops travelling with the sheet. */
 export type CrewKnobs = Required<Pick<ProjectOptions,
   "fatiguePctPer10mi" | "calibrationPct" | "restraintPct" | "aidStopMin" | "crewStopMin" | "stopOverridesMin"
 >> & {
@@ -53,8 +55,9 @@ export type CrewKnobs = Required<Pick<ProjectOptions,
   altitude: AltitudeOptions | null;
 };
 
-/** The planner's own defaults, for a CLI export with no --knobs file.
-    KEEP IN SYNC with useRacePlanInstance's usePersistedNumber initial values.
+/** The planner's own defaults, for a CLI export with no --knobs file — and
+    the planner's actual initial values: useRacePlanInstance reads them from
+    here for its usePersistedNumber sliders rather than repeating the numbers.
     `goalH` is the exception: its default is a function of the race's cutoff
     (see defaultGoalH), so it is filled per race rather than fixed here. */
 export const DEFAULT_CREW_KNOBS: Omit<CrewKnobs, "goalH" | "altitude"> = {
@@ -66,12 +69,12 @@ export const DEFAULT_CREW_KNOBS: Omit<CrewKnobs, "goalH" | "altitude"> = {
   stopOverridesMin: {},
 };
 
-/** The altitude knob's default, % of the published curve. KEEP IN SYNC with
-    useRacePlanInstance's `altitude_pct`. */
+/** The altitude knob's default, % of the published curve — the initial value
+    useRacePlanInstance gives its `altitude_pct` slider. */
 export const DEFAULT_ALTITUDE_PCT = 100;
 
-/** 85 % of the cutoff to the nearest half hour — the planner's goal default.
-    KEEP IN SYNC with useRacePlanInstance's `goalDefaultH`. */
+/** 85 % of the cutoff to the nearest half hour — the planner's goal default,
+    and the rule useRacePlanInstance's `goalDefaultH` calls. */
 export function defaultGoalH(cutoffH: number | null | undefined): number {
   return cutoffH != null && cutoffH > 0 ? Math.round(cutoffH * 0.85 * 2) / 2 : 32;
 }
