@@ -941,6 +941,13 @@ function settingsApi(): Plugin {
             normalizePhysiology: (raw: unknown) => { physiology: Record<string, number>; warnings: string[] }
           }
           if (req.method === 'GET') {
+            // PR #23 review round 1, finding 2: only the PUT branch used to
+            // call this. This GET now returns physiology and goals too, so a
+            // cross-site page's plain GET (no preflight needed) must not be
+            // able to trigger it — including the loadGoals side effect below,
+            // which bootstraps config/goals.json from the example on first
+            // call.
+            if (crossSiteBlocked(req, res)) return
             const state = await stateMod.loadState(projectRoot)
             const { profile, corrupt } = readProfile()
             // bootstraps config/goals.json from the example on first open —
