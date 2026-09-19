@@ -151,6 +151,32 @@ test("validateRaceEdit type-checks every accepted field", () => {
   }
 });
 
+/* RaceIntake.tsx carries a compatibility fallback: on a 400 whose message
+   matches /unresolved_acknowledged: boolean required/ it collapses its
+   array to a bare boolean and retries — so a message this server emits for
+   a GENUINE error must never accidentally match that exact phrase, or a
+   real client bug (e.g. a stray number in the array) would silently get
+   retried as "acknowledge everything" instead of surfacing as refused. */
+test("unresolved_acknowledged: array-of-wrong-type gets a message distinct from the legacy fallback trigger", () => {
+  const r = validateRaceEdit({ unresolved_acknowledged: [1, 2] }, ctx);
+  assert.equal(r.ok, false);
+  assert.match(r.errors.join(" | "), /array of string field paths required/);
+  assert.ok(!/unresolved_acknowledged: boolean required/.test(r.errors.join(" | ")), r.errors.join(" | "));
+});
+
+test("unresolved_acknowledged: wrong type entirely also never matches the legacy fallback trigger", () => {
+  const r = validateRaceEdit({ unresolved_acknowledged: "true" }, ctx);
+  assert.equal(r.ok, false);
+  assert.ok(!/unresolved_acknowledged: boolean required/.test(r.errors.join(" | ")), r.errors.join(" | "));
+});
+
+test("unresolved_acknowledged accepts a well-formed array or boolean outright", () => {
+  assert.equal(validateRaceEdit({ unresolved_acknowledged: ["links.tracking"] }, ctx).ok, true);
+  assert.equal(validateRaceEdit({ unresolved_acknowledged: [] }, ctx).ok, true);
+  assert.equal(validateRaceEdit({ unresolved_acknowledged: true }, ctx).ok, true);
+  assert.equal(validateRaceEdit({ unresolved_acknowledged: false }, ctx).ok, true);
+});
+
 test("validateRaceEdit collects every problem rather than stopping at the first", () => {
   const r = validateRaceEdit({ status: "active", date: "nope", visual: { hero: "x" } }, ctx);
   assert.equal(r.errors.length, 3, r.errors.join(" | "));
@@ -339,10 +365,41 @@ test("applyRaceEdit records an explicit acknowledgement list as a user-provenanc
   assert.deepEqual(written, ["unresolved_acknowledged"]);
 });
 
-test("applyRaceEdit expands a legacy boolean sent in the body against the folder's OWN stored unresolved", () => {
+test("applyRaceEdit expands a body-provided boolean against the folder's stored unresolved when no live list is given", () => {
   const before = race({ unresolved: ["links.tracking", "elevation.min_ft"] });
   const { race: next } = applyRaceEdit(before, { unresolved_acknowledged: true }, { at: AT });
-  assert.deepEqual(next.unresolved_acknowledged, ["links.tracking", "elevation.min_ft"]);
+  assert.deepEqual(next.unresolved_acknowledged, ["elevation.min_ft", "links.tracking"]);
+});
+
+test("applyRaceEdit expands a body-provided boolean against the LIVE unresolved list when given (currentUnresolved)", () => {
+  // RaceIntake.tsx's compatibility fallback sends `true` to mean "acknowledge
+  // every path the review screen shows right now" — which includes
+  // matcher/sun/course-mismatch entries loadReview computes live and NEVER
+  // persists to race.json's own `unresolved` (see loadReview's comments).
+  // The vite PUT handler passes that live list through as `currentUnresolved`;
+  // a body-provided `true` must expand against it, not the narrower stored one.
+  const before = race({ unresolved: ["links.tracking"] });
+  const { race: next } = applyRaceEdit(
+    before,
+    { unresolved_acknowledged: true },
+    { at: AT, currentUnresolved: ["links.tracking", "aid_stations[0].gpx_wpt"] },
+  );
+  assert.deepEqual(next.unresolved_acknowledged, ["aid_stations[0].gpx_wpt", "links.tracking"]);
+});
+
+test("applyRaceEdit's UNCONDITIONAL migration of an already-on-disk legacy boolean still uses only the stored list, never currentUnresolved", () => {
+  // The two cases are deliberately different: a save that does not TOUCH
+  // acknowledgement must not have currentUnresolved's live extras silently
+  // acknowledged just because they happened to be passed through for some
+  // OTHER reason on this call.
+  const before = race({ unresolved: ["links.tracking"], unresolved_acknowledged: true });
+  const { race: next, written } = applyRaceEdit(
+    before,
+    { date: "2027-08-14" },
+    { at: AT, currentUnresolved: ["links.tracking", "aid_stations[0].gpx_wpt"] },
+  );
+  assert.deepEqual(next.unresolved_acknowledged, ["links.tracking"]);
+  assert.ok(!written.includes("unresolved_acknowledged"), written.join(", "));
 });
 
 test("applyRaceEdit migrates a legacy boolean already on disk to the array shape even on an unrelated save", () => {

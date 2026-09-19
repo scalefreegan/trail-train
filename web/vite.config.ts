@@ -1530,7 +1530,7 @@ function raceEditApi(): Plugin {
 
   type RaceEditMod = {
     validateRaceEdit: (body: unknown, ctx: { stationCount: number; unresolved: string[]; aidStations?: unknown[] }) => { ok: boolean; errors: string[]; code: string | null }
-    applyRaceEdit: (race: Record<string, unknown>, body: Record<string, unknown>, opts: { at: string }) =>
+    applyRaceEdit: (race: Record<string, unknown>, body: Record<string, unknown>, opts: { at: string; currentUnresolved?: string[] }) =>
       { race: Record<string, unknown>; written: string[]; block_targets: Record<string, number>[] | null }
     applyBlockTargetsEdit: (block: Record<string, unknown>, targets: Record<string, number>[], opts: { at: string }) =>
       Record<string, unknown>
@@ -1661,7 +1661,7 @@ function raceEditApi(): Plugin {
           })
           if (!shape.ok) { json(res, 400, { error: shape.errors.join('\n'), errors: shape.errors }); return }
 
-          const applied = mod.applyRaceEdit(before, body, { at })
+          const applied = mod.applyRaceEdit(before, body, { at, currentUnresolved: review.unresolved as string[] })
           const next_ = applied.race
           /* Recomputed, then persisted: the review screen's red list has to be
              a fact about the folder on disk, not something the client
