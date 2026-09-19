@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useDialog } from "./race/dialogChrome";
 import { usePersistentState, type CoachContext, type TemporaryContextItem } from "./data";
 
 /** PRD §5.3 — KEEP IN SYNC with GOAL_PHASES in scripts/goals.mjs. */
@@ -222,11 +223,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
     if ((!dirty && !newNote.text.trim()) || window.confirm("discard unsaved changes?")) onClose();
   }, [dirty, saving, newNote.text, onClose]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") requestClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [requestClose]);
+  const { titleId, dialogProps } = useDialog({ onClose: requestClose, locked: saving });
 
   useEffect(() => {
     fetch("/api/settings")
@@ -691,6 +688,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
       }}
     >
       <div
+        {...dialogProps}
         className="panel notch"
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -704,7 +702,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
           borderBottom: "1px solid var(--edge)", padding: "16px 28px", flexShrink: 0,
         }}>
           <div>
-            <div className="eyebrow" style={{ color: "var(--mist-dim)" }}>⚙ coach settings</div>
+            <div id={titleId} className="eyebrow" style={{ color: "var(--mist-dim)" }}>⚙ coach settings</div>
             <div style={{ fontSize: 11.5, color: "var(--mist-mute)", marginTop: 3 }}>
               the context the coach reads before every readout and chat reply
             </div>

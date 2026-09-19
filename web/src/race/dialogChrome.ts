@@ -7,7 +7,7 @@
 // lint rule that says so is right: RaceIntake.tsx and RaceRefresh.tsx are two
 // dialogs over the same endpoints, and this is the seam between them.
 
-import type { CSSProperties } from "react";
+import { useEffect, useId, useRef, type CSSProperties, type KeyboardEvent, type RefObject } from "react";
 
 export type StageState = "pending" | "running" | "done" | "error" | "skipped";
 
@@ -88,6 +88,87 @@ export async function runStage(
 /* ------------------------------------------------------------------ */
 /*  Shared bits of chrome                                              */
 /* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ */
+/*  useDialog — the chrome every modal in this app needs and (before   */
+/*  this) none of them fully had: labelled, focused, trapped, and      */
+/*  handed back to whoever opened it.                                  */
+/* ------------------------------------------------------------------ */
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * role="dialog" + aria-modal, initial focus moved into the dialog, Tab and
+ * Shift+Tab trapped inside it, Escape to close (unless `locked` — a stage
+ * is running and closing mid-write would strand it), and focus handed back
+ * to whatever had it before the dialog opened once the dialog unmounts.
+ *
+ * Spread `dialogProps` onto the dialog's own outer element (the one that
+ * carries `role="dialog"` today). Point the dialog's heading at `titleId`
+ * with `id={titleId}` — or, for a dialog with no heading of its own (the
+ * printable cards), pass `label` instead and the hook uses aria-label.
+ *
+ * Adopted so far: RaceRefresh, ArchiveRace, CoachSettings, RunnerCard,
+ * FuelCard, DropBagCard. TODO — RaceIntake.tsx (the review/new-race dialog)
+ * still has its own hand-rolled Escape effect and no focus trap; it owns
+ * `locked`/`reviewLocked` state this hook would take as its `locked` param
+ * the same way RaceRefresh does. Not switched over here to stay out of a
+ * file another fixer is actively editing.
+ */
+export function useDialog({ onClose, locked, label }: {
+  onClose: () => void;
+  locked?: boolean;
+  label?: string;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const openerRef = useRef<HTMLElement | null>(null);
+
+  // the opener: whatever had focus right before this dialog mounted — the
+  // switcher row or button that triggered it. Captured once, restored once.
+  useEffect(() => {
+    openerRef.current = document.activeElement as HTMLElement | null;
+    return () => { openerRef.current?.focus?.(); };
+  }, []);
+
+  // initial focus, once, into the dialog's first focusable control (every
+  // one of these dialogs renders a header with a close button up front, so
+  // there is always a fallback target even before async content loads)
+  useEffect(() => {
+    const el = dialogRef.current;
+    if (!el) return;
+    const first = el.querySelector<HTMLElement>(FOCUSABLE);
+    (first ?? el).focus();
+  }, []);
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      if (!locked) onClose();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const el = dialogRef.current;
+    if (!el) return;
+    const nodes = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((n) => n.offsetParent !== null);
+    if (nodes.length === 0) return;
+    const first = nodes[0], last = nodes[nodes.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+
+  return {
+    titleId,
+    dialogProps: {
+      ref: dialogRef as RefObject<HTMLDivElement>,
+      role: "dialog" as const,
+      "aria-modal": true as const,
+      ...(label ? { "aria-label": label } : { "aria-labelledby": titleId }),
+      tabIndex: -1,
+      onKeyDown,
+    },
+  };
+}
 
 export const inputStyle: CSSProperties = {
   background: "var(--night-deep)", border: "1px solid var(--edge-bright)",

@@ -4,6 +4,7 @@ import { useUnits } from "../data";
 import { fmtElapsed, type projectRace, type StationProjection } from "./pacing";
 import type { Course, CrewBase } from "./types";
 import { useRacePlan } from "./useRacePlan";
+import { useDialog } from "./dialogChrome";
 
 /* ------------------------------------------------------------------ */
 /*  Runner card — a double-sided 3×5in index card the runner carries.  */
@@ -172,6 +173,9 @@ export function RunnerCard({ course, proj, crewBase, onClose }: {
     return () => document.body.classList.remove("card-printing");
   }, []);
 
+  const { race } = useRacePlan();
+  const { dialogProps } = useDialog({ onClose, label: `${race.name} — runner card` });
+
   const split = Math.ceil(proj.stations.length / 2);
   const halves = [proj.stations.slice(0, split), proj.stations.slice(split)]
     .filter((h) => h.length > 0);
@@ -179,6 +183,7 @@ export function RunnerCard({ course, proj, crewBase, onClose }: {
   // portal to <body>: outside #root, so print CSS can hide the whole app
   return createPortal(
     <div
+      {...dialogProps}
       className="runner-card"
       style={{
         position: "fixed", inset: 0, zIndex: 100, overflow: "auto",

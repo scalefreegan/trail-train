@@ -27,7 +27,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRefresh } from "../data";
 import { Backdrop, Block, Eyebrow, Hint, StageList } from "./RaceIntake";
-import { inputStyle, runStage, type StageRow, type StageState } from "./dialogChrome";
+import { inputStyle, runStage, useDialog, type StageRow, type StageState } from "./dialogChrome";
 
 /* ------------------------------------------------------------------ */
 /*  Shapes                                                             */
@@ -149,6 +149,7 @@ export default function RaceRefresh({ slug, name, onClose }: {
   const abortRef = useRef<AbortController | null>(null);
 
   const locked = running || busy !== null;
+  const { titleId, dialogProps } = useDialog({ onClose, locked });
 
   // A diff waiting from an earlier run. 404 is the ordinary answer — it means
   // there is nothing pending, not that anything went wrong.
@@ -161,11 +162,6 @@ export default function RaceRefresh({ slug, name, onClose }: {
     return () => { stale = true; };
   }, [slug]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !locked) onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, locked]);
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const upload = async (files: FileList | null) => {
@@ -261,10 +257,8 @@ export default function RaceRefresh({ slug, name, onClose }: {
   return createPortal(
     <Backdrop onClose={() => { if (!locked) onClose(); }}>
       <div
+        {...dialogProps}
         className="panel notch"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`refresh ${name}`}
         onClick={(e) => e.stopPropagation()}
         style={{
           width: "min(860px, 100%)", margin: "0 auto", display: "flex",
@@ -276,7 +270,7 @@ export default function RaceRefresh({ slug, name, onClose }: {
           borderBottom: "1px solid var(--edge)", padding: "16px 28px", flexShrink: 0,
         }}>
           <div style={{ minWidth: 0 }}>
-            <div className="eyebrow" style={{ color: "var(--mist-dim)" }}>refresh from sources · {name}</div>
+            <div id={titleId} className="eyebrow" style={{ color: "var(--mist-dim)" }}>refresh from sources · {name}</div>
             <div style={{ fontSize: 11.5, color: "var(--mist-mute)", marginTop: 3 }}>
               {diff
                 ? "nothing has been written to the race yet — this is what Accept would change"

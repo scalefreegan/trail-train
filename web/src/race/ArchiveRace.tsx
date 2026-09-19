@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useStrava } from "../data";
 import type { Activity } from "../data";
+import { useDialog } from "./dialogChrome";
 
 /* Archive with result (PRD §10). The dialog behind the switcher's "Archive
    with result…" row: pick the Strava activity that IS the race, optionally
@@ -111,12 +112,7 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
     return null;
   }, [candidates, linkedActivityId, raceDate]);
   const activityId = picked ?? defaultId;
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !busy) onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, busy]);
+  const { titleId, dialogProps } = useDialog({ onClose, locked: busy });
 
   const parsedSplits = useMemo(() => parseOfficialSplits(splitsText), [splitsText]);
   const finishH = parseElapsedH(finishText);
@@ -168,10 +164,8 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
       }}
     >
       <div
+        {...dialogProps}
         className="panel notch"
-        role="dialog"
-        aria-modal="true"
-        aria-label="archive with result"
         onClick={(e) => e.stopPropagation()}
         style={{ width: "min(620px, 100%)", maxHeight: "100%", margin: "auto", display: "flex", flexDirection: "column" }}
       >
@@ -179,10 +173,10 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
           display: "flex", justifyContent: "space-between", alignItems: "center",
           borderBottom: "1px solid var(--edge)", padding: "16px 24px",
         }}>
-          <div className="eyebrow" style={{ color: "var(--mist-dim)" }}>
+          <div id={titleId} className="eyebrow" style={{ color: "var(--mist-dim)" }}>
             {linkedActivityId ? "link result" : "archive with result"}
           </div>
-          <button className="chip" onClick={onClose} disabled={busy} autoFocus style={{ fontSize: 9 }}>close esc</button>
+          <button className="chip" onClick={onClose} disabled={busy} style={{ fontSize: 9 }}>close esc</button>
         </div>
 
         <div style={{ padding: "16px 24px 20px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { fmtCarry, type FuelPlan, type FuelSegment, type NutritionConfig } from "./nutrition";
 import { useRacePlan } from "./useRacePlan";
+import { useDialog } from "./dialogChrome";
 
 /* ------------------------------------------------------------------ */
 /*  Fuel card — the nutrition companion to RunnerCard: a double-sided  */
@@ -168,12 +169,16 @@ export function FuelCard({ plan, cfg, onClose }: {
     return () => document.body.classList.remove("card-printing");
   }, []);
 
+  const { race } = useRacePlan();
+  const { dialogProps } = useDialog({ onClose, label: `${race.name} — fuel card` });
+
   const split = Math.ceil(plan.segments.length / 2);
   const halves = [plan.segments.slice(0, split), plan.segments.slice(split)]
     .filter((h) => h.length > 0);
 
   return createPortal(
     <div
+      {...dialogProps}
       className="runner-card"
       style={{
         position: "fixed", inset: 0, zIndex: 100, overflow: "auto",
