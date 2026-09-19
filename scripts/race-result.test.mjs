@@ -3,7 +3,7 @@
 // longitude, so "how far is the runner from the station" is plain metres of
 // latitude and the geometry is checkable by hand.
 
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -335,14 +335,21 @@ test("archiveRace: race.json is archived before result.json is written, so a cra
   const root = await tempRace(t);
   const dir = path.join(root, "races", "test-race-2026");
   // Stand in for "the process died between the two writes": writeJsonAtomic
-  // (scripts/lib.mjs) writes result.json via a `result.json.tmp.<pid>` file
-  // and renames it into place, so pre-occupying that exact tmp path with a
-  // directory makes ONLY the result.json write fail — race.json's own write
-  // (a different tmp path) is unaffected, and the earlier `loadResult` read
-  // still sees a plain ENOENT (no result.json exists yet).
-  const resultTmp = path.join(dir, `result.json.tmp.${process.pid}`);
-  await fs.mkdir(resultTmp);
-  t.after(() => fs.rm(resultTmp, { recursive: true, force: true }));
+  // (scripts/lib.mjs) renames a temp file onto result.json. Its temp name is
+  // no longer a fixed, guessable `result.json.tmp.<pid>` (PR #23 review
+  // round 1: it now carries a per-call counter and a random suffix, so
+  // concurrent writers to the same path never collide), so the failure is
+  // injected at the rename call itself — failing ONLY the one whose
+  // destination is result.json, leaving race.json's own write (a different
+  // destination) unaffected, and the earlier `loadResult` read still sees a
+  // plain ENOENT (no result.json exists yet).
+  const resultJsonPath = path.join(dir, "result.json");
+  const originalRename = fs.rename;
+  mock.method(fs, "rename", async (src, dest) => {
+    if (dest === resultJsonPath) throw Object.assign(new Error(`EISDIR: illegal operation on a directory, rename '${src}' -> '${dest}'`), { code: "EISDIR" });
+    return originalRename(src, dest);
+  });
+  t.after(() => mock.restoreAll());
 
   await assert.rejects(
     archiveRace({ root, slug: "test-race-2026", activityId: "20165079124", activity: raceDayActivity(), streams: streams() }),
@@ -358,7 +365,7 @@ test("archiveRace: race.json is archived before result.json is written, so a cra
 
   // A re-run repairs it: the status flip is a no-op the second time (race.json
   // is already archived), and result.json gets written for real.
-  await fs.rm(resultTmp, { recursive: true });
+  mock.restoreAll();
   const { result } = await archiveRace({
     root, slug: "test-race-2026", activityId: "20165079124", activity: raceDayActivity(), streams: streams(),
   });

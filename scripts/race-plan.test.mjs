@@ -13,7 +13,7 @@
 // physiology block (tt-yib.9), which is a change to somebody else's file, not
 // a regression in this one.
 
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -930,13 +930,19 @@ test("a failure partway through the three-file write says which files already la
   const race = { ...mm.race, slug, status: "draft", date: "2027-08-13", distance_mi: 104, gain_ft: 19000 };
   await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(race, null, 2));
 
-  // writeJsonAtomic (scripts/lib.mjs) writes race.json via a
-  // `race.json.tmp.<pid>` file and renames it into place; pre-occupying
-  // that exact path with a directory makes ONLY the third write fail —
-  // block.json and nutrition.json (different tmp paths) land for real.
-  const raceTmp = path.join(dir, `race.json.tmp.${process.pid}`);
-  await fs.mkdir(raceTmp);
-  t.after(() => fs.rm(raceTmp, { recursive: true, force: true }));
+  // writeJsonAtomic (scripts/lib.mjs) renames a temp file onto race.json;
+  // its temp name is no longer a fixed, guessable `race.json.tmp.<pid>` (PR
+  // #23 review round 1: it now carries a per-call counter and a random
+  // suffix, so concurrent writers to the same path never collide), so the
+  // failure is injected at the rename call itself — failing ONLY the one
+  // whose destination is race.json — rather than by pre-occupying a path.
+  const raceJsonPath = path.join(dir, "race.json");
+  const originalRename = fs.rename;
+  mock.method(fs, "rename", async (src, dest) => {
+    if (dest === raceJsonPath) throw Object.assign(new Error(`EISDIR: illegal operation on a directory, rename '${src}' -> '${dest}'`), { code: "EISDIR" });
+    return originalRename(src, dest);
+  });
+  t.after(() => mock.restoreAll());
 
   const reply = await goodOutput();
   const err = await planRace({
