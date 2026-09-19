@@ -430,10 +430,13 @@ function run(argv) {
  * Render a PDF to per-page PNGs under `outDir`.
  * @param {string} pdfPath
  * @param {string} outDir
- * @param {{renderer: ReturnType<typeof choosePdfRenderer>, tools: object, maxPages?: number}} opts
+ * @param {{renderer: ReturnType<typeof choosePdfRenderer>, tools: object, maxPages?: number, pageCount?: number|null}} opts
+ *   `pageCount` (the PDF's own declared page count) lets this tell "0 images
+ *   because PDFKit could not open the file" apart from "0 images because
+ *   there genuinely are none" — see the quartz-jxa check below.
  * @returns {Promise<{images: string[], renderer: string|null, warning: string|null}>}
  */
-export async function renderPdfPages(pdfPath, outDir, { renderer, tools, maxPages = MAX_PDF_PAGES }) {
+export async function renderPdfPages(pdfPath, outDir, { renderer, tools, maxPages = MAX_PDF_PAGES, pageCount = null }) {
   await fs.mkdir(outDir, { recursive: true });
   const warn = renderer.warning;
   try {
@@ -462,6 +465,19 @@ export async function renderPdfPages(pdfPath, outDir, { renderer, tools, maxPage
     return { images: [], renderer: renderer.id, warning: `${renderer.id} failed to render ${path.basename(pdfPath)}: ${e.message.slice(0, 200)}${warn ? ` · ${warn}` : ""}` };
   }
   const images = (await fs.readdir(outDir)).filter((f) => f.endsWith(".png")).sort().map((f) => path.join(outDir, f));
+  // SPLIT_JXA's PDFDocument.alloc.initWithURL returns a doc whose `.js` is
+  // false for a corrupt/encrypted PDF; the script's own guard (`if (!doc.js)
+  // return '0'`) then exits 0 with zero pages split — no exception for the
+  // catch block above to turn into a warning, and choosePdfRenderer's
+  // warning is null for quartz-jxa (a whole-document renderer). Indistin-
+  // guishable from success unless this checks the PDF's own page count.
+  if (renderer.id === "quartz-jxa" && images.length === 0 && Number.isFinite(pageCount) && pageCount >= 1) {
+    return {
+      images,
+      renderer: renderer.id,
+      warning: `quartz-jxa opened ${path.basename(pdfPath)} but produced 0 of its ${pageCount} page(s) — the PDF may be corrupt or encrypted`,
+    };
+  }
   return { images, renderer: renderer.id, warning: warn };
 }
 
@@ -651,6 +667,18 @@ export function validateAgentDraft(draft) {
       if (isObj(c) && (c.gain_ft !== undefined || c.grade_pct !== undefined || c.len_mi !== undefined)) {
         errors.push(`race_climbs[${i}]: climb metrics are computed from the GPX — emit only id, label and approx_mi`);
       }
+      // build-course.mjs scales and snaps this window directly; a reversed
+      // or malformed one (e.g. [15, 10]) has no honest fallback (it built
+      // negative length_mi, garbage gain, an empty profile — build-course.mjs
+      // now drops the climb and warns, but the draft should not validate
+      // with one in the first place).
+      if (isObj(c) && c.approx_mi !== undefined) {
+        const [a, b] = Array.isArray(c.approx_mi) ? c.approx_mi : [];
+        const numOk = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+        if (!Array.isArray(c.approx_mi) || c.approx_mi.length !== 2 || !numOk(a) || !numOk(b) || a >= b) {
+          errors.push(`race_climbs[${i}].approx_mi: [start, end] with 0 <= start < end required (got ${JSON.stringify(c.approx_mi)})`);
+        }
+      }
     });
   }
   return { ok: errors.length === 0, errors };
@@ -728,10 +756,10 @@ export function collectUnresolved(race, agentUnresolved = []) {
  * status), the agent's fields as given, per-field provenance, and the source
  * list. Nothing is filled in on the agent's behalf — a null stays null.
  * @param {object} draft the validated agent output
- * @param {{slug: string, year: number, manifest: object[], at?: string}} ctx
+ * @param {{slug: string, year: number, manifest: object[], warnings?: string[], at?: string}} ctx
  * @returns {object} race.json
  */
-export function buildRaceJson(draft, { slug, year, manifest = [], at = new Date().toISOString() }) {
+export function buildRaceJson(draft, { slug, year, manifest = [], warnings = [], at = new Date().toISOString() }) {
   const agentFields = [
     "name", "short", "date", "start_time", "timezone", "location", "format",
     "distance_mi", "gain_ft", "elevation", "cutoff_h", "features", "aid_stations",
@@ -757,12 +785,41 @@ export function buildRaceJson(draft, { slug, year, manifest = [], at = new Date(
   }
   provenance.edition_year = { by: PROVENANCE_BY, at, source: "intake request" };
   race.provenance = provenance;
+  // A source that this run tried and failed to (re)fetch is kept, marked with
+  // `error`, rather than dropped outright — but ONLY on a PARTIAL failure.
+  // When every fetch failed, the array must come back empty exactly as
+  // before: that is the signal race-merge.mjs's NO_STATEMENT_WHEN_EMPTY
+  // guard keys off of ("a refresh that fetched nothing does not erase the
+  // source list" — a dead site, no network). A partial failure has no such
+  // guard, and race-merge.mjs's leaf() replaces `sources` as one whole-array
+  // value, so a failed entry dropped here is just gone from the merged file
+  // too, with no diff line to say so or why.
+  const anySucceeded = manifest.some((m) => m.file || m.status === 200);
   race.sources = manifest
-    .filter((m) => m.file || m.status === 200)
-    .map((m) => ({ kind: m.kind, ref: m.ref, fetched_at: m.fetched_at, file: m.file ?? null }));
+    .filter((m) => m.file || m.status === 200 || (anySucceeded && m.error))
+    .map((m) => ({
+      kind: m.kind,
+      ref: m.ref,
+      fetched_at: m.fetched_at,
+      file: m.file ?? null,
+      ...(m.file || m.status === 200 ? {} : { error: m.error ?? `fetch failed (status ${m.status ?? "?"})` }),
+    }));
   if (typeof draft.review_notes === "string" && draft.review_notes.trim()) {
     race.review_notes = draft.review_notes.trim();
   }
+  // A PDF-render or GPX-parse failure is otherwise only ever seen as
+  // transient SSE progress text — gone the moment the stream ends. This is
+  // the folder's durable record of it, for a reviewer opening the draft
+  // later (and for manifest.json's per-entry `warning`, which says WHICH
+  // source; this says it happened at all, in one place the review dialog
+  // can show without re-reading the manifest).
+  if (warnings.length) race.intake_warnings = [...warnings];
+  // PRD §15: race.json carries the holes the agent could not fill. Every
+  // downstream reader (race-edit.mjs's recomputeUnresolved, race-merge.mjs's
+  // mergeRace) starts from `race.unresolved ?? []`, so a value computed here
+  // and never attached to the object is a value that silently vanishes the
+  // moment the file is written — this is the one place that can happen.
+  race.unresolved = collectUnresolved(race, draft.unresolved ?? []);
   return race;
 }
 
@@ -775,6 +832,80 @@ function summarizeGpx(text) {
   const miles = track.length ? track[track.length - 1].cum_mi.toFixed(1) : "?";
   const names = waypoints.slice(0, 40).map((w) => w.name).filter(Boolean);
   return `  track: ${track.length} points, ${miles} mi end to end\n  waypoints (${waypoints.length}): ${names.join(", ") || "none named"}`;
+}
+
+/**
+ * Render every PDF the manifest names, deduping byte-identical copies (the
+ * runner manual routinely arrives twice: linked from the site AND uploaded
+ * by the owner).
+ *
+ * Mutates each entry with `pages_rendered`, `page_count` and `warning` — the
+ * manifest is the durable record a re-opened draft folder reads back later;
+ * the `warnings` this returns are the SSE-progress copy of the same facts,
+ * gone once the run's stream ends. `0 pages_rendered` alone cannot tell a
+ * reviewer "no renderer was available" from "this PDF has no image pages",
+ * which is exactly the gap `entry.warning` closes.
+ *
+ * @param {object[]} manifest sources/manifest.json entries (mutated in place)
+ * @param {{sourcesDir: string, tools: object, say?: (msg: string) => void}} opts
+ * @returns {Promise<{images: {label: string, images: string[]}[], warnings: string[], rendererUsed: string|null}>}
+ */
+export async function renderManifestPdfs(manifest, { sourcesDir, tools, say = () => {} }) {
+  const pdfs = manifest.filter((m) => m.file && (m.kind === "pdf" || PDF_RE.test(m.file)));
+  const images = [];
+  const warnings = [];
+  let rendererUsed = null;
+  const seenPdfs = new Map();
+  for (const entry of pdfs) {
+    const pdfPath = path.join(sourcesDir, entry.file);
+    const buf = await fs.readFile(pdfPath);
+    const digest = crypto.createHash("sha256").update(buf).digest("hex");
+    if (seenPdfs.has(digest)) {
+      entry.duplicate_of = seenPdfs.get(digest);
+      say(`${path.basename(entry.file)}: byte-identical to ${seenPdfs.get(digest)} — not rendered twice`);
+      continue;
+    }
+    seenPdfs.set(digest, entry.file);
+    const pageCount = pdfPageCount(buf);
+    const renderer = choosePdfRenderer({ pageCount, tools });
+    const outDir = path.join(sourcesDir, "pages", kebab(path.basename(entry.file, ".pdf")));
+    say(`${path.basename(entry.file)}: ${pageCount} page(s) via ${renderer.id ?? "no renderer"}`);
+    const result = await renderPdfPages(pdfPath, outDir, { renderer, tools, pageCount });
+    rendererUsed = rendererUsed ?? result.renderer;
+    if (result.warning) {
+      warnings.push(result.warning);
+      say(`  ⚠ ${result.warning}`);
+    }
+    entry.warning = result.warning ?? null;
+    if (result.images.length) images.push({ label: entry.ref, images: result.images });
+    entry.pages_rendered = result.images.length;
+    entry.page_count = pageCount;
+  }
+  return { images, warnings, rendererUsed };
+}
+
+/**
+ * The GPX cross-check: find the manifest's GPX (if any), summarize it for the
+ * agent, and — like renderManifestPdfs above — stamp a parse failure onto the
+ * manifest entry itself rather than only the transient `warnings` array, so
+ * a reviewer opening the draft later can see the track was never checked.
+ * @param {object[]} manifest sources/manifest.json entries (mutated in place)
+ * @param {{sourcesDir: string, say?: (msg: string) => void}} opts
+ * @returns {Promise<{gpxSummary: string|null, warning: string|null}>}
+ */
+export async function summarizeManifestGpx(manifest, { sourcesDir, say = () => {} }) {
+  const gpxEntry = manifest.find((m) => m.file && (m.kind === "gpx" || GPX_RE.test(m.file)));
+  if (!gpxEntry) return { gpxSummary: null, warning: null };
+  try {
+    const gpxSummary = summarizeGpx(await fs.readFile(path.join(sourcesDir, gpxEntry.file), "utf8"));
+    say(`gpx: ${gpxSummary?.split("\n")[0].trim() ?? "unreadable"}`);
+    return { gpxSummary, warning: null };
+  } catch (e) {
+    const warning = `GPX ${gpxEntry.ref} could not be parsed: ${e.message}`;
+    gpxEntry.warning = warning;
+    say(`  ⚠ ${warning}`);
+    return { gpxSummary: null, warning };
+  }
 }
 
 /**
@@ -872,52 +1003,23 @@ export async function runIntake({
     /* 2. PDFs → per-page PNGs */
     onProgress({ step: "render", status: "start", label: "rendering PDF pages" });
     const tools = await detectPdfTools();
-    const pdfs = manifest.filter((m) => m.file && (m.kind === "pdf" || PDF_RE.test(m.file)));
-    const images = [];
-    let rendererUsed = null;
-    // The runner manual routinely arrives twice — linked from the site AND
-    // uploaded by the owner. Rendering both hands the agent two identical
-    // stacks of page images and invites it to spend turns on the copy.
-    const seenPdfs = new Map();
-    for (const entry of pdfs) {
-      const pdfPath = path.join(sourcesDir, entry.file);
-      const buf = await fs.readFile(pdfPath);
-      const digest = crypto.createHash("sha256").update(buf).digest("hex");
-      if (seenPdfs.has(digest)) {
-        entry.duplicate_of = seenPdfs.get(digest);
-        say("render", `${path.basename(entry.file)}: byte-identical to ${seenPdfs.get(digest)} — not rendered twice`);
-        continue;
-      }
-      seenPdfs.set(digest, entry.file);
-      const pageCount = pdfPageCount(buf);
-      const renderer = choosePdfRenderer({ pageCount, tools });
-      const outDir = path.join(sourcesDir, "pages", kebab(path.basename(entry.file, ".pdf")));
-      say("render", `${path.basename(entry.file)}: ${pageCount} page(s) via ${renderer.id ?? "no renderer"}`);
-      const result = await renderPdfPages(pdfPath, outDir, { renderer, tools });
-      rendererUsed = rendererUsed ?? result.renderer;
-      if (result.warning) {
-        warnings.push(result.warning);
-        say("render", `  ⚠ ${result.warning}`, { stream: "err" });
-      }
-      if (result.images.length) images.push({ label: entry.ref, images: result.images });
-      entry.pages_rendered = result.images.length;
-      entry.page_count = pageCount;
-    }
-    if (!pdfs.length) say("render", "no PDFs to render");
+    const hadPdfs = manifest.some((m) => m.file && (m.kind === "pdf" || PDF_RE.test(m.file)));
+    const { images, warnings: renderWarnings, rendererUsed } = await renderManifestPdfs(manifest, {
+      sourcesDir,
+      tools,
+      say: (m) => say("render", m, /^\s*⚠/.test(m) ? { stream: "err" } : {}),
+    });
+    warnings.push(...renderWarnings);
+    if (!hadPdfs) say("render", "no PDFs to render");
     onProgress({ step: "render", status: "done", renderer: rendererUsed });
 
     /* 3. GPX sanity check — the matcher is stage 2; this is only a cross-check
           the agent can hold its aid list against. */
-    let gpxSummary = null;
-    const gpxEntry = manifest.find((m) => m.file && (m.kind === "gpx" || GPX_RE.test(m.file)));
-    if (gpxEntry) {
-      try {
-        gpxSummary = summarizeGpx(await fs.readFile(path.join(sourcesDir, gpxEntry.file), "utf8"));
-        say("render", `gpx: ${gpxSummary?.split("\n")[0].trim() ?? "unreadable"}`);
-      } catch (e) {
-        warnings.push(`GPX ${gpxEntry.ref} could not be parsed: ${e.message}`);
-      }
-    }
+    const { gpxSummary, warning: gpxWarning } = await summarizeManifestGpx(manifest, {
+      sourcesDir,
+      say: (m) => say("render", m, /^\s*⚠/.test(m) ? { stream: "err" } : {}),
+    });
+    if (gpxWarning) warnings.push(gpxWarning);
 
     /* 4. the agent */
     onProgress({ step: "agent", status: "start", label: "reading sources with the intake agent" });
@@ -965,10 +1067,18 @@ export async function runIntake({
       await abort(slug, contract.errors.join("; "), `intake agent output failed the contract:\n  · ${contract.errors.join("\n  · ")}`);
     }
 
-    await assertSlugAvailable(root, slug, { refresh, outDir });
+    try {
+      await assertSlugAvailable(root, slug, { refresh, outDir });
+    } catch (e) {
+      // Unlike the two checks above, this one runs AFTER the agent has
+      // already produced a valid draft — a late collision (the derived slug
+      // happens to match an existing folder) must not cost the owner the
+      // paid turn just spent, so it goes through the same abort() net.
+      await abort(slug, e.message, `slug collision after the agent run: ${e.message}`);
+    }
 
-    const race = buildRaceJson(draft, { slug, year: Number(year), manifest });
-    const unresolved = collectUnresolved(race, draft.unresolved ?? []);
+    const race = buildRaceJson(draft, { slug, year: Number(year), manifest, warnings });
+    const unresolved = race.unresolved;
     const { errors, excused } = draftValidationErrors(race, unresolved);
     if (errors.length) {
       await abort(slug, errors.join("; "), `draft failed schema validation:\n  · ${errors.join("\n  · ")}`);
@@ -976,9 +1086,20 @@ export async function runIntake({
     for (const e of excused) say("validate", `known gap (listed unresolved): ${e}`);
 
     const dir = outDir ?? raceDir(root, slug);
-    await moveSources(staging, dir);
-    await writeJsonAtomic(path.join(dir, "sources", "manifest.json"), manifest);
-    await writeJsonAtomic(path.join(dir, "race.json"), race);
+    try {
+      await moveSources(staging, dir);
+      await writeJsonAtomic(path.join(dir, "sources", "manifest.json"), manifest);
+      await writeJsonAtomic(path.join(dir, "race.json"), race);
+    } catch (e) {
+      // Validation already passed at this point — an ENOSPC/EACCES here is a
+      // disk problem, not a bad draft, but it is just as capable of losing a
+      // ten-minute agent run if the raw output isn't parked first. `abort`
+      // itself calls saveRawOutput, which writes under `outDir ?? races/<slug>/`
+      // — the same place moveSources was headed — so a failure partway
+      // through moveSources can still collide; that risk already exists for
+      // every abort() call site above and is no worse here.
+      await abort(slug, e.message, `writing races/${slug}/ failed: ${e.message}`);
+    }
     onProgress({ step: "validate", status: "done", slug, unresolved: unresolved.length });
 
     return {

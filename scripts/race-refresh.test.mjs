@@ -26,6 +26,7 @@ import { buildRaceJson } from "./race-intake.mjs";
 import {
   SHADOW,
   acceptRefresh,
+  loadShadowRace,
   readRefresh,
   refreshSources,
   rejectRefresh,
@@ -202,6 +203,25 @@ test("a refresh writes nothing outside .refresh/", async (t) => {
   assert.equal(shadowRace.distance_mi, 32.8);
 });
 
+/* ------------------------- loadShadowRace (finding #3) ------------------- */
+
+test("loadShadowRace: no race.json at all reads as null — the ENOENT case runRefresh reports as no diff", async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-shadow-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const shadow = path.join(tmp, SHADOW);
+  await fs.mkdir(shadow, { recursive: true });
+  assert.equal(await loadShadowRace(shadow, SLUG), null);
+});
+
+test("loadShadowRace: a race.json that is not valid JSON propagates instead of reading as \"nothing to diff\"", async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-shadow-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const shadow = path.join(tmp, SHADOW);
+  await fs.mkdir(shadow, { recursive: true });
+  await fs.writeFile(path.join(shadow, "race.json"), "{ not json");
+  await assert.rejects(loadShadowRace(shadow, SLUG), /race\.json is not valid JSON/);
+});
+
 test("the diff names what Accept would change, and nothing else", async (t) => {
   const { tmp, dir } = await fixtureRace(t);
   const incoming = await draft();
@@ -249,7 +269,11 @@ test("stage 3 plans into the shadow, leaving the live block and fuel plan alone"
     // Tue → week 1 is 2027-05-24 and race week is 12, which is the block the
     // canned reply carries. The clock is injected for exactly this reason.
     today: new Date(2027, 4, 18),
-    runAgent: cannedIntake(await draft({ date: "2027-08-13" })),
+    // A confirmed date, not just a filled-in one: the fixture's own
+    // `unresolved` always lists "date" (it was written for the null-date
+    // case), and race-plan.mjs now treats "date" ∈ unresolved as no date at
+    // all — this override is what makes this specific date a real one.
+    runAgent: cannedIntake(await draft({ date: "2027-08-13", unresolved: ["links.gpx"] })),
     runPlanAgent: async () => ({ text: JSON.stringify(plan), wrapper: {}, retried: false }),
   });
 
@@ -311,6 +335,85 @@ test("accept applies exactly the merged files and takes the shadow away", async 
   assert.equal(race.status, "active", "an active race is still active after a refresh");
   assert.equal(race.slug, SLUG);
   await assert.rejects(fs.access(path.join(dir, SHADOW)), /ENOENT/, "the shadow folder is gone");
+});
+
+test("accept copies course.gpx and build/course.json BEFORE the merged JSON — an interruption between them is repaired by a re-run", async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-accept-order-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const dir = path.join(tmp, "races", SLUG);
+  const shadow = path.join(dir, SHADOW);
+  await fs.mkdir(path.join(dir, "build"), { recursive: true });
+  await fs.mkdir(path.join(shadow, "build"), { recursive: true });
+
+  const race = { ...buildRaceJson(await draft(), { slug: SLUG, year: 2027, manifest: [] }), status: "active" };
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(race, null, 2));
+  await fs.writeFile(path.join(dir, "course.gpx"), "OLD GPX\n");
+  await fs.writeFile(path.join(dir, "build", "course.json"), JSON.stringify({ v: "old" }, null, 2));
+
+  const incomingRace = { ...race, distance_mi: 32.8 };
+  await fs.writeFile(path.join(shadow, "race.json"), JSON.stringify(incomingRace, null, 2));
+  await fs.writeFile(path.join(shadow, "course.gpx"), "NEW GPX\n");
+  await fs.writeFile(path.join(shadow, "build", "course.json"), JSON.stringify({ v: "new" }, null, 2));
+  await fs.writeFile(path.join(shadow, "diff.json"), JSON.stringify({ slug: SLUG, at: "2026-09-18T00:00:00Z" }, null, 2));
+
+  // The injected failure: onProgress throws the instant it sees the
+  // course.gpx copy logged, simulating a crash right there — before any of
+  // the merged JSON files (race.json/block.json/nutrition.json) are touched.
+  let sawCourseGpx = false;
+  await assert.rejects(
+    acceptRefresh({
+      root: tmp,
+      slug: SLUG,
+      onProgress: (e) => {
+        if (e.message === `races/${SLUG}/course.gpx`) {
+          sawCourseGpx = true;
+          throw new Error("simulated crash right after course.gpx");
+        }
+      },
+    }),
+    /simulated crash/,
+  );
+  assert.ok(sawCourseGpx, "the injected failure actually fired where this test means it to");
+
+  // course.gpx already landed; race.json did NOT — proof course files are
+  // copied before the JSON write, not after.
+  assert.equal(await fs.readFile(path.join(dir, "course.gpx"), "utf8"), "NEW GPX\n");
+  assert.equal((await readJson(path.join(dir, "race.json"))).distance_mi, race.distance_mi, "the interrupted write never reached race.json");
+  // .refresh/ survives the crash, so a re-run has something to repair from.
+  assert.ok(await fs.access(shadow).then(() => true, () => false), ".refresh/ must not be removed on a failed accept");
+
+  // A plain re-run (no injected failure) finishes the job.
+  await acceptRefresh({ root: tmp, slug: SLUG });
+  assert.equal((await readJson(path.join(dir, "race.json"))).distance_mi, 32.8);
+  await assert.rejects(fs.access(shadow), /ENOENT/, "the shadow is gone once the accept actually completes");
+});
+
+test("accept promotes course.gpx via temp+rename — a blocked rename leaves the live file untouched, not truncated", async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-accept-atomic-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const dir = path.join(tmp, "races", SLUG);
+  const shadow = path.join(dir, SHADOW);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.mkdir(shadow, { recursive: true });
+
+  const race = { ...buildRaceJson(await draft(), { slug: SLUG, year: 2027, manifest: [] }), status: "active" };
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(race, null, 2));
+  await fs.writeFile(path.join(dir, "course.gpx"), "OLD GPX — the live course\n");
+  await fs.writeFile(path.join(shadow, "course.gpx"), "NEW GPX — freshly re-read\n");
+  await fs.writeFile(path.join(shadow, "diff.json"), JSON.stringify({ slug: SLUG, at: "2026-09-18T00:00:00Z" }, null, 2));
+
+  // Pre-occupy the exact tmp path the promotion copies to before renaming —
+  // fs.copyFile(from, tmp) fails outright (tmp is a directory), the same way
+  // it would if the process died mid-write and left a stale tmp behind.
+  const blockedTmp = path.join(dir, `course.gpx.tmp.${process.pid}`);
+  await fs.mkdir(blockedTmp);
+
+  await assert.rejects(acceptRefresh({ root: tmp, slug: SLUG }));
+  assert.equal(
+    await fs.readFile(path.join(dir, "course.gpx"), "utf8"),
+    "OLD GPX — the live course\n",
+    "the live file must be untouched, not partially overwritten, when the promotion cannot complete",
+  );
 });
 
 test("accept never touches plan.json or result.json", async (t) => {

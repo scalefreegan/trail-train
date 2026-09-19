@@ -79,6 +79,24 @@ async function readJsonIfPresent(p) {
   }
 }
 
+/**
+ * The shadow's race.json, or null when stage 1-3 never wrote one — the ONLY
+ * case that should read as "nothing to diff". race-config.mjs's readJson has
+ * no error code to distinguish that from a truncated write or a race.json
+ * that is not valid JSON (it throws a plain Error either way), so this keys
+ * off the message shape listRaces (race-config.mjs) already uses for the same
+ * distinction. A parse or schema error must propagate: swallowing it here
+ * would report the misleading "the refresh produced no race.json to diff"
+ * for what is actually a broken shadow folder the owner needs to see.
+ * @returns {Promise<{slug: string, dir: string, race: object, block: object|null, plan: object|null, nutrition: object|null}|null>}
+ */
+export async function loadShadowRace(shadow, slug) {
+  return loadRaceFolderAt(shadow, slug).catch((e) => {
+    if (/not found$/.test(e.message)) return null;
+    throw e;
+  });
+}
+
 /** YYYY-MM-DD-HHMM, the dated name the promoted source cache takes. */
 export function sourceStamp(at = new Date()) {
   const iso = at.toISOString();
@@ -239,7 +257,7 @@ export async function runRefresh({
 
   /* 4. the merge — deterministic, no agent, nothing written to the live folder */
   step("merge", "start", { label: "diffing against the race on disk" });
-  const incoming = await loadRaceFolderAt(shadow, slug).catch(() => null);
+  const incoming = await loadShadowRace(shadow, slug);
   if (!incoming) throw new Error(`the refresh produced no ${SHADOW}/race.json to diff`);
   const merged = mergeRaceFolder(
     { race: current.race, block: current.block, nutrition: current.nutrition },
@@ -309,24 +327,38 @@ export async function acceptRefresh({ root, slug, onProgress = () => {} }) {
   );
 
   const wrote = [];
+
+  /* The course the new chart was snapped to, and the build that came off it,
+     copied BEFORE the merged JSON below. Both are generated and gitignored,
+     and a crash partway through this function must not leave a refreshed aid
+     table sitting beside a stale course (a mismatch nothing would flag). This
+     order does not make a crash impossible — it makes it repairable: .refresh/
+     is not removed until the very last line, so a re-run of acceptRefresh
+     recomputes the same merge and finishes whichever half did not land. */
+  for (const asset of ["course.gpx", path.join("build", "course.json")]) {
+    const from = path.join(shadow, asset);
+    if (!(await fs.access(from).then(() => true, () => false))) continue;
+    const to = path.join(current.dir, asset);
+    // A raw fs.copyFile onto the live path is not atomic — a crash mid-copy
+    // leaves a truncated file there, which is exactly the kind of half-write
+    // the reordering above this loop exists to avoid. Temp file + rename,
+    // same guarantee writeJsonAtomic (scripts/lib.mjs) gives every JSON
+    // write in this app; course.gpx is text, so this copies bytes rather
+    // than round-tripping through JSON.parse/stringify.
+    await fs.mkdir(path.dirname(to), { recursive: true });
+    const tmp = `${to}.tmp.${process.pid}`;
+    await fs.copyFile(from, tmp);
+    await fs.rename(tmp, to);
+    wrote.push(`races/${slug}/${asset}`);
+    say(`races/${slug}/${asset}`);
+  }
+
   for (const file of MERGED_FILES) {
     const next = merged.files[file];
     if (!next) continue;
     await writeJsonAtomic(path.join(current.dir, file), next);
     wrote.push(`races/${slug}/${file}`);
     say(`races/${slug}/${file}`);
-  }
-
-  /* The course the new chart was snapped to, and the build that came off it.
-     Both are generated, both are gitignored, and leaving the old ones next to
-     a refreshed race.json would make the profile disagree with the aid table. */
-  for (const asset of ["course.gpx", path.join("build", "course.json")]) {
-    const from = path.join(shadow, asset);
-    if (!(await fs.access(from).then(() => true, () => false))) continue;
-    const to = path.join(current.dir, asset);
-    await fs.mkdir(path.dirname(to), { recursive: true });
-    await fs.copyFile(from, to);
-    wrote.push(`races/${slug}/${asset}`);
   }
 
   /* The source cache, under a dated name so the manual the CURRENT race.json

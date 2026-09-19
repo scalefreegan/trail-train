@@ -136,6 +136,13 @@ test("validateRaceJson collects the other shape errors", () => {
   assertRejects(validRace({ sources: [{ kind: "tweet", ref: "x" }] }), "sources[0].kind");
 });
 
+test("validateRaceJson accepts intake_warnings as an optional array of strings, nothing else", () => {
+  assert.equal(validateRaceJson(validRace({ intake_warnings: ["no PDF renderer on this machine"] })).ok, true);
+  assert.equal(validateRaceJson(validRace()).ok, true, "absent entirely is fine — most drafts have none");
+  assertRejects(validRace({ intake_warnings: "no PDF renderer" }), "intake_warnings: array of strings");
+  assertRejects(validRace({ intake_warnings: [{ message: "no PDF renderer" }] }), "intake_warnings: array of strings");
+});
+
 test("listRaces returns [] when races/ is missing and skips non-races", async (t) => {
   const root = await tempRoot(t);
   assert.deepEqual(await listRaces(root), []);

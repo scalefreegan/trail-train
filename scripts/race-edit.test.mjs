@@ -8,8 +8,11 @@ import assert from "node:assert/strict";
 import {
   EDITABLE_AID_FIELDS,
   EDITABLE_RACE_KEYS,
+  applyBlockTargetsEdit,
   applyRaceEdit,
   applyStatus,
+  isBlockStale,
+  loadReview,
   otherActiveSlugs,
   pruneAcknowledgedNulls,
   recomputeUnresolved,
@@ -18,6 +21,9 @@ import {
   validateStatusTransition,
   valueAtPath,
 } from "./race-edit.mjs";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 /** A minimal race.json that validateRaceJson accepts outright. */
 function race(over = {}) {
@@ -189,7 +195,26 @@ test("applyRaceEdit returns block targets narrowed to the three keys block.json 
   }, { at: AT });
   assert.deepEqual(block_targets, [{ wk: 1, target_dist: 40, target_elev: 6000 }]);
   assert.ok(written.includes("block.targets"));
-  assert.deepEqual(next.provenance["block.targets"], { by: "user", at: AT });
+  // Ownership is stamped on block.json itself (applyBlockTargetsEdit) — see
+  // that test below — not on race.provenance, which nothing ever read.
+  assert.ok(!("block.targets" in (next.provenance ?? {})));
+});
+
+test("applyBlockTargetsEdit stamps block.json's own provenance, keeping the rest of the file", () => {
+  const block = { start_date: "2027-05-24", total_weeks: 12, targets: [{ wk: 1, target_dist: 30, target_elev: 4000 }] };
+  const next = applyBlockTargetsEdit(block, [{ wk: 1, target_dist: 40, target_elev: 6000 }], { at: AT });
+  assert.deepEqual(next.targets, [{ wk: 1, target_dist: 40, target_elev: 6000 }]);
+  assert.deepEqual(next.provenance, { targets: { by: "user", at: AT } });
+  assert.equal(next.start_date, "2027-05-24", "unrelated block fields survive");
+  assert.equal(next.total_weeks, 12);
+  assert.deepEqual(block.targets, [{ wk: 1, target_dist: 30, target_elev: 4000 }], "the input block is not mutated");
+});
+
+test("applyBlockTargetsEdit preserves other provenance keys a future field might add", () => {
+  const block = { targets: [], provenance: { start_date: { by: "computed", at: "2027-01-01T00:00:00Z" } } };
+  const next = applyBlockTargetsEdit(block, [{ wk: 1, target_dist: 1, target_elev: 1 }], { at: AT });
+  assert.deepEqual(next.provenance.start_date, { by: "computed", at: "2027-01-01T00:00:00Z" });
+  assert.deepEqual(next.provenance.targets, { by: "user", at: AT });
 });
 
 test("applyRaceEdit records the acknowledgement as a user-provenance field", () => {
@@ -415,4 +440,44 @@ test("applyStatus prunes the acknowledged holes it was validated against", () =>
   const next = applyStatus(r, "active", { at: AT, unresolved: ["elevation.min_ft"] });
   assert.equal(next.status, "active");
   assert.equal("min_ft" in next.elevation, false);
+});
+
+/* ------------------------------ block staleness --------------------------- */
+
+test("isBlockStale: true when race.date has moved out of the block's race week", () => {
+  const block = { start_date: "2027-05-24", total_weeks: 12, targets: [] };
+  // week 12 (the last) runs 2027-08-09 through 2027-08-15 — inside it, not stale
+  assert.equal(isBlockStale(block, { date: "2027-08-13" }), false);
+  assert.equal(isBlockStale(block, { date: "2027-08-09" }), false);
+  assert.equal(isBlockStale(block, { date: "2027-08-15" }), false);
+  // the owner moved the race a week later — now stale
+  assert.equal(isBlockStale(block, { date: "2027-08-20" }), true);
+  // and a week earlier
+  assert.equal(isBlockStale(block, { date: "2027-08-06" }), true);
+});
+
+test("isBlockStale: false when there is nothing sane to compare — a separate problem, not staleness", () => {
+  const block = { start_date: "2027-05-24", total_weeks: 12, targets: [] };
+  assert.equal(isBlockStale(block, { date: null }), false);
+  assert.equal(isBlockStale(block, { date: "not-a-date" }), false);
+  assert.equal(isBlockStale(null, { date: "2027-08-13" }), false);
+  assert.equal(isBlockStale({ start_date: "2027-05-24" }, { date: "2027-08-13" }), false, "total_weeks missing");
+});
+
+test("loadReview surfaces block_stale without touching block.json — the athlete's targets are never at risk", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "race-edit-review-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const slug = "test-race-2027";
+  const dir = path.join(root, "races", slug);
+  await fs.mkdir(dir, { recursive: true });
+  const r = race({ date: "2027-08-20" }); // the block below was planned for 2027-08-13
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(r, null, 2));
+  const block = { start_date: "2027-05-24", total_weeks: 12, targets: [{ wk: 1, target_dist: 30, target_elev: 4000 }] };
+  await fs.writeFile(path.join(dir, "block.json"), JSON.stringify(block, null, 2));
+
+  const review = await loadReview(root, slug);
+  assert.equal(review.block_stale, true);
+  assert.deepEqual(review.block, block, "the targets themselves are untouched");
+  // and loadReview is read-only — the file on disk is exactly what was written
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir, "block.json"), "utf8")), block);
 });

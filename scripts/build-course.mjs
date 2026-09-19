@@ -318,6 +318,17 @@ export async function buildCourse(root, slug, opts = {}) {
   // chart figures, against which the GPX-measured ones are compared.
   const officialDist = race.distance_mi;
   const officialGain = race.gain_ft;
+  // distance_mi is not in race-intake.mjs's NEVER_EXCUSABLE set, so a draft
+  // can validate and be written with it null (listed unresolved). Dividing
+  // by that unguarded turns every snap window and climb window into
+  // Infinity/NaN — silently, since `null` coerces to 0 first. An unresolved
+  // distance fails the course build outright instead.
+  if (!Number.isFinite(officialDist) || officialDist <= 0) {
+    throw new Error(
+      `races/${folder.slug}/race.json distance_mi is not a positive number (${JSON.stringify(officialDist)}) — ` +
+        "resolve it in the review screen before building the course"
+    );
+  }
   const scale = measuredDist / officialDist; // measured miles per official mile
 
   log(`── ${race.name} (${folder.slug}) · course build ──`);
@@ -331,6 +342,36 @@ export async function buildCourse(root, slug, opts = {}) {
   );
   log(`track points: ${track.length} · grid points: ${grid.length}`);
   log("");
+
+  // A GPX whose measured distance or gain is wildly off race.json's chart
+  // figures (a truncated download, the wrong file entirely) is not the
+  // normal 1-3% drift a GPX always has against the organizer's stated
+  // numbers — it is a strong signal this course.gpx is not the race's real
+  // course, and everything downstream (snap windows, climb detection,
+  // projected splits) would be silently wrong. Flagged distinctly from the
+  // ordinary log lines above so race-build.mjs can promote it to a
+  // structured, review-dialog-visible warning/unresolved entry rather than
+  // an SSE line that scrolls by and is gone.
+  const MISMATCH_THRESHOLD = 0.15; // 15% — comfortably above normal GPX drift
+  const distPctOff = Math.abs(measuredDist / officialDist - 1);
+  const gainPctOff = Number.isFinite(officialGain) && officialGain > 0
+    ? Math.abs(measuredGain / officialGain - 1)
+    : null;
+  const mismatches = [];
+  if (distPctOff > MISMATCH_THRESHOLD) {
+    mismatches.push(
+      `course.gpx measures ${measuredDist.toFixed(1)} mi vs race.json's ${officialDist} mi ` +
+        `(${(distPctOff * 100).toFixed(0)}% off — normal GPX drift is 1-3%); this GPX may be truncated or the wrong file`
+    );
+  }
+  if (gainPctOff !== null && gainPctOff > MISMATCH_THRESHOLD) {
+    mismatches.push(
+      `course.gpx measures ${Math.round(measuredGain).toLocaleString()} ft of gain vs race.json's ` +
+        `${officialGain.toLocaleString()} ft (${(gainPctOff * 100).toFixed(0)}% off — normal GPX drift is 1-3%); ` +
+        "this GPX may be truncated or the wrong file"
+    );
+  }
+  for (const m of mismatches) warn(m);
 
   // ── Aid stations: resolve to a waypoint, then snap to the track ─────────
   // The authored gpx_wpt is still authoritative when it names a real waypoint;
@@ -469,10 +510,24 @@ export async function buildCourse(root, slug, opts = {}) {
     return EXTEND_MAX_DRAWDOWN_FT;
   };
 
-  const race_climbs = (race.race_climbs ?? []).map((rc) => {
+  const race_climbs = (race.race_climbs ?? []).flatMap((rc) => {
     // Windows in config are official miles; scale to measured space.
     const w0 = rc.approx_mi[0] * scale;
     const w1 = rc.approx_mi[1] * scale;
+    // A malformed window (reversed, non-finite, or outside the course this
+    // GPX actually measures) has no honest fallback: nearestGridIdx would
+    // still resolve SOME indices, and the fallback branch below assumes
+    // s <= p — a reversed window silently wrote negative length_mi, garbage
+    // gain and an empty profile instead of failing. Warn and drop the climb
+    // rather than write a course.json entry nobody asked for.
+    if (!Number.isFinite(w0) || !Number.isFinite(w1) || w0 >= w1) {
+      warn(`${rc.label}: approx_mi [${rc.approx_mi}] is not an ascending window — climb dropped from course.json`);
+      return [];
+    }
+    if (w1 < 0 || w0 > measuredDist) {
+      warn(`${rc.label}: approx_mi [${rc.approx_mi}] falls outside the measured course (0–${measuredDist.toFixed(1)} mi) — climb dropped from course.json`);
+      return [];
+    }
     let match = null;
     let bestOv = 0;
     for (const c of detected) {
@@ -681,6 +736,10 @@ export async function buildCourse(root, slug, opts = {}) {
     profile_points: profile.length,
     measured_mi: payload.distance_mi,
     measured_gain_ft: payload.gain_ft,
+    // Non-empty only when distance or gain missed the official chart by more
+    // than MISMATCH_THRESHOLD — race-build.mjs turns this into a structured
+    // warning AND an unresolved("course.gpx") entry, not just an SSE line.
+    mismatches,
   };
 }
 

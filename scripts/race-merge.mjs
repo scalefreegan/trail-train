@@ -115,6 +115,19 @@ function ownerOf(provenance, path) {
   return null;
 }
 
+/**
+ * True when ANY provenance key under `prefix` (the prefix itself, or a
+ * `.field`/`[i]` child of it) is user-owned — not just the whole row/array.
+ * A dropped-row check that only asks `ownerOf(prefix)` misses a station the
+ * owner never claimed as a whole but did hand-edit one field of (e.g. a
+ * typed-in cutoff), which is exactly the case a chart re-read has to protect.
+ */
+function anyUserOwnedUnder(provenance, prefix) {
+  if (!isObj(provenance)) return false;
+  return Object.entries(provenance).some(([k, v]) =>
+    v?.by === "user" && (k === prefix || k.startsWith(`${prefix}.`) || k.startsWith(`${prefix}[`)));
+}
+
 /* ------------------------------ the merge -------------------------------- */
 
 /**
@@ -215,8 +228,10 @@ export function mergeFile(current, incoming, { file = "race.json", at = new Date
         return;
       }
       if (row == null && cur) {
-        // dropped from the new chart — unless the owner authored this row
-        if (ownerOf(provenance, `${path}[${ci}]`) === "user") {
+        // dropped from the new chart — unless the owner authored this row, OR
+        // any single field on it (a typed-in cutoff on a station the owner
+        // never touched otherwise); "whole row" alone missed that case.
+        if (anyUserOwnedUnder(provenance, `${path}[${ci}]`)) {
           out.push(structuredClone(cur));
           stationProv.push({ mi: out.length - 1, ii: null, ci });
           record({ path: `${path}[${ci}]`, kind: "kept", from: cur, to: undefined, by: "user", key: rowKey(cur, cfg) });
@@ -228,7 +243,11 @@ export function mergeFile(current, incoming, { file = "race.json", at = new Date
       // matched: merge field by field, under the CURRENT index — that is how
       // race-build.mjs keys a station's provenance ("aid_stations[2].gpx_wpt")
       const rowOut = structuredClone(cur);
-      if (cfg.key && !eq(cur[cfg.key], row[cfg.key])) {
+      // Skipped when the key field itself is user-owned: the per-field loop
+      // below records that case as "kept" (the owner's name wins), and
+      // recording "renamed" here too would be a duplicate, misattributed
+      // ("by: null") entry for a field the owner actually claimed.
+      if (cfg.key && !eq(cur[cfg.key], row[cfg.key]) && ownerOf(provenance, `${path}[${ci}].${cfg.key}`) !== "user") {
         record({ path: `${path}[${ci}].${cfg.key}`, kind: "renamed", from: cur[cfg.key], to: row[cfg.key], by: null, key: rowKey(cur, cfg) });
       }
       for (const k of Object.keys(row)) {

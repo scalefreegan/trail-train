@@ -429,6 +429,30 @@ export function validateRaceJson(obj) {
       if (!isStr(s.ref)) bad(`sources[${i}].ref: non-empty string required`);
     });
   }
+  if (obj.race_climbs !== undefined) {
+    if (!Array.isArray(obj.race_climbs)) bad("race_climbs: array required");
+    else obj.race_climbs.forEach((c, i) => {
+      if (!isObj(c)) { bad(`race_climbs[${i}]: object required`); return; }
+      if (!isStr(c.id)) bad(`race_climbs[${i}].id: non-empty string required`);
+      if (!isStr(c.label)) bad(`race_climbs[${i}].label: non-empty string required`);
+      // build-course.mjs scales and snaps this window directly onto the
+      // track; a reversed or out-of-range one produced negative length_mi
+      // and garbage gain with no error (see build-course.mjs's own guard).
+      const [a, b] = Array.isArray(c.approx_mi) ? c.approx_mi : [];
+      if (!Array.isArray(c.approx_mi) || c.approx_mi.length !== 2 || !isNum(a) || !isNum(b) || a < 0 || a >= b) {
+        bad(`race_climbs[${i}].approx_mi: [start, end] with 0 <= start < end required (got ${JSON.stringify(c.approx_mi)})`);
+      }
+    });
+  }
+  // A durable record of what intake couldn't read cleanly (a PDF chart with
+  // no renderer available, a GPX that failed to parse) — see race-intake.mjs.
+  // Distinct from `unresolved` (fields the schema still needs) because these
+  // are readable/not-readable facts about a SOURCE, not a hole in the race.
+  if (obj.intake_warnings !== undefined) {
+    if (!Array.isArray(obj.intake_warnings) || obj.intake_warnings.some((w) => typeof w !== "string")) {
+      bad("intake_warnings: array of strings required");
+    }
+  }
 
   validateAidStations(obj.aid_stations, bad);
   return { ok: errors.length === 0, errors };

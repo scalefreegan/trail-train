@@ -293,16 +293,44 @@ export function applyRaceEdit(race, body, { at = new Date().toISOString() } = {}
     if (setAtPath(next, p, v)) stamp(p);
   }
 
-  // block.json carries no provenance block of its own, so the fact that a
-  // human wrote its targets is recorded on the race — the only file in the
-  // folder that remembers who said what.
+  // block.json now stamps its OWN provenance (applyBlockTargetsEdit, below) —
+  // race.provenance["block.targets"] used to carry this instead, but nothing
+  // ever read it (race-plan.mjs's planRace and race-merge.mjs's mergeBlock
+  // both check a field's owner on the file the field actually lives in), so a
+  // hand edit here was recorded and then silently clobbered by the next
+  // re-plan. `written` still reports the change for the API response; it is
+  // no longer a race.provenance key.
   let blockTargets = null;
   if (Array.isArray(body.block_targets)) {
     blockTargets = body.block_targets.map((t) => ({ wk: t.wk, target_dist: t.target_dist, target_elev: t.target_elev }));
-    stamp("block.targets");
+    written.push("block.targets");
   }
 
   return { race: next, written, block_targets: blockTargets };
+}
+
+/**
+ * Merge a user's edited week targets into block.json, stamping
+ * `block.provenance.targets = {by: "user", at}` on the file that actually
+ * holds them. race-plan.mjs's planRace and race-merge.mjs's mergeBlock both
+ * read a field's ownership off the file it lives in (the same mechanism
+ * mergeFile already uses for race.json), so this stamp is what makes a
+ * hand-edited block survive the next re-plan or refresh.
+ *
+ * Pure — the dev server's PUT /api/races/:slug reads block.json, calls this,
+ * and writes the result back; `node --test` asks the same question directly.
+ *
+ * @param {object} block the parsed block.json (not mutated)
+ * @param {{wk: number, target_dist: number, target_elev: number}[]} targets
+ *   already-validated rows (see BLOCK_TARGET_KEYS above)
+ * @param {{at?: string}} [opts]
+ * @returns {object} the block.json to write
+ */
+export function applyBlockTargetsEdit(block, targets, { at = new Date().toISOString() } = {}) {
+  const next = isObj(block) ? { ...block } : {};
+  next.targets = targets;
+  next.provenance = { ...(isObj(next.provenance) ? next.provenance : {}), targets: { by: "user", at } };
+  return next;
 }
 
 /**
@@ -475,6 +503,33 @@ export function applyStatus(race, status, { at = new Date().toISOString(), unres
 /* ----------------------------- folder read ------------------------------ */
 
 /**
+ * Whether block.json's weeks were counted back from a race day that is no
+ * longer race.json's date. Editing `date` (applyRaceEdit) never touches or
+ * deletes block.json — the athlete's targets, hand-edited or not, are a
+ * commitment nobody wants to lose because the date moved by a week — but
+ * check-races.mjs and the review dialog both need to be able to SAY the
+ * block's calendar no longer lines up, rather than silently showing stale
+ * week numbers next to the new date.
+ * @param {object|null} block
+ * @param {object} race
+ * @returns {boolean}
+ */
+export function isBlockStale(block, race) {
+  if (!isObj(block) || typeof block.start_date !== "string" || !Number.isInteger(block.total_weeks)) return false;
+  // No confirmed date to compare against at all — a separate problem
+  // (race-plan.mjs's planWindow already refuses to plan against it), not a
+  // staleness question.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(race?.date))) return false;
+  const start = Date.parse(`${block.start_date}T00:00:00Z`);
+  const raceDate = Date.parse(`${race.date}T00:00:00Z`);
+  if (Number.isNaN(start) || Number.isNaN(raceDate)) return false;
+  // block.start_date is always a Monday (race-plan.mjs's planWindow); any day
+  // within race week total_weeks falls in this same floor-divided bucket.
+  const weekOfRaceDate = Math.floor((raceDate - start) / (7 * 86400000)) + 1;
+  return weekOfRaceDate !== block.total_weeks;
+}
+
+/**
  * Everything the review screen needs about one folder, in one read: the four
  * JSON files, the built course profile, the GPX waypoint list, the matcher's
  * ranked candidates per station, and the merged unresolved list.
@@ -527,6 +582,10 @@ export async function loadReview(root, slug) {
     slug,
     race,
     block: folder.block,
+    // Surfaced distinctly from `block` itself: the review dialog can show
+    // the athlete's existing targets AND a "these weeks were planned for a
+    // different date" notice, without this module ever touching block.json.
+    block_stale: isBlockStale(folder.block, race),
     nutrition: folder.nutrition,
     plan: folder.plan,
     course,

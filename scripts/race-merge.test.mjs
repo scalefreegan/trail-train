@@ -275,6 +275,70 @@ test("an inserted station carries the per-station provenance to its new index", 
   assert.equal(merged.provenance["aid_stations[2].gpx_wpt"], undefined, "the stale index is gone");
 });
 
+test("an inserted station also carries a MATCHER-owned stamp to its new index — rekeying is not a user-only special case", () => {
+  // Round-1 finding: "does race-merge's re-keying cover race-build.mjs's
+  // matchStations output and race-edit.mjs's applyRaceEdit writers, or only
+  // the user-owned case the test above exercises?" Verified sound: rekeying
+  // (mergeFile's rekeyRowProvenance) is pure string-prefix + `by` matching
+  // over the provenance OBJECT — it has no idea which module wrote a given
+  // key, so a "matcher" stamp (race-build.mjs:189) and a "user" stamp
+  // (race-edit.mjs:267, same aid_stations[i].field shape) get identical
+  // treatment. This pins that down for the non-user case.
+  const race = baseRace();
+  race.aid_stations[2].gpx_wpt = "PINCHOT";
+  race.provenance["aid_stations[2].gpx_wpt"] = { by: "matcher", at: "2026-01-01T00:00:00Z", confidence: 0.91, method: "fuzzy" };
+  const incoming = structuredClone(baseRace());
+  incoming.aid_stations.splice(1, 0, { name: "Little Giant", total_mi: 6.2, cutoff_h: 2, crew: false });
+  // The refresh's own re-match (race-build.mjs, run against the shadow
+  // folder before this merge) reconfirms the same waypoint with a FRESH
+  // matcher stamp — this is what a real re-intake's incoming.provenance
+  // actually looks like for a field nobody hand-edited. Pinchot Camp is at
+  // index 3 in THIS array (the insert above shifted it from 2), which is
+  // the index the incoming side's own stamp has to use.
+  incoming.provenance["aid_stations[3].gpx_wpt"] = { by: "matcher", at: AT, confidence: 0.97, method: "exact" };
+
+  const { merged } = mergeRace(race, incoming);
+  assert.equal(merged.aid_stations[3].name, "Pinchot Camp", "shifted by the inserted row, same as the user-owned case");
+  assert.deepEqual(
+    merged.provenance["aid_stations[3].gpx_wpt"],
+    { by: "matcher", at: AT, confidence: 0.97, method: "exact" },
+    "the fresh re-match's provenance lands at the NEW index, not the stale one",
+  );
+  assert.equal(merged.provenance["aid_stations[2].gpx_wpt"], undefined, "the stale index is gone here too");
+});
+
+test("a station dropped from the new chart is kept when the owner hand-edited even one of its fields", () => {
+  const race = baseRace();
+  race.aid_stations[1].cutoff_h = 4.5; // Kendall
+  race.provenance["aid_stations[1].cutoff_h"] = { by: "user", at: AT };
+  const incoming = structuredClone(baseRace());
+  incoming.aid_stations.splice(1, 1); // the new chart drops Kendall entirely
+
+  const { merged, diff, conflicts } = mergeRace(race, incoming);
+  assert.deepEqual(merged.aid_stations.map((s) => s.name), ["Silverton", "Kendall", "Pinchot Camp", "Molas"]);
+  assert.equal(merged.aid_stations[1].cutoff_h, 4.5);
+  assert.ok(!diff.some((d) => d.kind === "removed"), "no field ownership means no field is safe to erase by dropping the row");
+  const kept = diff.find((d) => d.path === "aid_stations[1]" && d.kind === "kept");
+  assert.ok(kept, diff.map((d) => `${d.kind}:${d.path}`).join(" | "));
+  assert.equal(kept.key, "Kendall");
+  assert.ok(conflicts.includes(kept));
+});
+
+test("a renamed station whose name the owner claimed does not also get a misattributed 'renamed' entry", () => {
+  const race = baseRace();
+  race.provenance["aid_stations[2].name"] = { by: "user", at: AT }; // Pinchot Camp
+  const incoming = structuredClone(baseRace());
+  incoming.aid_stations[2] = { name: "Pinchot", total_mi: 38.4, cutoff_h: 13, crew: true };
+
+  const { merged, diff } = mergeRace(race, incoming);
+  assert.equal(merged.aid_stations[2].name, "Pinchot Camp", "the owner's name wins");
+  const entriesForName = diff.filter((d) => d.path === "aid_stations[2].name");
+  assert.equal(entriesForName.length, 1, diff.map((d) => `${d.kind}:${d.path}`).join(" | "));
+  assert.equal(entriesForName[0].kind, "kept");
+  // the rest of the row still merges normally
+  assert.equal(merged.aid_stations[2].cutoff_h, 13);
+});
+
 test("a user-owned aid_stations array is kept whole", () => {
   const race = baseRace();
   race.provenance.aid_stations = { by: "user", at: AT };
@@ -352,6 +416,22 @@ test("block.json gains no provenance object just by being merged", () => {
   const { merged } = mergeBlock(block, incoming);
   assert.equal(merged.total_weeks, 5);
   assert.ok(!("provenance" in merged), "a file that never had provenance does not grow one");
+});
+
+test("hand-edited block.json targets survive a refresh merge — the incoming set is a kept diff entry", () => {
+  // The shape race-edit.mjs's applyBlockTargetsEdit stamps: block.json owns
+  // its own provenance, not race.provenance["block.targets"] (nothing reads
+  // that any more — see race-plan.test.mjs and race-edit.test.mjs).
+  const block = { ...baseBlock(), provenance: { targets: { by: "user", at: "2027-01-01T00:00:00Z" } } };
+  const incoming = structuredClone(block);
+  delete incoming.provenance;
+  incoming.targets = incoming.targets.map((t) => ({ ...t, target_dist: t.target_dist + 1 }));
+
+  const { merged, diff, conflicts } = mergeBlock(block, incoming);
+  assert.deepEqual(merged.targets, block.targets, "the owner's numbers are untouched");
+  assert.deepEqual(paths(diff), ["kept:targets"]);
+  assert.deepEqual(conflicts, diff, "the whole diff is a conflict — the owner should see the agent's proposal");
+  assert.deepEqual(merged.provenance, { targets: { by: "user", at: "2027-01-01T00:00:00Z" } }, "ownership itself is untouched");
 });
 
 /* ---------------------------- nutrition.json ------------------------------ */

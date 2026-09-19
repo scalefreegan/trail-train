@@ -310,3 +310,58 @@ test("archiveRace: an unknown slug is not_found; an unbuilt course is bad_reques
     (e) => e.code === "bad_request" && /course:build/.test(e.message),
   );
 });
+
+test("archiveRace: a race with no valid date fails with an actionable error, before any Strava lookup", async (t) => {
+  // No `activity`/`streams` injected and no web/public/strava.json written —
+  // if the date guard runs first, this rejects with the date message; if it
+  // ran after findLoggedActivity, it would instead complain the log is
+  // missing. A race can reach "active" with date still null (an
+  // acknowledged unresolved field, PRD §8), so this is reachable in practice,
+  // not just a type-safety nicety.
+  const root = await tempRace(t, { race: raceJson({ date: null }) });
+  await assert.rejects(
+    archiveRace({ root, slug: "test-race-2026", activityId: "20165079124" }),
+    (e) => e.code === "bad_request" && /no valid date/.test(e.message) && /null/.test(e.message),
+  );
+
+  const malformed = await tempRace(t, { race: raceJson({ date: "Sept 12" }) });
+  await assert.rejects(
+    archiveRace({ root: malformed, slug: "test-race-2026", activityId: "20165079124" }),
+    (e) => e.code === "bad_request" && /no valid date/.test(e.message),
+  );
+});
+
+test("archiveRace: race.json is archived before result.json is written, so a crash between them leaves an obviously-incomplete (not phantom) state", async (t) => {
+  const root = await tempRace(t);
+  const dir = path.join(root, "races", "test-race-2026");
+  // Stand in for "the process died between the two writes": writeJsonAtomic
+  // (scripts/lib.mjs) writes result.json via a `result.json.tmp.<pid>` file
+  // and renames it into place, so pre-occupying that exact tmp path with a
+  // directory makes ONLY the result.json write fail — race.json's own write
+  // (a different tmp path) is unaffected, and the earlier `loadResult` read
+  // still sees a plain ENOENT (no result.json exists yet).
+  const resultTmp = path.join(dir, `result.json.tmp.${process.pid}`);
+  await fs.mkdir(resultTmp);
+  t.after(() => fs.rm(resultTmp, { recursive: true, force: true }));
+
+  await assert.rejects(
+    archiveRace({ root, slug: "test-race-2026", activityId: "20165079124", activity: raceDayActivity(), streams: streams() }),
+  );
+
+  // The first write landed: race.json is already archived...
+  const race = JSON.parse(await fs.readFile(path.join(dir, "race.json"), "utf8"));
+  assert.equal(race.status, "archived");
+  // ...while the second write is the one that failed — no phantom result for
+  // a still-active race is possible in this order, only an archived race
+  // that is obviously missing its result.
+  await assert.rejects(fs.access(path.join(dir, "result.json")), /ENOENT/);
+
+  // A re-run repairs it: the status flip is a no-op the second time (race.json
+  // is already archived), and result.json gets written for real.
+  await fs.rm(resultTmp, { recursive: true });
+  const { result } = await archiveRace({
+    root, slug: "test-race-2026", activityId: "20165079124", activity: raceDayActivity(), streams: streams(),
+  });
+  assert.equal(result.status, "finished");
+  assert.equal(JSON.parse(await fs.readFile(path.join(dir, "race.json"), "utf8")).status, "archived");
+});

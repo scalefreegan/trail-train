@@ -332,8 +332,13 @@ export function ownedProvenance(race) {
   );
 }
 
-/** Minimum aid stations whose gpx_wpt must come back identical, of 15. */
-export const REFERENCE_WPT_FLOOR = 14;
+/** Minimum aid stations whose gpx_wpt must come back identical, of 15.
+    PRD §15 states 15/15; the matcher reproduces exactly that today
+    (verified: `node scripts/check-races.mjs` → "waypoints reproduced from
+    names alone: 15/15"), so 14 was a stale slack floor from before the
+    matcher cleared the last one — a real regression to 14/15 should fail
+    this check, not pass it silently under the old floor. */
+export const REFERENCE_WPT_FLOOR = 15;
 
 async function checkReferenceRebuild(root) {
   const src = path.join(root, "races", REFERENCE_SLUG);
