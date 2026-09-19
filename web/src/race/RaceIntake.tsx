@@ -30,7 +30,7 @@ import { THEME_PRESET_NAMES } from "../themes/presets";
 import { ThemePreview } from "../themes/ThemePreview";
 import type { Course, RaceAidStation, RaceBlock, RaceConfig } from "./types";
 import type { NutritionConfig } from "./nutrition-config";
-import { cellStyle, inputStyle, runStage, type StageEvent, type StageRow, type StageState } from "./dialogChrome";
+import { cellStyle, friendlyFetchError, inputStyle, runStage, useDialog, type StageEvent, type StageRow, type StageState } from "./dialogChrome";
 
 
 /* ------------------------------------------------------------------ */
@@ -155,6 +155,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   const { reload } = useRefresh();
   const [slug, setSlug] = useState<string | null>(openAt);
   const [screen, setScreen] = useState<"form" | "review">(openAt ? "review" : "form");
+  const header = screen === "review" ? "review · draft race" : "new race";
 
   // Restore a form abandoned by ESC/backdrop (round 1, bug D8) — read once,
   // synchronously, during the first render, so the fields never flash empty
@@ -169,7 +170,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   const [themePreset, setThemePreset] = useState<string>(() => readNewRaceDraft(openAt)?.themePreset ?? "");
   const [uploads, setUploads] = useState<{ name: string; path: string; bytes: number }[]>(() => readNewRaceDraft(openAt)?.uploads ?? []);
   const [uploading, setUploading] = useState(false);
-  const [restoredDraft] = useState(() => readNewRaceDraft(openAt) !== null);
+  const [restoredDraft, setRestoredDraft] = useState(() => readNewRaceDraft(openAt) !== null);
 
   // run
   const [running, setRunning] = useState(false);
@@ -188,14 +189,13 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   const [reviewLocked, setReviewLocked] = useState(false);
   const locked = running || reviewLocked;
 
-  // Escape closes. The draft is on disk, so there is nothing here to lose —
-  // except mid-run (or mid-review-screen-write), where closing would orphan
-  // a stream or leave a second concurrent write racing a reopened dialog.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !locked) onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, locked]);
+  // Focus, Tab-trap, Escape (respecting `locked` — mid-run or mid-review-
+  // screen-write, closing would orphan a stream or leave a second concurrent
+  // write racing a reopened dialog) and focus return, same as every other
+  // overlay in the app (PR #23 review round 2, generic finding 2 / resilience
+  // finding 5: this was the one dialog still hand-rolling its own Escape
+  // effect with no focus trap at all).
+  const { dialogProps } = useDialog({ onClose, locked, label: header });
   useEffect(() => () => abortRef.current?.abort(), []);
 
   // Persist on every change so ESC/backdrop never loses it again.
@@ -207,6 +207,21 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
       else localStorage.removeItem(NEW_RACE_DRAFT_KEY);
     } catch { /* private browsing / storage disabled — best-effort only */ }
   }, [openAt, siteUrl, extraUrls, year, notes, themePreset, uploads]);
+
+  // The fix for round 1's data-loss bug (D8, above) had no escape hatch of
+  // its own — ESC, backdrop, CANCEL and even a reload all now RESTORE a
+  // half-typed form, but nothing could ever CLEAR one short of blanking
+  // every field and removing every upload by hand (PR #23 review round 2,
+  // draft finding 10). True whenever there is something a reopen would
+  // bring back — restored on open, or typed since — not only right after a
+  // restore, so the control stays available for the rest of this session too.
+  const hasDraftContent = draftHasContent({ siteUrl, extraUrls, notes, uploads });
+  const discardDraft = () => {
+    setSiteUrl(""); setExtraUrls(""); setYear(String(new Date().getFullYear() + 1));
+    setNotes(""); setThemePreset(""); setUploads([]);
+    setRestoredDraft(false); // otherwise the "restored your unsent form" copy outlives the form it described
+    try { localStorage.removeItem(NEW_RACE_DRAFT_KEY); } catch { /* best-effort */ }
+  };
 
   const upload = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -225,7 +240,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
         setUploads((prev) => [...prev.filter((u) => u.path !== saved.path), saved]);
       }
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyFetchError(e));
     } finally {
       setUploading(false);
     }
@@ -294,7 +309,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
         for (const s of STAGES) if (next[s.id] === "pending") next[s.id] = "skipped";
         return next;
       });
-      setRunError((e as Error).message);
+      setRunError(friendlyFetchError(e));
     } finally {
       setRunning(false);
       abortRef.current = null;
@@ -310,7 +325,6 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   const canRun = /^https?:\/\/\S+$/i.test(siteUrl.trim()) && yearOk && !running;
   const ranAnything = STAGES.some((s) => stageState[s.id] !== "pending");
 
-  const header = screen === "review" ? "review · draft race" : "new race";
   const subtitle = screen === "review"
     ? "check what the intake read, fill or accept what it could not, then activate"
     : "the race's own site, whatever documents you have, and one run of the three intake stages";
@@ -318,10 +332,8 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   return createPortal(
     <Backdrop onClose={() => { if (!locked) onClose(); }}>
       <div
+        {...dialogProps}
         className="panel notch"
-        role="dialog"
-        aria-modal="true"
-        aria-label={header}
         onClick={(e) => e.stopPropagation()}
         style={{
           width: screen === "review" ? "min(1240px, 100%)" : "min(720px, 100%)",
@@ -351,9 +363,24 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
         ) : (
           <>
             <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "24px 28px 8px" }}>
-              {restoredDraft && (
-                <p style={{ fontSize: 11, color: "var(--lamp)", margin: "0 0 16px", lineHeight: 1.5 }}>
-                  restored your unsent form — closing this dialog kept what you had typed and any file already uploaded
+              {(restoredDraft || hasDraftContent) && (
+                <p style={{
+                  fontSize: 11, color: "var(--lamp)", margin: "0 0 16px", lineHeight: 1.5,
+                  display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 10,
+                }}>
+                  <span>
+                    {restoredDraft
+                      ? "restored your unsent form — closing this dialog kept what you had typed and any file already uploaded"
+                      : "this form is saved as you type — closing the dialog will bring it back"}
+                  </span>
+                  <button
+                    type="button"
+                    className="chip"
+                    onClick={discardDraft}
+                    style={{ fontSize: 8.5, flexShrink: 0 }}
+                  >
+                    discard draft
+                  </button>
                 </p>
               )}
               <Block>
@@ -622,8 +649,22 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   // Re-read on mount, and whenever a caller bumps the pulse — the folder is
   // the source of truth and a refused write must never leave the screen
   // showing something that is not on disk.
+  //
+  // `load(keepError)` — REVERT calls it bare, which clears any refused-save
+  // error list along with the edit buffers (round 1, bug R3/D5). But
+  // activate() also calls it after a refused status/pointer flip, to pick up
+  // whatever the earlier PUT in the same activate attempt DID manage to write
+  // — and that reload must not wipe the very error it is being called to
+  // react to (PR #23 review round 2, draft finding 1: ACTIVATE's 400 was
+  // rendered into `saveError` and then immediately cleared by this effect's
+  // own success handler before the athlete ever saw it, since the GET here
+  // succeeds even when the activation it followed did not).
   const [readKey, setReadKey] = useState(0);
-  const load = useCallback(() => setReadKey((k) => k + 1), []);
+  const keepErrorRef = useRef<string[] | null>(null);
+  const load = useCallback((keepError?: string[] | null) => {
+    keepErrorRef.current = keepError ?? null;
+    setReadKey((k) => k + 1);
+  }, []);
   useEffect(() => {
     let stale = false;
     fetch(`/api/races/${slug}?t=${Date.now()}`)
@@ -636,11 +677,11 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
         if (stale) return;
         setData(body);
         // REVERT is "every control in the dialog back to the on-disk state"
-        // (round 1, bug R3/D6) — that includes the acknowledge checkboxes and
-        // any error list left over from a refused save (bug D5), not just the
-        // edit buffers.
+        // (round 1, bug R3/D6) — that includes the acknowledge checkboxes,
+        // not just the edit buffers.
         setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setFills({}); setAcked({});
-        setSaveError(null);
+        setSaveError(keepErrorRef.current);
+        keepErrorRef.current = null;
         setLoadError(null);
       })
       .catch((e: Error) => { if (!stale) setLoadError(e.message); });
@@ -754,7 +795,18 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
     // on sends the list — that is the shape A's schema change expects, and it
     // is also the only way to persist un-ticking a box (round 1, bug D6/R3):
     // a bare `true` can never express "acknowledged all but this one".
-    if (unfilled.length) body.unresolved_acknowledged = unfilled.filter(isAcked);
+    //
+    // Only when `ackDirty` — a checkbox was actually touched THIS session, so
+    // its local state (`acked`) disagrees with what's on disk. Sending the
+    // list on every save (even an unrelated aid-station edit that never
+    // touched a checkbox) used to resend whatever this tab last loaded as
+    // "acked", which is a lost-update bug the moment a second tab is open: an
+    // ack withdrawn in tab A gets silently reinstated by an unrelated save in
+    // stale tab B, since B's `acked` is empty and falls back to ITS OWN
+    // (older) `data` for every path either way (PR #23 review round 2, draft
+    // finding 2). A tab that never touched the boxes now sends nothing for
+    // this field, leaving whatever the last tab to actually change it wrote.
+    if (unfilled.length && ackDirty) body.unresolved_acknowledged = unfilled.filter(isAcked);
     if (data?.block && Object.keys(blockEdits).length) {
       body.block_targets = data.block.targets.map((t) => ({
         wk: t.wk,
@@ -815,7 +867,12 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setFills({}); setAcked({});
       onReload();
     } catch (e) {
-      setSaveError((e as { errors?: string[] }).errors ?? [(e as Error).message]);
+      // `put()`'s own refusals carry `.errors` (the server's per-field
+      // messages); anything else — most commonly a network-level failure —
+      // gets the same friendly mapping the stage path already had (round 2,
+      // draft finding 5: a killed dev server rendered the bare `Failed to
+      // fetch` here instead).
+      setSaveError((e as { errors?: string[] }).errors ?? [friendlyFetchError(e)]);
     } finally {
       setBusy(null);
     }
@@ -839,8 +896,11 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       });
       const statusBody = await statusRes.json();
       if (!statusRes.ok) {
-        setSaveError((statusBody as { errors?: string[] }).errors ?? [String((statusBody as { error?: string }).error)]);
-        load();
+        // `load(...)`, not a bare `setSaveError` + `load()`: the reload picks
+        // up whatever the PUT above DID manage to write, and must not wipe
+        // the very error it is being called to react to (see the comment on
+        // `load` above — PR #23 review round 2, draft finding 1).
+        load((statusBody as { errors?: string[] }).errors ?? [String((statusBody as { error?: string }).error)]);
         return;
       }
 
@@ -854,14 +914,12 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       });
       if (!ptr.ok) {
         const b = await ptr.json().catch(() => ({ error: `HTTP ${ptr.status}` }));
-        setSaveError([`the folder is active but the pointer did not move: ${(b as { error?: string }).error}`]);
-        load();
+        load([`the folder is active but the pointer did not move: ${(b as { error?: string }).error}`]);
         return;
       }
       onDone();
     } catch (e) {
-      setSaveError((e as { errors?: string[] }).errors ?? [(e as Error).message]);
-      load();
+      load((e as { errors?: string[] }).errors ?? [friendlyFetchError(e)]);
     } finally {
       setBusy(null);
     }
@@ -879,14 +937,31 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   }
 
   const isDraft = race.status === "draft";
+  // `data.activation` is the server's own verdict as of the last GET/PUT
+  // response — it can refuse for a reason the ack checkboxes can never fix
+  // (PR #23 review round 2, draft finding 1: a night race with no computed
+  // sun stays refused no matter how many boxes are ticked — see
+  // validateStatusTransition in scripts/race-edit.mjs). But it can ALSO be
+  // stale in exactly one dimension: "N unresolved fields — fill or
+  // acknowledge" reflects whatever was on disk as of that last read, while
+  // `remaining` above tracks the SAME gate live against the checkboxes the
+  // athlete is ticking right now. Recognizing that one message and leaving it
+  // to `remaining` avoids nagging about an ack the athlete already made
+  // locally but has not saved yet; every other reason (wrong status, another
+  // folder already active, the missing-sun block, a schema failure) is
+  // real regardless of any checkbox and must not be swallowed just because
+  // there also happen to be open holes (which is exactly what let the sun
+  // block above go silent).
+  const activationBlocked = data.activation.ok === false
+    && !/unresolved field.*fill them in or acknowledge/i.test(data.activation.errors?.[0] ?? "");
   const blockers = !isDraft
     ? [`this folder's status is "${race.status}" — only a draft activates here`]
     : remaining > 0
       ? [`${remaining} unresolved field${remaining > 1 ? "s" : ""} still to fill in or acknowledge`]
-      : data.activation.ok || openHoles.length
-        ? []
-        : data.activation.errors;
-  const canActivate = isDraft && allAcked && busy === null && stage === null && !hasWptConflict;
+      : activationBlocked
+        ? data.activation.errors
+        : [];
+  const canActivate = isDraft && allAcked && busy === null && stage === null && !hasWptConflict && !activationBlocked;
 
   return (
     <>
@@ -902,6 +977,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               theme
               <select
+                aria-label="theme"
                 style={{ ...inputStyle, fontSize: 11, padding: "2px 6px" }}
                 value={themeEdit ?? race.visual?.theme_preset ?? ""}
                 onChange={(e) => { setSaveError(null); setThemeEdit(e.target.value); }}
@@ -1084,7 +1160,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
                     : `status: ${race.status}`}
               </span>}
         </div>
-        <button className="chip" onClick={load} disabled={busy !== null || stage !== null} style={{ fontSize: 10 }}>
+        <button className="chip" onClick={() => load()} disabled={busy !== null || stage !== null} style={{ fontSize: 10 }}>
           revert
         </button>
         <button
@@ -1182,7 +1258,13 @@ function UnresolvedList({ unresolved, hints, race, course, fills, isAcked, onFil
                   </button>
                 )}
                 <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--mist-mute)", opacity: filled ? 0.4 : 1 }}>
-                  <input type="checkbox" checked={filled || isAcked(path)} disabled={filled} onChange={(e) => onAck(path, e.target.checked)} />
+                  <input
+                    type="checkbox"
+                    aria-label={`acknowledge ${path}`}
+                    checked={filled || isAcked(path)}
+                    disabled={filled}
+                    onChange={(e) => onAck(path, e.target.checked)}
+                  />
                   acknowledge
                 </label>
               </div>

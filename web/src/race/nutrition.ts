@@ -54,7 +54,13 @@ export function useNutrition() {
       if (norm) { setCfg(norm); setError(`${message} — showing the last saved copy`); setSource("cache"); }
       else { setError(message); setSource("default"); }
     };
-    fetch(`/nutrition.json?t=${Date.now()}`)
+    // see useRaceData.ts's useCourse comment on `?slug=` — same pointer race
+    // (a request left in flight across a race switch used to resolve
+    // against whichever folder the pointer named by the time the server got
+    // to it, poisoning THIS slug's offline cache with the other race's
+    // fueling numbers), same fix: pin the read to an explicit slug.
+    const url = slug ? `/nutrition.json?slug=${encodeURIComponent(slug)}&t=${Date.now()}` : `/nutrition.json?t=${Date.now()}`;
+    fetch(url)
       .then(async (r) => {
         if (stale) return;
         if (r.status === 404) { setCfg(DEFAULT_NUTRITION); setError(null); setSource("default"); return; }

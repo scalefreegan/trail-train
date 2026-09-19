@@ -7,7 +7,7 @@ import { fmtElapsed, type StationProjection } from "./pacing";
 import { resolveHold } from "./raceDayHold";
 import { RacePlanProvider } from "./RacePlanProvider";
 import { RaceErrorBoundary } from "./RaceErrorBoundary";
-import { useCrewBase } from "./useRaceData";
+import { useCrewBase, useRaceResult } from "./useRaceData";
 import { useRacePlan, type RacePlan } from "./useRacePlan";
 import { useRunCourseAgain } from "./runCourseAgain";
 
@@ -267,6 +267,13 @@ export function RaceDay() {
   // D5: a race whose date has passed kept projecting a finish as if the
   // runner were still on pace 9 days after the gun.
   const racePast = raceLocalParts(raceStart, plan.timeZone).iso < raceLocalParts(now, plan.timeZone).iso;
+  // Only fetched once the race is actually past — a live race has no result
+  // yet, and asking is noise (useRaceResult(null) fetches nothing at all).
+  const { result: pastResult } = useRaceResult(racePast ? viewing : null);
+  // round 2, generic finding 4: telling the athlete to archive a race that
+  // is already archived (it already HAS a result) is advice with nothing
+  // left to act on.
+  const alreadyArchived = plan.raceConfig.status === "archived";
   const stations = proj?.stations ?? [];
   // Where to measure "to go" from: the stated mile if the runner gave one,
   // otherwise the mile the plan has them at right now. Both are honest —
@@ -296,7 +303,13 @@ export function RaceDay() {
           className="display numerals"
           style={{ fontSize: 56, marginTop: 4, letterSpacing: "-0.04em" }}
         >
-          {race.clock(elapsedH)}
+          {/* A race day that has passed has nothing live to project — the
+              "+7" race-relative clock offset it used to show (round 2,
+              generic finding 4) is a number about TODAY, not about the race,
+              on a screen that has just said there is nothing left to show.
+              The recorded finish, once archived, is worth the same space;
+              until then it's a dash, not a stale countdown. */}
+          {racePast ? (pastResult?.finish_h != null ? race.clock(pastResult.finish_h) : "—") : race.clock(elapsedH)}
         </div>
         <div className="numerals" style={{ fontSize: 15, color: "var(--mist-dim)", marginTop: 6 }}>
           {racePast
@@ -319,8 +332,10 @@ export function RaceDay() {
         // since stopped.
         <Notice tone="mute">
           {race.short} was {raceLocalParts(raceStart, plan.timeZone).iso} — race day has passed, so this page
-          won't project a live position for it any more. Archive it with a result from the dashboard switcher
-          when you're ready.
+          won't project a live position for it any more.
+          {alreadyArchived
+            ? (pastResult?.finish_h != null && <> Finished in {fmtElapsed(pastResult.finish_h)}.</>)
+            : " Archive it with a result from the dashboard switcher when you're ready."}
         </Notice>
       ) : (
         <>

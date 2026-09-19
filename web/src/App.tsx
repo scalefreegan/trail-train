@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   useRefresh, REFRESH_STEPS,
@@ -28,7 +28,7 @@ import { RaceDayRoute } from "./race/RaceDay";
 import { RACE_DAY_HASH, useHashRoute } from "./race/hashRoute";
 import { useCourse, useRaceResult } from "./race/useRaceData";
 import { ArchiveRace } from "./race/ArchiveRace";
-import { runStage } from "./race/dialogChrome";
+import { friendlyFetchError, runStage } from "./race/dialogChrome";
 import type { RaceView } from "./data";
 import { raceClockHM } from "./race/pacing";
 import { ThemePreview } from "./themes/ThemePreview";
@@ -243,7 +243,23 @@ function RaceSwitcher() {
   const [open, setOpen] = useState(false);
   const [races, setRaces] = useState<RaceListEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  // `kind` distinguishes a real pointer switch from the free course-rebuild
+  // stage sharing the same "which row is busy" slot (round 2, generic finding
+  // 6: both used to report as "switching…", which is simply wrong for a
+  // rebuild — see busyLabel below).
+  const [busy, setBusy] = useState<{ slug: string; kind: "switch" | "build" } | null>(null);
+  // Set once a "Run course again…" build finishes, so the row can say so
+  // instead of the menu just closing with no confirmation at all (round 2,
+  // generic finding 6). Self-clears; overwritten by the next thing that
+  // matters (a fresh `error`, or busy again) via the effect below.
+  const [builtNotice, setBuiltNotice] = useState<string | null>(null);
+  // Synchronous re-entrancy guard: state-driven `disabled` on the rows can
+  // only take effect once React re-renders, which does not happen mid-script
+  // for a burst of clicks fired in the same tick (round 2, generic finding 2
+  // — `row.disabled === false` on all three of three synchronous clicks).
+  // This ref is checked and set before anything async happens, so the 2nd
+  // and 3rd clicks in such a burst never even issue a request.
+  const busyRef = useRef(false);
   /* The intake dialog, and which folder it opens on: null is the form ("New
      race…"), a slug is the review screen of a draft already on disk. */
   const [intake, setIntake] = useState<{ slug: string | null } | null>(null);
@@ -314,8 +330,25 @@ function RaceSwitcher() {
         if (stale) return;
         setRaces(d.races);
         setCursor(cursorForSlug(d.races, currentSlug));
+        // A successful read of the current server state is as good a signal
+        // as any that whatever this menu was complaining about no longer
+        // applies — clears a stale "another activation is already in
+        // progress" left over from a resolved duplicate-click race, on the
+        // next reopen even without an intervening switch of its own (round
+        // 2, generic finding 5).
+        setError(null);
       })
-      .catch((e: Error) => { if (!stale) { setRaces([]); setError(e.message); } });
+      .catch((e: unknown) => {
+        if (stale) return;
+        // Keep whatever was loaded last, rather than blanking the list to
+        // "New race…" as the one thing left that looks clickable — a paid
+        // agent run is not a reasonable stand-in for "the server is down"
+        // (round 2, resilience finding 6). Only a folder that has genuinely
+        // never loaded (first open, server already unreachable) falls back
+        // to empty.
+        setRaces((prev) => prev ?? []);
+        setError(friendlyFetchError(e));
+      });
     return () => { stale = true; };
   }, [open, currentSlug]);
 
@@ -336,8 +369,13 @@ function RaceSwitcher() {
   }, [open, close]);
 
   const choose = useCallback(async (slug: string | null, mode: "train" | "view") => {
-    setBusy(slug ?? "__generic__");
+    // See busyRef's comment above: a duplicate click fired before React
+    // re-renders the (now-stale) `disabled` prop must still be a no-op.
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy({ slug: slug ?? "__generic__", kind: "switch" });
     setError(null);
+    setBuiltNotice(null);
     try {
       const res = await fetch("/api/race/activate", {
         method: "POST",
@@ -352,8 +390,9 @@ function RaceSwitcher() {
       // the pulse every panel is keyed on — race, course, fuel all refetch
       reload();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyFetchError(e));
     } finally {
+      busyRef.current = false;
       setBusy(null);
     }
   }, [close, reload]);
@@ -365,18 +404,53 @@ function RaceSwitcher() {
       menu open with a busy row, the same pattern `choose` uses below, so a
       slow build doesn't look like the click did nothing. */
   const runCourseAgain = useCallback(async (slug: string) => {
-    setBusy(slug);
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy({ slug, kind: "build" });
     setError(null);
+    setBuiltNotice(null);
     try {
       await runStage("/api/race-intake/build", { slug }, () => {}, new AbortController().signal);
-      close();
+      // Confirmation, not a silent close (round 2, generic finding 6): the
+      // menu stays open long enough to say the build actually finished. The
+      // reload pulse still fires now — the race/course views refetch right
+      // away even though the row keeps its notice a little longer.
       reload();
+      setBuiltNotice(slug);
+      window.setTimeout(() => setBuiltNotice((cur) => (cur === slug ? null : cur)), 4000);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyFetchError(e));
     } finally {
+      busyRef.current = false;
       setBusy(null);
     }
-  }, [close, reload]);
+  }, [reload]);
+
+  // The menu is `position: absolute` off a trigger that can sit anywhere in
+  // the (wrapping) command bar — round 2, resilience finding 3: anchored
+  // `left: 0` under a chip already ~130px in, the panel's fixed width ran
+  // past the right edge of the document at 320/390px, on the one control a
+  // phone needs most. Measured against the trigger's OWN viewport position
+  // (not just capped by a max-width, which alone can't fix an anchor that is
+  // already too far right for any reasonable width to fit) and clamped to a
+  // GUTTER on both edges, so it can shift left of the trigger when it has to
+  // but never past the document's own edges.
+  const MENU_GUTTER = 16;
+  const [menuLayout, setMenuLayout] = useState<{ left: number; width: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const update = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const width = Math.min(360, window.innerWidth - MENU_GUTTER * 2);
+      const rect = trigger.getBoundingClientRect();
+      const desiredLeft = Math.max(MENU_GUTTER, Math.min(rect.left, window.innerWidth - width - MENU_GUTTER));
+      setMenuLayout({ left: desiredLeft - rect.left, width });
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [open]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") { e.preventDefault(); close(); return; }
@@ -441,8 +515,12 @@ function RaceSwitcher() {
             transition={{ duration: 0.14 }}
             className="panel"
             style={{
-              position: "absolute", top: "calc(100% + 8px)", left: 0, zIndex: 60,
-              minWidth: 280, maxWidth: 360, maxHeight: "70vh", overflowY: "auto",
+              position: "absolute", top: "calc(100% + 8px)", zIndex: 60,
+              left: menuLayout?.left ?? 0,
+              width: menuLayout?.width,
+              minWidth: menuLayout ? undefined : 280,
+              maxWidth: menuLayout ? undefined : `calc(100vw - ${MENU_GUTTER * 2}px)`,
+              maxHeight: "70vh", overflowY: "auto",
               background: "var(--night-deep)", padding: "8px 0",
             }}
           >
@@ -452,7 +530,7 @@ function RaceSwitcher() {
               hint="train toward your goals"
               swatch={<ThemePreview visual={null} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round label="basecamp palette" />}
               disabled={busy != null}
-              busy={busy === "__generic__"}
+              busy={busy?.slug === "__generic__"}
               onSelect={() => choose(null, "train")}
             />
             {races === null && (
@@ -473,7 +551,13 @@ function RaceSwitcher() {
                         <ThemePreview visual={entry.visual} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round />
                       )}
                       disabled={!!entry.error || busy != null}
-                      busy={busy === entry.slug}
+                      busy={busy?.slug === entry.slug}
+                      // The rebuild stage shares this row's busy slot with a
+                      // real pointer switch (both key off the same slug) —
+                      // "switching…" would be simply wrong while a free
+                      // course rebuild is what's actually running (round 2,
+                      // generic finding 6).
+                      busyLabel={busy?.slug === entry.slug && busy.kind === "build" ? "building…" : "switching…"}
                       current={entry.slug === currentSlug}
                       onSelect={() => choose(entry.slug, modeFor(entry.status))}
                     />
@@ -499,9 +583,12 @@ function RaceSwitcher() {
                       <SwitcherRow
                         {...itemProps("rerun", entry.slug)}
                         label="↳ Run course again…"
-                        hint={busy === entry.slug ? "building…" : "rebuild course.json from the stored gpx — free, no agent turn"}
+                        hint={builtNotice === entry.slug
+                          ? "course rebuilt ✓"
+                          : "rebuild course.json from the stored gpx — free, no agent turn"}
+                        busyLabel="building…"
                         disabled={busy != null}
-                        busy={busy === entry.slug}
+                        busy={busy?.slug === entry.slug && busy.kind === "build"}
                         onSelect={() => runCourseAgain(entry.slug)}
                       />
                     )}
@@ -569,9 +656,14 @@ function RaceSwitcher() {
   );
 }
 
-const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, swatch, ...rest }: {
+const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, busyLabel = "switching…", swatch, ...rest }: {
   label: string; hint: string; onSelect: () => void;
   current?: boolean; disabled?: boolean; busy?: boolean;
+  /** what the hint line says while `busy` — a real pointer switch and the
+      free course-rebuild stage are both "this row is busy" but are not the
+      same claim (round 2, generic finding 6: a rebuild used to report
+      "switching…", which the athlete never asked for). */
+  busyLabel?: string;
   /** the race's palette, as one dot — see SWATCH_SLOT */
   swatch?: React.ReactNode;
 } & React.ButtonHTMLAttributes<HTMLButtonElement> & { ref?: React.Ref<HTMLButtonElement> }) => (
@@ -624,7 +716,7 @@ const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, swatch, .
         marginLeft: 19, whiteSpace: "normal", overflowWrap: "break-word",
       }}
     >
-      {busy ? "switching…" : hint}
+      {busy ? busyLabel : hint}
     </span>
   </button>
 );
@@ -681,6 +773,10 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
   // and null while browsing, where "race in -371 days" is both useless and a
   // claim that this race is the one being trained for.
   const dleft = race && !viewing ? daysUntil(race.date) : null;
+  // daysUntil clamps at 0, so a race trained for past its own date used to
+  // read "RACE IN 0 days" forever instead of saying what actually happened
+  // (PR #23 review round 2, generic finding 4 / resilience finding 9).
+  const racePast = race && !viewing ? isPast(race.date) : false;
   const failedSteps = REFRESH_STEPS.filter((s) => status[s] === "error");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [, force] = useState(0);
@@ -721,10 +817,14 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
         <div className="commandbar-mid" style={{ flex: 1 }}>
           <BarStat label="block week" value={`${String(currentWeek).padStart(2, "0")} / ${totalWeeks}`} />
           {race && dleft != null && (
-            <>
-              <BarStat label="race in" value={`${dleft} days`} accent />
-              <BarStat label="race day" value={race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, month: "short", day: "numeric" }).toLowerCase()} />
-            </>
+            racePast ? (
+              <BarStat label="race day" value="has passed" />
+            ) : (
+              <>
+                <BarStat label="race in" value={`${dleft} days`} accent />
+                <BarStat label="race day" value={race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, month: "short", day: "numeric" }).toLowerCase()} />
+              </>
+            )
           )}
         </div>
 
