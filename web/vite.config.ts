@@ -1122,23 +1122,30 @@ function raceAssetApi(): Plugin {
     apply: 'serve',
     configureServer(server) {
       server.middlewares.use('/api/races', async (req, res, next) => {
-        // vite.config.ts can't statically import from scripts/ (it is ESM JS
-        // outside the TS project), so the loader is imported per request.
-        const asset = await import(path.join(projectRoot, 'scripts/race-asset.mjs')) as AssetMod
-        const parsed = asset.parseAssetUrl(req.url ?? '')
-        // not an asset path — that is the race list's request, not ours
-        if (!parsed) { next(); return }
-
         const json = (code: number, body: unknown) => {
           res.statusCode = code
           res.setHeader('Content-Type', 'application/json')
           res.setHeader('Cache-Control', 'no-store')
           res.end(JSON.stringify(body))
         }
-        if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
-        if (crossSiteBlocked(req, res)) return
-
         try {
+          // vite.config.ts can't statically import from scripts/ (it is ESM
+          // JS outside the TS project), so the loader is imported per
+          // request — inside the try: an import() rejection here (a
+          // transient fs error, a bad checkout mid-pull, a syntax error
+          // introduced while iterating on race-asset.mjs) must become this
+          // plugin's own 500, not an unhandled promise rejection that
+          // crashes the whole Vite dev server (PR #23 review round 1,
+          // finding 3 — every other request-time import() in this file is
+          // already inside its try/catch).
+          const asset = await import(path.join(projectRoot, 'scripts/race-asset.mjs')) as AssetMod
+          const parsed = asset.parseAssetUrl(req.url ?? '')
+          // not an asset path — that is the race list's request, not ours
+          if (!parsed) { next(); return }
+
+          if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+          if (crossSiteBlocked(req, res)) return
+
           // Gates 1/2/4 FIRST: the slug has to be proven a slug before it can
           // be joined onto a path to read the folder's race.json.
           const checked = asset.checkAssetRequest(projectRoot, parsed.slug, parsed.name)
