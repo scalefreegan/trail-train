@@ -537,7 +537,7 @@ const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, swatch, .
     disabled={disabled || busy}
     style={{
       width: "100%", textAlign: "left", padding: "7px 14px",
-      display: "flex", alignItems: "baseline", gap: 8,
+      display: "flex", flexWrap: "wrap", alignItems: "baseline", rowGap: 2, columnGap: 8,
       cursor: disabled ? "not-allowed" : "pointer",
       opacity: disabled ? 0.5 : 1,
       background: "transparent",
@@ -565,7 +565,21 @@ const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, swatch, .
     <span style={{ fontSize: 12.5, color: "var(--mist)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
       {label}
     </span>
-    <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)", whiteSpace: "nowrap" }}>
+    {/* the label always gets the row to itself (swatch + label only); the
+        hint is forced onto its own line below via flexBasis: 100% (a
+        flex-wrap item with a 100% basis can't fit the remaining space on
+        the label's line, so it wraps) rather than competing with the
+        label for width and squeezing it to 0 (bug: a long hint like
+        "re-read the site and manual…" left "↳ Refresh from sources…"
+        rendering at 0px). It wraps or truncates within the menu instead
+        of overflowing it. */}
+    <span
+      className="eyebrow"
+      style={{
+        fontSize: 8, color: "var(--mist-mute)", flexBasis: "100%",
+        marginLeft: 19, whiteSpace: "normal", overflowWrap: "break-word",
+      }}
+    >
       {busy ? "switching…" : hint}
     </span>
   </button>
