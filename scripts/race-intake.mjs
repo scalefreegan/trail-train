@@ -106,6 +106,21 @@ async function slugExists(root, slug) {
   }
 }
 
+/** Already-exists error text shared by the plain check and the atomic claim
+    below — a caller sees the same message whichever path produced it. */
+function slugTakenMessage(slug) {
+  return `races/${slug}/race.json already exists — pass refresh: true to re-intake it (hand edits are NOT merged by this stage)`;
+}
+
+/** Where a not-yet-written race folder's exclusive claim lives while an
+    intake run derives, validates and writes it. Cleaned up by
+    releaseSlugClaim in runIntake's `finally`, whatever the outcome — once
+    race.json itself exists it is the durable guard, and the claim file has
+    nothing left to do. */
+function slugClaimPath(root, slug) {
+  return path.join(raceDir(root, slug), ".intake-claim");
+}
+
 /**
  * Guard the one destructive thing intake could do: overwrite a race folder.
  *
@@ -114,6 +129,18 @@ async function slugExists(root, slug) {
  * that directory, not races/<slug>/, which is the whole point of the exercise
  * and is left exactly as it is until the diff is accepted. Without an outDir,
  * `refresh` alone still means "overwrite" — the CLI's escape hatch.
+ *
+ * For a genuinely new slug (no race.json, no refresh), a bare existence
+ * check is a classic TOCTOU: two intake runs that independently derive the
+ * same slug (two tabs, two trivially different URLs for the same race) can
+ * both pass a plain `fs.access` before either has written anything. So this
+ * also ATOMICALLY CLAIMS the slug with an O_EXCL file create — a single
+ * syscall neither run can both win — rather than just reading. A directory
+ * that already exists with no race.json (a previous run's parked failure
+ * output under races/<slug>/sources/, or an empty folder) is not itself a
+ * collision; only the claim file, or a real race.json, is. The claim is
+ * released by releaseSlugClaim once the run that took it is done, win or
+ * lose — see runIntake.
  * @param {string} root
  * @param {string} slug
  * @param {{refresh?: boolean, outDir?: string|null}} [opts]
@@ -125,9 +152,30 @@ export async function assertSlugAvailable(root, slug, { refresh = false, outDir 
     if (!refresh) throw new Error(`refresh: true is required to write a shadow folder (${outDir})`);
     return;
   }
-  if (!(await slugExists(root, slug))) return;
-  if (refresh) return;
-  throw new Error(`races/${slug}/race.json already exists — pass refresh: true to re-intake it (hand edits are NOT merged by this stage)`);
+  if (await slugExists(root, slug)) {
+    if (refresh) return;
+    throw new Error(slugTakenMessage(slug));
+  }
+  if (refresh) return; // refreshing a slug with no race.json yet is a plain intake; nothing to claim exclusively
+  await fs.mkdir(raceDir(root, slug), { recursive: true });
+  try {
+    const fh = await fs.open(slugClaimPath(root, slug), "wx");
+    await fh.close();
+  } catch (e) {
+    if (e.code === "EEXIST") throw new Error(slugTakenMessage(slug));
+    throw e;
+  }
+}
+
+/**
+ * Release a slug claimed by assertSlugAvailable. Always safe to call,
+ * including for a slug that was never claimed (refresh, outDir, or an
+ * already-existing race never take one) — ENOENT is swallowed.
+ * @param {string} root
+ * @param {string} slug
+ */
+export async function releaseSlugClaim(root, slug) {
+  await fs.rm(slugClaimPath(root, slug), { force: true }).catch(() => {});
 }
 
 /* --------------------------- source fetch ----------------------------- */
@@ -959,9 +1007,18 @@ export async function runIntake({
   if (!/^\d{4}$/.test(String(year))) throw new Error(`runIntake: year must be a 4-digit year (got ${JSON.stringify(year)})`);
   const warnings = [];
   const say = (step, message, extra = {}) => onProgress({ step, status: "log", message, ...extra });
+  // The slug this run holds assertSlugAvailable's exclusive claim on, if
+  // any — released in the `finally` below whatever the outcome. Tracked so
+  // the post-agent re-check further down does not try to claim the SAME
+  // slug a second time against itself (assertSlugAvailable's claim is a
+  // plain O_EXCL create, not reentrant).
+  let claimedSlug = null;
   // Fail fast when the caller already knows the folder: the alternative is
   // spending the whole agent run and refusing afterwards.
-  if (slugHint) await assertSlugAvailable(root, slugHint, { refresh, outDir });
+  if (slugHint) {
+    await assertSlugAvailable(root, slugHint, { refresh, outDir });
+    if (!refresh && !outDir) claimedSlug = slugHint;
+  }
 
   // Stage everything in a temp dir: the folder name depends on the race NAME,
   // which only the agent can tell us. The cache moves into races/<slug>/sources/
@@ -1067,14 +1124,22 @@ export async function runIntake({
       await abort(slug, contract.errors.join("; "), `intake agent output failed the contract:\n  · ${contract.errors.join("\n  · ")}`);
     }
 
-    try {
-      await assertSlugAvailable(root, slug, { refresh, outDir });
-    } catch (e) {
-      // Unlike the two checks above, this one runs AFTER the agent has
-      // already produced a valid draft — a late collision (the derived slug
-      // happens to match an existing folder) must not cost the owner the
-      // paid turn just spent, so it goes through the same abort() net.
-      await abort(slug, e.message, `slug collision after the agent run: ${e.message}`);
+    // Only re-check/re-claim when this run does not already hold the claim
+    // for this exact slug (the slugHint branch above) — assertSlugAvailable's
+    // claim is a plain O_EXCL create, not reentrant, so calling it twice for
+    // the same slug in the same run would fail against itself.
+    if (slug !== claimedSlug) {
+      try {
+        await assertSlugAvailable(root, slug, { refresh, outDir });
+        if (!refresh && !outDir) claimedSlug = slug;
+      } catch (e) {
+        // Unlike the two checks above, this one runs AFTER the agent has
+        // already produced a valid draft — a late collision (the derived
+        // slug happens to match a folder another run claimed or wrote while
+        // THIS agent turn was still thinking) must not cost the owner the
+        // paid turn just spent, so it goes through the same abort() net.
+        await abort(slug, e.message, `slug collision after the agent run: ${e.message}`);
+      }
     }
 
     const race = buildRaceJson(draft, { slug, year: Number(year), manifest, warnings });
@@ -1124,6 +1189,10 @@ export async function runIntake({
     // (the slug is an existing race — copying would clobber ITS cache), the
     // temp dir stays put and the thrown error names it.
     if (!keepStaging) await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+    // Whatever happened, this run is done with its slug: on success
+    // race.json itself is now the durable guard, and on any failure the
+    // claim must not outlive this run or it would block every retry.
+    if (claimedSlug) await releaseSlugClaim(root, claimedSlug);
   }
 }
 
