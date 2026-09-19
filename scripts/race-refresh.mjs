@@ -339,8 +339,16 @@ export async function acceptRefresh({ root, slug, onProgress = () => {} }) {
     const from = path.join(shadow, asset);
     if (!(await fs.access(from).then(() => true, () => false))) continue;
     const to = path.join(current.dir, asset);
+    // A raw fs.copyFile onto the live path is not atomic — a crash mid-copy
+    // leaves a truncated file there, which is exactly the kind of half-write
+    // the reordering above this loop exists to avoid. Temp file + rename,
+    // same guarantee writeJsonAtomic (scripts/lib.mjs) gives every JSON
+    // write in this app; course.gpx is text, so this copies bytes rather
+    // than round-tripping through JSON.parse/stringify.
     await fs.mkdir(path.dirname(to), { recursive: true });
-    await fs.copyFile(from, to);
+    const tmp = `${to}.tmp.${process.pid}`;
+    await fs.copyFile(from, tmp);
+    await fs.rename(tmp, to);
     wrote.push(`races/${slug}/${asset}`);
     say(`races/${slug}/${asset}`);
   }

@@ -11,6 +11,8 @@ import {
   applyBlockTargetsEdit,
   applyRaceEdit,
   applyStatus,
+  isBlockStale,
+  loadReview,
   otherActiveSlugs,
   pruneAcknowledgedNulls,
   recomputeUnresolved,
@@ -19,6 +21,9 @@ import {
   validateStatusTransition,
   valueAtPath,
 } from "./race-edit.mjs";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 /** A minimal race.json that validateRaceJson accepts outright. */
 function race(over = {}) {
@@ -435,4 +440,44 @@ test("applyStatus prunes the acknowledged holes it was validated against", () =>
   const next = applyStatus(r, "active", { at: AT, unresolved: ["elevation.min_ft"] });
   assert.equal(next.status, "active");
   assert.equal("min_ft" in next.elevation, false);
+});
+
+/* ------------------------------ block staleness --------------------------- */
+
+test("isBlockStale: true when race.date has moved out of the block's race week", () => {
+  const block = { start_date: "2027-05-24", total_weeks: 12, targets: [] };
+  // week 12 (the last) runs 2027-08-09 through 2027-08-15 — inside it, not stale
+  assert.equal(isBlockStale(block, { date: "2027-08-13" }), false);
+  assert.equal(isBlockStale(block, { date: "2027-08-09" }), false);
+  assert.equal(isBlockStale(block, { date: "2027-08-15" }), false);
+  // the owner moved the race a week later — now stale
+  assert.equal(isBlockStale(block, { date: "2027-08-20" }), true);
+  // and a week earlier
+  assert.equal(isBlockStale(block, { date: "2027-08-06" }), true);
+});
+
+test("isBlockStale: false when there is nothing sane to compare — a separate problem, not staleness", () => {
+  const block = { start_date: "2027-05-24", total_weeks: 12, targets: [] };
+  assert.equal(isBlockStale(block, { date: null }), false);
+  assert.equal(isBlockStale(block, { date: "not-a-date" }), false);
+  assert.equal(isBlockStale(null, { date: "2027-08-13" }), false);
+  assert.equal(isBlockStale({ start_date: "2027-05-24" }, { date: "2027-08-13" }), false, "total_weeks missing");
+});
+
+test("loadReview surfaces block_stale without touching block.json — the athlete's targets are never at risk", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "race-edit-review-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const slug = "test-race-2027";
+  const dir = path.join(root, "races", slug);
+  await fs.mkdir(dir, { recursive: true });
+  const r = race({ date: "2027-08-20" }); // the block below was planned for 2027-08-13
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(r, null, 2));
+  const block = { start_date: "2027-05-24", total_weeks: 12, targets: [{ wk: 1, target_dist: 30, target_elev: 4000 }] };
+  await fs.writeFile(path.join(dir, "block.json"), JSON.stringify(block, null, 2));
+
+  const review = await loadReview(root, slug);
+  assert.equal(review.block_stale, true);
+  assert.deepEqual(review.block, block, "the targets themselves are untouched");
+  // and loadReview is read-only — the file on disk is exactly what was written
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir, "block.json"), "utf8")), block);
 });

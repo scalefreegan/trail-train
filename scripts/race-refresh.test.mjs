@@ -388,6 +388,34 @@ test("accept copies course.gpx and build/course.json BEFORE the merged JSON — 
   await assert.rejects(fs.access(shadow), /ENOENT/, "the shadow is gone once the accept actually completes");
 });
 
+test("accept promotes course.gpx via temp+rename — a blocked rename leaves the live file untouched, not truncated", async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-accept-atomic-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const dir = path.join(tmp, "races", SLUG);
+  const shadow = path.join(dir, SHADOW);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.mkdir(shadow, { recursive: true });
+
+  const race = { ...buildRaceJson(await draft(), { slug: SLUG, year: 2027, manifest: [] }), status: "active" };
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(race, null, 2));
+  await fs.writeFile(path.join(dir, "course.gpx"), "OLD GPX — the live course\n");
+  await fs.writeFile(path.join(shadow, "course.gpx"), "NEW GPX — freshly re-read\n");
+  await fs.writeFile(path.join(shadow, "diff.json"), JSON.stringify({ slug: SLUG, at: "2026-09-18T00:00:00Z" }, null, 2));
+
+  // Pre-occupy the exact tmp path the promotion copies to before renaming —
+  // fs.copyFile(from, tmp) fails outright (tmp is a directory), the same way
+  // it would if the process died mid-write and left a stale tmp behind.
+  const blockedTmp = path.join(dir, `course.gpx.tmp.${process.pid}`);
+  await fs.mkdir(blockedTmp);
+
+  await assert.rejects(acceptRefresh({ root: tmp, slug: SLUG }));
+  assert.equal(
+    await fs.readFile(path.join(dir, "course.gpx"), "utf8"),
+    "OLD GPX — the live course\n",
+    "the live file must be untouched, not partially overwritten, when the promotion cannot complete",
+  );
+});
+
 test("accept never touches plan.json or result.json", async (t) => {
   const { tmp, dir } = await fixtureRace(t);
   const plan = await fs.readFile(path.join(dir, "plan.json"), "utf8");
