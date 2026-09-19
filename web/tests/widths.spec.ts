@@ -49,6 +49,11 @@ const VIEWS: ViewCheck[] = [
     },
   },
   {
+    // Last on purpose: race-day mode is a route, not a tab, and coming back
+    // from `/#/race-day` to `/` is a same-document navigation that Playwright
+    // may treat as a no-op — leaving the next view's assertion waiting on a
+    // dashboard that never re-rendered. Ending the sweep here needs no return
+    // trip at all.
     name: 'race-day',
     open: async (page) => {
       await page.goto('/#/race-day')
@@ -107,13 +112,6 @@ test.describe('no horizontal scroll', () => {
 
         const { over, culprit } = await overflow(page)
         expect(over, `${view.name} at ${width}px is ${over}px too wide — widest offender: ${culprit ?? 'none found'}`).toBeLessThanOrEqual(0)
-
-        // Leaving race-day mode is a route change, so the tabs are only back
-        // once the dashboard has rendered again.
-        if (view.name === 'race-day') {
-          await page.goto('/')
-          await expect(page.getByText(/vitals — load × recovery/i)).toBeVisible()
-        }
       }
 
       expect(trouble.pageErrors).toEqual([])
