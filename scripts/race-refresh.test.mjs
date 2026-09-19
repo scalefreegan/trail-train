@@ -333,6 +333,57 @@ test("accept applies exactly the merged files and takes the shadow away", async 
   await assert.rejects(fs.access(path.join(dir, SHADOW)), /ENOENT/, "the shadow folder is gone");
 });
 
+test("accept copies course.gpx and build/course.json BEFORE the merged JSON — an interruption between them is repaired by a re-run", async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-accept-order-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const dir = path.join(tmp, "races", SLUG);
+  const shadow = path.join(dir, SHADOW);
+  await fs.mkdir(path.join(dir, "build"), { recursive: true });
+  await fs.mkdir(path.join(shadow, "build"), { recursive: true });
+
+  const race = { ...buildRaceJson(await draft(), { slug: SLUG, year: 2027, manifest: [] }), status: "active" };
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(race, null, 2));
+  await fs.writeFile(path.join(dir, "course.gpx"), "OLD GPX\n");
+  await fs.writeFile(path.join(dir, "build", "course.json"), JSON.stringify({ v: "old" }, null, 2));
+
+  const incomingRace = { ...race, distance_mi: 32.8 };
+  await fs.writeFile(path.join(shadow, "race.json"), JSON.stringify(incomingRace, null, 2));
+  await fs.writeFile(path.join(shadow, "course.gpx"), "NEW GPX\n");
+  await fs.writeFile(path.join(shadow, "build", "course.json"), JSON.stringify({ v: "new" }, null, 2));
+  await fs.writeFile(path.join(shadow, "diff.json"), JSON.stringify({ slug: SLUG, at: "2026-09-18T00:00:00Z" }, null, 2));
+
+  // The injected failure: onProgress throws the instant it sees the
+  // course.gpx copy logged, simulating a crash right there — before any of
+  // the merged JSON files (race.json/block.json/nutrition.json) are touched.
+  let sawCourseGpx = false;
+  await assert.rejects(
+    acceptRefresh({
+      root: tmp,
+      slug: SLUG,
+      onProgress: (e) => {
+        if (e.message === `races/${SLUG}/course.gpx`) {
+          sawCourseGpx = true;
+          throw new Error("simulated crash right after course.gpx");
+        }
+      },
+    }),
+    /simulated crash/,
+  );
+  assert.ok(sawCourseGpx, "the injected failure actually fired where this test means it to");
+
+  // course.gpx already landed; race.json did NOT — proof course files are
+  // copied before the JSON write, not after.
+  assert.equal(await fs.readFile(path.join(dir, "course.gpx"), "utf8"), "NEW GPX\n");
+  assert.equal((await readJson(path.join(dir, "race.json"))).distance_mi, race.distance_mi, "the interrupted write never reached race.json");
+  // .refresh/ survives the crash, so a re-run has something to repair from.
+  assert.ok(await fs.access(shadow).then(() => true, () => false), ".refresh/ must not be removed on a failed accept");
+
+  // A plain re-run (no injected failure) finishes the job.
+  await acceptRefresh({ root: tmp, slug: SLUG });
+  assert.equal((await readJson(path.join(dir, "race.json"))).distance_mi, 32.8);
+  await assert.rejects(fs.access(shadow), /ENOENT/, "the shadow is gone once the accept actually completes");
+});
+
 test("accept never touches plan.json or result.json", async (t) => {
   const { tmp, dir } = await fixtureRace(t);
   const plan = await fs.readFile(path.join(dir, "plan.json"), "utf8");

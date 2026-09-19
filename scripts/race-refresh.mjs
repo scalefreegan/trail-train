@@ -327,17 +327,14 @@ export async function acceptRefresh({ root, slug, onProgress = () => {} }) {
   );
 
   const wrote = [];
-  for (const file of MERGED_FILES) {
-    const next = merged.files[file];
-    if (!next) continue;
-    await writeJsonAtomic(path.join(current.dir, file), next);
-    wrote.push(`races/${slug}/${file}`);
-    say(`races/${slug}/${file}`);
-  }
 
-  /* The course the new chart was snapped to, and the build that came off it.
-     Both are generated, both are gitignored, and leaving the old ones next to
-     a refreshed race.json would make the profile disagree with the aid table. */
+  /* The course the new chart was snapped to, and the build that came off it,
+     copied BEFORE the merged JSON below. Both are generated and gitignored,
+     and a crash partway through this function must not leave a refreshed aid
+     table sitting beside a stale course (a mismatch nothing would flag). This
+     order does not make a crash impossible — it makes it repairable: .refresh/
+     is not removed until the very last line, so a re-run of acceptRefresh
+     recomputes the same merge and finishes whichever half did not land. */
   for (const asset of ["course.gpx", path.join("build", "course.json")]) {
     const from = path.join(shadow, asset);
     if (!(await fs.access(from).then(() => true, () => false))) continue;
@@ -345,6 +342,15 @@ export async function acceptRefresh({ root, slug, onProgress = () => {} }) {
     await fs.mkdir(path.dirname(to), { recursive: true });
     await fs.copyFile(from, to);
     wrote.push(`races/${slug}/${asset}`);
+    say(`races/${slug}/${asset}`);
+  }
+
+  for (const file of MERGED_FILES) {
+    const next = merged.files[file];
+    if (!next) continue;
+    await writeJsonAtomic(path.join(current.dir, file), next);
+    wrote.push(`races/${slug}/${file}`);
+    say(`races/${slug}/${file}`);
   }
 
   /* The source cache, under a dated name so the manual the CURRENT race.json
