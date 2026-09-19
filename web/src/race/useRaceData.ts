@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useActiveRace, useRefresh } from "../data";
 import { cacheGet, cachePut, slugKey } from "./offlineCache";
-import type { ClimbsSnapshot, Course, CrewBase } from "./types";
+import type { ClimbsSnapshot, Course, CrewBase, TrackerCheckpoint, TrackerResponse } from "./types";
 import type { PaceGradeCurve } from "./pacing";
 
 /* Snapshot hooks for the Race views — same provider-less pattern as
@@ -297,4 +297,167 @@ export function useRaceResult(slug: string | null) {
   // With no slug there is nothing to report — including whatever the last
   // slug left behind, which belonged to a different race.
   return { result: slug ? data : null, error: slug ? error : null };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Live tracker polling — PRD v2 §4, bead tt-cv1b0.6                  */
+/*                                                                    */
+/*  GET /api/races/:slug/tracker asks the race's configured timing     */
+/*  site where the runner was last seen. The SERVER holds a 60 s cache */
+/*  (scripts/trackers/index.mjs) and nothing anywhere polls on a timer */
+/*  unless a browser is asking — this hook is that browser, and these  */
+/*  are its manners:                                                   */
+/*                                                                    */
+/*    · 60 s between polls, matching the server's TTL exactly. Asking  */
+/*      faster only burns battery on a cached answer.                  */
+/*    · PAUSED while the tab is hidden. A phone in a pocket for six    */
+/*      hours must not keep a volunteer-run timing site company; the   */
+/*      first thing it does on coming back is poll.                    */
+/*    · exponential backoff on a 502 (or any other failure, or the     */
+/*      network being gone): the tracker being down mid-race is        */
+/*      ordinary, and hammering it does not bring it back.             */
+/*    · STOPPED, permanently, on 404 (no tracker configured, or no     */
+/*      adapter for the URL) and 501 (a recognised tracker that cannot */
+/*      be read — MAProgress). Neither fixes itself while the page is  */
+/*      open, so it says so in one line and stops asking.              */
+/*                                                                    */
+/*  It fetches nothing but this endpoint. Course files are loaded once */
+/*  by useCourse and never re-read on a tracker tick.                  */
+/* ------------------------------------------------------------------ */
+
+/** Matches CACHE_TTL_MS in scripts/trackers/index.mjs. */
+const TRACKER_POLL_MS = 60_000;
+
+/** First retry after a failure; doubles per consecutive failure. */
+const TRACKER_BACKOFF_MS = 60_000;
+
+/** Ceiling on the backoff — beyond this the page has effectively given up,
+    and a runner who reloads is the recovery path that actually works. */
+const TRACKER_MAX_BACKOFF_MS = 8 * 60_000;
+
+export type TrackerState = {
+  /** the last checkpoint the tracker reported, or null when the runner is
+      not on its page / has no checkpoint past the start */
+  tracker: TrackerCheckpoint | null;
+  /** ISO instant of the poll behind `tracker` */
+  polledAt: string | null;
+  /** one line for the race-day screen; null while everything is fine */
+  notice: string | null;
+  /** true once polling has stopped for good (404/501) */
+  stopped: boolean;
+};
+
+const TRACKER_IDLE: TrackerState = { tracker: null, polledAt: null, notice: null, stopped: false };
+
+/**
+ * Poll this race's live tracker while the page is open.
+ *
+ * @param slug the race to poll, or `null` to poll nothing at all — which is
+ *   what a race with no `tracking.url` passes, the same way useRaceResult
+ *   takes null for a race with no result worth asking about.
+ */
+export function useTracker(slug: string | null): TrackerState {
+  // Keyed on the slug and re-read in the RENDER phase, the way usePosition
+  // and useRacePlan's knobs are: an effect that reset the state instead
+  // would flash the PREVIOUS race's checkpoint for one paint after a switch.
+  const [state, setState] = useState<{ slug: string | null; v: TrackerState }>(() => ({ slug, v: TRACKER_IDLE }));
+  if (state.slug !== slug) setState({ slug, v: TRACKER_IDLE });
+
+  useEffect(() => {
+    if (!slug) return;
+
+    let stale = false;
+    // `stopped` is local to this effect run, not React state: the scheduler
+    // below reads it synchronously between a response and the next timer,
+    // and a state update would not be visible in time.
+    let stopped = false;
+    let failures = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    /** Every write goes through here so a late response from a race that has
+        since been switched away from can never land on the new one. */
+    const put = (fn: (prev: TrackerState) => TrackerState) => {
+      if (stale) return;
+      setState((s) => (s.slug === slug ? { slug, v: fn(s.v) } : s));
+    };
+
+    const schedule = (ms: number) => {
+      if (stale || stopped) return;
+      timer = setTimeout(() => { timer = null; void poll(); }, ms);
+    };
+
+    const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+
+    const poll = async () => {
+      if (stale || stopped) return;
+      // Hidden: drop the chain entirely rather than re-arming it. The
+      // visibility listener below restarts it the moment the tab is looked
+      // at, which is also when the answer starts mattering again.
+      if (hidden()) return;
+      try {
+        const r = await fetch(`/api/races/${encodeURIComponent(slug)}/tracker?t=${Date.now()}`);
+        if (stale) return;
+        if (r.status === 404 || r.status === 501) {
+          const body = await r.json().catch(() => null) as { error?: string } | null;
+          stopped = true;
+          put((v) => ({
+            ...v,
+            stopped: true,
+            notice: body?.error
+              ? `live tracking is off — ${body.error}`
+              : r.status === 501
+                ? "this race's tracker can't be read automatically — use the manual checkpoint below"
+                : "no live tracker is configured for this race",
+          }));
+          return;
+        }
+        if (!r.ok) {
+          failures += 1;
+          put((v) => ({ ...v, notice: `tracker unreachable (HTTP ${r.status}) — retrying` }));
+          schedule(backoff(failures));
+          return;
+        }
+        const d = await r.json() as TrackerResponse;
+        if (stale) return;
+        failures = 0;
+        put(() => ({
+          tracker: d.tracker ?? null,
+          polledAt: d.polled_at ?? null,
+          notice: null,
+          stopped: false,
+        }));
+        schedule(TRACKER_POLL_MS);
+      } catch {
+        if (stale) return;
+        failures += 1;
+        // The offline case lands here too. The last checkpoint STAYS on
+        // screen — it was true when it was read, and a runner who has just
+        // walked out of signal still wants to know where they were.
+        put((v) => ({ ...v, notice: "tracker unreachable — retrying" }));
+        schedule(backoff(failures));
+      }
+    };
+
+    const onVisible = () => {
+      if (stale || stopped || hidden() || timer !== null) return;
+      void poll();
+    };
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
+
+    void poll();
+    return () => {
+      stale = true;
+      if (timer !== null) clearTimeout(timer);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [slug]);
+
+  // With no slug there is nothing to report, including whatever the previous
+  // slug left behind — the same rule useRaceResult applies.
+  return slug && state.slug === slug ? state.v : TRACKER_IDLE;
+}
+
+/** Doubling backoff, capped. `n` is the consecutive-failure count. */
+function backoff(n: number): number {
+  return Math.min(TRACKER_MAX_BACKOFF_MS, TRACKER_BACKOFF_MS * 2 ** Math.max(0, n - 1));
 }
