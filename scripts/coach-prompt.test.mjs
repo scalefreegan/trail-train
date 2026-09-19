@@ -355,6 +355,19 @@ test("a bare mile with no time is a reported position, not a timed checkpoint", 
   assert.match(timed, /- Last checkpoint \(tracker\): mile 43\.2 at 14:02\./);
 });
 
+test("a delta with no clock or elapsed_h is still a reported position — PRD-v2 §10's distinction turns on observation TIME, not on having a delta", () => {
+  // parseRaceState accepts delta_min as an independent field (line ~454),
+  // so a future producer (a mile-based position with a computed delta) can
+  // hand this shape to the coach even though no current caller does today.
+  const b = raceStateBlock(parseRaceState({
+    mode: "train", name: "X", checkpoint: { mi: 43.2, delta_min: 6, source: "manual" },
+  }).state);
+  assert.match(b, /- Last reported position \(manual\): mile 43\.2/, "a bare delta must not promote this to a checkpoint");
+  assert.doesNotMatch(b, /Last checkpoint/);
+  // the delta text itself still renders — only the LABEL is at stake
+  assert.match(b, /6 min BEHIND plan/);
+});
+
 test("the client's race_state keys are all keys the server keeps", async () => {
   // The wire shape is declared in two places — web/src/race/raceState.ts's
   // RaceState and parseRaceState here — and a field the client sends that the

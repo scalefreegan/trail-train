@@ -547,10 +547,14 @@ export function raceStateBlock(state) {
       : cp.delta_min === 0
         ? ", exactly on plan"
         : `, ${Math.abs(cp.delta_min)} min ${cp.delta_min < 0 ? "AHEAD of" : "BEHIND"} plan`;
-    // With no time attached this is a POSITION the athlete stated, not a
-    // split — calling it a checkpoint would invite the coach to reason about
-    // a pace nobody recorded.
-    const label = when || delta ? "Last checkpoint" : "Last reported position";
+    // With no OBSERVATION TIME attached this is a POSITION the athlete
+    // stated, not a timed split — calling it a checkpoint would invite the
+    // coach to reason about a pace nobody recorded. The label turns on
+    // `when` alone: a `delta_min` can in principle arrive with no `clock`/
+    // `elapsed_h` (parseRaceState accepts it as an independent field), and a
+    // mile-only report with a computed delta must still read as a position,
+    // not a split.
+    const label = when ? "Last checkpoint" : "Last reported position";
     lines.push(`- ${label}${cp.source ? ` (${cp.source})` : ""}: ${where || "unnamed"}${when}${delta}.`);
   }
 
