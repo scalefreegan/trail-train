@@ -15,11 +15,29 @@
 //               context the coach is actually working from, so the rail can
 //               say so instead of implying the browsed race is the target.
 
+import fs from "node:fs/promises";
+import path from "node:path";
+
 import { bRacesFor, listRaces, resolveViewedRace } from "./race-config.mjs";
 import { loadPlanBlocks } from "./state.mjs";
 import { loadGoals } from "./goals.mjs";
 import { rollingBlock } from "./block.mjs";
 import { computeDaysUntilRace } from "./facts.mjs";
+import { deriveArrival } from "./acclimation.mjs";
+
+/**
+ * The calendar snapshot, or null. Absent is the normal state of a machine
+ * that has never run `sync:google`, and an unreadable one must not take the
+ * race payload down — deriveArrival degrades to its day-before default and
+ * says "default" on the planner, which is exactly the honest answer.
+ */
+async function loadCalendar(root) {
+  try {
+    return JSON.parse(await fs.readFile(path.join(root, "web", "public", "google-cal.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
 
 /**
  * @param {string} root  project root
@@ -30,6 +48,8 @@ import { computeDaysUntilRace } from "./facts.mjs";
  *   plan: {plan_blocks: object[]}, nutrition: object|null,
  *   training: {goals: object|null, block: object|null, plan: {plan_blocks: object[]}}|null,
  *   b_races: {slug, name, date, distance_mi, gain_ft, weeks_out}[],
+ *   acclimation?: {arrival_date: string|null, days_at_altitude: number,
+ *                  source: "calendar"|"default"|"override", matched_event?: object},
  *   warning?: string }>}
  */
 export async function activeRacePayload(root, now = Date.now()) {
@@ -79,6 +99,17 @@ export async function activeRacePayload(root, now = Date.now()) {
 
   if (viewed.training) {
     const daysUntil = computeDaysUntilRace(folder.race, now);
+    // When the athlete gets to altitude (PRD-v2 §2). Derived HERE rather
+    // than in the client because the travel events live in a file the client
+    // would otherwise have to fetch and re-classify, and because facts.mjs
+    // hands the coach the same number from the same function. The planner's
+    // manual override is applied on top, client-side, per slug — the server
+    // reports what the calendar says and the athlete overrules it.
+    const acclimation = deriveArrival({
+      race: folder.race,
+      calendar: await loadCalendar(root),
+      today: new Date(now).toISOString(),
+    });
     // The tune-ups entered inside THIS race's block, oldest first, each with
     // the weeks between it and race day (scripts/race-config.mjs's
     // bRacesFor — facts.mjs reads the same function, so the dashboard's
@@ -111,6 +142,7 @@ export async function activeRacePayload(root, now = Date.now()) {
       // instead of a pace projection nobody is running anymore.
       days_until: daysUntil,
       past: typeof daysUntil === "number" && daysUntil < 0,
+      acclimation,
       b_races,
     });
   }
