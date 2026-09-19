@@ -1519,6 +1519,16 @@ function Trajectory() {
     .join(" ").replace(/^L/, "M");
 
   const todayX = wx(currentWeek - 1);
+  // The "WK NN · TODAY" caption sits to the right of the today line by
+  // default, but "today" is very often the last (or near-last) week of the
+  // block — that put the label's box entirely past the svg's own right edge
+  // at every width tested, with `overflow: hidden` on the panel silently
+  // dropping all of it (round 3, new finding 4). ~100px is the label's
+  // rendered width at this fontSize/letterSpacing (measured: ~98px, "WK 12
+  // · TODAY"); once it wouldn't fit to the right of the line, anchor it to
+  // the LEFT of the line instead, still inside the plot.
+  const TODAY_LABEL_W = 100;
+  const todayLabelFitsRight = todayX + 6 + TODAY_LABEL_W <= width - 2;
 
   /* ---- hover: snap to nearest week ---- */
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -1775,7 +1785,12 @@ function Trajectory() {
                     initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 0.6, delay: 1 }}
                     opacity={mode === "cum" ? 1 : 0.45}
                   />
-                  <text x={todayX + 6} y={PAD.top - 8} fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)">
+                  <text
+                    x={todayLabelFitsRight ? todayX + 6 : todayX - 6}
+                    y={PAD.top - 8}
+                    textAnchor={todayLabelFitsRight ? "start" : "end"}
+                    fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)"
+                  >
                     WK {currentWeek} · TODAY
                   </text>
     
