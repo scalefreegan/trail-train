@@ -256,13 +256,13 @@ npx playwright test -c tests/playwright.config.ts print.spec  # one file
 | `review.spec.ts` | the review dialog's fill / acknowledge / save round trip |
 | `race-day.spec.ts` | race-day mode's position hold (phone viewport) |
 | `print.spec.ts` | what the three 3×5 cards and the crew sheet put on paper |
-| `a11y.spec.ts` | every dialog: role, name, initial focus, Tab trap, Escape |
+| `a11y.spec.ts` | all nine dialogs: role, name, initial focus, Tab trap, Escape |
 | `archive.spec.ts` | the archive dialog's activity picker and its ±1-day rule |
 | `offline.spec.ts` | race day with the laptop gone, and no browsed archive in it |
 | `refresh.spec.ts` | refresh from sources: the diff, then Accept and Reject |
 | `crew-export.spec.ts` | exporting the crew page and opening it with no network |
 | `widths.spec.ts` | 320 / 390 / 768 / 1024 / 1280, four views, no sideways scroll |
-| `b-race.spec.ts` | the tune-up quick form — skipped until bead 04 lands |
+| `b-race.spec.ts` | the tune-up quick form, and no agent turn behind it |
 
 Two of them are worth knowing about before you read them.
 

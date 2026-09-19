@@ -24,8 +24,9 @@ import {
  *   4. Tab and Shift+Tab cycle inside it and never escape
  *   5. Escape closes it, and focus goes back to whatever opened it
  *
- * The one dialog not covered here is the tune-up quick form (AddTuneUp) —
- * see the skipped test at the bottom.
+ * All nine dialogs are covered: the three printable cards, the crew sheet,
+ * coach settings, the review and new-race screens, refresh from sources,
+ * archive with result, and the tune-up quick form.
  */
 
 /** dialogChrome.ts's own FOCUSABLE selector. Kept identical on purpose: a
@@ -185,12 +186,15 @@ test.describe('dialog accessibility', () => {
     expect(trouble.pageErrors).toEqual([])
   })
 
-  // The tune-up quick form (AddTuneUp.tsx) arrives with bead 04, which has not
-  // merged into this branch's base — `git log v2 --oneline` tops out at bead
-  // 10. When it lands, this becomes the same three lines as every test above:
-  // open it from the B-race row under its parent race, then
-  // assertDialogContract(page, '<its accessible name>').
-  test.skip('the tune-up quick form', async () => {
-    // intentionally empty — see the comment above
+  test('the tune-up quick form', async ({ page, trouble }) => {
+    const menu = await openSwitcher(page)
+    // Only the race being trained for carries this row, which is why the
+    // beforeEach above points at the 100-miler.
+    await menu.getByRole('menuitem', { name: /Add tune-up…/ }).click()
+    // Named through aria-labelledby (its header), not aria-label — the other
+    // half of the contract `useDialog` offers, and the half nothing else here
+    // exercises except the refresh dialog.
+    await assertDialogContract(page, 'add tune-up')
+    expect(trouble.pageErrors).toEqual([])
   })
 })
