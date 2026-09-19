@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The exit test for the modular-races epic (tt-yib.19; PRD §12, §13).
 //
-// Five sections, each PASS / FAIL / SKIP with a reason. Any FAIL exits 1.
+// Six sections, each PASS / FAIL / SKIP with a reason. Any FAIL exits 1.
 //
 //   1. literals  no race name, short code, trailhead town or aid-station name
 //                survives in CODE. Comment mentions are history, not coupling,
@@ -18,10 +18,17 @@
 //                when that (uncommitted) folder is present. --live additionally
 //                re-fetches the sources it cites and reports what has changed.
 //   5. harness   `npm run build` and `npm test` in web/.
+//   6. ui        `npm run test:ui` — the Playwright flows (web/tests/). The one
+//                section that drives a browser, so it is also the one that can
+//                be turned off: `--no-ui` or TRAIL_CHECK_NO_UI=1 skips it with
+//                that as its stated reason rather than silently. Its wall time
+//                is reported either way, as is the whole run's.
 //
 // Usage:  cd web && npm run check:races
 //         cd web && npm run check:races -- --live    (network; see README)
+//         cd web && npm run check:races -- --no-ui   (skip the browser flows)
 //         TRAIL_CHECK_QUIET=1 npm run check:races    (results and summary only)
+//         TRAIL_CHECK_NO_UI=1 npm run check:races    (same as --no-ui)
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -629,25 +636,96 @@ async function checkHarness(root) {
   };
 }
 
+/* ========================= 6. the browser flows ========================= */
+
+/**
+ * Why the UI section is being skipped, or null to run it.
+ *
+ * Two ways to say so, because they are asked in two places: `--no-ui` from a
+ * developer running the gate by hand, and TRAIL_CHECK_NO_UI=1 from a machine
+ * (a container with no browser, a hook that must stay fast) where nobody is
+ * there to pass a flag. Either way the section reports SKIP with the reason
+ * on it — a check that quietly does not run is worse than one that fails.
+ *
+ * @param {string[]} [argv]
+ * @param {Record<string, string|undefined>} [env]
+ * @returns {string|null}
+ */
+export function uiSkipReason(argv = process.argv, env = process.env) {
+  if (argv.includes("--no-ui")) return "--no-ui";
+  if ((env.TRAIL_CHECK_NO_UI ?? "").trim()) return "TRAIL_CHECK_NO_UI=1";
+  return null;
+}
+
+/** "48s" / "1m 12s" — a duration a human reads, not a millisecond count. */
+export function formatDuration(ms) {
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${String(Math.round(s - m * 60)).padStart(2, "0")}s`;
+}
+
+/**
+ * The Playwright suite, as its own section.
+ *
+ * It is the slowest thing the gate does and the only part that needs a
+ * browser, so its wall time is always reported — a suite that has crept from
+ * thirty seconds to four minutes is a finding, and nobody notices it inside a
+ * single PASS line.
+ */
+async function checkUi(root, { ui = true, skipReason = null } = {}) {
+  if (!ui) {
+    return {
+      status: "SKIP",
+      reason: `browser flows not run (${skipReason ?? "disabled"})`,
+      detail: [],
+      info: ["web/tests/ — run `cd web && npm run test:ui` to drive them"],
+    };
+  }
+  const started = Date.now();
+  const { code, output } = await runNpm(root, "test:ui");
+  const took = formatDuration(Date.now() - started);
+  const lines = tail(output).map((l) => `  ${l}`);
+  if (code !== 0) {
+    return {
+      status: "FAIL",
+      reason: `npm run test:ui — exit ${code} after ${took}`,
+      detail: [`npm run test:ui — exit ${code}`, ...lines],
+      info: [],
+    };
+  }
+  return {
+    status: "PASS",
+    reason: `the browser flows pass in ${took}`,
+    detail: [],
+    info: [`npm run test:ui — exit 0 in ${took}`, ...lines],
+  };
+}
+
 /* =============================== report ================================ */
 
-const SECTIONS = [
+export const SECTIONS = [
   { id: "literals", title: "race literals out of the code", run: checkLiterals },
   { id: "folders", title: "every race folder validates", run: checkFolders },
   { id: "reference", title: `${REFERENCE_SLUG} rebuilds deterministically`, run: checkReferenceRebuild },
   { id: "draft", title: `${DRAFT_SLUG} against PRD §12`, run: checkDraft },
   { id: "harness", title: "npm run build · npm test", run: checkHarness },
+  { id: "ui", title: "npm run test:ui — the browser flows", run: checkUi },
 ];
 
 const MARK = { PASS: "✔", FAIL: "✗", SKIP: "–" };
 
 async function main() {
+  const startedAt = Date.now();
   const quiet = Boolean(process.env.TRAIL_CHECK_QUIET);
   const live = process.argv.includes("--live");
+  const skipReason = uiSkipReason();
+  const ui = skipReason === null;
   const say = (line = "") => console.log(line);
 
   say(`── Basecamp race harness ──  ${ROOT}`);
   if (live) say("--live: the draft's sources will be re-fetched over the network.");
+  if (!ui) say(`${skipReason}: the browser flows will be skipped.`);
   say();
 
   const results = [];
@@ -655,7 +733,7 @@ async function main() {
     if (!quiet) say(`▸ ${section.title}`);
     let r;
     try {
-      r = await section.run(ROOT, { live });
+      r = await section.run(ROOT, { live, ui, skipReason });
     } catch (e) {
       r = { status: "FAIL", reason: `threw: ${e.message}`, detail: [String(e.stack ?? e)], info: [] };
     }
@@ -682,6 +760,7 @@ async function main() {
   say("── summary ──");
   for (const r of results) say(`  ${MARK[r.status]} ${r.status.padEnd(4)} ${r.id.padEnd(10)} ${r.reason}`);
   say(`  ${counts.PASS} passed · ${counts.SKIP} skipped · ${counts.FAIL} failed`);
+  say(`  in ${formatDuration(Date.now() - startedAt)}`);
   process.exitCode = counts.FAIL ? 1 : 0;
 }
 

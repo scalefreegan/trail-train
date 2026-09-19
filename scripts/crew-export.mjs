@@ -33,7 +33,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -67,7 +67,15 @@ let hooksRegistered = false;
 function registerClientResolver() {
   if (hooksRegistered) return;
   hooksRegistered = true;
-  const clientSrc = path.join(ROOT, "web", "src") + path.sep;
+  // Real path, not the joined one. TRAIL_PROJECT_ROOT points ROOT at a data
+  // directory whose web/src is a SYMLINK to the checkout's (see
+  // web/tests/launch.mjs), and Node reports the parent of every import at its
+  // resolved real path — so a clientSrc still carrying the link matches
+  // nothing, the hook never fires, and pacing.ts's `import "./clock"` fails to
+  // resolve. Falls back to the joined path when there is nothing there to
+  // resolve, which is a root with no client source at all.
+  const joined = path.join(ROOT, "web", "src");
+  const clientSrc = (existsSync(joined) ? realpathSync(joined) : joined) + path.sep;
   registerHooks({
     resolve(specifier, context, nextResolve) {
       const parent = context.parentURL;

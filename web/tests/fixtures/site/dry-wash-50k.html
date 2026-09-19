@@ -1,0 +1,24 @@
+<!doctype html>
+<!--
+  The synthetic race website the refresh flow re-reads.
+
+  Served out of the temp project root's web/public/, so "refreshing from
+  sources" fetches 127.0.0.1 and never the internet: scripts/race-intake.mjs
+  fetches links.site for real, and a fixture pointing at a public URL would
+  make this suite depend on DNS, on somebody else's uptime, and on a promise
+  that a .invalid hostname really never resolves.
+
+  Nothing here is a real race. The numbers deliberately DISAGREE with
+  races/_fixtures/crewless-50k/race.json in two places — the overall cutoff and
+  Broken Fence's — so the refresh has something to diff.
+-->
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Dry Wash 50K · 2027</title></head>
+  <body>
+    <h1>Dry Wash 50K</h1>
+    <p>Saturday 15 May 2027 · 06:00 start · loop course · 31.4 mi / 4,200 ft</p>
+    <p>Overall cutoff: <b>9:30</b> from the gun.</p>
+    <p><a href="./dry-wash-50k-aid.html">Aid stations and cutoffs</a></p>
+    <p>This race has no crew access and no drop bags.</p>
+  </body>
+</html>
