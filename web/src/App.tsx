@@ -416,6 +416,7 @@ function RaceSwitcher() {
               label="No race (generic)"
               hint="train toward your goals"
               swatch={<ThemePreview visual={null} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round label="basecamp palette" />}
+              disabled={busy != null}
               busy={busy === "__generic__"}
               onSelect={() => choose(null, "train")}
             />
@@ -436,7 +437,7 @@ function RaceSwitcher() {
                       swatch={entry.error ? null : (
                         <ThemePreview visual={entry.visual} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round />
                       )}
-                      disabled={!!entry.error}
+                      disabled={!!entry.error || busy != null}
                       busy={busy === entry.slug}
                       current={entry.slug === currentSlug}
                       onSelect={() => choose(entry.slug, modeFor(entry.status))}
@@ -446,6 +447,7 @@ function RaceSwitcher() {
                         {...itemProps("review", entry.slug)}
                         label="↳ Review…"
                         hint="aid chart, profile, unresolved · activate"
+                        disabled={busy != null}
                         onSelect={() => { setOpen(false); setIntake({ slug: entry.slug }); }}
                       />
                     )}
@@ -454,6 +456,7 @@ function RaceSwitcher() {
                         {...itemProps("refresh", entry.slug)}
                         label="↳ Refresh from sources…"
                         hint="re-read the site and manual · diff before anything is written"
+                        disabled={busy != null}
                         onSelect={() => { setOpen(false); setRefreshing(entry); }}
                       />
                     )}
@@ -469,6 +472,7 @@ function RaceSwitcher() {
                   hint={trainingSlug
                     ? `${archiveTarget.short} · link the Strava run`
                     : `${archiveTarget.short} · no activity linked`}
+                  disabled={busy != null}
                   onSelect={() => { setOpen(false); setArchiveOpen(archiveTarget); }}
                 />
               )}
@@ -476,6 +480,7 @@ function RaceSwitcher() {
                 {...itemProps("new")}
                 label="New race…"
                 hint="build a race folder from its website"
+                disabled={busy != null}
                 onSelect={() => { setOpen(false); setIntake({ slug: null }); }}
               />
             </div>
