@@ -189,6 +189,9 @@ function fakeAgentReply() {
  * REMAINING timeout rather than a fresh one (so the worst case doesn't
  * double). Every other failure rejects with a classified message.
  *
+ * `TRAIL_FAKE_AGENT=<file>` short-circuits the whole thing — see
+ * fakeAgentReply above.
+ *
  * @param {object} opts
  * @param {string} opts.prompt
  * @param {string} [opts.systemPrompt] appended to the CLI's own system prompt
