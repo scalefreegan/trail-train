@@ -9,6 +9,7 @@ import {
 } from "./features";
 import type { Course, RaceConfig } from "./types";
 import { migrateLegacyKnobs } from "./knobMigration";
+import type { SunTimes } from "./nightWindow";
 
 /* ------------------------------------------------------------------ */
 /*  Shared race-plan wiring.                                          */
@@ -102,6 +103,11 @@ export type RacePlan = {
   missing: boolean;
   /** course.json load failure — the one that blocks rendering entirely */
   error: string | null;
+  /** course.sun, falling back to raceConfig.sun — null when nobody has
+      computed it yet (a draft's course was built before its date was
+      known). Read this instead of `course.sun` everywhere: the views must
+      render "sun unknown" rather than dereference it. */
+  sun: SunTimes | null;
   /** the personal pace-vs-grade curve, for provenance display */
   paceGrade: PaceGradeCurve;
   /** kept separate from `error`: these degrade the plan, they don't block it,
@@ -247,13 +253,20 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
     [course, fit, paceGrade, fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides],
   );
 
+  // course.sun is the freshest (it's what the last build actually computed);
+  // raceConfig.sun is the fallback for the sliver of a render where course.json
+  // hasn't loaded yet but race.json already answered /api/race/active. Both are
+  // null on a draft built before its date was known (tt bug fix-sun-null) — every
+  // consumer below reads THIS, never `course.sun` directly.
+  const sun = course?.sun ?? raceConfig.sun ?? null;
+
   const fuelPlan = useMemo(
-    () => (course && proj ? planFuel(proj, course, race.date, nutrition, race.timeZone) : null),
-    [course, proj, race.date, race.timeZone, nutrition],
+    () => (course && proj ? planFuel(proj, sun, race.date, nutrition, race.timeZone) : null),
+    [course, proj, sun, race.date, race.timeZone, nutrition],
   );
 
   return {
-    course, missing, error: courseError,
+    course, missing, error: courseError, sun,
     paceGrade, paceGradeError, nutritionError,
     fit, proj, nutrition, fuelPlan, physiology, physiologyError,
     raceStart: race.date, timeZone: race.timeZone, clock: race.clock,
