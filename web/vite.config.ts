@@ -171,7 +171,16 @@ const SLUG_OP_LABEL: Record<string, string> = {
   archive: 'an archive',
   edit: 'a save',
   'refresh-review': 'a refresh accept/reject',
+  activate: 'an activation',
 }
+
+// The sentinel "slug" POST /api/race/activate locks under (PR #23 review
+// round 1, resilience findings 1 & 2). It is deliberately NOT a real slug:
+// config/active-race.json is a single file shared across every race, not
+// one per folder, so two activations for DIFFERENT slugs still write the
+// same file and must still serialize — a per-slug lock (acquireSlugLock's
+// usual key) would let them race each other exactly like before.
+const ACTIVATE_LOCK_KEY = '__active-race-pointer__'
 
 function slugLockKey(slug: string): string {
   return `slug:${slug}`
@@ -1343,6 +1352,19 @@ function raceSwitchApi(): Plugin {
       server.middlewares.use('/api/race/activate', async (req, res) => {
         if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
         if (crossSiteBlocked(req, res)) return
+        // Global, not per-slug (PR #23 review round 1, resilience findings 1
+        // & 2): config/active-race.json is ONE file regardless of which slug
+        // each request names, so two activations racing each other — even
+        // for two different races — must serialize on it. Refuses with 409
+        // rather than queuing: the loser's click is stale the instant it is
+        // rejected (the switcher/review dialog both re-read on the next
+        // render), so making it wait to overwrite whatever won would just
+        // reproduce the "last click silently wins, UI disagrees" bug this
+        // fixes.
+        if (!acquireSlugLock(ACTIVATE_LOCK_KEY, 'activate')) {
+          json(res, 409, { error: 'another race activation is already in progress — try again' })
+          return
+        }
         try {
           const chunks: Buffer[] = []
           let size = 0
@@ -1364,6 +1386,8 @@ function raceSwitchApi(): Plugin {
           if (code === 'not_found') { json(res, 404, { error: (e as Error).message }); return }
           if (code === 'bad_request') { json(res, 400, { error: (e as Error).message }); return }
           json(res, 500, { error: (e as Error).message })
+        } finally {
+          releaseSlugLock(ACTIVATE_LOCK_KEY)
         }
       })
     },
