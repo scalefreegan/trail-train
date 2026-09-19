@@ -16,40 +16,19 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-/** Fallback body mass, kg. Deliberately a round, IMPERSONAL number: the
-    committed example profile must never carry the owner's real weight, and a
-    plan built on this default is announced (see normalizePhysiology's
-    warnings) rather than quietly wrong. Roughly a median adult male runner —
-    close enough that the mg/kg caffeine band lands in the right ballpark,
-    far enough from anyone in particular that nobody mistakes it for theirs. */
-export const DEFAULT_BODY_KG = 75;
+import {
+  DEFAULT_BODY_KG,
+  DEFAULT_LONG_RUN_REF_MI,
+  PHYSIOLOGY_FIELDS,
+  PHYSIOLOGY_KEYS,
+} from "./contracts.mjs";
 
-/** Fallback long-run reference distance, mi — the old pacing.ts `D_REF`. The
-    projection evaluates its fitted fitness pace at this one distance and lets
-    the fatigue curve carry everything past it, so it should sit in the middle
-    of the athlete's actual long-run regime. */
-export const DEFAULT_LONG_RUN_REF_MI = 20;
-
-/** The editable physiology fields, with the bounds the settings PUT enforces.
-    `dflt` is what a missing/invalid value falls back to. KEEP IN SYNC with
-    the physiology block in config/profile.example.json.
-
-    `optional: true` marks a field with no usable stand-in: it normalizes to
-    null and, unlike the others, says nothing when it is missing. A default
-    body mass still produces a roughly right caffeine band, so substituting
-    one and warning is the honest move. There is no such number for where
-    somebody lives — guessing sea level would quietly add hours of altitude
-    penalty to a Denver athlete's race plan — so the field stays null and the
-    views that use it ask for it by name. */
-export const PHYSIOLOGY_FIELDS = {
-  body_kg: { lo: 30, hi: 200, dflt: DEFAULT_BODY_KG, label: "body mass (kg)" },
-  long_run_ref_mi: { lo: 5, hi: 50, dflt: DEFAULT_LONG_RUN_REF_MI, label: "long-run reference (mi)" },
-  // −300 ft clears the Dead Sea and Death Valley; 15,000 ft clears every
-  // inhabited place on earth by a wide margin.
-  home_elevation_ft: { lo: -300, hi: 15000, dflt: null, optional: true, label: "home elevation (ft)" },
-};
-
-export const PHYSIOLOGY_KEYS = /** @type {const} */ (Object.keys(PHYSIOLOGY_FIELDS));
+// The fields, their bounds and their impersonal defaults live in
+// scripts/contracts.mjs, because the settings PUT in web/vite.config.ts and
+// the dialog in web/src/CoachSettings.tsx enforce and render the same
+// numbers. Re-exported so every existing import site (`from "./profile.mjs"`)
+// keeps working.
+export { DEFAULT_BODY_KG, DEFAULT_LONG_RUN_REF_MI, PHYSIOLOGY_FIELDS, PHYSIOLOGY_KEYS };
 
 /**
  * Coerce a raw `physiology` block into a complete, in-range one.
