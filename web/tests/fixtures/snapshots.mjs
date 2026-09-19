@@ -114,8 +114,48 @@ function stravaActivities(anchor, days) {
   return out;
 }
 
+/**
+ * The run that IS the 100-miler, on race day.
+ *
+ * races/_fixtures/mm-like-100 is always dated today (launch.mjs), and the
+ * archive dialog's picker is a window of ±3 days around the race date with the
+ * longest race-day run first — so without this entry there is simply nothing
+ * to link a result to, and the flow cannot be tested at all. It is also the
+ * longest activity in the log by a wide margin, which is what makes it the
+ * dialog's default selection.
+ *
+ * `id` deliberately keeps the `fix-` prefix every other fixture activity
+ * carries: scripts/ui-fixtures.test.mjs greps the generated snapshots for
+ * anything that looks like real data, and a bare numeric Strava id is exactly
+ * the shape a copied-from-life fixture has.
+ */
+function raceDayRun(anchor) {
+  const movingS = 30 * 3600 + 41 * 60;
+  return {
+    id: "fix-run-race-day",
+    date: isoDate(anchor, 0),
+    start_utc: isoAt(anchor, 0, 11),
+    start_time_local: `${isoDate(anchor, 0)}T05:00:00`,
+    utc_offset_s: -21600,
+    timezone: "America/Denver",
+    title: "Mesa Monster 100 — the whole thing",
+    sport: "Run",
+    type: "long",
+    distance_m: Math.round(100.4 * 1609.344),
+    elevation_m: Math.round(21400 * 0.3048),
+    moving_s: movingS,
+    elapsed_s: movingS + 4 * 3600,
+    avg_hr: 132,
+    max_hr: 171,
+    avg_pace_s_per_km: Math.round(movingS / (100.4 * 1.609344)),
+    rpe: 5,
+    strava_url: "https://example.invalid/activities/0",
+    weather: { temp_min_c: 4, temp_max_c: 29, temp_avg_c: 16, apparent_avg_c: 17, humidity_avg: 0.21 },
+  };
+}
+
 function strava(anchor, days) {
-  const activities = stravaActivities(anchor, days);
+  const activities = [...stravaActivities(anchor, days), raceDayRun(anchor)];
   return {
     fetched_at: new Date(anchor.getTime() - 40 * 60_000).toISOString(),
     window: { start: isoDate(anchor, -days), end: isoDate(anchor, 0) },
