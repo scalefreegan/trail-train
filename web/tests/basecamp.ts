@@ -53,6 +53,7 @@ export const test = base.extend<{ trouble: ConsoleTrouble }>({
 })
 
 export { expect }
+export type { Page }
 
 /* ------------------------------------------------------------------ */
 /*  Fixture facts the specs assert against                             */

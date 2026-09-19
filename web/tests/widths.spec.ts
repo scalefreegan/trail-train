@@ -1,4 +1,4 @@
-import { test, expect, MM, openDashboard, setActiveRace, type Page } from './basecamp'
+import { test, expect, MM, openDashboard, openSwitcher, setActiveRace, type Page } from './basecamp'
 
 /**
  * Flow 12 — no horizontal scroll, at every width the app claims to support.
@@ -45,7 +45,7 @@ const VIEWS: ViewCheck[] = [
       // The tab is labelled "fuel"; the view behind it is the nutrition plan
       // (App.tsx's VIEW_LABEL maps "nutrition" → "fuel").
       await page.getByRole('button', { name: /^fuel$/i }).click()
-      await expect(page.getByText(/fuel/i).first()).toBeVisible()
+      await expect(page.getByText(/^nutrition plan$/i).first()).toBeVisible()
     },
   },
   {
@@ -115,6 +115,29 @@ test.describe('no horizontal scroll', () => {
           await expect(page.getByText(/vitals — load × recovery/i)).toBeVisible()
         }
       }
+
+      expect(trouble.pageErrors).toEqual([])
+    })
+  }
+
+  // The menu is its own overflow risk: it is a fixed-width panel anchored
+  // under a chip that already starts ~130px in, so on a 320px phone it used to
+  // hang off the right edge and drag the whole document sideways the moment it
+  // opened (round 2, resilience finding 3) — with the page itself measuring
+  // clean both before and after.
+  for (const width of [320, 390]) {
+    test(`the race switcher's menu stays inside ${width}px`, async ({ page, trouble }) => {
+      await page.setViewportSize({ width, height: 800 })
+      await openDashboard(page)
+      await openSwitcher(page)
+
+      const { over, culprit } = await overflow(page)
+      expect(over, `the open switcher at ${width}px is ${over}px too wide — widest offender: ${culprit ?? 'none found'}`).toBeLessThanOrEqual(0)
+
+      const box = await page.getByRole('menu', { name: 'race' }).boundingBox()
+      expect(box, 'the switcher menu has no box').not.toBeNull()
+      expect(box!.x, 'the menu hangs off the left edge').toBeGreaterThanOrEqual(0)
+      expect(box!.x + box!.width, 'the menu hangs off the right edge').toBeLessThanOrEqual(width)
 
       expect(trouble.pageErrors).toEqual([])
     })
