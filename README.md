@@ -301,9 +301,11 @@ that possible, and both are inert when unset:
   resolves with that file's contents instead of spawning the `claude` CLI, so
   the agent-backed flows can be driven without a live sign-in. A missing file
   is a hard error, never a quiet fall-through to a real spawn. The dashboard's
-  streaming `/api/chat` endpoint spawns the CLI directly and is *not* covered
-  by it. Global setup sets it for the whole run, so no test can reach a real
-  spawn even by accident.
+  streaming `/api/chat` endpoint does not go through `runClaudeJson` — it
+  spawns the CLI itself so it can stream — so it honours the same variable
+  independently: set, it answers with the file's text through the same SSE
+  path, and nothing is spawned. Global setup sets it for the whole run, so no
+  test can reach a real spawn even by accident.
 - **`TRAIL_CREW_SHELL=<file>`** — the prebuilt single-file crew shell the crew
   export renders into, instead of running `vite build` per request. The suite
   builds it once from the checkout's `web/` (~25 ms) and passes it down, since
