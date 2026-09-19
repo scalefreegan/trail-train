@@ -149,3 +149,31 @@ export async function openReviewFor(page: Page, raceName: string) {
   await expect(dialog).toBeVisible()
   return dialog
 }
+
+/**
+ * Put the race view on screen for the active race.
+ *
+ * The planner (and every printable document's button) only exists under the
+ * "race" tab, which itself only exists when a race is active — `viewsFor` in
+ * App.tsx gives a generic dashboard the "training" tab alone.
+ */
+export async function openRaceTab(page: Page) {
+  await page.getByRole('button', { name: /^race$/i }).click()
+  await expect(page.getByText(/climb readiness — you vs/i)).toBeVisible()
+}
+
+/**
+ * Open one of the planner's printable documents and return its dialog.
+ *
+ * Each is a portalled `role="dialog"` named after the race — see
+ * `useDialog({ label })` in race/dialogChrome.ts — and each sets a body class
+ * (`card-printing` / `crew-printing`) that the print stylesheet keys off, so
+ * only one may be open at a time. The caller closes it before opening the
+ * next.
+ */
+export async function openPrintable(page: Page, button: RegExp, dialogName: string) {
+  await page.getByRole('button', { name: button }).click()
+  const dialog = page.getByRole('dialog', { name: dialogName })
+  await expect(dialog).toBeVisible()
+  return dialog
+}
