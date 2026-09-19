@@ -119,20 +119,101 @@ function parseSlugParam(raw: string): string | null {
   return KEBAB_SLUG_RE.test(slug) ? slug : null
 }
 
-// PR #23 review round 1, finding 4: raceBuildApi, racePlanApi, raceIntakeApi
-// and raceRefreshApi each spawn a paid `claude -p` turn (plan/intake/refresh)
-// or run a long CPU pass (build), and write races/<slug>/*.json atomically at
-// the end. A double-click, or two browser tabs open to the same race, fires
-// two concurrent requests: two concurrent agent turns silently double the
-// bill, and two concurrent writers to the same file interleave via
-// writeJsonAtomic (whichever settles last wins, silently discarding the
-// other run's result) instead of erroring. One Set for the dev server's
-// lifetime, keyed "<endpoint>:<slug>" (raceIntakeApi, which may not have a
-// slug yet for a brand-new race, keys on its derived slug hint or else the
-// site_url) — a request for a key already in the Set gets 409 instead of
-// starting a second run, and every acquirer releases its key in `finally`,
-// including on a thrown error or a client disconnect.
+// PR #23 review round 1 finding 4, round 2 findings 2 and 3 (scripts report)
+// / high finding (web report): raceBuildApi, racePlanApi, raceIntakeApi and
+// raceRefreshApi each spawn a paid `claude -p` turn (plan/intake/refresh) or
+// run a long CPU pass (build); raceEditApi (PUT and POST .../status) and the
+// archive route in raceResultApi are quick, no-agent writes but touch the
+// exact same file. ALL of them write races/<slug>/race.json (some also
+// block.json) at the end, and every one of them is a candidate for "two
+// concurrent tabs/requests silently clobber each other's write" — the
+// archive-during-build case is the sharpest version: buildRace snapshots
+// race.json once at the start and writes that whole (by-then-stale) copy
+// back at the end, so a build finishing after a concurrent archive completes
+// SILENTLY REVERTS the archive's status flip with no error to either caller.
+//
+// One Set for the dev server's lifetime, holding two KINDS of key:
+//
+//   "slug:<slug>"   — build, plan, refresh, archive, edit (PUT and
+//                     POST .../status), and (once its slug is known) intake
+//                     ALL write races/<slug>/race.json independently, so
+//                     they must be mutually exclusive with EACH OTHER, not
+//                     just with a second call to the same endpoint. Round 1
+//                     keyed each endpoint separately ("build:<slug>" vs
+//                     "plan:<slug>"), which let a build and a plan for the
+//                     same slug run at once and silently clobber each
+//                     other's write — this single shared key is the fix.
+//   "intake:<url>"  — a brand-new intake has no slug yet, so it locks on the
+//                     site_url instead, NORMALIZED (see normalizeUrlForLock)
+//                     so a trivial variant of the same URL — scheme,
+//                     "www.", a trailing slash, a query string or fragment —
+//                     still collides on the same key rather than silently
+//                     bypassing the lock.
+//
+// A request for a key already in the Set gets 409 instead of starting a
+// second run, and every acquirer releases its key in `finally`, including on
+// a thrown error or a client disconnect. The lock alone is not sufficient for
+// build/plan, though: see buildRace's own re-read-before-write guard
+// (scripts/race-build.mjs) for the other half of the archive-during-build fix
+// — a slow build started BEFORE a fast archive/edit is still in flight when
+// the archive completes, still holds no lock on it (it acquired first), and
+// must not blindly overwrite whatever the archive/edit wrote meanwhile.
 const inFlightSlugs = new Set<string>()
+// Which operation currently holds each "slug:<slug>" key — the key alone no
+// longer says whether a build, a plan or a refresh is running, and the 409
+// should name it.
+const slugLockOwner = new Map<string, string>()
+const SLUG_OP_LABEL: Record<string, string> = {
+  build: 'a build',
+  plan: 'a plan run',
+  refresh: 'a refresh',
+  intake: 'an intake',
+  archive: 'an archive',
+  edit: 'a save',
+}
+
+function slugLockKey(slug: string): string {
+  return `slug:${slug}`
+}
+
+/** Acquire the shared per-slug lock for `op` ('build' | 'plan' | 'refresh' |
+    'intake' | 'archive' | 'edit'). Returns false — without touching
+    anything — when another operation already holds it. */
+function acquireSlugLock(slug: string, op: string): boolean {
+  const key = slugLockKey(slug)
+  if (inFlightSlugs.has(key)) return false
+  inFlightSlugs.add(key)
+  slugLockOwner.set(key, op)
+  return true
+}
+
+function releaseSlugLock(slug: string): void {
+  const key = slugLockKey(slug)
+  inFlightSlugs.delete(key)
+  slugLockOwner.delete(key)
+}
+
+/** What to call whatever currently holds (or, right after a failed acquire,
+    held) the slug lock, for a 409 message. */
+function slugLockLabel(slug: string, fallbackOp: string): string {
+  return SLUG_OP_LABEL[slugLockOwner.get(slugLockKey(slug)) ?? fallbackOp] ?? 'an operation'
+}
+
+// Normalize a site_url for the intake lock key: lowercase, strip the scheme,
+// a leading "www.", a trailing slash, and any query/fragment — so
+// "https://Race.example.com/2027/" and "http://race.example.com/2027?utm=x"
+// collide on the same key instead of two intakes for the same event racing
+// each other under a raw-string lock neither ever trips.
+function normalizeUrlForLock(url: string): string {
+  try {
+    const u = new URL(url)
+    const host = u.hostname.toLowerCase().replace(/^www\./, '')
+    const pathname = u.pathname.replace(/\/+$/, '')
+    return `${host}${pathname}`.toLowerCase()
+  } catch {
+    return url.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '').split(/[?#]/)[0]
+  }
+}
 
 // Dev-only middleware: POST /api/refresh runs the three sync scripts in
 // sequence and streams progress lines back as Server-Sent Events.
@@ -1357,6 +1438,15 @@ function raceResultApi(): Plugin {
         }
 
         if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        // See inFlightSlugs above (PR #23 review round 2, scripts finding
+        // "archive endpoint holds no lock"): archiveRace flips race.json's
+        // status and writes result.json — a build/plan/refresh/edit for the
+        // same slug finishing after (or starting during) an archive must not
+        // silently interleave with it.
+        if (!acquireSlugLock(slug, 'archive')) {
+          json(res, 409, { error: `${slugLockLabel(slug, 'archive')} for "${slug}" is already running` })
+          return
+        }
         try {
           const chunks: Buffer[] = []
           let size = 0
@@ -1381,6 +1471,8 @@ function raceResultApi(): Plugin {
           json(res, 200, { slug, result, pointer })
         } catch (e) {
           fail(res, e)
+        } finally {
+          releaseSlugLock(slug)
         }
       })
     },
@@ -1471,6 +1563,31 @@ function raceEditApi(): Plugin {
           return
         }
 
+        // GET is read-only (loadReview never writes) — answered without
+        // touching the lock, so an athlete can still open the review screen
+        // while a build/plan/refresh/archive is running for that slug.
+        if (!statusPath && req.method === 'GET') {
+          try {
+            const mod = await raceEdit()
+            json(res, 200, await mod.loadReview(projectRoot, slug))
+          } catch (e) {
+            const message = (e as Error).message || String(e)
+            console.error(`[race-edit] ${message}`)
+            json(res, 500, { error: message })
+          }
+          return
+        }
+
+        // Everything else here writes race.json (status promotion, or the
+        // PUT edit, plus block.json for a block-target edit) — see
+        // inFlightSlugs above (PR #23 review round 2, scripts finding
+        // "raceEditApi PUT/status unlocked"): must serialize against a
+        // concurrent build/plan/refresh/archive/intake on the same slug, not
+        // just win a race with `writeJsonAtomic` and lose silently.
+        if (!acquireSlugLock(slug, 'edit')) {
+          json(res, 409, { error: `${slugLockLabel(slug, 'edit')} for "${slug}" is already running` })
+          return
+        }
         try {
           const mod = await raceEdit()
           const { writeJsonAtomic } = await import(path.join(projectRoot, 'scripts/lib.mjs')) as {
@@ -1500,10 +1617,6 @@ function raceEditApi(): Plugin {
             return
           }
 
-          if (req.method === 'GET') {
-            json(res, 200, await mod.loadReview(projectRoot, slug))
-            return
-          }
           if (req.method !== 'PUT') { res.statusCode = 405; res.end('GET or PUT required'); return }
 
           const body = await readBody(req)
@@ -1554,6 +1667,8 @@ function raceEditApi(): Plugin {
           const message = (e as Error).message || String(e)
           console.error(`[race-edit] ${message}`)
           json(res, 500, { error: message })
+        } finally {
+          releaseSlugLock(slug)
         }
       })
     },
@@ -1707,15 +1822,14 @@ function raceBuildApi(): Plugin {
           json(res, 404, { error: `no race folder "${slug}" — races/${slug}/race.json is not there` })
           return
         }
-        // See inFlightSlugs above (PR #23 review round 1, finding 4): a
-        // second build for the same slug while one is already running is
-        // refused rather than started.
-        const lockKey = `build:${slug}`
-        if (inFlightSlugs.has(lockKey)) {
-          json(res, 409, { error: `a build for "${slug}" is already running` })
+        // See inFlightSlugs above (PR #23 review round 1 finding 4; round 2
+        // finding 3): a build/plan/refresh for the same slug — whichever
+        // one — while one is already running is refused rather than started,
+        // since any of them can write this same race.json.
+        if (!acquireSlugLock(slug, 'build')) {
+          json(res, 409, { error: `${slugLockLabel(slug, 'build')} for "${slug}" is already running` })
           return
         }
-        inFlightSlugs.add(lockKey)
 
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
@@ -1770,7 +1884,7 @@ function raceBuildApi(): Plugin {
           send('error', { message })
           send('done', { ok: false, error: message })
         } finally {
-          inFlightSlugs.delete(lockKey)
+          releaseSlugLock(slug)
           clearInterval(hb)
           if (!res.writableEnded) res.end()
         }
@@ -1833,15 +1947,14 @@ function racePlanApi(): Plugin {
           return
         }
         const dryRun = body.dry_run === true
-        // See inFlightSlugs above (PR #23 review round 1, finding 4): a
-        // second plan run for the same slug while one is already running is
-        // refused rather than started (it spawns a paid `claude -p` turn).
-        const lockKey = `plan:${slug}`
-        if (inFlightSlugs.has(lockKey)) {
-          json(res, 409, { error: `a plan run for "${slug}" is already running` })
+        // See inFlightSlugs above (PR #23 review round 1 finding 4; round 2
+        // finding 3): shared with build/refresh — it spawns a paid
+        // `claude -p` turn AND writes race.json, so it must not overlap
+        // with either of them for the same slug, not just with itself.
+        if (!acquireSlugLock(slug, 'plan')) {
+          json(res, 409, { error: `${slugLockLabel(slug, 'plan')} for "${slug}" is already running` })
           return
         }
-        inFlightSlugs.add(lockKey)
 
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
@@ -1910,7 +2023,7 @@ function racePlanApi(): Plugin {
           send('error', { message })
           send('done', { ok: false, error: message })
         } finally {
-          inFlightSlugs.delete(lockKey)
+          releaseSlugLock(slug)
           clearInterval(hb)
           if (!res.writableEnded) res.end()
         }
@@ -2027,15 +2140,14 @@ function raceRefreshApi(): Plugin {
         const notes = typeof body.notes === 'string' ? body.notes.slice(0, 8000) : ''
         const skipPlan = body.skip_plan === true
 
-        // See inFlightSlugs above (PR #23 review round 1, finding 4): a
-        // second re-intake for the same slug while one is already running is
-        // refused rather than started (it spawns two paid `claude -p` turns).
-        const lockKey = `refresh:${slug}`
-        if (inFlightSlugs.has(lockKey)) {
-          json(res, 409, { error: `a refresh for "${slug}" is already running` })
+        // See inFlightSlugs above (PR #23 review round 1 finding 4; round 2
+        // finding 3): shared with build/plan — a refresh spawns two paid
+        // `claude -p` turns and its accept step writes race.json, so it must
+        // not overlap with a build or plan on the same slug either.
+        if (!acquireSlugLock(slug, 'refresh')) {
+          json(res, 409, { error: `${slugLockLabel(slug, 'refresh')} for "${slug}" is already running` })
           return
         }
-        inFlightSlugs.add(lockKey)
 
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
@@ -2082,7 +2194,7 @@ function raceRefreshApi(): Plugin {
           send('error', { message })
           send('done', { ok: false, error: message })
         } finally {
-          inFlightSlugs.delete(lockKey)
+          releaseSlugLock(slug)
           clearInterval(hb)
           if (!res.writableEnded) res.end()
         }
@@ -2239,17 +2351,26 @@ function raceIntakeApi(): Plugin {
           json(res, 400, { error: 'slug: lowercase kebab-case required' })
           return
         }
-        // See inFlightSlugs above (PR #23 review round 1, finding 4): a
-        // second intake for the same target while one is already running is
-        // refused rather than started (it spawns a paid `claude -p` turn). A
-        // brand-new race has no slug yet, so the site_url stands in for it —
-        // the same URL submitted twice is still "the same target".
-        const lockKey = `intake:${slugHint ?? siteUrl}`
-        if (inFlightSlugs.has(lockKey)) {
+        // See inFlightSlugs above (PR #23 review round 1 finding 4; round 2
+        // findings 2 and 3): a second intake for the same target while one
+        // is already running is refused rather than started (it spawns a
+        // paid `claude -p` turn). A brand-new race has no slug yet, so the
+        // (normalized) site_url stands in for it — a trivially different URL
+        // for the same event is still "the same target". slugHint, when
+        // given, both replaces the URL key (an exact re-intake target beats
+        // a URL guess) AND additionally takes the shared per-slug lock, so
+        // this run is also mutually exclusive with a concurrent build/plan/
+        // refresh on that folder, not just with another intake of it.
+        const intakeTargetKey = `intake:${slugHint ?? normalizeUrlForLock(siteUrl)}`
+        if (inFlightSlugs.has(intakeTargetKey)) {
           json(res, 409, { error: `an intake for "${slugHint ?? siteUrl}" is already running` })
           return
         }
-        inFlightSlugs.add(lockKey)
+        if (slugHint && !acquireSlugLock(slugHint, 'intake')) {
+          json(res, 409, { error: `${slugLockLabel(slugHint, 'intake')} for "${slugHint}" is already running` })
+          return
+        }
+        inFlightSlugs.add(intakeTargetKey)
 
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
@@ -2313,7 +2434,8 @@ function raceIntakeApi(): Plugin {
           send('error', { message })
           send('done', { ok: false, error: message })
         } finally {
-          inFlightSlugs.delete(lockKey)
+          inFlightSlugs.delete(intakeTargetKey)
+          if (slugHint) releaseSlugLock(slugHint)
           clearInterval(hb)
           if (!res.writableEnded) res.end()
         }

@@ -24,6 +24,7 @@ import {
   draftValidationErrors,
   kebab,
   pdfPageCount,
+  releaseSlugClaim,
   renderManifestPdfs,
   renderPdfPages,
   detectPdfTools,
@@ -43,6 +44,15 @@ const cannedAgent = (body) => async () => ({
   wrapper: { numTurns: 3, costUsd: 0.1, durationMs: 4000 },
   retried: false,
 });
+
+/** Same, but holds for `delayMs` first — wide enough to force two concurrent
+    runIntake calls to both be mid-flight (past fetch/render, waiting on
+    "the agent") at once, so their post-agent slug checks land in the same
+    window instead of one call finishing outright before the other starts. */
+const slowCannedAgent = (body, delayMs) => async () => {
+  await new Promise((r) => setTimeout(r, delayMs));
+  return { text: JSON.stringify(body), wrapper: { numTurns: 3, costUsd: 0.1, durationMs: 4000 }, retried: false };
+};
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, "fixtures", "race-intake-agent-output.json");
@@ -204,11 +214,15 @@ test("buildRaceJson persists the run's warnings onto race.json — durable, not 
   assert.equal(validateRaceJson(withWarnings).ok, false, "date is still null in the fixture, unrelated to this field");
   assert.deepEqual(validateRaceJson(withWarnings).errors.filter((e) => /intake_warnings/.test(e)), []);
 
-  // no warnings at all: the key does not appear rather than an empty array —
-  // consistent with review_notes and every other "only when there is
-  // something to say" optional field in this file.
+  // No warnings at all: the key is still written, as an EMPTY array — unlike
+  // review_notes and the other "only when there is something to say"
+  // optional fields. An absent key here would be indistinguishable, to
+  // race-merge.mjs's "absence is not removal" rule, from "this run didn't
+  // check" — and a stale warning from an earlier bad run would then survive
+  // a clean re-intake forever. An explicit [] IS this run's statement that
+  // nothing is wrong, which mergeFile treats as an ordinary value to apply.
   const clean = buildRaceJson(draft, { slug: "cinder-cone-50k-2027", year: 2027, manifest: MANIFEST });
-  assert.equal("intake_warnings" in clean, false);
+  assert.deepEqual(clean.intake_warnings, []);
 });
 
 test("a draft with a known unknown validates; the same hole unlisted does not", async () => {
@@ -283,6 +297,27 @@ test("an existing race folder is refused unless refresh is asked for", async () 
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test("assertSlugAvailable claims a new slug atomically, and releaseSlugClaim frees it for a retry", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "intake-slug-claim-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+
+  // First caller claims the slug — no race.json yet, so this is the "brand
+  // new race" branch, not the existing-folder refusal above.
+  await assertSlugAvailable(root, "never-claimed-2027");
+  // A second, concurrent caller for the SAME not-yet-written slug must be
+  // refused deterministically — this is the actual fix: a plain fs.access
+  // existence check would have let both through.
+  await assert.rejects(
+    () => assertSlugAvailable(root, "never-claimed-2027"),
+    /already exists — pass refresh: true/,
+  );
+  // Releasing the claim (what runIntake's `finally` does on any outcome)
+  // frees the slug again for a genuine retry — the claim must not outlive
+  // its run and block one forever.
+  await releaseSlugClaim(root, "never-claimed-2027");
+  await assertSlugAvailable(root, "never-claimed-2027");
 });
 
 /* ---------------------------- PDF rendering ----------------------------- */
@@ -544,6 +579,36 @@ test("runIntake: a late slug collision (post-agent) is parked through the abort 
   const match = /raw agent output saved to (.+)\)$/.exec(err.message);
   assert.ok(match, "the error names where the raw output landed");
   assert.equal(await fs.readFile(match[1], "utf8").then(() => true, () => false), true, `${match[1]} must actually exist`);
+});
+
+test("runIntake: two concurrent runs deriving the same NEW slug — only one writes, the other is parked through the abort net", async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "intake-run-concurrent-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const draft = await loadDraft(); // both runs derive the same slug: cinder-cone-50k-2027
+
+  // Two independent runIntake calls, each with its own injected runner (the
+  // shape a "New race…" submitted twice from two tabs would produce, or two
+  // trivially-different URLs for the same event) — nothing here reaches a
+  // real agent or the network (DEAD_SITE, per the file header).
+  const results = await Promise.allSettled([
+    runIntake({ root: tmp, siteUrl: DEAD_SITE, year: 2027, runAgent: slowCannedAgent(draft, 30) }),
+    runIntake({ root: tmp, siteUrl: DEAD_SITE, year: 2027, runAgent: slowCannedAgent(draft, 30) }),
+  ]);
+
+  const fulfilled = results.filter((r) => r.status === "fulfilled");
+  const rejected = results.filter((r) => r.status === "rejected");
+  assert.equal(fulfilled.length, 1, `expected exactly one winner: ${JSON.stringify(results.map((r) => r.status))}`);
+  assert.equal(rejected.length, 1);
+  assert.match(rejected[0].reason.message, /already exists|slug collision/);
+
+  // The folder holds exactly one race.json — not two writers interleaved —
+  // and the exclusive claim used to serialize them did not outlive the run
+  // that took it (it would otherwise block every future intake of this slug).
+  const dir = path.join(tmp, "races", "cinder-cone-50k-2027");
+  const onDisk = JSON.parse(await fs.readFile(path.join(dir, "race.json"), "utf8"));
+  assert.equal(onDisk.slug, "cinder-cone-50k-2027");
+  const claimExists = await fs.access(path.join(dir, ".intake-claim")).then(() => true, () => false);
+  assert.equal(claimExists, false, "the claim must be released once its run is done");
 });
 
 test("runIntake: a write failure after validation still parks the raw output instead of deleting staging", async (t) => {

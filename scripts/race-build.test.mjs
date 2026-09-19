@@ -13,6 +13,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import { readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -346,6 +347,123 @@ test("the fixture's own default gain_ft (1200) is far enough off to be flagged o
   const r = await buildRace({ root, slug });
   assert.ok(r.unresolved.includes("course.gpx"), r.unresolved.join(", "));
   assert.ok(r.warnings.some((w) => /ft of gain vs race\.json's 1,200 ft/.test(w)), r.warnings.join(" | "));
+});
+
+test("an out_and_back course.gpx that measures ~half the official round-trip distance is not flagged as truncated/wrong", async () => {
+  const slug = "out-and-back-half-2027";
+  const race = draftRace(slug);
+  race.format = "out_and_back";
+  race.distance_mi = 60; // the synthetic track measures ~29.9 mi — ~half of 60
+  race.gain_ft = 1200; // deliberately still far off measured (~399) — the point
+  const { root } = await makeRoot(slug, { race }); // is that distance alone excuses BOTH dimensions once matched
+
+  const r = await buildRace({ root, slug });
+  assert.ok(!r.unresolved.includes("course.gpx"), r.unresolved.join(", "));
+  assert.ok(!r.warnings.some((w) => /GPX may be truncated or the wrong file/.test(w)), r.warnings.join(" | "));
+});
+
+test("format alone does not excuse a genuinely wrong ratio — an out_and_back GPX at a non-leg ratio still flags", async () => {
+  const slug = "out-and-back-wrong-ratio-2027";
+  const race = draftRace(slug);
+  race.format = "out_and_back"; // same format as the excused case above…
+  race.distance_mi = 36; // …but 29.9/36 ≈ 0.83, nowhere near the ~0.5/~2 leg ratio
+  const { root } = await makeRoot(slug, { race });
+
+  const r = await buildRace({ root, slug });
+  assert.ok(r.unresolved.includes("course.gpx"), r.unresolved.join(", "));
+  assert.ok(r.warnings.some((w) => /GPX may be truncated or the wrong file/.test(w)), r.warnings.join(" | "));
+});
+
+test("a point_to_point course at the same ~half ratio is NOT excused — the ratio only means something for out_and_back/loop", async () => {
+  const slug = "point-to-point-half-ratio-2027";
+  const race = draftRace(slug);
+  race.format = "point_to_point";
+  race.distance_mi = 60; // same ~0.5 ratio as the excused out_and_back case above
+  race.gain_ft = 1200;
+  const { root } = await makeRoot(slug, { race });
+
+  const r = await buildRace({ root, slug });
+  assert.ok(r.unresolved.includes("course.gpx"), r.unresolved.join(", "));
+});
+
+test("the course.gpx mismatch is persisted onto race.json's unresolved list, and clears on a later build whose GPX passes", async () => {
+  const slug = "truncated-gpx-persist-2027";
+  const race = draftRace(slug);
+  race.distance_mi = 36; // 17% off — same shape as the "flagged structurally" test above
+  const { root, dir } = await makeRoot(slug, { race });
+
+  const r1 = await buildRace({ root, slug });
+  assert.ok(r1.unresolved.includes("course.gpx"), r1.unresolved.join(", "));
+  // On disk, not just in buildRace's in-memory return value — this is the
+  // whole point of the fix: race.json is the thing check-races.mjs and a
+  // bare CLI build see after this run's SSE stream is long gone.
+  const onDiskMismatched = await readJson(path.join(dir, "race.json"));
+  assert.ok(
+    Array.isArray(onDiskMismatched.unresolved) && onDiskMismatched.unresolved.includes("course.gpx"),
+    JSON.stringify(onDiskMismatched.unresolved)
+  );
+
+  // Fix the underlying problem — here, correcting race.json's official
+  // figures to match the real GPX stands in for "the owner dropped in a
+  // corrected course.gpx"; either way the comparison is the same — and
+  // rebuild: a passing GPX un-flags the entry instead of leaving it stuck
+  // true the way a plain field-absence merge would.
+  onDiskMismatched.distance_mi = 30;
+  onDiskMismatched.gain_ft = 399; // ~ the synthetic profile's real measured gain
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(onDiskMismatched, null, 2));
+
+  const r2 = await buildRace({ root, slug });
+  assert.ok(!r2.unresolved.includes("course.gpx"), r2.unresolved.join(", "));
+  const onDiskFixed = await readJson(path.join(dir, "race.json"));
+  assert.ok(
+    !(onDiskFixed.unresolved ?? []).includes("course.gpx"),
+    JSON.stringify(onDiskFixed.unresolved)
+  );
+});
+
+/* --------------- concurrent archive/edit during a build -------------------- */
+
+test("a concurrent archive/edit that finishes mid-build survives buildRace's later writes — patched on, not overwritten by the stale snapshot", async () => {
+  // PR #23 review round 2: buildRace used to clone race.json once at the top
+  // and write that whole (by-then-stale) clone back at the end. A build runs
+  // for real wall time; simulate the web layer's archive endpoint (or the
+  // review dialog's PUT) landing its own write — a status flip, here — while
+  // this build is still in flight between its own two internal writes.
+  const slug = "concurrent-archive-2027";
+  const { root, dir } = await makeRoot(slug);
+  const racePath = path.join(dir, "race.json");
+
+  let injected = false;
+  const r = await buildRace({
+    root, slug,
+    onProgress: (e) => {
+      // Fires once, right as the course build starts — after buildRace's own
+      // first write (matched stations + sun) has already landed, and before
+      // its second (the course.gpx mismatch flag) — the exact window the
+      // finding describes a fast concurrent archive/edit completing in.
+      if (!injected && e.step === "build" && e.status === "start") {
+        injected = true;
+        const race = JSON.parse(readFileSync(racePath, "utf8"));
+        race.status = "archived"; // stands in for POST /api/races/:slug/archive
+        writeFileSync(racePath, JSON.stringify(race, null, 2));
+      }
+    },
+  });
+
+  assert.ok(injected, "the injection point never fired — this test is not exercising the race");
+  assert.ok(Array.isArray(r.unresolved), "buildRace's own return value is unaffected either way");
+
+  const onDisk = await readJson(racePath);
+  // The concurrent write survives — the whole point of the fix.
+  assert.equal(onDisk.status, "archived", "a concurrent archive must not be silently reverted by the build finishing later");
+  // AND buildRace's own work from BOTH internal writes still landed onto
+  // that same (now-archived) file — this is a real field-level merge, not
+  // "the build just became a no-op because something else touched the file".
+  assert.equal(onDisk.aid_stations[0].gpx_wpt, "Cross Mtn TH");
+  assert.equal(onDisk.aid_stations[1].gpx_wpt, "Bear Creek Aid");
+  assert.equal(onDisk.provenance["aid_stations[0].gpx_wpt"].by, "matcher");
+  assert.match(onDisk.sun?.sunrise ?? "", /^\d{2}:\d{2}$/);
+  assert.equal(onDisk.provenance.sun.by, "computed");
 });
 
 test("an unresolved (null) distance_mi fails the course build with an actionable error, not Infinity/NaN", async () => {

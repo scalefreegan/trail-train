@@ -26,6 +26,7 @@ import { buildRaceJson } from "./race-intake.mjs";
 import {
   SHADOW,
   acceptRefresh,
+  applyingPath,
   loadShadowRace,
   readRefresh,
   refreshSources,
@@ -381,11 +382,19 @@ test("accept copies course.gpx and build/course.json BEFORE the merged JSON — 
   assert.equal((await readJson(path.join(dir, "race.json"))).distance_mi, race.distance_mi, "the interrupted write never reached race.json");
   // .refresh/ survives the crash, so a re-run has something to repair from.
   assert.ok(await fs.access(shadow).then(() => true, () => false), ".refresh/ must not be removed on a failed accept");
+  // …and the applying marker survives right alongside it — the signal
+  // loadReview's `refresh_interrupted` is built on (race-edit.test.mjs).
+  assert.ok(
+    await fs.access(applyingPath(tmp, SLUG)).then(() => true, () => false),
+    "the applying marker must survive a crashed accept, not just .refresh/ itself",
+  );
 
   // A plain re-run (no injected failure) finishes the job.
   await acceptRefresh({ root: tmp, slug: SLUG });
   assert.equal((await readJson(path.join(dir, "race.json"))).distance_mi, 32.8);
   await assert.rejects(fs.access(shadow), /ENOENT/, "the shadow is gone once the accept actually completes");
+  // The marker goes with it — a completed accept leaves nothing "interrupted".
+  await assert.rejects(fs.access(applyingPath(tmp, SLUG)), /ENOENT/);
 });
 
 test("accept promotes course.gpx via temp+rename — a blocked rename leaves the live file untouched, not truncated", async (t) => {
@@ -538,7 +547,21 @@ test("re-intaking the archived MM100 against its own race.json yields an empty d
     skipPlan: true,
     runAgent: cannedIntake(echo),
   });
-  assert.deepEqual(diff.diff, [], diff.diff.map((d) => `${d.path}:${d.kind}`).join(" | "));
+  // races/mogollon-monster-100-2026/race.json predates intake_warnings being
+  // written unconditionally (this round's fix) and so has no key at all yet —
+  // the shadow's `[]` is a real, one-time "added" entry on this first refresh
+  // (mirrors what any committed race not yet touched by this fix will show),
+  // not a determinism failure. Filtered out here so this test still isolates
+  // what it is actually checking: that a re-intake over unchanged sources
+  // otherwise produces no noise.
+  const diffWithoutWarningsMigration = diff.diff.filter((d) => d.path !== "intake_warnings");
+  assert.deepEqual(
+    diffWithoutWarningsMigration, [],
+    diffWithoutWarningsMigration.map((d) => `${d.path}:${d.kind}`).join(" | "),
+  );
+  assert.deepEqual(diff.diff.find((d) => d.path === "intake_warnings"), {
+    file: "race.json", path: "intake_warnings", kind: "added", from: undefined, to: [], by: null,
+  });
   assert.deepEqual(diff.conflicts, []);
 
   // …and the provenance timestamps DID move, which is exactly what must not count

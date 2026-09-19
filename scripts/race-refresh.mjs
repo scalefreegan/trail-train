@@ -42,31 +42,26 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { arg, note, writeJsonAtomic } from "./lib.mjs";
-import { loadRaceFolder, loadRaceFolderAt, raceDir } from "./race-config.mjs";
+import { APPLYING_MARKER, SHADOW, applyingPath, diffPath, loadRaceFolder, loadRaceFolderAt, raceDir, shadowDir } from "./race-config.mjs";
 import { runIntake } from "./race-intake.mjs";
 import { buildRace } from "./race-build.mjs";
 import { planRace } from "./race-plan.mjs";
 import { mergeRaceFolder } from "./race-merge.mjs";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// SHADOW/shadowDir/diffPath/APPLYING_MARKER/applyingPath now live in
+// race-config.mjs (a leaf module) rather than here — scripts/race-edit.mjs
+// needs applyingPath too, and race-edit.mjs importing THIS file directly
+// would be a cycle (this file imports race-merge.mjs, which imports
+// race-edit.mjs for recomputeUnresolved). Re-exported so every existing
+// `from "./race-refresh.mjs"` import (this file's own CLI, tests) keeps
+// working unchanged.
+export { SHADOW, shadowDir, diffPath, APPLYING_MARKER, applyingPath };
 
-/** The shadow folder's name inside the race folder. Gitignored; "." keeps it
-    out of listRaces, which skips dot-folders, but it is nested anyway. */
-export const SHADOW = ".refresh";
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 /** The files a refresh may ever rewrite. plan.json and result.json are not
     here and are not an oversight — see the header. */
 export const MERGED_FILES = ["race.json", "block.json", "nutrition.json"];
-
-/** races/<slug>/.refresh/ */
-export function shadowDir(root, slug) {
-  return path.join(raceDir(root, slug), SHADOW);
-}
-
-/** races/<slug>/.refresh/diff.json */
-export function diffPath(root, slug) {
-  return path.join(shadowDir(root, slug), "diff.json");
-}
 
 const GPX_RE = /\.gpx(?:[?#]|$)/i;
 
@@ -317,6 +312,10 @@ export async function acceptRefresh({ root, slug, onProgress = () => {} }) {
   const shadow = shadowDir(root, slug);
   const pending = await readRefresh(root, slug);
   if (!pending) throw new Error(`no refresh waiting for ${slug} — races/${slug}/${SHADOW}/diff.json is not there`);
+
+  // Set before any of the merge/copy/write work below, removed only by the
+  // `.refresh/` cleanup at the very end — see APPLYING_MARKER above.
+  await fs.writeFile(applyingPath(root, slug), new Date().toISOString());
 
   const current = await loadRaceFolder(root, slug);
   const incoming = await loadRaceFolderAt(shadow, slug);

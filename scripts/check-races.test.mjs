@@ -1,19 +1,26 @@
 // node --test scripts/check-races.test.mjs   (or: cd web && npm test)
 //
-// The two pieces of scripts/check-races.mjs that are judgement rather than
+// Mostly the pieces of scripts/check-races.mjs that are judgement rather than
 // plumbing: the grep gate's comment-vs-code classifier (which decides whether
 // a race literal is history or coupling) and the PRD §12 assertion set for the
-// San Juan Softie draft. Nothing here shells out, reads races/ or hits the
-// network — the harness's own build/test section is what does that, and it
-// cannot run inside the test run it spawns.
-
+// San Juan Softie draft. Nothing here shells out or hits the network — the
+// harness's own build/test section is what does that, and it cannot run
+// inside the test run it spawns. checkFolders' block-staleness WARN-vs-FAIL
+// split is the one exception that reads a (temp-dir, never the real races/)
+// folder — its judgement call is specific enough, and easy enough to regress
+// silently, to be worth the disk I/O.
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import {
   ALLOWED_EXCEPTIONS,
   DRAFT_SLUG,
   RACE_LITERAL_RE,
+  REFERENCE_SLUG,
+  checkFolders,
   classifyLines,
   clockMinutes,
   commentStyle,
@@ -24,6 +31,8 @@ import {
   sunWithin,
   tail,
 } from "./check-races.mjs";
+
+const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 
 /* ------------------------- the comment classifier ----------------------- */
 
@@ -238,6 +247,54 @@ test("only user- and agent-owned provenance is guarded", () => {
   });
   assert.deepEqual(Object.keys(owned).sort(), ["aid_stations", "date"]);
   assert.deepEqual(ownedProvenance({}), {});
+});
+
+/* ------------------------ checkFolders: block staleness ------------------ */
+
+/** A temp root holding one copy of the reference race's folder, re-slugged
+    and re-dated far enough from its committed block.json's calendar to be
+    unmistakably stale under any reasonable week count. */
+async function staleBlockFolder(slug, status) {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "check-races-blockstale-"));
+  const src = path.join(ROOT, "races", REFERENCE_SLUG);
+  const dir = path.join(tmp, "races", slug);
+  await fs.mkdir(dir, { recursive: true });
+  for (const f of ["course.gpx", "block.json", "nutrition.json", "race.json"]) {
+    await fs.copyFile(path.join(src, f), path.join(dir, f));
+  }
+  const race = JSON.parse(await fs.readFile(path.join(dir, "race.json"), "utf8"));
+  race.slug = slug;
+  race.status = status;
+  race.date = "2099-01-05"; // nowhere near the committed block's calendar
+  if (status === "draft") race.unresolved = [];
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(race, null, 2));
+  return tmp;
+}
+
+test("checkFolders warns (does not fail) a draft folder whose block was counted back from a different race date", async (t) => {
+  const tmp = await staleBlockFolder("stale-draft-2099", "draft");
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+
+  const r = await checkFolders(tmp);
+  assert.equal(r.status, "PASS", `a stale block on a DRAFT must not fail the gate: ${JSON.stringify(r.detail)}`);
+  assert.equal(r.detail.length, 0);
+  assert.ok(
+    r.warnings.some((w) => /stale-draft-2099\/block\.json/.test(w) && /counted back from a race date/.test(w)),
+    JSON.stringify(r.warnings)
+  );
+});
+
+test("checkFolders fails an active folder whose block was counted back from a different race date", async (t) => {
+  const tmp = await staleBlockFolder("stale-active-2099", "active");
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+
+  const r = await checkFolders(tmp);
+  assert.equal(r.status, "FAIL");
+  assert.ok(
+    r.detail.some((e) => /stale-active-2099\/block\.json/.test(e) && /counted back from a race date/.test(e)),
+    JSON.stringify(r.detail)
+  );
+  assert.deepEqual(r.warnings, []);
 });
 
 test("tail keeps the last non-blank lines", () => {

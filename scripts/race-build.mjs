@@ -19,10 +19,17 @@
 //   5. sun       sunrise/sunset from the start coordinates (race-sun.mjs) when
 //                race.json has none, or has one nobody stamped.
 //
-// race.json is written ONCE, atomically, before the course build — the builder
-// reads the folder off disk, so the matched waypoints and the computed sun have
-// to be there first. A second run over the same folder writes nothing at all:
-// every station now resolves exactly and `sun` carries provenance.
+// race.json is written before the course build (the builder reads the folder
+// off disk, so the matched waypoints and the computed sun have to be there
+// first) and again after, for the course.gpx mismatch flag — both writes go
+// through applyBuildPatch, which re-reads race.json fresh each time and
+// patches on only the fields THIS stage owns, rather than writing back the
+// whole snapshot buildRace read at the start (PR #23 review round 2: a build
+// runs for real wall time, and a concurrent archive/edit/status-promotion
+// that completes before this function's final write must not be silently
+// reverted by it). A second run over an already-consistent folder writes
+// nothing at all: every station now resolves exactly and `sun` carries
+// provenance.
 //
 // config/active-race.json is never read or written here. Building a folder says
 // nothing about which race the athlete is training for.
@@ -207,6 +214,85 @@ function matchStations(race, gpx, unresolved, warnings, at) {
 }
 
 /**
+ * Add or remove one entry from race.json's persisted `unresolved` array, in
+ * place, without disturbing anything else already there (a null-valued
+ * schema field intake left, a hand-added unresolved_fills note). The
+ * course.gpx distance/gain mismatch is the one unresolved reason buildRace
+ * discovers for itself, mid-build, rather than carrying forward from
+ * validateForBuild's snapshot — so it is the one entry this function owns:
+ * dedupe on add, and cleared the moment a later build's GPX passes the check
+ * again (a corrected course.gpx un-flags itself, it isn't left stuck true
+ * forever the way `mergeFile`'s "absence is not removal" rule would treat a
+ * plain merge).
+ * @param {object} race mutated in place
+ * @param {string} key
+ * @param {boolean} present
+ * @returns {boolean} whether race.unresolved changed
+ */
+function setPersistedUnresolvedEntry(race, key, present) {
+  const current = Array.isArray(race.unresolved) ? race.unresolved : [];
+  const has = current.includes(key);
+  if (present === has) return false;
+  race.unresolved = present ? [...current, key].sort() : current.filter((u) => u !== key);
+  return true;
+}
+
+/**
+ * Patch the fields THIS build stage owns — matched aid-station gpx_wpt +
+ * provenance, computed sun + provenance.sun, and the course.gpx mismatch
+ * unresolved entry — onto whatever race.json says RIGHT NOW, instead of
+ * writing back the whole snapshot buildRace read at the top of the run.
+ *
+ * A build runs for real wall time (a GPX fetch, the matcher, the course
+ * build), during which the review screen's PUT, the archive endpoint's
+ * status flip, or another build entirely may write races/<slug>/race.json —
+ * this stage does not own any of THEIR fields, so re-reading fresh and
+ * patching on only its own is what stops a slow build from silently
+ * reverting a fast concurrent write that finished first (PR #23 review
+ * round 2 — the web-side per-slug lock, vite.config.ts, is only half of
+ * this fix: it stops two locked writers from overlapping, but a build that
+ * started BEFORE an archive/edit and is still running when the archive/edit
+ * finishes holds no lock on it either way).
+ *
+ * Writes only when the patch actually changes something on the fresh copy —
+ * the same "byte-identical on a no-op re-run" guarantee a single
+ * unconditional write had, now measured against the live file instead of
+ * the stale one.
+ *
+ * @param {string} dir
+ * @param {string} at shared timestamp for any provenance this call stamps
+ * @param {{matched?: object[], sun?: object|null, unresolvedCourseGpx?: boolean|null}} patch
+ *   `matched` rows with `written: false` are skipped (nothing to apply); a
+ *   matched index that no longer exists on the fresh copy (a concurrent edit
+ *   reshaped the aid table) is skipped too rather than resurrecting a row.
+ * @returns {Promise<{race: object, wrote: boolean}>}
+ */
+async function applyBuildPatch(dir, at, { matched = [], sun = null, unresolvedCourseGpx = null } = {}) {
+  const racePath = path.join(dir, "race.json");
+  const race = JSON.parse(await fs.readFile(racePath, "utf8"));
+  const before = JSON.stringify(race);
+  const stations = Array.isArray(race.aid_stations) ? race.aid_stations : [];
+  const provenance = () => (race.provenance = race.provenance ?? {});
+
+  for (const m of matched) {
+    if (!m.written) continue;
+    const station = stations[m.index];
+    if (!station) continue;
+    station.gpx_wpt = m.gpx_wpt;
+    provenance()[`aid_stations[${m.index}].gpx_wpt`] = { by: "matcher", at, confidence: m.confidence, method: m.method };
+  }
+  if (sun) {
+    race.sun = sun;
+    provenance().sun = { by: "computed", at, source: SUN_SOURCE };
+  }
+  if (unresolvedCourseGpx !== null) setPersistedUnresolvedEntry(race, "course.gpx", unresolvedCourseGpx);
+
+  if (JSON.stringify(race) === before) return { race, wrote: false };
+  await writeJsonAtomic(racePath, race);
+  return { race, wrote: true };
+}
+
+/**
  * Run stage 2 over races/<slug>/ — or over `dir`, when a re-intake is building
  * a shadow copy of the folder (scripts/race-refresh.mjs). `root` still points
  * at the repo either way; only the folder being written moves.
@@ -274,7 +360,7 @@ export async function buildRace({ root, slug, dir = raceDir(root, slug), onProgr
 
   /* 3. aid stations ↔ waypoints */
   step("match", "start", { label: "matching aid stations to GPX waypoints" });
-  const { matched, changed } = matchStations(race, gpx, unresolved, warnings, at);
+  const { matched } = matchStations(race, gpx, unresolved, warnings, at);
   for (const m of matched) {
     say("match", `${m.name}: ${m.gpx_wpt ? `"${m.gpx_wpt}"` : "—"} (${m.method ?? "no match"}${m.confidence ? `, ${m.confidence}` : ""})${m.written ? " ← written" : ""}`);
   }
@@ -308,12 +394,16 @@ export async function buildRace({ root, slug, dir = raceDir(root, slug), onProgr
     step("sun", "done", { computed: sunChanged });
   }
 
-  // One atomic write, and only when something actually changed — that is what
-  // makes a re-run leave race.json byte-identical.
-  if (changed || sunChanged) {
-    await writeJsonAtomic(path.join(dir, "race.json"), race);
-    say("match", `wrote races/${slug}/race.json`);
-  }
+  // Patched onto the file's CURRENT contents (applyBuildPatch re-reads),
+  // not written back as the whole stale snapshot this function read at the
+  // top — see applyBuildPatch. Called unconditionally rather than gated on
+  // `changed || sunChanged`: buildCourse (next) reads race.json fresh off
+  // disk and needs the matched waypoints/sun there first regardless of
+  // whether THIS run was the one that put them there, and a genuine no-op
+  // still leaves the file byte-identical because applyBuildPatch only
+  // writes when its patch actually changes something.
+  const matchWrite = await applyBuildPatch(dir, at, { matched, sun: sunChanged ? race.sun : null });
+  if (matchWrite.wrote) say("match", `wrote races/${slug}/race.json`);
 
   /* 5. the course build */
   step("build", "start", { label: "building course.json" });
@@ -329,9 +419,18 @@ export async function buildRace({ root, slug, dir = raceDir(root, slug), onProgr
   // A GPX far enough off race.json's official distance/gain to not be normal
   // drift is promoted from "warning" to "unresolved" too: a course this
   // wrong should block activation until a human confirms the GPX is right,
-  // the same way an unmatched aid station does.
-  if (course.mismatches?.length) unresolved.add("course.gpx");
+  // the same way an unmatched aid station does. Persisted onto race.json
+  // itself (not just returned in-memory) so it survives past this run's SSE
+  // stream — loadReview also re-derives it live from build/course.json, but
+  // race.json is the ground truth check-races.mjs and a bare CLI build see.
+  const hasMismatch = Boolean(course.mismatches?.length);
+  if (hasMismatch) unresolved.add("course.gpx");
   step("build", "done", { aid_stations: course.aid_stations, race_climbs: course.race_climbs });
+
+  const mismatchWrite = await applyBuildPatch(dir, at, { unresolvedCourseGpx: hasMismatch });
+  if (mismatchWrite.wrote) {
+    say("build", `wrote races/${slug}/race.json (course.gpx mismatch ${hasMismatch ? "flagged" : "cleared"})`);
+  }
 
   return {
     slug, dir, unresolved: [...unresolved].sort(), warnings, matched, course,
