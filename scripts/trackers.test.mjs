@@ -467,3 +467,20 @@ test("pollTracker: stations come from race.json, so the hold names the course's 
   assert.equal(hit.tracker.station, "Burnett Aid");
   assert.equal(hit.tracker.matched, true);
 });
+
+/* --------------------- the dev-server fixture route --------------------- */
+
+test("trackerFixtureApi checks crossSiteBlocked, like every sibling /api/races route", () => {
+  // Not an HTTP test — vite.config.ts has no server-integration harness under
+  // scripts/. Grepping the plugin's own body is the same pattern
+  // scripts/race-intake.test.mjs uses for raceCreateApi. This route was the
+  // one exception in its neighborhood: GET/HEAD-only, gated on
+  // TRAIL_TEST_FIXTURES=1, serving only committed scrubbed fixture HTML — low
+  // stakes, but every other plugin registered alongside it checks Origin/Host
+  // before doing anything, and this one should too, for consistency.
+  const configPath = path.join(here, "..", "web", "vite.config.ts");
+  const config = fs.readFileSync(configPath, "utf8");
+  const body = /function trackerFixtureApi\(\): Plugin \{(.+?)\n\}\n/s.exec(config);
+  assert.ok(body, "could not find trackerFixtureApi");
+  assert.ok(/crossSiteBlocked\(req, res\)/.test(body[1]), "trackerFixtureApi must refuse cross-site callers");
+});

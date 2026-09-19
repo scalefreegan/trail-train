@@ -1831,6 +1831,7 @@ function trackerFixtureApi(): Plugin {
       console.log(`[dev-api] TRAIL_TEST_FIXTURES=1 — serving ${dir} at /__fixtures__/trackers/`)
       server.middlewares.use('/__fixtures__/trackers', (req, res, next) => {
         if (req.method !== 'GET' && req.method !== 'HEAD') { next(); return }
+        if (crossSiteBlocked(req, res)) return
         let name: string
         try {
           name = decodeURIComponent((req.url ?? '').split('?')[0].replace(/^\//, ''))
