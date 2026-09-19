@@ -172,6 +172,7 @@ const SLUG_OP_LABEL: Record<string, string> = {
   edit: 'a save',
   'refresh-review': 'a refresh accept/reject',
   activate: 'an activation',
+  'crew-export': 'a crew export',
 }
 
 // The sentinel "slug" POST /api/race/activate locks under (PR #23 review
@@ -2863,6 +2864,187 @@ function courseFiles(): Plugin {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/*  Single-file build for the crew export (PRD v2 §5, bead tt-cv1b0.7). */
+/*                                                                     */
+/*  The crew page is a second entry (crew.html) that has to leave the  */
+/*  build as ONE file: it is written into races/<slug>/build/ by       */
+/*  scripts/crew-export.mjs, AirDropped to a crew chief, and opened    */
+/*  from a phone in a canyon. A sibling assets/ folder would not       */
+/*  survive that trip, and a font or preconnect URL would hang the     */
+/*  paint offline.                                                     */
+/*                                                                     */
+/*  Rather than take vite-plugin-singlefile as a dependency (the bead  */
+/*  says no new deps), this inlines the emitted JS/CSS itself and      */
+/*  then THROWS if anything in the HTML still points at an emitted     */
+/*  asset or an http(s) URL. A silently half-inlined crew sheet would  */
+/*  look fine on the laptop that built it and be blank in the field,   */
+/*  so the failure has to happen at build time, loudly.                */
+/*                                                                     */
+/*  Only vite.crew.config.ts uses it. The main `npm run build` emits   */
+/*  crew.html the ordinary way (second entry, shared chunks), which is */
+/*  what keeps the crew page type-checked and bundled by the normal    */
+/*  build even when nobody exports.                                    */
+/* ------------------------------------------------------------------ */
+/* Dev-only middleware: POST /api/races/:slug/crew-export (PRD v2 §5).
+
+   Runs scripts/crew-export.mjs for the folder with the planner's LIVE knobs
+   in the request body — the same fatigue/calibration/restraint/goal/stop
+   values the athlete has on screen — writes races/<slug>/build/crew-<date>.html
+   and streams the same bytes straight back as a download. One press, one file,
+   identical to what the CLI writes.
+
+   The body is the knobs and nothing else; anything unrecognised in it is
+   dropped by sanitizeKnobs, so a hand-rolled POST cannot reach into the
+   exporter. The response is text/html with a Content-Disposition filename,
+   which is what lets the button hand the browser a real download instead of
+   navigating the app away to a 150 KB page.
+
+   Registered inside the /api/races prefix group (see the plugins array): the
+   switcher's list endpoint answers every GET it sees, so each deeper
+   /api/races/<slug>/... route has to be given the request first.
+
+   It takes the shared per-slug lock ('crew-export'): the export reads the
+   folder's build/course.json, and a build rewriting that file underneath it
+   would export a sheet half from one course and half from another. Nothing
+   here writes race.json. */
+function crewExportApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* Seven knobs and a handful of per-station stop overrides. */
+  const BODY_MAX_BYTES = 64 * 1024
+
+  type CrewExportMod = {
+    crewExport: (
+      root: string,
+      slug: string,
+      opts: { knobs?: unknown },
+    ) => Promise<{ html: string; outPath: string; bytes: number; filename: string }>
+  }
+
+  return {
+    name: 'trail-train-crew-export-api',
+    apply: 'serve',
+    configureServer(server) {
+      const json = (res: ServerResponse, code: number, payload: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify(payload))
+      }
+
+      server.middlewares.use('/api/races', async (req, res, next) => {
+        const m = /^\/([^/?]+)\/crew-export(?:\?.*)?$/.exec(req.url ?? '')
+        if (!m) { next(); return }
+        if (crossSiteBlocked(req, res)) return
+        const slug = parseSlugParam(m[1])
+        if (!slug) { json(res, 400, { error: 'slug: lowercase kebab-case required' }); return }
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+
+        const chunks: Buffer[] = []
+        let total = 0
+        for await (const c of req) {
+          total += (c as Buffer).byteLength
+          if (total > BODY_MAX_BYTES) { json(res, 413, { error: 'request body too large' }); return }
+          chunks.push(c as Buffer)
+        }
+        let knobs: unknown
+        try { knobs = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
+        catch { json(res, 400, { error: 'bad json' }); return }
+
+        if (!acquireSlugLock(slug, 'crew-export')) {
+          json(res, 409, { error: `${slugLockLabel(slug, 'crew-export')} for "${slug}" is already running` })
+          return
+        }
+        try {
+          const { crewExport } = await import(
+            path.join(projectRoot, 'scripts/crew-export.mjs')
+          ) as CrewExportMod
+          const out = await crewExport(projectRoot, slug, { knobs })
+          res.statusCode = 200
+          res.setHeader('Content-Type', 'text/html; charset=utf-8')
+          res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`)
+          // The sheet is a snapshot of knobs that change on the next slider
+          // drag — nothing downstream may keep it.
+          res.setHeader('Cache-Control', 'no-store')
+          // Where it also landed, so the client can say so without guessing.
+          res.setHeader('X-Crew-Export-Path', path.relative(projectRoot, out.outPath))
+          res.end(out.html)
+        } catch (e) {
+          const code = (e as { code?: string }).code
+          const status =
+            code === 'not_found' ? 404
+            : code === 'no_course' || code === 'no_fit' ? 409
+            : code === 'too_big' ? 507
+            : 500
+          const message = (e as Error).message || String(e)
+          console.error(`[crew-export] ${message}`)
+          json(res, status, { error: message, code: code ?? null })
+        } finally {
+          releaseSlugLock(slug)
+        }
+      })
+    },
+  }
+}
+
+export function inlineSingleFile(): Plugin {
+  // `</script` is the ONLY sequence that can end a script element early, so
+  // it is the only one that has to be neutralised in inlined JS. Inside a
+  // JS string literal `<\/script` is the same string; inside a comment or a
+  // regex it is inert either way.
+  const safeScript = (code: string) => code.replace(/<\/script/gi, '<\\/script')
+  const escapeRe = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+  return {
+    name: 'trail-train-inline-single-file',
+    apply: 'build',
+    enforce: 'post',
+    generateBundle(_options, bundle) {
+      const inlined = new Set<string>()
+      for (const [name, asset] of Object.entries(bundle)) {
+        if (asset.type !== 'asset' || !name.endsWith('.html')) continue
+        let html = String(asset.source)
+
+        for (const [key, out] of Object.entries(bundle)) {
+          if (out.type === 'chunk' && key.endsWith('.js')) {
+            const tag = new RegExp(`<script[^>]*\\bsrc=["'][^"']*${escapeRe(key)}["'][^>]*></script>`, 'g')
+            if (!tag.test(html)) continue
+            html = html.replace(tag, `<script type="module">${safeScript(out.code)}</script>`)
+            inlined.add(key)
+          } else if (out.type === 'asset' && key.endsWith('.css')) {
+            const tag = new RegExp(`<link[^>]*\\bhref=["'][^"']*${escapeRe(key)}["'][^>]*>`, 'g')
+            if (!tag.test(html)) continue
+            html = html.replace(tag, `<style>${String(out.source)}</style>`)
+            inlined.add(key)
+          }
+        }
+        // modulepreload hints point at chunks that are no longer separate files
+        html = html.replace(/<link[^>]*\brel=["']modulepreload["'][^>]*>\s*/g, '')
+
+        // What the file still POINTS AT — attribute targets and CSS url()s,
+        // not any mention of a filename (the shell's own comments name its
+        // sources, and a substring check reads those as references).
+        const targets = [
+          ...html.matchAll(/(?:src|href)\s*=\s*["']([^"']+)["']/g),
+          ...html.matchAll(/url\(\s*["']?([^)"']+)["']?\s*\)/g),
+        ].map((m) => m[1].trim()).filter((v) => !v.startsWith('data:') && !v.startsWith('#'))
+
+        const leftover = targets.filter((t) =>
+          Object.keys(bundle).some((k) => k !== name && (t === k || t.endsWith(`/${k}`))))
+        if (leftover.length > 0) {
+          this.error(`${name} still points at emitted assets after inlining: ${leftover.join(', ')}`)
+        }
+        const external = targets.filter((t) => /^(?:https?:)?\/\//i.test(t))
+        if (external.length > 0) {
+          this.error(`${name} must not reference the network: ${external.join(', ')}`)
+        }
+        asset.source = html
+      }
+      // Drop what is now embedded so the build directory holds ONE file.
+      for (const key of inlined) delete bundle[key]
+    },
+  }
+}
+
 export default defineConfig({
   // raceBuildApi and racePlanApi BEFORE raceIntakeApi: connect matches by path
   // prefix in registration order, and /api/race-intake would otherwise swallow
@@ -2879,14 +3061,27 @@ export default defineConfig({
   // lets them share one prefix in any order.
   // raceRefreshApi is also why it sits ahead of raceIntakeApi: its other mount
   // is /api/race-intake/refresh, which the intake's own prefix would swallow.
-  // raceTrackerApi (/api/races/<slug>/tracker) joins that same group — one
-  // more /api/races route that the list endpoint would otherwise answer.
+  // raceTrackerApi (/api/races/<slug>/tracker) and crewExportApi
+  // (/api/races/<slug>/crew-export) join that same group — two more
+  // /api/races routes that the list endpoint would otherwise answer.
   // raceCreateApi is the only one mounted on the BARE prefix: POST /api/races
   // (the tune-up quick form) has to be given the request before raceSwitchApi,
   // whose list endpoint answers — or 405s — every method it sees there. It
   // hands on everything else, so the slug-path plugins above are unaffected by
   // where it sits among them.
-  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceTrackerApi(), raceAssetApi(), raceRefreshApi(), raceEditApi(), raceCreateApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceTrackerApi(), crewExportApi(), raceAssetApi(), raceRefreshApi(), raceEditApi(), raceCreateApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
+  // Two entries. index.html is the app; crew.html is the crew export's shell
+  // (PRD v2 §5) — built here so `npm run build` type-checks and bundles it
+  // like everything else, and built AGAIN as one inlined file by
+  // vite.crew.config.ts when an export actually needs a shell.
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        crew: path.resolve(__dirname, 'crew.html'),
+      },
+    },
+  },
   // Fixed, memorable, deliberately unusual port. The 5173 default collides
   // with every other Vite project on the machine, and a colliding neighbor
   // silently claims the port so this app hops to 5174+ — which breaks the

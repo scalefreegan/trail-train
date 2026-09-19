@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 web/dist/
+web/dist-crew/
 web/.vite/
 
 # Local caches — Strava altitude streams fetched by `npm run sync:streams`.
