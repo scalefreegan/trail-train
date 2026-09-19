@@ -1,7 +1,7 @@
 import { createContext, useContext, useMemo, useState } from "react";
 import { useStrava, useActiveRace, type RaceView } from "../data";
 import { useCourse, usePaceGrade, usePhysiology, type Physiology } from "./useRaceData";
-import { planFuel, useNutrition, type FuelPlan, type NutritionConfig } from "./nutrition";
+import { planFuel, useNutrition, type FuelPlan, type NutritionConfig, type NutritionSource } from "./nutrition";
 import { fitPacing, projectRace, type PacingFit, type PaceGradeCurve } from "./pacing";
 import {
   resolveFeatures, visibleColumns, visiblePanels,
@@ -114,6 +114,10 @@ export type RacePlan = {
       and the planner footer reports them individually */
   paceGradeError: string | null;
   nutritionError: string | null;
+  /** "default" when nutrition.json is missing/invalid/unreadable with no
+      cached copy to fall back to — every fueling constant on screen is then
+      the impersonal DEFAULT_NUTRITION, not this race's own tuning. */
+  nutritionSource: NutritionSource;
   /** the athlete's own numbers (config/profile.json) — body mass for every
       mg/kg caffeine figure, long-run reference for the pacing fit. Shared
       here for the same reason the projection is: the planner's model footer
@@ -196,7 +200,7 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
   const { activities } = useStrava();
   const { course, missing, error: courseError } = useCourse();
   const { paceGrade, error: paceGradeError } = usePaceGrade();
-  const { nutrition, error: nutritionError } = useNutrition();
+  const { nutrition, error: nutritionError, source: nutritionSource } = useNutrition();
   const { physiology, error: physiologyError } = usePhysiology();
 
   // The bare `race.<knob>` keys only ever belonged to MM100 (LEGACY_KNOB_SLUG)
@@ -267,7 +271,7 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
 
   return {
     course, missing, error: courseError, sun,
-    paceGrade, paceGradeError, nutritionError,
+    paceGrade, paceGradeError, nutritionError, nutritionSource,
     fit, proj, nutrition, fuelPlan, physiology, physiologyError,
     raceStart: race.date, timeZone: race.timeZone, clock: race.clock,
     raceConfig, race, features, panels, columns,
