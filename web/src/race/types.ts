@@ -277,7 +277,8 @@ export type RaceConfig = {
       (scripts/race-edit.mjs) and gated on before activation. */
   unresolved?: string[];
   /** The owner has seen `unresolved` and accepted what is still missing. */
-  unresolved_acknowledged?: boolean;
+  /** acknowledged unresolved paths; a legacy boolean true is migrated by the server on the next save */
+  unresolved_acknowledged?: boolean | string[];
 };
 
 /** races/<slug>/block.json — today's state.block, per race. */
