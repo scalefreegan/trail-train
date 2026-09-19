@@ -244,6 +244,34 @@ test("renderCrewHtml refuses a shell with no data block", () => {
 
 /* ---------------- what the file SAYS ---------------- */
 
+test("a nutrition.json comment never reaches the exported HTML", async () => {
+  // A coach's private planning rationale, written for internal use only —
+  // exactly the shape of the real MM100 finding (a 555-char `comment` field
+  // and a `caffeine_comment` field, neither consumed anywhere in the app).
+  const SECRET = "PRIVATE COACH NOTE: back off calibration after the knee flared up in March, do not show the crew";
+  const CAFFEINE_SECRET = "athlete gets jittery over 150mg, keep doses conservative — coach eyes only";
+  await fs.writeFile(
+    path.join(root, "races", SLUG, "nutrition.json"),
+    JSON.stringify({
+      flask_carb_g: 55,
+      phases: [{ until_h: 12, carb_g_hr: 75, supplement: "gels" }],
+      comment: SECRET,
+      caffeine_comment: CAFFEINE_SECRET,
+      caffeine: { caffeine_comment: CAFFEINE_SECRET },
+    }),
+  );
+  try {
+    const { html, data } = await crewExport(root, SLUG, { now: NOW, write: false });
+    assert.equal(html.includes(SECRET), false, "coach prose must never land in the crew handout's HTML");
+    assert.equal(html.includes(CAFFEINE_SECRET), false);
+    assert.equal("comment" in data.nutrition, false, "the payload itself must not carry it either");
+    assert.equal("caffeine_comment" in data.nutrition, false);
+    assert.equal("caffeine_comment" in data.nutrition.caffeine, false);
+  } finally {
+    await fs.rm(path.join(root, "races", SLUG, "nutrition.json"), { force: true });
+  }
+});
+
 test("the payload carries the projection, its inputs, and the crew's own data", async () => {
   const data = await buildCrewData(root, SLUG, { now: NOW });
 
@@ -632,6 +660,29 @@ test("a folder with no built course is refused by name", async () => {
 test("an unknown slug is a not_found, not a crash", async () => {
   await assert.rejects(
     () => buildCrewData(root, "nope-not-here", { now: NOW }),
-    (e) => e.code === "not_found",
+    (e) => e.code === "not_found" && /race\.json not found/.test(e.message),
   );
+});
+
+test("a folder whose race.json is corrupt is reported as broken, not as missing", async () => {
+  // A hand-edit or an interrupted write leaving race.json truncated/invalid
+  // must not be collapsed into the same "not found" a genuinely absent
+  // folder gets — the message is the only thing telling a crew chief which
+  // problem they actually have.
+  const broken = path.join(root, "races", "broken-race");
+  await fs.mkdir(broken, { recursive: true });
+  await fs.writeFile(path.join(broken, "race.json"), "{ not valid json");
+  try {
+    await assert.rejects(
+      () => buildCrewData(root, "broken-race", { now: NOW }),
+      (e) => {
+        assert.equal(e.code, "not_found", "still tagged not_found so the endpoint answers 404");
+        assert.match(e.message, /not valid JSON/, "the real parse error must survive");
+        assert.equal(/race\.json not found/.test(e.message), false, "must not claim the file is missing");
+        return true;
+      },
+    );
+  } finally {
+    await fs.rm(broken, { recursive: true, force: true });
+  }
 });
