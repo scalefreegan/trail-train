@@ -210,6 +210,49 @@ up as `CHANGED`. It is the only part of the harness that touches the network,
 it is off by default, and it is not a re-intake — re-running the agent is what
 "refresh from sources" does.
 
+### Browser tests
+
+```bash
+cd web
+npm run test:ui                    # the four core flows, ~12 s
+npx playwright test -c tests/playwright.config.ts --headed    # watch them
+```
+
+`web/tests/` drives the real app in a real browser: the generic dashboard,
+the race switcher (generic → a race → back), the review dialog's fill /
+acknowledge / save, and race-day's position hold.
+
+It runs against a **throwaway project root**, never your checkout.
+`web/tests/launch.mjs` builds a temp directory with synthetic config, race
+folders and `web/public/*.json`, starts `vite` on a free port (never 38100),
+and points it there with `TRAIL_PROJECT_ROOT`. Two environment variables make
+that possible, and both are inert when unset:
+
+- **`TRAIL_PROJECT_ROOT=<absolute path>`** — the repo root every script and the
+  dev server reads and writes under, instead of the checkout. One helper,
+  `projectRoot()` in `scripts/lib.mjs`, is where a script gets it; the dev
+  server resolves the same variable once into `PROJECT_ROOT` and uses it for
+  every `/api` route *and* for `publicDir`, so the snapshots the page fetches
+  and the files the API writes always come from the same place. A relative
+  value is ignored with a warning. **Anything new that needs the repo root
+  must call `projectRoot()`** — `scripts/project-root.test.mjs` fails the
+  build if a script goes back to deriving it from its own `import.meta.url`.
+- **`TRAIL_FAKE_AGENT=<file>`** — `runClaudeJson` (`scripts/agent-run.mjs`)
+  resolves with that file's contents instead of spawning the `claude` CLI, so
+  the agent-backed flows can be driven without a live sign-in. A missing file
+  is a hard error, never a quiet fall-through to a real spawn. The dashboard's
+  streaming `/api/chat` endpoint spawns the CLI directly and is *not* covered
+  by it.
+
+The fixtures are synthetic by construction and stay that way:
+`scripts/ui-fixtures.test.mjs` greps every committed fixture — and the
+generated snapshots — for anything shaped like an e-mail address, a phone
+number, a street address or a real host, and fails on a match. The dashboard
+snapshots are generated at launch rather than committed, because every panel
+is a function of "how long ago"; a frozen snapshot would read as months stale
+within a year. Race folders live under `races/_fixtures/`, which `listRaces`
+skips, so they are never a race the app can open.
+
 ### Athlete profile
 
 The agent uses your name, location, local trail names and the title words you
