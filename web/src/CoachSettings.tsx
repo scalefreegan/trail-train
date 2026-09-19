@@ -234,7 +234,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
     if ((!dirty && !newNote.text.trim()) || window.confirm("discard unsaved changes?")) onClose();
   }, [dirty, saving, newNote.text, onClose]);
 
-  const { titleId, dialogProps } = useDialog({ onClose: requestClose, locked: saving });
+  const { titleId, dialogProps } = useDialog({ onClose: requestClose, locked: saving, label: "coach settings" });
 
   useEffect(() => {
     fetch("/api/settings")
@@ -546,6 +546,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
               value={form.goals.notes} minHeight={64} maxLength={2000}
               placeholder="injuries and their reassessment dates, why this phase, anything that caps the week"
               onChange={(v) => patch({ goals: { ...form.goals, notes: v } })}
+              aria-label="goals notes"
             />
             <Hint>sent to the coach verbatim in place of the race paragraph</Hint>
           </div>
@@ -559,6 +560,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
               onChange={(v) => patch({ sections: { ...form.sections, [key]: v } })}
               minHeight={key === "calendar_conventions" ? 140 : 88}
               maxLength={4000}
+              aria-label={label}
             />
             <Hint>{hint} · sent to the coach verbatim</Hint>
           </Block>
@@ -577,7 +579,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
             {form.temporary.length === 0 && (
               <span style={{ fontSize: 12, color: "var(--mist-mute)" }}>none yet</span>
             )}
-            {form.temporary.map((t) => {
+            {form.temporary.map((t, i) => {
               const expired = t.expires < today;
               return (
                 <div key={t.id} style={{
@@ -590,6 +592,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                       type="date" value={t.expires} className="numerals"
                       onChange={(e) => patch({ temporary: form.temporary.map((x) => x.id === t.id ? { ...x, expires: e.target.value } : x) })}
                       style={{ ...inputStyle, fontSize: 11, padding: "3px 7px", colorScheme: "dark" }}
+                      aria-label={`temporary note ${i + 1} expiry`}
                     />
                     {t.source === "agent" && (
                       <span className="eyebrow" style={{ fontSize: 8, border: "1px dashed var(--edge-bright)", padding: "2px 6px", color: "var(--lamp)" }}>agent</span>
@@ -606,6 +609,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                     value={t.text} minHeight={40} maxLength={2000}
                     onChange={(v) => patch({ temporary: form.temporary.map((x) => x.id === t.id ? { ...x, text: v } : x) })}
                     style={{ border: "1px solid var(--edge)", fontSize: 12 }}
+                    aria-label={`temporary note ${i + 1} text`}
                   />
                 </div>
               );
@@ -618,6 +622,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                   type="date" value={newNote.expires} className="numerals"
                   onChange={(e) => setNewNote((n) => ({ ...n, expires: e.target.value }))}
                   style={{ ...inputStyle, fontSize: 11, padding: "3px 7px", colorScheme: "dark" }}
+                  aria-label="new note expiry"
                 />
                 <button className="chip" style={{ fontSize: 9, padding: "2px 10px", marginLeft: "auto" }} onClick={addNote}
                   disabled={!newNote.text.trim() || !newNote.expires}
@@ -628,6 +633,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                 onChange={(v) => setNewNote((n) => ({ ...n, text: v }))}
                 placeholder="e.g. travel, a niggle, a schedule change…"
                 style={{ border: "1px solid var(--edge)", fontSize: 12 }}
+                aria-label="new note text"
               />
             </div>
           </div>
@@ -664,6 +670,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                 }
               }}
               style={{ ...inputStyle, width: 130, fontSize: 11, padding: "4px 8px" }}
+              aria-label="add childcare marker"
             />
             {markerHint && <span style={{ fontSize: 10.5, color: "var(--ember)" }}>{markerHint}</span>}
           </div>
@@ -694,6 +701,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                     }
                   }}
                   style={{ ...inputStyle, width: 100, fontSize: 11, padding: "4px 8px" }}
+                  aria-label={`add ${cls} keyword`}
                 />
               </div>
             ))}
