@@ -11,6 +11,7 @@ import { loadState, loadPlanBlocks, activeContext, isoDate } from "./state.mjs";
 import { listRaces, loadActiveRaceFolder, raceDir } from "./race-config.mjs";
 import { loadGoals } from "./goals.mjs";
 import { ROLLING_WEEKS, rollingBlock } from "./block.mjs";
+import { raceStart, isValidTimeZone } from "./clock.mjs";
 
 // Heat exposure threshold (Celsius) — mirrors weather.mjs WEATHER_HOT_THRESHOLD_C.
 const HOT_THRESHOLD_C = 24;
@@ -44,6 +45,43 @@ const weekIndexFor = (date, blockStart) => {
   const s = new Date(blockStart + "T00:00:00").getTime();
   return Math.floor((d - s) / 86400000 / 7) + 1;
 };
+
+/**
+ * Days remaining until race day, counted against the race's OWN wall clock
+ * (scripts/clock.mjs's raceStart) rather than the machine's zone — a race
+ * whose timezone differs from the athlete's laptop must not read as "started"
+ * a day early or late just because the process happens to be elsewhere.
+ *
+ * Falls back to a naive local-machine parse of `race.date` (the pre-fix
+ * behavior) only when the timezone is missing, not a zone this runtime
+ * recognizes, or the race's date/start_time can't be parsed as race-local
+ * wall clock — with a console.warn either way, since a silent fallback here
+ * is exactly the bug this function replaces (facts.mjs:251-253 in the
+ * review: a Phoenix race trained for from Denver read as already started).
+ * @param {{date?:string, start_time?:string, timezone?:string}|null} race
+ * @param {number} now epoch ms
+ * @returns {number|null}
+ */
+function computeDaysUntilRace(race, now) {
+  if (!race?.date) return null;
+  if (!race.timezone || !isValidTimeZone(race.timezone)) {
+    console.warn(
+      `• race.timezone ${JSON.stringify(race.timezone)} missing/invalid — ` +
+        `days_until computed in the machine's local zone, not the race's`,
+    );
+  } else {
+    try {
+      const startMs = raceStart(race.date, race.start_time ?? "00:00", race.timezone).getTime();
+      return Math.ceil((startMs - now) / 86400000);
+    } catch (e) {
+      console.warn(
+        `• race ${JSON.stringify(race.date)} ${JSON.stringify(race.start_time)} in zone ` +
+          `${race.timezone} unparseable (${e.message}) — days_until computed in the machine's local zone`,
+      );
+    }
+  }
+  return Math.ceil((new Date(`${race.date}T00:00:00`).getTime() - now) / 86400000);
+}
 
 const C_TO_F = (c) => c * 9 / 5 + 32;
 
@@ -248,9 +286,7 @@ export function computeFacts(strava, oura, ctx, now = Date.now()) {
   const longest = d7.reduce((m, a) => (!m || a.distance_mi > m.distance_mi ? a : m), null);
   // null, not a number, with no race — there is nothing to count down to,
   // and a 0 or a NaN here reads as "race day" to everything downstream.
-  const daysUntilRace = race?.date
-    ? Math.ceil((new Date(`${race.date}T00:00:00`).getTime() - now) / 86400000)
-    : null;
+  const daysUntilRace = computeDaysUntilRace(race, now);
 
   return {
     // local date, matching the expiry filtering — a UTC date would tell the

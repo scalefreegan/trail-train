@@ -138,6 +138,21 @@ test("race mode: the folder's block.json drives the window", () => {
   assert.equal(f.goals, null, "a race outranks the standing goals");
 });
 
+test("days_until is computed in the race's own zone, not the process's", () => {
+  // MM100-shaped: America/Phoenix (no DST). now = 2026-09-14T06:30:00Z is
+  // 23:30 MST Sep 13 in Phoenix — race day hasn't started there yet, but the
+  // pre-fix `new Date(race.date + "T00:00:00")` parsed in the PROCESS's own
+  // zone, which under TZ=America/Denver reads race midnight as already 1h
+  // past (days_until -0, "race started"). Race-local math must land on 1
+  // regardless of what TZ this test happens to run under — this file is run
+  // once with TZ=America/Denver and once with TZ=Pacific/Auckland to prove it.
+  const ctx = { race: { name: "MM100", date: "2026-09-14", timezone: "America/Phoenix" } };
+  const now = new Date("2026-09-14T06:30:00Z").getTime();
+  const f = computeFacts({ activities: [] }, null, ctx, now);
+  assert.equal(f.days_until, 1, `process TZ was ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
+  assert.equal(f.race.days_until, 1);
+});
+
 test("race mode without a usable block.json falls back to the rolling window", () => {
   const ctx = { race: { name: "Draft Race", date: "2027-06-05" }, block: null };
   const f = computeFacts({ activities: [] }, null, ctx, NOW);
