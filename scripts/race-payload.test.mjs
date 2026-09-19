@@ -300,3 +300,73 @@ test("train mode names the same folder it views, and carries no training aside",
   assert.equal(payload.viewing, slug);
   assert.equal(payload.training, null);
 });
+
+/* ===================== tune-up races (PRD-v2 §3) ===================== */
+
+/** A B folder hanging off validRace()'s slug, as the quick form writes one. */
+const bRace = (over = {}) => ({
+  schema_version: 1,
+  kind: "b",
+  parent_slug: "san-juan-softie-100-2027",
+  status: "draft",
+  short: "TUNE",
+  start_time: "06:00",
+  timezone: "America/Denver",
+  cutoff_h: null,
+  aid_stations: [{ name: "Finish", total_mi: over.distance_mi ?? 31, cutoff_h: null }],
+  ...over,
+});
+
+test("train mode: the payload carries the block's tune-up races, oldest first", async (t) => {
+  const root = await tempRoot(t);
+  const slug = "san-juan-softie-100-2027";
+  await fs.mkdir(path.join(root, "races", slug), { recursive: true });
+  await writeJson(path.join(root, "races", slug, "race.json"), validRace());
+  await writeJson(path.join(root, "config", "active-race.json"), { slug });
+  // loadFactsFromRoot reads the synced snapshots; an empty one is enough to
+  // reach the race paragraph's half of the comparison below.
+  await writeJson(path.join(root, "web", "public", "strava.json"), { activities: [] });
+
+  for (const b of [
+    bRace({ slug: "jemez-mountain-50k-2027", name: "Jemez Mountain 50K", date: "2027-05-22", distance_mi: 31, gain_ft: 5000 }),
+    bRace({ slug: "cinder-cone-25k-2027", name: "Cinder Cone 25K", date: "2027-04-10", distance_mi: 15.5, gain_ft: 2200 }),
+    // somebody else's tune-up: same races/ folder, different parent
+    bRace({ slug: "not-mine-50k-2027", name: "Not Mine 50K", date: "2027-06-05", distance_mi: 31, gain_ft: 3000, parent_slug: "another-race-2027" }),
+  ]) {
+    await fs.mkdir(path.join(root, "races", b.slug), { recursive: true });
+    await writeJson(path.join(root, "races", b.slug, "race.json"), b);
+  }
+
+  const payload = await activeRacePayload(root, NOW);
+  assert.equal(payload.active, slug);
+  assert.deepEqual(payload.b_races, [
+    { slug: "cinder-cone-25k-2027", name: "Cinder Cone 25K", date: "2027-04-10", distance_mi: 15.5, gain_ft: 2200, weeks_out: 18 },
+    { slug: "jemez-mountain-50k-2027", name: "Jemez Mountain 50K", date: "2027-05-22", distance_mi: 31, gain_ft: 5000, weeks_out: 12 },
+  ]);
+
+  // and the coach is told about exactly the same two races, from the same
+  // folders — the dashboard's markers and the prompt cannot disagree
+  const facts = await loadFactsFromRoot(root, NOW);
+  assert.deepEqual(facts.race.b_races, payload.b_races);
+});
+
+test("no A-race block, no tune-ups: the key is always there and empty", async (t) => {
+  const root = await tempRoot(t);
+  const slug = "san-juan-softie-100-2027";
+  await fs.mkdir(path.join(root, "races", slug), { recursive: true });
+  // a draft folder being BROWSED — view mode, so nothing is being trained for
+  await writeJson(path.join(root, "races", slug, "race.json"), validRace({ status: "draft" }));
+  await writeJson(path.join(root, "config", "active-race.json"), { slug, mode: "view" });
+  const b = bRace({ slug: "jemez-mountain-50k-2027", name: "Jemez Mountain 50K", date: "2027-05-22", distance_mi: 31, gain_ft: 5000 });
+  await fs.mkdir(path.join(root, "races", b.slug), { recursive: true });
+  await writeJson(path.join(root, "races", b.slug, "race.json"), b);
+
+  const viewing = await activeRacePayload(root, NOW);
+  assert.equal(viewing.mode, "view");
+  assert.deepEqual(viewing.b_races, []);
+
+  await fs.rm(path.join(root, "config", "active-race.json"));
+  const generic = await activeRacePayload(root, NOW);
+  assert.equal(generic.active, null);
+  assert.deepEqual(generic.b_races, []);
+});

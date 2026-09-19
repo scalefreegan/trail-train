@@ -8,7 +8,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { loadState, loadPlanBlocks, activeContext, isoDate } from "./state.mjs";
-import { listRaces, loadActiveRaceFolder, raceDir } from "./race-config.mjs";
+import { bRacesFor, listRaces, loadActiveRaceFolder, raceDir, raceKind } from "./race-config.mjs";
 import { loadGoals } from "./goals.mjs";
 import { ROLLING_WEEKS, rollingBlock } from "./block.mjs";
 import { raceStart, isValidTimeZone } from "./clock.mjs";
@@ -445,7 +445,13 @@ async function trainingContext(projectRoot) {
     return null;
   });
   const { plan_blocks } = await loadPlanBlocks(projectRoot);
-  const history = await raceHistory(projectRoot);
+  // One listing, two questions: what the athlete has already run (history)
+  // and which tune-ups sit inside the current block (race.b_races below).
+  const races = await listRaces(projectRoot).catch((e) => {
+    console.warn(`• races/ unreadable (${e.message}) — coaching without race history`);
+    return [];
+  });
+  const history = await raceHistory(projectRoot, races);
   if (!folder) {
     const { goals, bootstrapped, errors } = await loadGoals(projectRoot).catch((e) => {
       console.warn(`• config/goals.json unreadable (${e.message}) — coaching without goals`);
@@ -489,6 +495,12 @@ async function trainingContext(projectRoot) {
         drop_bag: Boolean(a.drop_bag),
         pacers: Boolean(a.pacers),
       })),
+      // The tune-ups entered INSIDE this block (PRD-v2 §3), oldest first,
+      // each with the weeks between it and race day. The same list the
+      // dashboard draws markers from (scripts/race-payload.mjs) — one
+      // function, so the coach cannot plan a taper around a race the
+      // trajectory does not show.
+      b_races: bRacesFor(races, { ...race, slug: folder.slug }),
     },
     block: block ?? null,
     goals: null,
@@ -505,13 +517,13 @@ async function trainingContext(projectRoot) {
  * one is on the calendar. result.json is gitignored (it records a real
  * finish), so its absence is normal and lands as `result: null` rather than
  * dropping the race from the athlete's history.
- * @returns {Promise<{slug, name, date, distance_mi, gain_ft, result}[]>}
+ * A finished TUNE-UP is history too — `kind` says which it was, so the coach
+ * reads a B-race finish as the rehearsal it was rather than as a goal race.
+ * @param {string} projectRoot
+ * @param {{slug: string, race: object|null}[]} races listRaces' output
+ * @returns {Promise<{slug, name, kind, date, distance_mi, gain_ft, result}[]>}
  */
-async function raceHistory(projectRoot) {
-  const races = await listRaces(projectRoot).catch((e) => {
-    console.warn(`• races/ unreadable (${e.message}) — coaching without race history`);
-    return [];
-  });
+async function raceHistory(projectRoot, races) {
   const archived = races.filter((r) => r.race?.status === "archived");
   const out = [];
   for (const { slug, race } of archived) {
@@ -523,6 +535,7 @@ async function raceHistory(projectRoot) {
       slug,
       name: race.name,
       short: race.short ?? null,
+      kind: raceKind(race),
       date: race.date ?? null,
       distance_mi: race.distance_mi ?? null,
       gain_ft: race.gain_ft ?? null,

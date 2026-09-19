@@ -15,7 +15,7 @@
 //               context the coach is actually working from, so the rail can
 //               say so instead of implying the browsed race is the target.
 
-import { resolveViewedRace } from "./race-config.mjs";
+import { bRacesFor, listRaces, resolveViewedRace } from "./race-config.mjs";
 import { loadPlanBlocks } from "./state.mjs";
 import { loadGoals } from "./goals.mjs";
 import { rollingBlock } from "./block.mjs";
@@ -29,6 +29,7 @@ import { computeDaysUntilRace } from "./facts.mjs";
  *   race: object|null, goals: object|null, block: object|null,
  *   plan: {plan_blocks: object[]}, nutrition: object|null,
  *   training: {goals: object|null, block: object|null, plan: {plan_blocks: object[]}}|null,
+ *   b_races: {slug, name, date, distance_mi, gain_ft, weeks_out}[],
  *   warning?: string }>}
  */
 export async function activeRacePayload(root, now = Date.now()) {
@@ -62,6 +63,11 @@ export async function activeRacePayload(root, now = Date.now()) {
       plan: { plan_blocks },
       nutrition: null,
       training: null,
+      // Tune-ups hang off an A RACE's block (PRD-v2 §3). With no race being
+      // trained for there is nothing for one to sit inside, so this is empty
+      // rather than absent — the key is always there, and a client that maps
+      // over it never has to null-check the mode first.
+      b_races: [],
     });
   }
 
@@ -73,6 +79,19 @@ export async function activeRacePayload(root, now = Date.now()) {
 
   if (viewed.training) {
     const daysUntil = computeDaysUntilRace(folder.race, now);
+    // The tune-ups entered inside THIS race's block, oldest first, each with
+    // the weeks between it and race day (scripts/race-config.mjs's
+    // bRacesFor — facts.mjs reads the same function, so the dashboard's
+    // markers and the coach's list can never be different races). A races/
+    // that cannot be read is not worth taking the dashboard down for: the
+    // race itself already loaded.
+    const b_races = bRacesFor(
+      await listRaces(root).catch((e) => {
+        warning = warning ?? `races/ unreadable (${e.message}) — tune-up races omitted`;
+        return [];
+      }),
+      { ...folder.race, slug: folder.slug },
+    );
     return withWarning({
       active: folder.slug,
       mode: "train",
@@ -92,6 +111,7 @@ export async function activeRacePayload(root, now = Date.now()) {
       // instead of a pace projection nobody is running anymore.
       days_until: daysUntil,
       past: typeof daysUntil === "number" && daysUntil < 0,
+      b_races,
     });
   }
 
@@ -118,5 +138,9 @@ export async function activeRacePayload(root, now = Date.now()) {
       block: rollingBlock(goals, plan_blocks, now),
       plan: { plan_blocks },
     },
+    // View mode is by definition not training for anything (the pointer's
+    // mode, not the folder's status, decides that) — so there is no A-race
+    // block for a tune-up to belong to. See the generic branch above.
+    b_races: [],
   });
 }

@@ -30,7 +30,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { listRaces, loadRaceFolder, validateRaceJson, validateSingleActive } from "./race-config.mjs";
+import { listRaces, loadRaceFolder, raceKind, validateRaceJson, validateSingleActive } from "./race-config.mjs";
 import { draftValidationErrors } from "./race-intake.mjs";
 import { validateBlockTargets, validateNutrition } from "./race-plan.mjs";
 import { isBlockStale } from "./race-edit.mjs";
@@ -264,9 +264,12 @@ export async function checkFolders(root) {
     }
     // A draft may carry the holes it declared in unresolved[]; an active or
     // archived folder must validate outright.
+    // `races` in both branches: a B folder's parent_slug is checked against
+    // the folders actually on disk here — this gate is the one caller that
+    // has read all of them (PRD-v2 §3).
     const { errors: schema } = r.race.status === "draft"
-      ? draftValidationErrors(r.race, r.race.unresolved ?? [])
-      : validateRaceJson(r.race);
+      ? draftValidationErrors(r.race, r.race.unresolved ?? [], { races })
+      : validateRaceJson(r.race, { races });
     for (const e of schema) errors.push(`${r.slug}/race.json: ${e}`);
 
     const folder = await loadRaceFolder(root, r.slug);
@@ -298,8 +301,13 @@ export async function checkFolders(root) {
         errors.push(`${r.slug}/nutrition.json: the client loader refuses it`);
       }
     }
+    // A B folder carries none of the planning files by design (PRD-v2 §3:
+    // race.json and optionally a course), so its "—"s are the expected shape
+    // rather than something missing — say which kind it is on the line.
+    const kind = raceKind(r.race);
     info.push(
-      `${r.slug}  status ${r.race.status} · ${r.race.aid_stations?.length ?? 0} stations · ` +
+      `${r.slug}  ${kind === "b" ? `tune-up of ${r.race.parent_slug}` : "A race"} · status ${r.race.status} · ` +
+        `${r.race.aid_stations?.length ?? 0} stations · ` +
         `block ${folder.block ? `${folder.block.total_weeks} wk` : "—"} · nutrition ${folder.nutrition ? "ok" : "—"}`
     );
   }
