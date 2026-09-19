@@ -1504,6 +1504,95 @@ function raceResultApi(): Plugin {
   }
 }
 
+/* Dev-only middleware for race day's live tracker (PRD §4):
+     GET /api/races/:slug/tracker — poll the race's configured tracker and
+       answer with the runner's last checkpoint.
+
+   Read-only and idempotent, so unlike its /api/races siblings it takes no
+   slug lock: it writes nothing, spawns nothing and holds no `claude` turn.
+
+   Everything that could be tested is in scripts/trackers/index.mjs —
+   adapter detection, the parse, and the 60 s TTL (pollTracker takes an
+   injected clock and an injected fetch, and scripts/trackers.test.mjs
+   drives both against a committed fixture). What is left here is the HTTP
+   shell: the guard, the slug, the race.json read and the error mapping.
+
+   NOTHING POLLS ON A TIMER. The tracker is asked only inside this handler,
+   i.e. only when a browser asked, and at most once a minute per race —
+   pointing a 5-second client poll at a volunteer-run timing site is exactly
+   the thing the cache exists to prevent. The cache is one Map for the dev
+   server's lifetime, keyed by slug + url + bib + name, so editing the bib
+   in the review screen invalidates it with no manual clear.
+
+   MUST be registered before raceSwitchApi, with the other /api/races/<slug>
+   routes: connect matches by path prefix, and the switcher's GET /api/races
+   would otherwise answer this with the race LIST. It next()s anything that
+   is not its own route. */
+function raceTrackerApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  type TrackersMod = {
+    pollTracker: (o: Record<string, unknown>) => Promise<unknown>
+    createTrackerCache: () => Map<string, unknown>
+  }
+  return {
+    name: 'trail-train-race-tracker-api',
+    apply: 'serve',
+    configureServer(server) {
+      let cache: Map<string, unknown> | null = null
+      const json = (res: ServerResponse, code: number, body: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        // Never let a browser or proxy hold a checkpoint: the 60 s TTL
+        // above is the ONLY cache this endpoint wants, and it is the one
+        // that can be invalidated.
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(JSON.stringify(body))
+      }
+      const trackers = () =>
+        import(path.join(projectRoot, 'scripts/trackers/index.mjs')) as Promise<TrackersMod>
+
+      server.middlewares.use('/api/races', async (req, res, next) => {
+        const m = /^\/([^/?]+)\/tracker(?:\?.*)?$/.exec(req.url ?? '')
+        if (!m) { next(); return }
+        if (crossSiteBlocked(req, res)) return
+        const slug = parseSlugParam(m[1])
+        if (!slug) { json(res, 400, { error: 'slug: lowercase kebab-case required' }); return }
+        if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+
+        try {
+          const { loadRaceFolder } = (await import(
+            path.join(projectRoot, 'scripts/race-config.mjs')
+          )) as { loadRaceFolder: (root: string, slug: string) => Promise<{ race: unknown }> }
+          let race: unknown
+          try {
+            race = (await loadRaceFolder(projectRoot, slug)).race
+          } catch {
+            json(res, 404, { error: `races/${slug}/race.json not found` })
+            return
+          }
+          const { pollTracker, createTrackerCache } = await trackers()
+          if (!cache) cache = createTrackerCache()
+          json(res, 200, await pollTracker({ slug, race, cache }))
+        } catch (e) {
+          // The adapters tag every refusal the same way race-result.mjs
+          // does. `unsupported` is its own status rather than a 404 or a
+          // 500: the tracker was RECOGNISED (MAProgress) and cannot be
+          // read, which is a different thing for the client to say than
+          // "no tracker here" or "we broke".
+          const code = (e as { code?: string }).code
+          const status =
+            code === 'not_found' ? 404
+            : code === 'bad_request' ? 400
+            : code === 'unsupported' ? 501
+            : code === 'bad_gateway' ? 502
+            : 500
+          json(res, status, { error: (e as Error).message, code: code ?? null })
+        }
+      })
+    },
+  }
+}
+
 /* Dev-only middleware backing the review screen of the "New race…" dialog
    (PRD §8, "Review dialog"), one path segment deeper than the switcher's list:
      GET  /api/races/:slug         — everything the review screen renders, in
@@ -2599,13 +2688,16 @@ export default defineConfig({
   // way, but the order says the intent. raceResultApi, raceAssetApi and
   // Everything before raceSwitchApi is NOT cosmetic: /api/races/<slug>,
   // /api/races/<slug>/status, /api/races/<slug>/result,
-  // /api/races/<slug>/refresh and /api/races/<slug>/asset/<name> are all under
-  // /api/races, and the list endpoint answers every GET it sees, so each has
-  // to be given the request first. All four call next() for a path that is not
-  // theirs, which is what lets them share one prefix in any order.
+  // /api/races/<slug>/tracker, /api/races/<slug>/refresh and
+  // /api/races/<slug>/asset/<name> are all under /api/races, and the list
+  // endpoint answers every GET it sees, so each has to be given the request
+  // first. All five call next() for a path that is not theirs, which is what
+  // lets them share one prefix in any order.
   // raceRefreshApi is also why it sits ahead of raceIntakeApi: its other mount
   // is /api/race-intake/refresh, which the intake's own prefix would swallow.
-  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceAssetApi(), raceRefreshApi(), raceEditApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
+  // raceTrackerApi (/api/races/<slug>/tracker) joins that same group — one
+  // more /api/races route that the list endpoint would otherwise answer.
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceTrackerApi(), raceAssetApi(), raceRefreshApi(), raceEditApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
   // Fixed, memorable, deliberately unusual port. The 5173 default collides
   // with every other Vite project on the machine, and a colliding neighbor
   // silently claims the port so this app hops to 5174+ — which breaks the

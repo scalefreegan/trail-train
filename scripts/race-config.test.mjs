@@ -143,6 +143,27 @@ test("validateRaceJson accepts intake_warnings as an optional array of strings, 
   assertRejects(validRace({ intake_warnings: [{ message: "no PDF renderer" }] }), "intake_warnings: array of strings");
 });
 
+test("validateRaceJson accepts tracking as an optional {url, bib, name}", () => {
+  assert.equal(validateRaceJson(validRace()).ok, true, "absent entirely is fine — most races have no tracker");
+  assert.equal(validateRaceJson(validRace({ tracking: null })).ok, true, "explicitly null is fine too");
+  assert.equal(validateRaceJson(validRace({
+    tracking: { url: "https://www.opensplittime.org/events/2026-san-juan-softie-100/spread", bib: "999", name: "Aaron Brooks" },
+  })).ok, true);
+  // intake fills url months before the athlete has a bib
+  assert.equal(validateRaceJson(validRace({
+    tracking: { url: "https://www.opensplittime.org/events/x/spread", bib: null, name: null },
+  })).ok, true);
+  assert.equal(validateRaceJson(validRace({ tracking: {} })).ok, true, "an empty object says 'no tracker yet'");
+
+  assertRejects(validRace({ tracking: "https://www.opensplittime.org/events/x" }), "tracking: object");
+  assertRejects(validRace({ tracking: { url: "https://x.test/e", bib: 999 } }), "tracking.bib: string or null");
+  assertRejects(validRace({ tracking: { url: "https://x.test/e", name: { first: "A" } } }), "tracking.name: string or null");
+  // the adapter registry detects by hostname, so a scheme-less URL would
+  // only fail on race morning
+  assertRejects(validRace({ tracking: { url: "opensplittime.org/events/x/spread" } }), "tracking.url: absolute http(s) URL");
+  assertRejects(validRace({ tracking: { url: "ftp://x.test/e" } }), "tracking.url: absolute http(s) URL");
+});
+
 test("listRaces returns [] when races/ is missing and skips non-races", async (t) => {
   const root = await tempRoot(t);
   assert.deepEqual(await listRaces(root), []);

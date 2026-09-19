@@ -832,6 +832,23 @@ export function buildRaceJson(draft, { slug, year, manifest = [], warnings = [],
     };
   }
   provenance.edition_year = { by: PROVENANCE_BY, at, source: "intake request" };
+  // PRD §4: `tracking.url` is the one tracking field intake can know — the
+  // race site's live-tracking link, which the agent already reports as
+  // links.tracking. bib and name are the athlete's, months away from being
+  // issued, so they are seeded null for the review screen to fill rather
+  // than guessed. Only written when the site actually linked a tracker: an
+  // empty `tracking: {}` on every race would be a field that says nothing
+  // and a `tracking.url` entry in `unresolved` for races that have no
+  // tracker at all.
+  const trackingUrl = typeof draft.links?.tracking === "string" ? draft.links.tracking.trim() : "";
+  if (trackingUrl) {
+    race.tracking = { url: trackingUrl, bib: null, name: null };
+    provenance.tracking = {
+      by: PROVENANCE_BY,
+      at,
+      source: typeof draft.field_sources?.links === "string" ? draft.field_sources.links : "race-intake",
+    };
+  }
   race.provenance = provenance;
   // A source that this run tried and failed to (re)fetch is kept, marked with
   // `error`, rather than dropped outright — but ONLY on a PARTIAL failure.

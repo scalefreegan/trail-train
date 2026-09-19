@@ -522,6 +522,30 @@ export function validateRaceJson(obj) {
       bad("intake_warnings: array of strings required");
     }
   }
+  // PRD §4: which live tracker to poll on race day, and who to look for on
+  // it. Wholly optional — most races have no tracker, and a race with one
+  // usually gets `url` from intake months before the athlete knows their
+  // bib, so bib and name are independently nullable rather than required
+  // together. `url` is the one field with a shape: scripts/trackers/
+  // detect()s an adapter from its HOSTNAME, so a bare "opensplittime.org/…"
+  // with no scheme would not parse as a URL at all and would fail at poll
+  // time, on race morning, instead of here.
+  if (obj.tracking !== undefined && obj.tracking !== null) {
+    if (!isObj(obj.tracking)) bad("tracking: object of {url, bib, name} required");
+    else {
+      for (const k of ["url", "bib", "name"]) {
+        const v = obj.tracking[k];
+        if (v !== undefined && v !== null && typeof v !== "string") bad(`tracking.${k}: string or null required`);
+      }
+      if (isStr(obj.tracking.url)) {
+        let scheme = null;
+        try { scheme = new URL(obj.tracking.url).protocol; } catch { scheme = null; }
+        if (scheme !== "http:" && scheme !== "https:") {
+          bad(`tracking.url: absolute http(s) URL required (got ${JSON.stringify(obj.tracking.url)})`);
+        }
+      }
+    }
+  }
 
   validateAidStations(obj.aid_stations, bad);
   return { ok: errors.length === 0, errors };
