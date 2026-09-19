@@ -55,6 +55,28 @@ const OUT_GRID_MI = 0.05; // profile resolution written to course.json
 // would be silently wrong.
 export const MISMATCH_THRESHOLD = 0.15; // 15% — comfortably above normal GPX drift
 
+// PR #23 review round 2: this check compares the GPX's measured distance
+// against race.json's distance_mi verbatim, with no knowledge of
+// race.format. An out-and-back (or a loop lapped more than once) whose
+// course.gpx genuinely traces only one leg — a real, correctly-sourced file,
+// not a truncated download — measures ~half (or, for a doubled lap, ~double)
+// the round-trip official figure and would otherwise false-positive at
+// ~50-100% off. No out_and_back fixture exists in this repo to prove the
+// intake prompt's actual convention either way (docs/PRD-modular-races.md
+// lists loop as an explicit v1 non-goal, and MM100/the untracked Softie
+// draft are point_to_point/loop respectively, neither near this boundary),
+// so this excuses ONLY that specific ~0.5x/~2x ratio, and only for these two
+// formats — a genuinely wrong or truncated file for an out-and-back still
+// lands at some other fraction and still trips the guard below.
+const LEG_OR_LAP_RATIOS = [0.5, 2];
+const LEG_OR_LAP_RATIO_TOLERANCE = 0.15; // relative, same width as MISMATCH_THRESHOLD
+function isLegOrLapDistance(measuredDist, officialDist, format) {
+  if (format !== "out_and_back" && format !== "loop") return false;
+  if (!Number.isFinite(measuredDist) || !Number.isFinite(officialDist) || officialDist <= 0) return false;
+  const ratio = measuredDist / officialDist;
+  return LEG_OR_LAP_RATIOS.some((r) => Math.abs(ratio - r) <= r * LEG_OR_LAP_RATIO_TOLERANCE);
+}
+
 /**
  * Compare a GPX-measured distance/gain against race.json's official chart
  * figures and report anything far enough off to not be normal drift.
@@ -65,15 +87,18 @@ export const MISMATCH_THRESHOLD = 0.15; // 15% — comfortably above normal GPX 
  * instead of only buildCourse ever seeing it once, mid-build.
  * @param {{distance_mi: number, gain_ft: number}} measured
  * @param {{distance_mi: number, gain_ft: number}} official
+ * @param {{format?: string|null}} [opts] race.json's `format` — only
+ *   "out_and_back"/"loop" are ever consulted; see isLegOrLapDistance above.
  * @returns {string[]}
  */
-export function courseMismatches(measured, official) {
+export function courseMismatches(measured, official, { format = null } = {}) {
   const mismatches = [];
   const officialDist = official?.distance_mi;
   const officialGain = official?.gain_ft;
   const measuredDist = measured?.distance_mi;
   const measuredGain = measured?.gain_ft;
   if (!Number.isFinite(officialDist) || officialDist <= 0 || !Number.isFinite(measuredDist)) return mismatches;
+  if (isLegOrLapDistance(measuredDist, officialDist, format)) return mismatches;
   const distPctOff = Math.abs(measuredDist / officialDist - 1);
   const gainPctOff = Number.isFinite(officialGain) && officialGain > 0 && Number.isFinite(measuredGain)
     ? Math.abs(measuredGain / officialGain - 1)
@@ -395,7 +420,8 @@ export async function buildCourse(root, slug, opts = {}) {
   // entry rather than an SSE line that scrolls by and is gone.
   const mismatches = courseMismatches(
     { distance_mi: measuredDist, gain_ft: measuredGain },
-    { distance_mi: officialDist, gain_ft: officialGain }
+    { distance_mi: officialDist, gain_ft: officialGain },
+    { format: race.format ?? null }
   );
   for (const m of mismatches) warn(m);
 

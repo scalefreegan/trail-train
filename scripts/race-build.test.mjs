@@ -349,6 +349,43 @@ test("the fixture's own default gain_ft (1200) is far enough off to be flagged o
   assert.ok(r.warnings.some((w) => /ft of gain vs race\.json's 1,200 ft/.test(w)), r.warnings.join(" | "));
 });
 
+test("an out_and_back course.gpx that measures ~half the official round-trip distance is not flagged as truncated/wrong", async () => {
+  const slug = "out-and-back-half-2027";
+  const race = draftRace(slug);
+  race.format = "out_and_back";
+  race.distance_mi = 60; // the synthetic track measures ~29.9 mi — ~half of 60
+  race.gain_ft = 1200; // deliberately still far off measured (~399) — the point
+  const { root } = await makeRoot(slug, { race }); // is that distance alone excuses BOTH dimensions once matched
+
+  const r = await buildRace({ root, slug });
+  assert.ok(!r.unresolved.includes("course.gpx"), r.unresolved.join(", "));
+  assert.ok(!r.warnings.some((w) => /GPX may be truncated or the wrong file/.test(w)), r.warnings.join(" | "));
+});
+
+test("format alone does not excuse a genuinely wrong ratio — an out_and_back GPX at a non-leg ratio still flags", async () => {
+  const slug = "out-and-back-wrong-ratio-2027";
+  const race = draftRace(slug);
+  race.format = "out_and_back"; // same format as the excused case above…
+  race.distance_mi = 36; // …but 29.9/36 ≈ 0.83, nowhere near the ~0.5/~2 leg ratio
+  const { root } = await makeRoot(slug, { race });
+
+  const r = await buildRace({ root, slug });
+  assert.ok(r.unresolved.includes("course.gpx"), r.unresolved.join(", "));
+  assert.ok(r.warnings.some((w) => /GPX may be truncated or the wrong file/.test(w)), r.warnings.join(" | "));
+});
+
+test("a point_to_point course at the same ~half ratio is NOT excused — the ratio only means something for out_and_back/loop", async () => {
+  const slug = "point-to-point-half-ratio-2027";
+  const race = draftRace(slug);
+  race.format = "point_to_point";
+  race.distance_mi = 60; // same ~0.5 ratio as the excused out_and_back case above
+  race.gain_ft = 1200;
+  const { root } = await makeRoot(slug, { race });
+
+  const r = await buildRace({ root, slug });
+  assert.ok(r.unresolved.includes("course.gpx"), r.unresolved.join(", "));
+});
+
 test("the course.gpx mismatch is persisted onto race.json's unresolved list, and clears on a later build whose GPX passes", async () => {
   const slug = "truncated-gpx-persist-2027";
   const race = draftRace(slug);

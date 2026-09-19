@@ -589,7 +589,8 @@ export async function loadReview(root, slug) {
   const courseMismatchLive = course
     ? courseMismatches(
         { distance_mi: course.distance_mi, gain_ft: course.gain_ft },
-        { distance_mi: race.distance_mi, gain_ft: race.gain_ft }
+        { distance_mi: race.distance_mi, gain_ft: race.gain_ft },
+        { format: race.format ?? null }
       ).length > 0
     : null;
 
