@@ -30,7 +30,7 @@ import { THEME_PRESET_NAMES } from "../themes/presets";
 import { ThemePreview } from "../themes/ThemePreview";
 import type { Course, RaceAidStation, RaceBlock, RaceConfig } from "./types";
 import type { NutritionConfig } from "./nutrition-config";
-import { cellStyle, inputStyle, runStage, type StageEvent, type StageRow, type StageState } from "./dialogChrome";
+import { cellStyle, inputStyle, runStage, useDialog, type StageEvent, type StageRow, type StageState } from "./dialogChrome";
 
 
 /* ------------------------------------------------------------------ */
@@ -155,6 +155,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   const { reload } = useRefresh();
   const [slug, setSlug] = useState<string | null>(openAt);
   const [screen, setScreen] = useState<"form" | "review">(openAt ? "review" : "form");
+  const header = screen === "review" ? "review · draft race" : "new race";
 
   // Restore a form abandoned by ESC/backdrop (round 1, bug D8) — read once,
   // synchronously, during the first render, so the fields never flash empty
@@ -188,14 +189,13 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   const [reviewLocked, setReviewLocked] = useState(false);
   const locked = running || reviewLocked;
 
-  // Escape closes. The draft is on disk, so there is nothing here to lose —
-  // except mid-run (or mid-review-screen-write), where closing would orphan
-  // a stream or leave a second concurrent write racing a reopened dialog.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !locked) onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, locked]);
+  // Focus, Tab-trap, Escape (respecting `locked` — mid-run or mid-review-
+  // screen-write, closing would orphan a stream or leave a second concurrent
+  // write racing a reopened dialog) and focus return, same as every other
+  // overlay in the app (PR #23 review round 2, generic finding 2 / resilience
+  // finding 5: this was the one dialog still hand-rolling its own Escape
+  // effect with no focus trap at all).
+  const { dialogProps } = useDialog({ onClose, locked, label: header });
   useEffect(() => () => abortRef.current?.abort(), []);
 
   // Persist on every change so ESC/backdrop never loses it again.
@@ -310,7 +310,6 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   const canRun = /^https?:\/\/\S+$/i.test(siteUrl.trim()) && yearOk && !running;
   const ranAnything = STAGES.some((s) => stageState[s.id] !== "pending");
 
-  const header = screen === "review" ? "review · draft race" : "new race";
   const subtitle = screen === "review"
     ? "check what the intake read, fill or accept what it could not, then activate"
     : "the race's own site, whatever documents you have, and one run of the three intake stages";
@@ -318,10 +317,8 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   return createPortal(
     <Backdrop onClose={() => { if (!locked) onClose(); }}>
       <div
+        {...dialogProps}
         className="panel notch"
-        role="dialog"
-        aria-modal="true"
-        aria-label={header}
         onClick={(e) => e.stopPropagation()}
         style={{
           width: screen === "review" ? "min(1240px, 100%)" : "min(720px, 100%)",
@@ -945,6 +942,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               theme
               <select
+                aria-label="theme"
                 style={{ ...inputStyle, fontSize: 11, padding: "2px 6px" }}
                 value={themeEdit ?? race.visual?.theme_preset ?? ""}
                 onChange={(e) => { setSaveError(null); setThemeEdit(e.target.value); }}
@@ -1225,7 +1223,13 @@ function UnresolvedList({ unresolved, hints, race, course, fills, isAcked, onFil
                   </button>
                 )}
                 <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--mist-mute)", opacity: filled ? 0.4 : 1 }}>
-                  <input type="checkbox" checked={filled || isAcked(path)} disabled={filled} onChange={(e) => onAck(path, e.target.checked)} />
+                  <input
+                    type="checkbox"
+                    aria-label={`acknowledge ${path}`}
+                    checked={filled || isAcked(path)}
+                    disabled={filled}
+                    onChange={(e) => onAck(path, e.target.checked)}
+                  />
                   acknowledge
                 </label>
               </div>
