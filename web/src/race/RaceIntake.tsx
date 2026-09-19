@@ -768,7 +768,18 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
     // on sends the list — that is the shape A's schema change expects, and it
     // is also the only way to persist un-ticking a box (round 1, bug D6/R3):
     // a bare `true` can never express "acknowledged all but this one".
-    if (unfilled.length) body.unresolved_acknowledged = unfilled.filter(isAcked);
+    //
+    // Only when `ackDirty` — a checkbox was actually touched THIS session, so
+    // its local state (`acked`) disagrees with what's on disk. Sending the
+    // list on every save (even an unrelated aid-station edit that never
+    // touched a checkbox) used to resend whatever this tab last loaded as
+    // "acked", which is a lost-update bug the moment a second tab is open: an
+    // ack withdrawn in tab A gets silently reinstated by an unrelated save in
+    // stale tab B, since B's `acked` is empty and falls back to ITS OWN
+    // (older) `data` for every path either way (PR #23 review round 2, draft
+    // finding 2). A tab that never touched the boxes now sends nothing for
+    // this field, leaving whatever the last tab to actually change it wrote.
+    if (unfilled.length && ackDirty) body.unresolved_acknowledged = unfilled.filter(isAcked);
     if (data?.block && Object.keys(blockEdits).length) {
       body.block_targets = data.block.targets.map((t) => ({
         wk: t.wk,
