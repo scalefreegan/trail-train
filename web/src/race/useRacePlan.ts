@@ -152,11 +152,14 @@ export type RacePlan = {
   clock: (elapsedH: number) => string;
   settings: {
     fatigue: number; calibration: number; restraint: number; goalH: number;
+    /** the altitude term's scale, % (100 = the model as published, 0 = off) */
+    altitude: number;
     aidStopMin: number; crewStopMin: number; stopOverrides: Record<string, number>;
   };
   set: {
     fatigue: (n: number) => void; calibration: (n: number) => void;
     restraint: (n: number) => void; goalH: (n: number) => void;
+    altitude: (n: number) => void;
     aidStopMin: (n: number) => void; crewStopMin: (n: number) => void;
     stopOverride: (name: string, min: number | null) => void;
     clearStopOverrides: () => void;
@@ -231,6 +234,11 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
   // age the fatigue clock less — bank energy for the second 50
   const [restraint, setRestraint] = usePersistedNumber(knob("restraint_pct"), 8);
   const [goalH, setGoalH] = usePersistedNumber(knob("goal_h"), goalDefaultH);
+  // how much of the modeled altitude penalty to apply: 100 = the curve as
+  // published (scripts/altitude.mjs), 0 = off. A knob rather than a constant
+  // because the curve is a population average and bead 02's back-test will
+  // have an opinion about this athlete's own number.
+  const [altitude, setAltitude] = usePersistedNumber(knob("altitude_pct"), 100);
   const [aidStopMin, setAidStopMin] = usePersistedNumber(knob("aid_stop_min"), 5);
   const [crewStopMin, setCrewStopMin] = usePersistedNumber(knob("crew_stop_min"), 10);
   const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops(knob("stop_overrides"));
@@ -253,8 +261,12 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
       fatiguePctPer10mi: fatigue, calibrationPct: calibration, restraintPct: restraint,
       gradeCurve: paceGrade,
       goalH: goalH > 0 ? goalH : null, aidStopMin, crewStopMin, stopOverridesMin: stopOverrides,
+      // acclimation_days is 0 until bead 02 derives it from the calendar's
+      // travel events — "fly in and run", the pessimistic end of the curve
+      altitude: { pct: altitude, homeElevationFt: physiology.home_elevation_ft, acclimationDays: 0 },
     }) : null),
-    [course, fit, paceGrade, fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides],
+    [course, fit, paceGrade, fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides,
+     altitude, physiology.home_elevation_ft],
   );
 
   // course.sun is the freshest (it's what the last build actually computed);
@@ -275,10 +287,10 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
     fit, proj, nutrition, fuelPlan, physiology, physiologyError,
     raceStart: race.date, timeZone: race.timeZone, clock: race.clock,
     raceConfig, race, features, panels, columns,
-    settings: { fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides },
+    settings: { fatigue, calibration, restraint, goalH, altitude, aidStopMin, crewStopMin, stopOverrides },
     set: {
       fatigue: setFatigue, calibration: setCalibration, restraint: setRestraint,
-      goalH: setGoalH, aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
+      goalH: setGoalH, altitude: setAltitude, aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
       stopOverride: setStopOverride, clearStopOverrides,
     },
   };

@@ -836,6 +836,7 @@ function settingsApi(): Plugin {
   const PHYSIOLOGY_BOUNDS: Record<string, [number, number]> = {
     body_kg: [30, 200],
     long_run_ref_mi: [5, 50],
+    home_elevation_ft: [-300, 15000],
   }
   // KEEP IN SYNC with GOAL_PHASES in scripts/goals.mjs — vite.config.ts
   // can't statically import from scripts/ (its tsconfig has no allowJs), and
@@ -1029,7 +1030,9 @@ function settingsApi(): Plugin {
             saveGoals: (root: string, g: unknown) => Promise<string>
           }
           const profileMod = await import(path.join(projectRoot, 'scripts/profile.mjs')) as {
-            normalizePhysiology: (raw: unknown) => { physiology: Record<string, number>; warnings: string[] }
+            // home_elevation_ft normalizes to NULL when unset — the loader has
+            // no honest stand-in for where somebody lives (scripts/profile.mjs)
+            normalizePhysiology: (raw: unknown) => { physiology: Record<string, number | null>; warnings: string[] }
           }
           if (req.method === 'GET') {
             // PR #23 review round 1, finding 2: only the PUT branch used to
