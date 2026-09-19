@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "slug": "rimrock-50k",
+  "status": "archived",
+  "name": "Rimrock Ramble 50K",
+  "short": "RR50K",
+  "edition_year": 2026,
+  "date": "2026-04-18",
+  "start_time": "07:00",
+  "timezone": "America/Denver",
+  "location": "Invented for tests · a rim that does not exist",
+  "format": "loop",
+  "distance_mi": 31.6,
+  "gain_ft": 5400,
+  "elevation": { "min_ft": 6100, "max_ft": 8250, "avg_ft": 7100, "altitude_significant": true },
+  "cutoff_h": 10,
+  "features": {
+    "crew": true,
+    "drop_bags": false,
+    "pacers": false,
+    "night": false,
+    "heat": false,
+    "altitude": true,
+    "water_crossings": false
+  },
+  "sun": { "sunrise": "06:31", "sunset": "19:44" },
+  "aid_stations": [
+    { "name": "Start", "gpx_wpt": null, "total_mi": 0, "seg_mi": 0, "seg_gain_ft": 0, "cutoff_h": null, "crew": true, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": false, "menu": "full", "notes": "" },
+    { "name": "Lantern Draw", "gpx_wpt": null, "total_mi": 8.2, "seg_mi": 8.2, "seg_gain_ft": 1700, "cutoff_h": 3, "crew": false, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": true, "menu": "backcountry", "notes": "water only" },
+    { "name": "Quartz Bench", "gpx_wpt": null, "total_mi": 17.4, "seg_mi": 9.2, "seg_gain_ft": 1900, "cutoff_h": 6, "crew": true, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": false, "menu": "full", "notes": "the one crew point" },
+    { "name": "Pinyon Gate", "gpx_wpt": null, "total_mi": 25.1, "seg_mi": 7.7, "seg_gain_ft": 1300, "cutoff_h": 8.5, "crew": false, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": false, "menu": "basic", "notes": "" },
+    { "name": "Finish", "gpx_wpt": null, "total_mi": 31.6, "seg_mi": 6.5, "seg_gain_ft": 500, "cutoff_h": 10, "crew": true, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": false, "menu": "full", "notes": "" }
+  ],
+  "race_climbs": [
+    { "id": "lantern", "label": "Lantern Draw climb", "approx_mi": [2.0, 8.2] },
+    { "id": "quartz", "label": "Quartz Bench climb", "approx_mi": [11.5, 17.4] }
+  ],
+  "coach_notes": {
+    "terrain": "Dirt road to the rim, then rocky singletrack the rest of the way round.",
+    "climate": "Cool at the start, warm on the exposed bench by mid-morning.",
+    "altitude": "Everything sits above 6,000 ft.",
+    "key_demands": "Two honest climbs inside the first half; the rest is runnable.",
+    "race_week": "Nothing race-specific."
+  },
+  "links": { "site": "https://example.invalid/rimrock-ramble-50k" },
+  "visual": { "theme_preset": "desert", "panels": { "climb_comparison": false, "model_check": false, "crew_sheet": false } },
+  "sources": []
+}
