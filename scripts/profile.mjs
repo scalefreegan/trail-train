@@ -97,14 +97,29 @@ export const profileExamplePath = (projectRoot) => path.join(projectRoot, "confi
  */
 export async function loadProfileWithWarnings(projectRoot) {
   let profile = null;
+  const parseWarnings = [];
   for (const p of [profilePath(projectRoot), profileExamplePath(projectRoot)]) {
-    try { profile = JSON.parse(await fs.readFile(p, "utf8")); break; } catch { /* next */ }
+    try {
+      profile = JSON.parse(await fs.readFile(p, "utf8"));
+      break;
+    } catch (e) {
+      if (e.code === "ENOENT") continue; // never created yet — normal, try the next path
+      // The file EXISTS but is not valid JSON — a corrupt (not missing)
+      // profile.json. Falling through to the example/minimal fallback here
+      // would silently discard the athlete's real name, home trails and
+      // physiology with no trace anywhere the coach or settings dialog would
+      // show it. Mirrors goals.mjs's readJsonIfPresent, which draws the same
+      // ENOENT-vs-corrupt line. The message also lands in `warnings` (below)
+      // so every physiology_warnings-style consumer of this loader — not
+      // just the process's console — surfaces it.
+      parseWarnings.push(`${p} exists but failed to parse (${e.message}) — falling back`);
+    }
   }
   if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
     profile = { athlete_name: "the athlete", location: "their home mountains", home_trails: [] };
   }
   const { physiology, warnings } = normalizePhysiology(profile.physiology);
-  return { profile: { ...profile, physiology }, warnings };
+  return { profile: { ...profile, physiology }, warnings: [...parseWarnings, ...warnings] };
 }
 
 /**

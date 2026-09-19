@@ -430,9 +430,29 @@ export async function migrateToV3(projectRoot, state) {
     await writeIfAbsent(path.join(dir, "race.json"), raceJsonFromLegacy(state.race, slug, todayIso));
     if (state.block) await writeIfAbsent(path.join(dir, "block.json"), state.block);
     if (planBlocks.length > 0) await writeIfAbsent(path.join(dir, "plan.json"), { plan_blocks: planBlocks });
-  } else if (planBlocks.length > 0) {
-    // No race in this file at all: the plan is already a generic-mode plan.
-    await writeIfAbsent(genericPlanPath(projectRoot), { plan_blocks: planBlocks });
+  } else {
+    if (planBlocks.length > 0) {
+      // No race in this file at all: the plan is already a generic-mode plan.
+      await writeIfAbsent(genericPlanPath(projectRoot), { plan_blocks: planBlocks });
+    }
+    if (state.block) {
+      // A block with no race to attach it to (the restored-backup / test-
+      // fixture path this migration's own docstring calls out) has no live
+      // home that fits it: block.json only means something inside a race
+      // folder (it is read alongside that race's dates/targets), and
+      // config/generic-plan.json's shape is `{plan_blocks}`, not a block —
+      // stuffing block targets into either would be read back wrong later,
+      // which is worse than not migrating them at all. Rather than invent a
+      // new file for a shape nothing else reads, leave it where the backup
+      // above already put it durably, and say so loudly instead of the
+      // previous silent `delete next.block` with nothing printed.
+      console.warn(
+        `• state.json v2→v3: found state.block with no state.race — there is no ` +
+          `race folder to attach it to, so it was NOT migrated into a live file. ` +
+          `The full block is preserved in the v2 backup at ${backupPath}; move it ` +
+          `into a race's block.json by hand if you need it back.`,
+      );
+    }
   }
 
   const next = { ...state, version: STATE_VERSION };

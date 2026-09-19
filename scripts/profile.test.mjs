@@ -21,6 +21,7 @@ import {
   loadProfile,
   loadProfileWithWarnings,
   normalizePhysiology,
+  profilePath,
   resetProfileWarnings,
 } from "./profile.mjs";
 
@@ -176,7 +177,7 @@ test("profile.json wins over the example when both exist", async (t) => {
   assert.equal(profile.physiology.body_kg, 80);
 });
 
-test("a corrupt profile.json falls through to the example rather than throwing", async (t) => {
+test("a corrupt profile.json falls through to the example rather than throwing — loudly, not silently", async (t) => {
   const root = await tempRoot(t);
   await writeConfig(root, "profile.json", "{ nope, not json ");
   await writeConfig(root, "profile.example.json", { athlete_name: "the athlete" });
@@ -185,7 +186,28 @@ test("a corrupt profile.json falls through to the example rather than throwing",
   assert.equal(profile.athlete_name, "the athlete");
   // the example carries no physiology in this fixture, so the defaults apply
   assert.equal(profile.physiology.body_kg, DEFAULT_BODY_KG);
-  assert.equal(warnings.length, 2);
+  // the corrupt-file warning, PLUS the two physiology defaults — not just 2:
+  // a corrupt file being silently treated the same as a missing one is
+  // exactly the bug this test guards against.
+  assert.equal(warnings.length, 3, `expected 3 warnings, got: ${JSON.stringify(warnings)}`);
+  const corruptWarning = warnings.find((w) => w.includes(profilePath(root)));
+  assert.ok(corruptWarning, `expected a warning naming ${profilePath(root)}, got: ${JSON.stringify(warnings)}`);
+  assert.ok(/failed to parse/i.test(corruptWarning), "names the parse failure, not just the file");
+  assert.ok(corruptWarning.includes("JSON"), "carries JSON.parse's own message, not a generic one");
+});
+
+test("a corrupt profile.json prints a console.warn naming the file and the parse error", async (t) => {
+  const root = await tempRoot(t);
+  await writeConfig(root, "profile.json", "{ nope, not json ");
+
+  resetProfileWarnings();
+  const { value: profile, lines } = await captureWarn(() => loadProfile(root));
+  // still degrades to a usable profile — this is about visibility, not throwing
+  assert.equal(profile.athlete_name, "the athlete");
+  assert.ok(
+    lines.some((l) => l.includes(profilePath(root)) && /failed to parse/i.test(l)),
+    `expected a console.warn naming ${profilePath(root)} and the parse failure, got: ${JSON.stringify(lines)}`,
+  );
 });
 
 test("an empty project still yields a usable, complete profile", async (t) => {
