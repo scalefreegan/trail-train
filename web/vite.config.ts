@@ -1285,6 +1285,164 @@ function raceAssetApi(): Plugin {
   }
 }
 
+/* Dev-only middleware: the tune-up quick form (PRD-v2 §3).
+     POST /api/races — { name, date, distance_mi, gain_ft, parent_slug,
+       timezone?, gpx? } writes a B-race folder (slug derived from the name
+       and the date's year) and, when a GPX came with it, builds its course.
+
+   Intake without the agent: five typed fields, no sources, no `claude -p`
+   turn and no spend. The rules — parent must be a readable A race, a tune-up
+   is never "active", provenance is the athlete's — live in
+   scripts/race-intake.mjs's quickCreateRace under `node --test`; this is the
+   HTTP skin over it.
+
+   `gpx` is a path from POST /api/race-intake/upload (or a file already in the
+   project): the same two-step the intake's own uploads use, so this endpoint
+   stays JSON and needs no multipart parser. It is re-checked against the same
+   safe roots here — a POST must never be able to ask the server to copy an
+   arbitrary file off the disk into a race folder.
+
+   MUST be registered BEFORE raceSwitchApi(): connect matches middleware by
+   path prefix in registration order and raceSwitchApi's GET /api/races
+   answers every method it sees with the race list or a 405. Anything that is
+   not a POST to the bare prefix is handed straight on — the slug sub-paths
+   belong to the result / asset / refresh / edit plugins. */
+function raceCreateApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* Five fields and a file path; a body bigger than this is not one. */
+  const BODY_MAX_BYTES = 64 * 1024
+  /* Same rule as the intake's uploads: a path the server will read has to be
+     under a directory the upload endpoint writes to, or inside the repo. */
+  const safeRoots = [os.tmpdir(), '/tmp', '/private/tmp', projectRoot].map((p) => {
+    try { return fs.realpathSync(p) } catch { return p }
+  })
+  const insideSafeRoot = (p: string): boolean => {
+    let real: string
+    try { real = fs.realpathSync(p) } catch { return false }
+    return safeRoots.some((root) => real === root || real.startsWith(root + path.sep))
+  }
+  type QuickCreate = (opts: Record<string, unknown>) => Promise<{
+    slug: string
+    dir: string
+    race: Record<string, unknown>
+    gpx: boolean
+  }>
+  type BuildRace = (opts: Record<string, unknown>) => Promise<{
+    slug: string
+    unresolved: string[]
+    warnings: string[]
+    course: unknown
+  }>
+
+  return {
+    name: 'trail-train-race-create-api',
+    apply: 'serve',
+    configureServer(server) {
+      const json = (res: ServerResponse, code: number, payload: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(JSON.stringify(payload))
+      }
+
+      server.middlewares.use('/api/races', async (req, res, next) => {
+        // connect strips the mount path: "" or "/" IS /api/races. A sub-path
+        // is somebody else's route, and a GET here is the switcher's list.
+        const rest = (req.url ?? '/').split('?')[0]
+        if (rest !== '' && rest !== '/') { next(); return }
+        if (req.method !== 'POST') { next(); return }
+        if (crossSiteBlocked(req, res)) return
+
+        const chunks: Buffer[] = []
+        let total = 0
+        for await (const c of req) {
+          total += (c as Buffer).byteLength
+          if (total > BODY_MAX_BYTES) { json(res, 413, { error: 'request body too large' }); return }
+          chunks.push(c as Buffer)
+        }
+        let body: {
+          name?: unknown; date?: unknown; distance_mi?: unknown; gain_ft?: unknown
+          parent_slug?: unknown; timezone?: unknown; gpx?: unknown
+        }
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
+        catch { json(res, 400, { error: 'bad json' }); return }
+
+        const parentSlug = parseSlugParam(typeof body.parent_slug === 'string' ? body.parent_slug.trim() : '')
+        if (!parentSlug) { json(res, 400, { error: 'parent_slug: the A race this tune-up sits inside is required (lowercase kebab-case)' }); return }
+        const distance = typeof body.distance_mi === 'number' ? body.distance_mi : Number(body.distance_mi)
+        const gain = typeof body.gain_ft === 'number' ? body.gain_ft : Number(body.gain_ft)
+        if (!Number.isFinite(distance) || distance <= 0) { json(res, 400, { error: 'distance_mi: positive number required' }); return }
+        if (!Number.isFinite(gain) || gain < 0) { json(res, 400, { error: 'gain_ft: non-negative number required' }); return }
+
+        /* The upload's path, checked twice: the shape here, the safe roots
+           below — neither alone keeps this from becoming a file-copy API. */
+        const rawGpx = body.gpx as { path?: unknown } | string | undefined
+        const gpxPath = typeof rawGpx === 'string'
+          ? rawGpx
+          : typeof rawGpx?.path === 'string' ? rawGpx.path : null
+        if (gpxPath) {
+          if (path.extname(gpxPath).toLowerCase() !== '.gpx') {
+            json(res, 415, { error: 'gpx: a .gpx file from /api/race-intake/upload is expected' })
+            return
+          }
+          if (!insideSafeRoot(gpxPath)) {
+            json(res, 400, { error: `gpx: must be a file from /api/race-intake/upload (or inside the project): ${gpxPath}` })
+            return
+          }
+        }
+
+        let created: Awaited<ReturnType<QuickCreate>>
+        try {
+          const { quickCreateRace } = await import(path.join(projectRoot, 'scripts/race-intake.mjs')) as {
+            quickCreateRace: QuickCreate
+          }
+          created = await quickCreateRace({
+            root: projectRoot,
+            name: typeof body.name === 'string' ? body.name : '',
+            date: typeof body.date === 'string' ? body.date : '',
+            distance_mi: distance,
+            gain_ft: gain,
+            parent_slug: parentSlug,
+            timezone: typeof body.timezone === 'string' ? body.timezone : null,
+            gpxPath,
+          })
+        } catch (e) {
+          // quickCreateRace tags its refusals the way archiveRace does.
+          const code = (e as { code?: string }).code
+          const status = code === 'conflict' ? 409 : code === 'not_found' ? 404 : code === 'bad_request' ? 400 : 500
+          if (status === 500) console.error(`[race-create] ${(e as Error).message}`)
+          json(res, status, { error: (e as Error).message })
+          return
+        }
+
+        // The folder is already valid and already answers the switcher; the
+        // course build is the optional second half. A build that fails (an
+        // unparseable GPX, a track with no points) must NOT undo the race —
+        // it comes back as `build.error` for the form to show, with the
+        // folder left in place to fix by hand or rebuild.
+        let build: { ok: boolean; unresolved?: string[]; warnings?: string[]; error?: string } | null = null
+        if (created.gpx) {
+          if (!acquireSlugLock(created.slug, 'build')) {
+            build = { ok: false, error: `${slugLockLabel(created.slug, 'build')} for "${created.slug}" is already running` }
+          } else {
+            try {
+              const { buildRace } = await import(path.join(projectRoot, 'scripts/race-build.mjs')) as { buildRace: BuildRace }
+              const result = await buildRace({ root: projectRoot, slug: created.slug })
+              build = { ok: true, unresolved: result.unresolved, warnings: result.warnings }
+            } catch (e) {
+              console.error(`[race-create] course build for ${created.slug}: ${(e as Error).message}`)
+              build = { ok: false, error: (e as Error).message }
+            } finally {
+              releaseSlugLock(created.slug)
+            }
+          }
+        }
+        json(res, 201, { slug: created.slug, race: created.race, build })
+      })
+    },
+  }
+}
+
 // Dev-only middleware: the race switcher's two endpoints (PRD §7).
 //   GET  /api/races          — every folder under races/, as the menu shows
 //                              them: slug, name, short, status, date.
@@ -1300,10 +1458,19 @@ function raceSwitchApi(): Plugin {
   const projectRoot = path.resolve(__dirname, '..')
   /* A slug and a mode; a body bigger than this is not one. */
   const BODY_MAX_BYTES = 16 * 1024
+  type RaceRow = {
+    slug: string
+    kind: string
+    parent_slug: string | null
+    date: string | null
+    [k: string]: unknown
+  }
   type RaceConfigMod = {
     listRaces: (root: string) => Promise<{ slug: string; race: Record<string, unknown> | null; error: string | null }[]>
     setActivePointer: (root: string, req: unknown) => Promise<{ slug: string | null; mode: string }>
     readActivePointer: (root: string) => Promise<{ slug: string | null; mode: string }>
+    groupRaces: (rows: RaceRow[]) => (RaceRow & { b_races: RaceRow[] })[]
+    raceKind: (race: Record<string, unknown> | null) => 'a' | 'b'
   }
   return {
     name: 'trail-train-race-switch-api',
@@ -1324,10 +1491,9 @@ function raceSwitchApi(): Plugin {
         if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
         if (crossSiteBlocked(req, res)) return
         try {
-          const { listRaces, readActivePointer } = await raceConfig()
+          const { listRaces, readActivePointer, groupRaces, raceKind } = await raceConfig()
           const [races, pointer] = await Promise.all([listRaces(projectRoot), readActivePointer(projectRoot)])
-          json(res, 200, {
-            races: races.map((r) => ({
+          const rows = races.map((r) => ({
               slug: r.slug,
               // A folder whose race.json is broken still appears, named after
               // itself and carrying its error: hiding it would look like the
@@ -1340,8 +1506,23 @@ function raceSwitchApi(): Plugin {
               // of each race's palette, which needs the preset and accent
               // BEFORE the race is switched to (tt-yib.16)
               visual: (r.race?.visual as Record<string, unknown>) ?? null,
+              // A tune-up and the A race it hangs off (PRD-v2 §3). A folder
+              // written before v2 has no `kind` and reads as "a" — raceKind
+              // is the one place that default lives.
+              kind: raceKind(r.race),
+              parent_slug: (r.race?.parent_slug as string) ?? null,
               error: r.error,
-            })),
+            }))
+          json(res, 200, {
+            // Flat, exactly as before — status, errors and the palette
+            // swatch are read off this list.
+            races: rows,
+            // The same rows nested: each A race carrying its tune-ups, which
+            // is how the switcher draws them. Derived server-side so the menu
+            // and the coach agree on what hangs off what; an orphan B (its
+            // parent folder is gone) stays at the top level rather than
+            // vanishing from the menu.
+            groups: groupRaces(rows),
             pointer,
           })
         } catch (e) {
@@ -2691,13 +2872,18 @@ export default defineConfig({
   // /api/races/<slug>/tracker, /api/races/<slug>/refresh and
   // /api/races/<slug>/asset/<name> are all under /api/races, and the list
   // endpoint answers every GET it sees, so each has to be given the request
-  // first. All five call next() for a path that is not theirs, which is what
+  // first. They all call next() for a path that is not theirs, which is what
   // lets them share one prefix in any order.
   // raceRefreshApi is also why it sits ahead of raceIntakeApi: its other mount
   // is /api/race-intake/refresh, which the intake's own prefix would swallow.
   // raceTrackerApi (/api/races/<slug>/tracker) joins that same group — one
   // more /api/races route that the list endpoint would otherwise answer.
-  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceTrackerApi(), raceAssetApi(), raceRefreshApi(), raceEditApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
+  // raceCreateApi is the only one mounted on the BARE prefix: POST /api/races
+  // (the tune-up quick form) has to be given the request before raceSwitchApi,
+  // whose list endpoint answers — or 405s — every method it sees there. It
+  // hands on everything else, so the slug-path plugins above are unaffected by
+  // where it sits among them.
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceTrackerApi(), raceAssetApi(), raceRefreshApi(), raceEditApi(), raceCreateApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
   // Fixed, memorable, deliberately unusual port. The 5173 default collides
   // with every other Vite project on the machine, and a colliding neighbor
   // silently claims the port so this app hops to 5174+ — which breaks the

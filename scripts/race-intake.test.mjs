@@ -24,11 +24,13 @@ import {
   draftValidationErrors,
   kebab,
   pdfPageCount,
+  quickCreateRace,
   releaseSlugClaim,
   renderManifestPdfs,
   renderPdfPages,
   detectPdfTools,
   runIntake,
+  shortFromName,
   summarizeManifestGpx,
   validateAgentDraft,
 } from "./race-intake.mjs";
@@ -645,4 +647,185 @@ test("runIntake: a write failure after validation still parks the raw output ins
     runIntake({ root: tmp, siteUrl: DEAD_SITE, year: 2027, runAgent: cannedAgent(draft) }),
     (e) => /raw agent output saved to/.test(e.message),
   );
+});
+
+/* ================= the quick form: a tune-up race (PRD-v2 §3) ================= */
+
+/** The A race a tune-up hangs off. Minimal but valid — quickCreateRace reads
+    its kind and its timezone, and nothing else. */
+const PARENT = {
+  schema_version: 1,
+  slug: "san-juan-softie-100-2027",
+  status: "active",
+  name: "San Juan Softie 100",
+  short: "SJS100",
+  date: "2027-08-13",
+  start_time: "06:00",
+  timezone: "America/Denver",
+  distance_mi: 104,
+  gain_ft: 19000,
+  cutoff_h: 38,
+  aid_stations: [{ name: "Finish", total_mi: 104, cutoff_h: 38 }],
+};
+
+/** "now" for these tests: well before the 2027 dates below. */
+const NOW = Date.parse("2027-01-15T12:00:00Z");
+
+async function quickRoot(t, { parent = PARENT } = {}) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "race-quick-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  if (parent) {
+    await fs.mkdir(path.join(root, "races", parent.slug), { recursive: true });
+    await fs.writeFile(path.join(root, "races", parent.slug, "race.json"), JSON.stringify(parent, null, 2));
+  }
+  return root;
+}
+
+const quickArgs = (over = {}) => ({
+  name: "Jemez Mountain 50K",
+  date: "2027-05-22",
+  distance_mi: 31,
+  gain_ft: 5000,
+  parent_slug: PARENT.slug,
+  now: NOW,
+  ...over,
+});
+
+test("shortFromName invents the short code the schema needs", () => {
+  assert.equal(shortFromName("Jemez Mountain 50K"), "JM50K");
+  assert.equal(shortFromName("San Juan Softie 100"), "SJS100");
+  assert.equal(shortFromName("Deadman Peaks"), "DP");
+  assert.equal(shortFromName("100"), "100");
+  assert.equal(shortFromName(""), "RACE");
+});
+
+test("quickCreateRace writes a valid tune-up folder with the athlete's own provenance", async (t) => {
+  const root = await quickRoot(t);
+  const { slug, race, gpx } = await quickCreateRace({ root, ...quickArgs() });
+
+  assert.equal(slug, "jemez-mountain-50k-2027");
+  assert.equal(gpx, false);
+  assert.equal(race.kind, "b");
+  assert.equal(race.parent_slug, PARENT.slug);
+  // ahead of its date, so it is a plan, not history — and never "active"
+  assert.equal(race.status, "draft");
+  assert.equal(race.short, "JM50K");
+  assert.equal(race.timezone, "America/Denver", "inherited from the parent");
+  assert.equal(race.cutoff_h, null);
+  assert.equal("features" in race, false, "absent features gate the reduced planner off");
+  // one finish line, so the projection has something to aim at
+  assert.deepEqual(race.aid_stations, [
+    { name: "Finish", total_mi: 31, cutoff_h: null, crew: false, drop_bag: false },
+  ]);
+  assert.deepEqual(race.unresolved, ["cutoff_h"]);
+
+  // no agent anywhere near this folder: everything the athlete typed is
+  // "user", and only the two DERIVED values are "computed" (so a later real
+  // intake is free to replace them — "user" is what race-merge.mjs protects)
+  const by = Object.fromEntries(Object.entries(race.provenance).map(([k, v]) => [k, v.by]));
+  assert.deepEqual(by, {
+    name: "user", date: "user", distance_mi: "user", gain_ft: "user", short: "user",
+    kind: "user", parent_slug: "user", timezone: "computed", aid_stations: "computed",
+  });
+
+  const onDisk = JSON.parse(await fs.readFile(path.join(root, "races", slug, "race.json"), "utf8"));
+  assert.deepEqual(onDisk, race);
+  const claim = await fs.access(path.join(root, "races", slug, ".intake-claim")).then(() => true, () => false);
+  assert.equal(claim, false, "the claim must be released once the folder is written");
+
+  const races = [{ slug: PARENT.slug, race: PARENT, error: null }, { slug, race, error: null }];
+  assert.deepEqual(validateRaceJson(race, { races }).errors, []);
+});
+
+test("quickCreateRace: an explicit timezone is the athlete's, and a past race is already history", async (t) => {
+  const root = await quickRoot(t);
+  const { race } = await quickCreateRace({
+    root,
+    ...quickArgs({ name: "Cinder Cone 25K", date: "2026-11-07", timezone: "America/Phoenix" }),
+  });
+  assert.equal(race.timezone, "America/Phoenix");
+  assert.equal(race.provenance.timezone.by, "user");
+  // its day is long over in its own zone
+  assert.equal(race.status, "archived");
+});
+
+test("quickCreateRace: race day itself is not yet history", async (t) => {
+  const root = await quickRoot(t);
+  const raceDay = Date.parse("2027-05-22T18:00:00-06:00"); // mid-afternoon in Denver
+  const { race } = await quickCreateRace({ root, ...quickArgs({ now: raceDay }) });
+  assert.equal(race.status, "draft");
+});
+
+test("quickCreateRace refuses a slug that is taken", async (t) => {
+  const root = await quickRoot(t);
+  await quickCreateRace({ root, ...quickArgs() });
+  await assert.rejects(
+    quickCreateRace({ root, ...quickArgs() }),
+    (e) => e.code === "conflict" && /already exists/.test(e.message),
+  );
+});
+
+test("quickCreateRace refuses a parent that is missing, unreadable or itself a tune-up", async (t) => {
+  const root = await quickRoot(t);
+  await assert.rejects(
+    quickCreateRace({ root, ...quickArgs({ parent_slug: "ghost-race-2027" }) }),
+    (e) => e.code === "not_found" && /no race folder/.test(e.message),
+  );
+
+  const { slug } = await quickCreateRace({ root, ...quickArgs() });
+  await assert.rejects(
+    quickCreateRace({ root, ...quickArgs({ name: "Second 50K", parent_slug: slug }) }),
+    (e) => e.code === "bad_request" && /itself a tune-up/.test(e.message),
+  );
+
+  await fs.writeFile(path.join(root, "races", PARENT.slug, "race.json"), "{ not json");
+  await assert.rejects(
+    quickCreateRace({ root, ...quickArgs({ name: "Third 50K" }) }),
+    (e) => e.code === "bad_request" && /unreadable/.test(e.message),
+  );
+});
+
+test("quickCreateRace refuses a name or date it cannot make a folder from", async (t) => {
+  const root = await quickRoot(t);
+  await assert.rejects(quickCreateRace({ root, ...quickArgs({ name: "  " }) }), (e) => e.code === "bad_request");
+  await assert.rejects(quickCreateRace({ root, ...quickArgs({ date: "May 22" }) }), (e) => e.code === "bad_request");
+  // a bad number is the schema's refusal, not a crash — and nothing is left
+  // behind on disk when it is refused
+  await assert.rejects(quickCreateRace({ root, ...quickArgs({ distance_mi: 0 }) }), (e) => e.code === "bad_request");
+  const left = await fs.readdir(path.join(root, "races"));
+  assert.deepEqual(left, [PARENT.slug]);
+});
+
+test("quickCreateRace copies an uploaded GPX into the folder as course.gpx", async (t) => {
+  const root = await quickRoot(t);
+  const upload = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "quick-upload-")), "jemez.gpx");
+  await fs.writeFile(upload, "<gpx></gpx>");
+  t.after(() => fs.rm(path.dirname(upload), { recursive: true, force: true }));
+
+  const { slug, race, gpx } = await quickCreateRace({ root, ...quickArgs({ gpxPath: upload }) });
+  assert.equal(gpx, true);
+  assert.equal(await fs.readFile(path.join(root, "races", slug, "course.gpx"), "utf8"), "<gpx></gpx>");
+  assert.deepEqual(race.sources.map((s) => ({ kind: s.kind, ref: s.ref })), [{ kind: "gpx", ref: "jemez.gpx" }]);
+});
+
+test("POST /api/races is registered before the race list it shares a prefix with", async () => {
+  // Not an HTTP test — connect matches middleware by path PREFIX in
+  // registration order, and raceSwitchApi's GET /api/races answers (or 405s)
+  // every method it sees there. If raceCreateApi ever slid after it in the
+  // plugins array the quick form would 405 with nothing else failing, so the
+  // order itself is the assertion. The cross-site guard is checked the same
+  // way: every state-changing endpoint in that file has one.
+  const config = await fs.readFile(path.join(HERE, "..", "web", "vite.config.ts"), "utf8");
+  const plugins = /plugins: \[(.+?)\]/s.exec(config);
+  assert.ok(plugins, "could not find the plugins array");
+  const order = plugins[1];
+  assert.ok(order.includes("raceCreateApi()"), "raceCreateApi is not registered");
+  assert.ok(
+    order.indexOf("raceCreateApi()") < order.indexOf("raceSwitchApi()"),
+    "raceCreateApi must come before raceSwitchApi",
+  );
+  const body = /function raceCreateApi\(\): Plugin \{(.+?)\n\}/s.exec(config);
+  assert.ok(body, "could not find raceCreateApi");
+  assert.ok(/crossSiteBlocked\(req, res\)/.test(body[1]), "the quick-create endpoint must refuse cross-site callers");
+  assert.ok(/insideSafeRoot\(gpxPath\)/.test(body[1]), "the uploaded GPX path must be re-checked");
 });
