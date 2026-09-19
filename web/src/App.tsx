@@ -1729,7 +1729,7 @@ function RoadAhead() {
         right={
           <span className="eyebrow">
             {calOk
-              ? `${cal!.summary.upcoming_events} events · ${cal!.summary.races_upcoming} races · ${cal!.summary.travel_days_upcoming.length} travel days · ${cal!.summary.childcare_days_upcoming?.length ?? 0} kid days`
+              ? `${cal!.summary.upcoming_events} events · ${cal!.summary.races_upcoming} race${cal!.summary.races_upcoming === 1 ? "" : "s"} · ${cal!.summary.travel_days_upcoming.length} travel days · ${cal!.summary.childcare_days_upcoming?.length ?? 0} kid days`
               : calMissing ? "calendar not connected" : "loading calendar…"}
             {calOk && isStale(cal!.fetched_at, 26) && (
               <span style={{ color: "var(--ember)" }} title="the calendar sync step has been failing — likely an expired Google token; run `node scripts/sync-google-cal.mjs --auth` to reconnect">
@@ -1745,7 +1745,7 @@ function RoadAhead() {
           </span>
         }
       >
-        the road ahead — 14 days · 6 weeks
+        the road ahead — {days.length} days · {blocks.length} week{blocks.length === 1 ? "" : "s"}
       </SectionTag>
 
       {/* calendar strip */}
