@@ -214,6 +214,17 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
   // section text at load time — lets the server re-apply agent appends that
   // landed while the dialog was open instead of clobbering them
   const sectionsBaselineRef = useRef<CoachContext["sections"] | null>(null);
+  // Which physiology fields the athlete actually typed into this time (PR
+  // #23 review round 1, generic finding 3): the dialog shows the server's
+  // documented FALLBACK numbers as if they were real values (that's the
+  // point — "physiologyNote" explains the substitution), so saving the
+  // whole physiology object on every save — even one that only touched
+  // "fuel kcal/h" — silently committed a guessed 75 kg / 20 mi as though the
+  // athlete had entered it, permanently losing the "this is a stand-in"
+  // warning. Only a field actually edited this session goes in the PUT body;
+  // the server already merges by key (web/vite.config.ts's settings PUT), so
+  // an untouched field is simply not present rather than being resent.
+  const physiologyDirtyRef = useRef<Set<PhysiologyKey>>(new Set());
   const backdropMouseDown = useRef(false);
 
   // discarding a long edit deserves one confirmation; a clean form closes
@@ -241,6 +252,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
         setToday(d.today);
         setCalendarError(d.calendar_error ?? null);
         setGoalsError(d.goals_error ?? null);
+        physiologyDirtyRef.current = new Set();
         // the server already fell back to defaults; the dialog shows them as
         // real values and explains, once, that they are stand-ins
         setPhysiologyNote(d.physiology_warnings?.length ? d.physiology_warnings.join(" · ") : null);
@@ -298,10 +310,14 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
     return null;
   };
 
-  /** Which physiology field is blank or out of the server's range. Checked
-      here so the dialog names the field instead of relaying a 400. */
+  /** Which physiology field is blank or out of the server's range. Only a
+      field the athlete actually edited this session is checked (and later
+      sent) — an untouched one is already a valid, server-supplied number
+      (real or a documented fallback) that this save isn't claiming as the
+      athlete's own. */
   const physiologyProblem = (ph: PhysiologyForm): string | null => {
     for (const { key, label, min, max } of PHYSIOLOGY_META) {
+      if (!physiologyDirtyRef.current.has(key)) continue;
       const v = ph[key];
       if (v === "") return `${label}: needs a number`;
       if (!Number.isFinite(v) || v < min || v > max) return `${label}: must be between ${min} and ${max}`;
@@ -349,10 +365,18 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
               childcare_markers: form.childcare_markers,
               calendar_keywords: form.calendar_keywords,
             },
-            physiology: {
-              body_kg: form.physiology.body_kg as number,
-              long_run_ref_mi: form.physiology.long_run_ref_mi as number,
-            },
+            // Sparse: only a field the athlete actually edited this session
+            // (physiologyDirtyRef) — the server merges by key (PUT
+            // /api/settings), so an untouched field is simply left out
+            // rather than resending the displayed fallback as if it were a
+            // real entry. Omitted altogether when nothing was touched.
+            ...(physiologyDirtyRef.current.size > 0 ? {
+              physiology: Object.fromEntries(
+                PHYSIOLOGY_META
+                  .filter(({ key }) => physiologyDirtyRef.current.has(key))
+                  .map(({ key }) => [key, form.physiology[key] as number]),
+              ),
+            } : {}),
           }),
         }),
       });
@@ -462,9 +486,12 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                 <Hint style={{ marginTop: 0, marginBottom: 4 }}>{label}</Hint>
                 <input type="number" min={min} max={max} step={step} className="numerals" disabled={!!calendarError}
                   style={{ ...inputStyle, width: "100%" }} value={form.physiology[key]}
-                  onChange={(e) => patch({
-                    physiology: { ...form.physiology, [key]: e.target.value === "" ? "" : Number(e.target.value) },
-                  })} />
+                  onChange={(e) => {
+                    physiologyDirtyRef.current.add(key);
+                    patch({
+                      physiology: { ...form.physiology, [key]: e.target.value === "" ? "" : Number(e.target.value) },
+                    });
+                  }} />
                 <Hint>{hint}</Hint>
               </label>
             ))}
