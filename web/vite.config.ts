@@ -2515,6 +2515,19 @@ function courseFiles(): Plugin {
           body = await fs.promises.readFile(path.join(folder.dir, 'build', name), 'utf8')
         } catch (e) {
           if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+          // crew-base.json is ONLY written when the folder has a
+          // crew.private.json (PR #23 review round 1, draft finding 13) — a
+          // fresh intake never has one, so its absence is the ordinary "this
+          // race has no crew info" case, not a build the athlete forgot to
+          // run. course.json's absence stays a 404 (that really is "not
+          // built yet" and drives the client's own empty state), but
+          // crew-base.json answers with an empty, valid payload so it does
+          // not read as a server error in the console on every render.
+          if (name === 'crew-base.json') {
+            res.statusCode = 200
+            res.end(JSON.stringify({}))
+            return
+          }
           res.statusCode = 404
           res.end(JSON.stringify({
             error: `races/${folder.slug}/build/${name} has not been generated — run \`npm run course:build -- --race ${folder.slug}\``,
