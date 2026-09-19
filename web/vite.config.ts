@@ -6,6 +6,16 @@ import fs from 'node:fs'
 import os from 'node:os'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
+// Every request-time `import(path.join(projectRoot, 'scripts/*.mjs'))` below
+// goes through Node's ESM loader cache, which is per-process: the first
+// request after the dev server starts loads and caches the module, and every
+// later request — even one made after you've saved a change to that
+// scripts/*.mjs file — keeps running the cached copy for the rest of that
+// `vite` process's life. There is no cache-busting query string on any of
+// these imports (PR #23 review round 1, finding 5). Restart the dev server
+// after editing anything under scripts/ or the "fix" you're testing may just
+// be the old code running again.
+
 // Cross-site request guard for the state-changing dev endpoints. These
 // middlewares spawn subprocesses (the `claude` CLI, the sync scripts) and
 // write files, with no auth — fine for a localhost tool, EXCEPT that a
@@ -79,6 +89,50 @@ function crossSiteBlocked(req: IncomingMessage, res: ServerResponse): boolean {
   }
   return false
 }
+
+// Every race slug becomes a filesystem path segment under races/<slug>/, so
+// the kebab shape IS the traversal guard: no dots, no separators, nothing to
+// escape the folder. This is the one check that has to run on every slug a
+// client supplies, wherever it arrives from — a URL segment (raceResultApi)
+// or a JSON body field (raceBuildApi, racePlanApi, raceIntakeApi, the
+// /api/race-intake/refresh leg of raceRefreshApi) — before that string
+// touches raceDir/loadResult/archiveRace/buildRace/planRace/runIntake or a
+// path.join. PR #23 review round 1, finding 1: raceResultApi shipped without
+// this because it rolled its own ad hoc slug capture instead of sharing one
+// helper with its siblings. Decodes first, so a slug arriving pre-encoded
+// (`..%2f..`) is judged on what it decodes to, not on the encoded literal;
+// malformed percent-encoding fails closed. Returns the decoded, validated
+// slug, or null — callers still choose the response: 400 for a request that
+// was clearly meant to name a slug (raceResultApi, the body-slug endpoints),
+// or next() for a route that plainly belongs to a different plugin (raceEditApi
+// and the /api/races/:slug/refresh review mount in raceRefreshApi instead
+// fold this same shape check directly into their own route-matching regex,
+// so a non-kebab segment never matches their route at all).
+const KEBAB_SLUG_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/
+function parseSlugParam(raw: string): string | null {
+  let slug: string
+  try {
+    slug = decodeURIComponent(raw)
+  } catch {
+    return null
+  }
+  return KEBAB_SLUG_RE.test(slug) ? slug : null
+}
+
+// PR #23 review round 1, finding 4: raceBuildApi, racePlanApi, raceIntakeApi
+// and raceRefreshApi each spawn a paid `claude -p` turn (plan/intake/refresh)
+// or run a long CPU pass (build), and write races/<slug>/*.json atomically at
+// the end. A double-click, or two browser tabs open to the same race, fires
+// two concurrent requests: two concurrent agent turns silently double the
+// bill, and two concurrent writers to the same file interleave via
+// writeJsonAtomic (whichever settles last wins, silently discarding the
+// other run's result) instead of erroring. One Set for the dev server's
+// lifetime, keyed "<endpoint>:<slug>" (raceIntakeApi, which may not have a
+// slug yet for a brand-new race, keys on its derived slug hint or else the
+// site_url) — a request for a key already in the Set gets 409 instead of
+// starting a second run, and every acquirer releases its key in `finally`,
+// including on a thrown error or a client disconnect.
+const inFlightSlugs = new Set<string>()
 
 // Dev-only middleware: POST /api/refresh runs the three sync scripts in
 // sequence and streams progress lines back as Server-Sent Events.
@@ -887,6 +941,13 @@ function settingsApi(): Plugin {
             normalizePhysiology: (raw: unknown) => { physiology: Record<string, number>; warnings: string[] }
           }
           if (req.method === 'GET') {
+            // PR #23 review round 1, finding 2: only the PUT branch used to
+            // call this. This GET now returns physiology and goals too, so a
+            // cross-site page's plain GET (no preflight needed) must not be
+            // able to trigger it — including the loadGoals side effect below,
+            // which bootstraps config/goals.json from the example on first
+            // call.
+            if (crossSiteBlocked(req, res)) return
             const state = await stateMod.loadState(projectRoot)
             const { profile, corrupt } = readProfile()
             // bootstraps config/goals.json from the example on first open —
@@ -1061,23 +1122,30 @@ function raceAssetApi(): Plugin {
     apply: 'serve',
     configureServer(server) {
       server.middlewares.use('/api/races', async (req, res, next) => {
-        // vite.config.ts can't statically import from scripts/ (it is ESM JS
-        // outside the TS project), so the loader is imported per request.
-        const asset = await import(path.join(projectRoot, 'scripts/race-asset.mjs')) as AssetMod
-        const parsed = asset.parseAssetUrl(req.url ?? '')
-        // not an asset path — that is the race list's request, not ours
-        if (!parsed) { next(); return }
-
         const json = (code: number, body: unknown) => {
           res.statusCode = code
           res.setHeader('Content-Type', 'application/json')
           res.setHeader('Cache-Control', 'no-store')
           res.end(JSON.stringify(body))
         }
-        if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
-        if (crossSiteBlocked(req, res)) return
-
         try {
+          // vite.config.ts can't statically import from scripts/ (it is ESM
+          // JS outside the TS project), so the loader is imported per
+          // request — inside the try: an import() rejection here (a
+          // transient fs error, a bad checkout mid-pull, a syntax error
+          // introduced while iterating on race-asset.mjs) must become this
+          // plugin's own 500, not an unhandled promise rejection that
+          // crashes the whole Vite dev server (PR #23 review round 1,
+          // finding 3 — every other request-time import() in this file is
+          // already inside its try/catch).
+          const asset = await import(path.join(projectRoot, 'scripts/race-asset.mjs')) as AssetMod
+          const parsed = asset.parseAssetUrl(req.url ?? '')
+          // not an asset path — that is the race list's request, not ours
+          if (!parsed) { next(); return }
+
+          if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+          if (crossSiteBlocked(req, res)) return
+
           // Gates 1/2/4 FIRST: the slug has to be proven a slug before it can
           // be joined onto a path to read the folder's race.json.
           const checked = asset.checkAssetRequest(projectRoot, parsed.slug, parsed.name)
@@ -1268,14 +1336,20 @@ function raceResultApi(): Plugin {
         // req.url is the remainder after the mount point: "/<slug>/archive".
         const m = /^\/([^/?]+)\/(archive|result)(?:\?.*)?$/.exec(req.url ?? '')
         if (!m) { next(); return }
-        const [, slug, route] = m
+        const [, rawSlug, route] = m
         if (crossSiteBlocked(req, res)) return
+        // PR #23 review round 1, finding 1: the capture above allows any
+        // non-"/",non-"?" character, so a traversal or non-kebab slug must be
+        // rejected HERE, before it reaches raceDir/loadResult/archiveRace —
+        // the same guard every sibling /api/races/:slug/* endpoint applies.
+        const slug = parseSlugParam(rawSlug)
+        if (!slug) { json(res, 400, { error: 'slug: lowercase kebab-case required' }); return }
 
         if (route === 'result') {
           if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
           try {
             const { loadResult } = await raceResult()
-            json(res, 200, { slug, result: await loadResult(projectRoot, decodeURIComponent(slug)) })
+            json(res, 200, { slug, result: await loadResult(projectRoot, slug) })
           } catch (e) {
             fail(res, e)
           }
@@ -1298,7 +1372,7 @@ function raceResultApi(): Plugin {
           const { archiveRace } = await raceResult()
           const { result, pointer } = await archiveRace({
             root: projectRoot,
-            slug: decodeURIComponent(slug),
+            slug,
             activityId: body.activity_id,
             official: body.official ?? null,
             notes: body.notes,
@@ -1622,10 +1696,8 @@ function raceBuildApi(): Plugin {
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
         catch { json(res, 400, { error: 'bad json' }); return }
 
-        const slug = typeof body.slug === 'string' ? body.slug.trim() : ''
-        /* The slug becomes a path segment, so the kebab shape is the guard as
-           much as the schema: no dots, no separators, nothing to traverse. */
-        if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
+        const slug = parseSlugParam(typeof body.slug === 'string' ? body.slug.trim() : '')
+        if (!slug) {
           json(res, 400, { error: 'slug: lowercase kebab-case required' })
           return
         }
@@ -1633,6 +1705,15 @@ function raceBuildApi(): Plugin {
           json(res, 404, { error: `no race folder "${slug}" — races/${slug}/race.json is not there` })
           return
         }
+        // See inFlightSlugs above (PR #23 review round 1, finding 4): a
+        // second build for the same slug while one is already running is
+        // refused rather than started.
+        const lockKey = `build:${slug}`
+        if (inFlightSlugs.has(lockKey)) {
+          json(res, 409, { error: `a build for "${slug}" is already running` })
+          return
+        }
+        inFlightSlugs.add(lockKey)
 
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
@@ -1687,6 +1768,7 @@ function raceBuildApi(): Plugin {
           send('error', { message })
           send('done', { ok: false, error: message })
         } finally {
+          inFlightSlugs.delete(lockKey)
           clearInterval(hb)
           if (!res.writableEnded) res.end()
         }
@@ -1739,10 +1821,8 @@ function racePlanApi(): Plugin {
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
         catch { json(res, 400, { error: 'bad json' }); return }
 
-        const slug = typeof body.slug === 'string' ? body.slug.trim() : ''
-        /* The slug becomes a path segment, so the kebab shape is the guard as
-           much as the schema: no dots, no separators, nothing to traverse. */
-        if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
+        const slug = parseSlugParam(typeof body.slug === 'string' ? body.slug.trim() : '')
+        if (!slug) {
           json(res, 400, { error: 'slug: lowercase kebab-case required' })
           return
         }
@@ -1751,6 +1831,15 @@ function racePlanApi(): Plugin {
           return
         }
         const dryRun = body.dry_run === true
+        // See inFlightSlugs above (PR #23 review round 1, finding 4): a
+        // second plan run for the same slug while one is already running is
+        // refused rather than started (it spawns a paid `claude -p` turn).
+        const lockKey = `plan:${slug}`
+        if (inFlightSlugs.has(lockKey)) {
+          json(res, 409, { error: `a plan run for "${slug}" is already running` })
+          return
+        }
+        inFlightSlugs.add(lockKey)
 
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
@@ -1819,6 +1908,7 @@ function racePlanApi(): Plugin {
           send('error', { message })
           send('done', { ok: false, error: message })
         } finally {
+          inFlightSlugs.delete(lockKey)
           clearInterval(hb)
           if (!res.writableEnded) res.end()
         }
@@ -1895,10 +1985,11 @@ function raceRefreshApi(): Plugin {
         try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as Record<string, unknown> }
         catch { return null }
       }
-      /* The slug becomes a path segment, so the kebab shape is the guard as
-         much as the schema: no dots, no separators, nothing to traverse. */
+      // The route match on the review mount below already proves its slug
+      // kebab-shaped; this also covers the body-supplied slug on the run
+      // endpoint, which has not been validated yet when it calls this.
       const raceExists = (slug: string) =>
-        /^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug) && fs.existsSync(path.join(projectRoot, 'races', slug, 'race.json'))
+        parseSlugParam(slug) !== null && fs.existsSync(path.join(projectRoot, 'races', slug, 'race.json'))
 
       /* ---- the run: POST /api/race-intake/refresh ---- */
       server.middlewares.use('/api/race-intake/refresh', async (req, res) => {
@@ -1909,8 +2000,8 @@ function raceRefreshApi(): Plugin {
         if (body === undefined) { json(res, 413, { error: 'request body too large' }); return }
         if (body === null) { json(res, 400, { error: 'bad json' }); return }
 
-        const slug = typeof body.slug === 'string' ? body.slug.trim() : ''
-        if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) { json(res, 400, { error: 'slug: lowercase kebab-case required' }); return }
+        const slug = parseSlugParam(typeof body.slug === 'string' ? body.slug.trim() : '')
+        if (!slug) { json(res, 400, { error: 'slug: lowercase kebab-case required' }); return }
         if (!raceExists(slug)) {
           json(res, 404, { error: `no race folder "${slug}" — races/${slug}/race.json is not there` })
           return
@@ -1933,6 +2024,16 @@ function raceRefreshApi(): Plugin {
           : []
         const notes = typeof body.notes === 'string' ? body.notes.slice(0, 8000) : ''
         const skipPlan = body.skip_plan === true
+
+        // See inFlightSlugs above (PR #23 review round 1, finding 4): a
+        // second re-intake for the same slug while one is already running is
+        // refused rather than started (it spawns two paid `claude -p` turns).
+        const lockKey = `refresh:${slug}`
+        if (inFlightSlugs.has(lockKey)) {
+          json(res, 409, { error: `a refresh for "${slug}" is already running` })
+          return
+        }
+        inFlightSlugs.add(lockKey)
 
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
@@ -1979,6 +2080,7 @@ function raceRefreshApi(): Plugin {
           send('error', { message })
           send('done', { ok: false, error: message })
         } finally {
+          inFlightSlugs.delete(lockKey)
           clearInterval(hb)
           if (!res.writableEnded) res.end()
         }
@@ -2129,11 +2231,23 @@ function raceIntakeApi(): Plugin {
         const refresh = body.refresh === true
         // Optional: the folder to write, when the caller already knows it (a
         // re-intake of an existing race). Checked before the agent runs.
-        const slugHint = typeof body.slug === 'string' && body.slug ? body.slug : null
-        if (slugHint && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slugHint)) {
+        const rawSlugHint = typeof body.slug === 'string' && body.slug ? body.slug : null
+        const slugHint = rawSlugHint ? parseSlugParam(rawSlugHint) : null
+        if (rawSlugHint && !slugHint) {
           json(res, 400, { error: 'slug: lowercase kebab-case required' })
           return
         }
+        // See inFlightSlugs above (PR #23 review round 1, finding 4): a
+        // second intake for the same target while one is already running is
+        // refused rather than started (it spawns a paid `claude -p` turn). A
+        // brand-new race has no slug yet, so the site_url stands in for it —
+        // the same URL submitted twice is still "the same target".
+        const lockKey = `intake:${slugHint ?? siteUrl}`
+        if (inFlightSlugs.has(lockKey)) {
+          json(res, 409, { error: `an intake for "${slugHint ?? siteUrl}" is already running` })
+          return
+        }
+        inFlightSlugs.add(lockKey)
 
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
@@ -2197,6 +2311,7 @@ function raceIntakeApi(): Plugin {
           send('error', { message })
           send('done', { ok: false, error: message })
         } finally {
+          inFlightSlugs.delete(lockKey)
           clearInterval(hb)
           if (!res.writableEnded) res.end()
         }
