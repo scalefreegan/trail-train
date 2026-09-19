@@ -74,9 +74,12 @@ export function detect(url) {
  * @param {string[]} [req.stations] race.json aid station names, course order
  * @param {string} [req.at] ISO poll timestamp (injected by tests)
  * @param {typeof fetch} [fetchImpl]
- * @returns {Promise<object|null>} null when the runner is not on the page,
- *   or is on it with no checkpoint beyond the start
- * @throws {Error & {code: string}} `not_found` when no adapter matches
+ * @returns {Promise<object|{tracker: null, reason: "runner_not_found"|"no_checkpoint"}>}
+ *   the reason-tagged shape when the runner is not on the page
+ *   ("runner_not_found") or is on it with no checkpoint beyond the start
+ *   ("no_checkpoint") — see opensplittime.mjs's fetchLastCheckpoint
+ * @throws {Error & {code: string}} `not_found` when no adapter matches,
+ *   `ambiguous` when a name ties across two or more entrants
  */
 export async function fetchLastCheckpoint(req, fetchImpl = fetch) {
   const url = req?.url;
@@ -114,9 +117,10 @@ export function createTrackerCache() {
  * can drive with an injected clock and an injected fetch, rather than in
  * vite.config.ts where nothing can reach it.
  *
- * Only SUCCESSES are cached, including a `null` result (a runner not yet
- * through a checkpoint is a perfectly good answer and must not be re-asked
- * every few seconds). A thrown error is deliberately NOT cached: the client
+ * Only SUCCESSES are cached, including a no-match result — `tracker: null`
+ * with a `reason` (a runner not yet through a checkpoint is a perfectly good
+ * answer and must not be re-asked every few seconds). A thrown error is
+ * deliberately NOT cached: the client
  * backs off on failure anyway (PRD §4), and pinning a transient 502 for a
  * full minute would outlast the outage that caused it.
  *
@@ -132,6 +136,7 @@ export function createTrackerCache() {
  * @param {number} [o.now] epoch ms, injectable
  * @param {number} [o.ttlMs]
  * @returns {Promise<{slug: string, source: string, tracker: object|null,
+ *   reason: "runner_not_found"|"no_checkpoint"|null,
  *   cached: boolean, age_s: number, polled_at: string}>}
  */
 export async function pollTracker(o) {
@@ -149,7 +154,7 @@ export async function pollTracker(o) {
   }
 
   const at = new Date(now).toISOString();
-  const tracker = await adapter.fetchLastCheckpoint(
+  const result = await adapter.fetchLastCheckpoint(
     {
       url: tracking.url,
       bib: tracking.bib,
@@ -159,8 +164,15 @@ export async function pollTracker(o) {
     },
     fetchImpl,
   );
+  // The adapter returns either a checkpoint object (a match) or a
+  // `{tracker: null, reason}` miss — unwrapped here so the endpoint's JSON
+  // carries `tracker` and `reason` as siblings rather than the client having
+  // to know which adapter-level shape it got.
+  const miss = result !== null && typeof result === "object" && "reason" in result;
+  const tracker = miss ? null : result;
+  const reason = miss ? result.reason : null;
 
-  const body = { slug, source: adapter.id, tracker, polled_at: at };
+  const body = { slug, source: adapter.id, tracker, reason, polled_at: at };
   // A cache handed in as undefined (a one-shot CLI call) still works; it
   // just does not remember.
   cache?.set(key, { at: now, body });

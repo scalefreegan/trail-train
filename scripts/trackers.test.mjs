@@ -205,25 +205,60 @@ test("opensplittime: a DNF reports the last station actually reached (an in-time
   assert.equal(hit.runner_status, "Dropped");
 });
 
-test("opensplittime: a runner who never started is null, like one who isn't entered", async () => {
+test("opensplittime: a runner who never started and one who isn't entered are both a null tracker, but for different reasons", async () => {
+  // bib 903 IS on the page (a row with only its start time) — reached, no
+  // checkpoint past it yet.
   const notStarted = await ost.fetchLastCheckpoint(
     { url: SPREAD_URL, bib: "903", stations: SOFTIE_STATIONS },
     fetchStub(SPREAD),
   );
-  assert.equal(notStarted, null);
+  assert.deepEqual(notStarted, { tracker: null, reason: "no_checkpoint" });
 
+  // bib 4242 is not a row on the page at all.
   const notEntered = await ost.fetchLastCheckpoint(
     { url: SPREAD_URL, bib: "4242", stations: SOFTIE_STATIONS },
     fetchStub(SPREAD),
   );
-  assert.equal(notEntered, null);
+  assert.deepEqual(notEntered, { tracker: null, reason: "runner_not_found" });
 
   // a name that is close but not the same person must not match
   const wrongName = await ost.fetchLastCheckpoint(
     { url: SPREAD_URL, name: "Test Runnerson", stations: SOFTIE_STATIONS },
     fetchStub(SPREAD),
   );
-  assert.equal(wrongName, null);
+  assert.deepEqual(wrongName, { tracker: null, reason: "runner_not_found" });
+});
+
+test("opensplittime: a name shared by two entrants is refused as ambiguous, not guessed at", async () => {
+  // A synthetic tie: two rows with the same name, neither an exact-score
+  // winner over the other. Built from the fixture's own rows rather than a
+  // second fixture, so the parse path stays real.
+  const rows = [
+    { bib: "", name: "Pat Rivera", status: "", cells: ["Fri 6:00AM"] },
+    { bib: "", name: "Pat Rivera", status: "", cells: ["Fri 6:01AM"] },
+  ];
+  assert.throws(
+    () => ost.findRow(rows, { name: "Pat Rivera" }),
+    (e) => e.code === "ambiguous" && e.candidates === 2 && /2 entrants/.test(e.message),
+  );
+  // a bib still wins outright over an ambiguous name — no ambiguity to
+  // report when the athlete already gave the unique identifier
+  const withBib = rows.map((r, i) => ({ ...r, bib: i === 1 ? "42" : "" }));
+  assert.equal(ost.findRow(withBib, { bib: "42", name: "Pat Rivera" }), withBib[1]);
+
+  // and it propagates all the way through fetchLastCheckpoint, off a real
+  // (minimal, synthetic) spread page — a duo sharing a name, no bib set yet.
+  const page = `<table><thead><tr>
+    <th></th><th></th><th></th><th></th><th></th><th></th><th></th>
+    <th class="text-nowrap text-center">Start<br>(Mile 0.0)</th>
+  </tr></thead><tbody>
+    <tr id="effort_1"><td></td><td>1</td><td></td><td>Pat Rivera</td><td>M</td><td>NM</td><td></td><td>Fri 6:00AM</td></tr>
+    <tr id="effort_2"><td></td><td>2</td><td></td><td>Pat Rivera</td><td>M</td><td>NM</td><td></td><td>Fri 6:00AM</td></tr>
+  </tbody></table>`;
+  await assert.rejects(
+    () => ost.fetchLastCheckpoint({ url: SPREAD_URL, name: "Pat Rivera", stations: [] }, fetchStub(page)),
+    (e) => e.code === "ambiguous" && e.candidates === 2,
+  );
 });
 
 test("opensplittime: a page with no spread table is an error, not a silent null", async () => {
@@ -357,10 +392,36 @@ test("pollTracker: a null answer is cached too — nothing re-polls for a runner
 
   const first = await pollTracker({ slug: "softie", race, cache, fetchImpl: impl, now: t0 });
   assert.equal(first.tracker, null);
+  assert.equal(first.reason, "no_checkpoint", "bib 903 is on the page, just not past a checkpoint yet");
   const second = await pollTracker({ slug: "softie", race, cache, fetchImpl: impl, now: t0 + 5_000 });
   assert.equal(second.cached, true);
   assert.equal(second.tracker, null);
+  assert.equal(second.reason, "no_checkpoint");
   assert.equal(impl.calls.length, 1);
+});
+
+test("pollTracker: a bib nobody has is runner_not_found, not no_checkpoint", async () => {
+  const cache = createTrackerCache();
+  const race = softieRace({ url: SPREAD_URL, bib: "4242" });
+  const hit = await pollTracker({ slug: "softie", race, cache, fetchImpl: fetchStub(SPREAD), now: Date.now() });
+  assert.equal(hit.tracker, null);
+  assert.equal(hit.reason, "runner_not_found");
+});
+
+test("pollTracker: an ambiguous name is not swallowed — it throws same as any other adapter refusal", async () => {
+  const cache = createTrackerCache();
+  const race = { slug: "softie", aid_stations: [], tracking: { url: SPREAD_URL, name: "Pat Rivera" } };
+  const page = `<table><thead><tr>
+    <th></th><th></th><th></th><th></th><th></th><th></th><th></th>
+    <th class="text-nowrap text-center">Start<br>(Mile 0.0)</th>
+  </tr></thead><tbody>
+    <tr id="effort_1"><td></td><td>1</td><td></td><td>Pat Rivera</td><td>M</td><td>NM</td><td></td><td>Fri 6:00AM</td></tr>
+    <tr id="effort_2"><td></td><td>2</td><td></td><td>Pat Rivera</td><td>M</td><td>NM</td><td></td><td>Fri 6:00AM</td></tr>
+  </tbody></table>`;
+  await assert.rejects(
+    () => pollTracker({ slug: "softie", race, cache, fetchImpl: fetchStub(page), now: Date.now() }),
+    (e) => e.code === "ambiguous" && e.candidates === 2,
+  );
 });
 
 test("pollTracker: a failure is NOT cached — the next request tries again", async () => {
@@ -405,4 +466,21 @@ test("pollTracker: stations come from race.json, so the hold names the course's 
   assert.equal(hit.tracker.checkpoint, "Burnett #7");
   assert.equal(hit.tracker.station, "Burnett Aid");
   assert.equal(hit.tracker.matched, true);
+});
+
+/* --------------------- the dev-server fixture route --------------------- */
+
+test("trackerFixtureApi checks crossSiteBlocked, like every sibling /api/races route", () => {
+  // Not an HTTP test — vite.config.ts has no server-integration harness under
+  // scripts/. Grepping the plugin's own body is the same pattern
+  // scripts/race-intake.test.mjs uses for raceCreateApi. This route was the
+  // one exception in its neighborhood: GET/HEAD-only, gated on
+  // TRAIL_TEST_FIXTURES=1, serving only committed scrubbed fixture HTML — low
+  // stakes, but every other plugin registered alongside it checks Origin/Host
+  // before doing anything, and this one should too, for consistency.
+  const configPath = path.join(here, "..", "web", "vite.config.ts");
+  const config = fs.readFileSync(configPath, "utf8");
+  const body = /function trackerFixtureApi\(\): Plugin \{(.+?)\n\}\n/s.exec(config);
+  assert.ok(body, "could not find trackerFixtureApi");
+  assert.ok(/crossSiteBlocked\(req, res\)/.test(body[1]), "trackerFixtureApi must refuse cross-site callers");
 });

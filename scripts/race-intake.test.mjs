@@ -765,6 +765,32 @@ test("quickCreateRace refuses a slug that is taken", async (t) => {
   );
 });
 
+test("quickCreateRace: a filesystem problem during the slug claim is not relabelled a conflict", async (t) => {
+  const root = await quickRoot(t);
+  const racesDir = path.join(root, "races");
+  // A fresh slug — assertSlugAvailable's slugExists() check passes, so it
+  // falls through to its own fs.mkdir(dir)/fs.open(claim, "wx"), which is
+  // exactly the step an EACCES (disk full's stand-in here: a read-only
+  // parent) needs to hit to exercise the bug: without the fix, ANY error
+  // from that step — not just the EEXIST race it exists to catch — used to
+  // come back as "races/<slug>/race.json is being created by another
+  // request", discarding the real cause.
+  await fs.chmod(racesDir, 0o500);
+  t.after(() => fs.chmod(racesDir, 0o755).catch(() => {}));
+  try {
+    await assert.rejects(
+      quickCreateRace({ root, ...quickArgs({ name: "Fresh Unclaimed 50K" }) }),
+      (e) => {
+        assert.notEqual(e.code, "conflict", "a real fs error must not be relabelled a conflict");
+        assert.match(e.message, /EACCES|permission denied/i, "the real cause must survive, not a plausible-sounding lie");
+        return true;
+      },
+    );
+  } finally {
+    await fs.chmod(racesDir, 0o755);
+  }
+});
+
 test("quickCreateRace refuses a parent that is missing, unreadable or itself a tune-up", async (t) => {
   const root = await quickRoot(t);
   await assert.rejects(

@@ -72,7 +72,10 @@ export function matches(url) {
  * @param {string[]} [req.stations] race.json aid station names
  * @param {string} [req.at] ISO poll timestamp
  * @param {typeof fetch} [fetchImpl]
- * @returns {Promise<object|null>}
+ * @returns {Promise<object|{tracker: null, reason: "runner_not_found"|"no_checkpoint"}>}
+ *   see opensplittime.mjs's fetchLastCheckpoint — same reason-tagged miss.
+ * @throws {Error & {code: string}} including `ambiguous` (from findRow, via
+ *   opensplittime.mjs) for a name that ties across two or more entrants
  */
 export async function fetchLastCheckpoint(req, fetchImpl = fetch) {
   const { url, bib = null, name = null, stations = [] } = req ?? {};
@@ -99,9 +102,9 @@ export async function fetchLastCheckpoint(req, fetchImpl = fetch) {
   }
 
   const row = findRow(rows, { bib, name });
-  if (!row) return null;
+  if (!row) return { tracker: null, reason: "runner_not_found" };
   const last = lastCheckpointFromRow(row.cells, headers);
-  if (!last) return null;
+  if (!last) return { tracker: null, reason: "no_checkpoint" };
 
   const mapped = mapStation(last.checkpoint, stations);
   return {

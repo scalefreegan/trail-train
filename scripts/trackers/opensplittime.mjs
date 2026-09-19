@@ -63,7 +63,7 @@ export const STATION_MATCH_MIN = 0.6;
 
 const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
-const tagged = (code, msg) => Object.assign(new Error(msg), { code });
+const tagged = (code, msg, extra) => Object.assign(new Error(msg), { code, ...extra });
 
 /** True when `url`'s host is (or is under) one of this adapter's domains. */
 export function matches(url) {
@@ -270,9 +270,18 @@ export function lastCheckpointFromRow(cells, headers) {
  * punctuation and abbreviations folded), and only above 0.9: "Chris Adams"
  * must not resolve to "Chris Adamson".
  *
+ * A name that ties the winning score across two or more rows (a father/son
+ * or a duo sharing a name, common enough in ultrarunning) is refused rather
+ * than guessed at — silently attaching the hold to whichever row happened to
+ * print first would be the wrong entrant's splits shown as fact. The same
+ * "showing the tracker's own label is honest; silently attaching it to the
+ * wrong station is not" principle mapStation already applies.
+ *
  * @param {{bib: string, name: string}[]} rows
  * @param {{bib?: string|null, name?: string|null}} who
  * @returns {object|null}
+ * @throws {Error & {code: "ambiguous", candidates: number}} when two or more
+ *   rows tie at the winning name score
  */
 export function findRow(rows, { bib, name } = {}) {
   const wantBib = bib === undefined || bib === null ? "" : String(bib).trim();
@@ -283,11 +292,27 @@ export function findRow(rows, { bib, name } = {}) {
   const wantName = typeof name === "string" ? name.trim() : "";
   if (wantName) {
     let best = null;
+    let tied = 0;
     for (const r of rows) {
       const score = r.name.toLowerCase() === wantName.toLowerCase() ? 1 : nameScore(r.name, wantName);
-      if (score >= 0.9 && (!best || score > best.score)) best = { row: r, score };
+      if (score < 0.9) continue;
+      if (!best || score > best.score) {
+        best = { row: r, score };
+        tied = 1;
+      } else if (score === best.score) {
+        tied += 1;
+      }
     }
-    if (best) return best.row;
+    if (best) {
+      if (tied > 1) {
+        throw tagged(
+          "ambiguous",
+          `${tied} entrants match name ${JSON.stringify(wantName)} — set a bib to tell them apart`,
+          { candidates: tied },
+        );
+      }
+      return best.row;
+    }
   }
   return null;
 }
@@ -341,10 +366,16 @@ export function mapStation(checkpoint, stations = []) {
  *        reaches the network on its own
  * @returns {Promise<{station: string, checkpoint: string, clock: string,
  *   elapsed_h: number|null, source: string, at: string, bib: string,
- *   runner_status: string, matched: boolean}|null>} null when the runner is
- *   not on the page, or is on it with no checkpoint past the start
+ *   runner_status: string, matched: boolean} |
+ *   {tracker: null, reason: "runner_not_found"|"no_checkpoint"}>}
+ *   the reason-tagged shape distinguishes a bib/name that matches nobody
+ *   ("runner_not_found") from a matched row that has not passed a
+ *   checkpoint yet ("no_checkpoint") — both were a bare `null` before this
+ *   was split out, and a mistyped bib failed exactly as quietly as an
+ *   unstarted race.
  * @throws {Error & {code: string}} `bad_gateway` for an unreachable or
- *   unparseable page, `bad_request` for a URL that is not an OST event
+ *   unparseable page, `bad_request` for a URL that is not an OST event,
+ *   `ambiguous` for a name that ties across two or more entrants
  */
 export async function fetchLastCheckpoint(req, fetchImpl = fetch) {
   const { url, bib = null, name = null, stations = [] } = req ?? {};
@@ -386,9 +417,9 @@ export async function fetchLastCheckpoint(req, fetchImpl = fetch) {
   }
 
   const row = findRow(rows, { bib, name });
-  if (!row) return null;
+  if (!row) return { tracker: null, reason: "runner_not_found" };
   const last = lastCheckpointFromRow(row.cells, headers);
-  if (!last) return null;
+  if (!last) return { tracker: null, reason: "no_checkpoint" };
 
   const mapped = mapStation(last.checkpoint, stations);
   return {

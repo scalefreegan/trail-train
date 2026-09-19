@@ -287,8 +287,19 @@ function crewRace(race) {
  */
 export async function buildCrewData(root, slug, { knobs = {}, now = new Date() } = {}) {
   const { pacing, nutrition, nutritionConfig, features, crewData } = await client();
-  const folder = await loadRaceFolder(root, slug).catch(() => {
-    throw fail("not_found", `races/${slug}/race.json not found`);
+  // loadRaceFolder (via readJson, scripts/race-config.mjs) throws three
+  // distinct messages: ENOENT's own "<p> not found", a parse error's "<p> is
+  // not valid JSON: <detail>", or the raw fs error for anything else (e.g.
+  // EACCES). Blanket-catching and rethrowing a fixed "not found" collapsed
+  // all three into one — a hand-edit or an interrupted write leaving
+  // race.json truncated then reported 404 "not found" from the CLI and the
+  // crew-export endpoint alike, sending whoever's looking for a renamed or
+  // deleted folder instead of a JSON syntax error, on the one artifact whose
+  // failure mode is "the crew has nothing on race morning." The real message
+  // survives now; it is still tagged `not_found` so the endpoint keeps
+  // answering 404 for it.
+  const folder = await loadRaceFolder(root, slug).catch((e) => {
+    throw fail("not_found", e.message);
   });
   const race = folder.race;
 
