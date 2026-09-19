@@ -402,7 +402,7 @@ export async function setActivePointer(root, req) {
 }
 
 /**
- * TODO(tt-yib.5): replaced by goals/generic mode.
+ * A legacy shim, still load-bearing and still worth retiring.
  * The active race, or — when no race is active — the most recent one by date.
  * Scripts written before generic mode existed (build-course.mjs, the dev
  * server's /nutrition.json) assume there IS a race; routing them through
