@@ -784,6 +784,10 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
   // and null while browsing, where "race in -371 days" is both useless and a
   // claim that this race is the one being trained for.
   const dleft = race && !viewing ? daysUntil(race.date) : null;
+  // daysUntil clamps at 0, so a race trained for past its own date used to
+  // read "RACE IN 0 days" forever instead of saying what actually happened
+  // (PR #23 review round 2, generic finding 4 / resilience finding 9).
+  const racePast = race && !viewing ? isPast(race.date) : false;
   const failedSteps = REFRESH_STEPS.filter((s) => status[s] === "error");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [, force] = useState(0);
@@ -824,10 +828,14 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
         <div className="commandbar-mid" style={{ flex: 1 }}>
           <BarStat label="block week" value={`${String(currentWeek).padStart(2, "0")} / ${totalWeeks}`} />
           {race && dleft != null && (
-            <>
-              <BarStat label="race in" value={`${dleft} days`} accent />
-              <BarStat label="race day" value={race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, month: "short", day: "numeric" }).toLowerCase()} />
-            </>
+            racePast ? (
+              <BarStat label="race day" value="has passed" />
+            ) : (
+              <>
+                <BarStat label="race in" value={`${dleft} days`} accent />
+                <BarStat label="race day" value={race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, month: "short", day: "numeric" }).toLowerCase()} />
+              </>
+            )
           )}
         </div>
 
