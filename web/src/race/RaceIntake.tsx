@@ -622,8 +622,22 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   // Re-read on mount, and whenever a caller bumps the pulse — the folder is
   // the source of truth and a refused write must never leave the screen
   // showing something that is not on disk.
+  //
+  // `load(keepError)` — REVERT calls it bare, which clears any refused-save
+  // error list along with the edit buffers (round 1, bug R3/D5). But
+  // activate() also calls it after a refused status/pointer flip, to pick up
+  // whatever the earlier PUT in the same activate attempt DID manage to write
+  // — and that reload must not wipe the very error it is being called to
+  // react to (PR #23 review round 2, draft finding 1: ACTIVATE's 400 was
+  // rendered into `saveError` and then immediately cleared by this effect's
+  // own success handler before the athlete ever saw it, since the GET here
+  // succeeds even when the activation it followed did not).
   const [readKey, setReadKey] = useState(0);
-  const load = useCallback(() => setReadKey((k) => k + 1), []);
+  const keepErrorRef = useRef<string[] | null>(null);
+  const load = useCallback((keepError?: string[] | null) => {
+    keepErrorRef.current = keepError ?? null;
+    setReadKey((k) => k + 1);
+  }, []);
   useEffect(() => {
     let stale = false;
     fetch(`/api/races/${slug}?t=${Date.now()}`)
@@ -636,11 +650,11 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
         if (stale) return;
         setData(body);
         // REVERT is "every control in the dialog back to the on-disk state"
-        // (round 1, bug R3/D6) — that includes the acknowledge checkboxes and
-        // any error list left over from a refused save (bug D5), not just the
-        // edit buffers.
+        // (round 1, bug R3/D6) — that includes the acknowledge checkboxes,
+        // not just the edit buffers.
         setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setFills({}); setAcked({});
-        setSaveError(null);
+        setSaveError(keepErrorRef.current);
+        keepErrorRef.current = null;
         setLoadError(null);
       })
       .catch((e: Error) => { if (!stale) setLoadError(e.message); });
@@ -839,8 +853,11 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       });
       const statusBody = await statusRes.json();
       if (!statusRes.ok) {
-        setSaveError((statusBody as { errors?: string[] }).errors ?? [String((statusBody as { error?: string }).error)]);
-        load();
+        // `load(...)`, not a bare `setSaveError` + `load()`: the reload picks
+        // up whatever the PUT above DID manage to write, and must not wipe
+        // the very error it is being called to react to (see the comment on
+        // `load` above — PR #23 review round 2, draft finding 1).
+        load((statusBody as { errors?: string[] }).errors ?? [String((statusBody as { error?: string }).error)]);
         return;
       }
 
@@ -854,14 +871,12 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       });
       if (!ptr.ok) {
         const b = await ptr.json().catch(() => ({ error: `HTTP ${ptr.status}` }));
-        setSaveError([`the folder is active but the pointer did not move: ${(b as { error?: string }).error}`]);
-        load();
+        load([`the folder is active but the pointer did not move: ${(b as { error?: string }).error}`]);
         return;
       }
       onDone();
     } catch (e) {
-      setSaveError((e as { errors?: string[] }).errors ?? [(e as Error).message]);
-      load();
+      load((e as { errors?: string[] }).errors ?? [(e as Error).message]);
     } finally {
       setBusy(null);
     }
@@ -879,14 +894,31 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   }
 
   const isDraft = race.status === "draft";
+  // `data.activation` is the server's own verdict as of the last GET/PUT
+  // response — it can refuse for a reason the ack checkboxes can never fix
+  // (PR #23 review round 2, draft finding 1: a night race with no computed
+  // sun stays refused no matter how many boxes are ticked — see
+  // validateStatusTransition in scripts/race-edit.mjs). But it can ALSO be
+  // stale in exactly one dimension: "N unresolved fields — fill or
+  // acknowledge" reflects whatever was on disk as of that last read, while
+  // `remaining` above tracks the SAME gate live against the checkboxes the
+  // athlete is ticking right now. Recognizing that one message and leaving it
+  // to `remaining` avoids nagging about an ack the athlete already made
+  // locally but has not saved yet; every other reason (wrong status, another
+  // folder already active, the missing-sun block, a schema failure) is
+  // real regardless of any checkbox and must not be swallowed just because
+  // there also happen to be open holes (which is exactly what let the sun
+  // block above go silent).
+  const activationBlocked = data.activation.ok === false
+    && !/unresolved field.*fill them in or acknowledge/i.test(data.activation.errors?.[0] ?? "");
   const blockers = !isDraft
     ? [`this folder's status is "${race.status}" — only a draft activates here`]
     : remaining > 0
       ? [`${remaining} unresolved field${remaining > 1 ? "s" : ""} still to fill in or acknowledge`]
-      : data.activation.ok || openHoles.length
-        ? []
-        : data.activation.errors;
-  const canActivate = isDraft && allAcked && busy === null && stage === null && !hasWptConflict;
+      : activationBlocked
+        ? data.activation.errors
+        : [];
+  const canActivate = isDraft && allAcked && busy === null && stage === null && !hasWptConflict && !activationBlocked;
 
   return (
     <>
@@ -1084,7 +1116,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
                     : `status: ${race.status}`}
               </span>}
         </div>
-        <button className="chip" onClick={load} disabled={busy !== null || stage !== null} style={{ fontSize: 10 }}>
+        <button className="chip" onClick={() => load()} disabled={busy !== null || stage !== null} style={{ fontSize: 10 }}>
           revert
         </button>
         <button
