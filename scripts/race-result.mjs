@@ -232,6 +232,17 @@ export async function archiveRace(o) {
     throw tagged(/not found$/.test(e.message) ? "not_found" : "bad_request", e.message);
   }
   const race = folder.race;
+  // Checked before the Strava lookup or the stream fetch below: a race can
+  // reach "active" with date still null (an acknowledged unresolved field —
+  // PRD §8's review dialog allows it), and daysBetween's raw `.split("-")`
+  // on a null race.date throws "Cannot read properties of null (reading
+  // 'split')" instead of a message that says what is actually missing.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(race.date)) || Number.isNaN(Date.parse(`${race.date}T00:00:00Z`))) {
+    throw tagged(
+      "bad_request",
+      `races/${slug}/race.json has no valid date (got ${JSON.stringify(race.date)}) — archiving needs race day to check the Strava activity against`,
+    );
+  }
 
   // ── race day, in the race's own zone ────────────────────────────────────
   const activity = o.activity ?? (await findLoggedActivity(root, activityId));
@@ -277,9 +288,14 @@ export async function archiveRace(o) {
     splits,
     notes: notes ?? prev.notes ?? null,
   };
-  await writeJsonAtomic(path.join(raceDir(root, slug), "result.json"), result);
 
-  // ── retire the folder ───────────────────────────────────────────────────
+  // ── retire the folder, THEN write the result ────────────────────────────
+  // In that order: a crash between the two writes leaves an archived race
+  // with no result.json yet (obviously incomplete, and re-running this
+  // function repairs it — the status flip below is a no-op the second time).
+  // The other order can leave a result.json for a race that is still
+  // "active"/"draft" — a phantom result the coach and the training views
+  // have no reason to expect from a folder they still treat as live.
   if (race.status !== "archived") {
     const at = o.now ?? new Date().toISOString();
     await writeJsonAtomic(path.join(raceDir(root, slug), "race.json"), {
@@ -288,6 +304,7 @@ export async function archiveRace(o) {
       provenance: { ...(race.provenance ?? {}), status: { by: "user", at } },
     });
   }
+  await writeJsonAtomic(path.join(raceDir(root, slug), "result.json"), result);
 
   // The pointer only has to move if it was TRAINING for this race; a browse
   // (view mode) is left alone — the athlete is looking at the race they just
