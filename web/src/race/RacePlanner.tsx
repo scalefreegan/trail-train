@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
-import { useUnits, useMeasuredWidth, relativeAgo } from "../data";
+import { useUnits, useMeasuredWidth, useRefresh, relativeAgo } from "../data";
 import { SectionTag, Contours } from "../atoms";
 import { useCrewBase, useRaceResult } from "./useRaceData";
 import { useRacePlan } from "./useRacePlan";
@@ -10,6 +10,7 @@ import { RunnerCard } from "./RunnerCard";
 import { FuelCard } from "./FuelCard";
 import { DropBagCard } from "./DropBagCard";
 import { fmtCarry } from "./nutrition";
+import { useRunCourseAgain } from "./runCourseAgain";
 import type { VisibleColumns } from "./features";
 import {
   projectRace, nightIntervals,
@@ -428,6 +429,12 @@ export function RacePlanner() {
   const { course, missing, error, fit, proj, nutrition, fuelPlan, settings, set,
     paceGrade, paceGradeError, nutritionError, physiologyError, features, panels, columns,
     raceConfig, sun } = useRacePlan();
+  const { reload } = useRefresh();
+  // D8: "no course data" used to just tell the athlete to run a shell
+  // command — the empty state now offers the same free, deterministic
+  // build the switcher's "Run course again…" row and the fuel view's own
+  // empty state (NutritionPlan.tsx) call.
+  const courseBuild = useRunCourseAgain(missing ? raceConfig.slug : null, reload);
   // An archived race has a result: what actually happened, station by station
   // (PRD §10). Only then does the table grow an "actual" column — a race that
   // has not been run has nothing to put in it.
@@ -469,12 +476,26 @@ export function RacePlanner() {
         <SectionTag>race planner</SectionTag>
         <div className="panel notch" style={{ padding: "28px 26px" }}>
           <span className="eyebrow" style={{ color: missing || error ? "var(--ember)" : "var(--mist-mute)" }}>
-            {missing
-              ? "no course data — run `npm run course:build` to parse the race gpx"
-              : error
-              ? error
-              : "loading course…"}
+            {missing ? "no course data yet" : error ? error : "loading course…"}
           </span>
+          {missing && (
+            <div style={{ marginTop: 12 }}>
+              <button
+                className="chip"
+                onClick={courseBuild.run}
+                disabled={courseBuild.busy}
+                style={{ fontSize: 10, minHeight: 36, padding: "0 14px" }}
+              >
+                {courseBuild.busy ? "building…" : "run course build"}
+              </button>
+              <div style={{ fontSize: 11, color: "var(--mist-mute)", marginTop: 8, lineHeight: 1.5 }}>
+                Parses the stored GPX into a course profile — free, no agent turn.
+              </div>
+              {courseBuild.error && (
+                <div style={{ fontSize: 11, color: "var(--ember)", marginTop: 6 }}>{courseBuild.error}</div>
+              )}
+            </div>
+          )}
         </div>
       </section>
     );
