@@ -5,6 +5,7 @@ import { useRacePlan } from "./useRacePlan";
 import { useRaceResult } from "./useRaceData";
 import { BIAS_WORTH_ACTING_ON, calibrate, type Band, type Flag } from "./calibration";
 import { fmtElapsed } from "./pacing";
+import { ALTITUDE_THRESHOLD_FT } from "./altitude";
 
 /* ------------------------------------------------------------------ */
 /*  Model check — how much to trust the number above.                  */
@@ -186,7 +187,8 @@ function Band3({ best, avg, worst, goal, actual = null }: {
 
 export function ModelCheck() {
   const u = useUnits();
-  const { course, proj, fit, paceGrade, settings, features, panels, raceConfig } = useRacePlan();
+  const { course, proj, fit, paceGrade, settings, panels, raceConfig } = useRacePlan();
+  const alt = proj?.altitude ?? null;
   const { activities } = useStrava();
   // An archived race puts its real finish on the band it was projected into.
   // Only a finish: a DNF has no time to compare, and saying so is the race
@@ -228,19 +230,44 @@ export function ModelCheck() {
         <div>
           <span className="eyebrow" style={{ fontSize: 8.5, display: "block", marginBottom: 8 }}>projection band</span>
           <Band3 best={proj.finish_h.best} avg={proj.finish_h.avg} worst={proj.finish_h.worst} goal={proj.goal_h} actual={actualFinishH} />
-          {/* PRD §2: the altitude flag buys a caveat, not pacing math. The fit
-              is built from training runs at whatever elevation you train at,
-              and nothing downstream corrects for the race's — so the band
-              above is silently optimistic and the honest move is to say so
-              rather than invent an adjustment nobody validated. */}
-          {features.altitude && (
+          {/* PRD-v2 §2 replaces v1's "altitude is not modeled" caveat with the
+              term itself. The paragraph's job is no longer to warn that the
+              band is optimistic — it is to say how many minutes of the band
+              ARE altitude, what they were measured from, and what would
+              change them, so the number can be argued with instead of
+              believed. Shown only where the model does something: on a course
+              that never reaches the threshold there is nothing to report. */}
+          {alt != null && alt.max_seg_ele_ft > ALTITUDE_THRESHOLD_FT && (
             <p style={{ fontSize: 11.5, color: "var(--lamp)", lineHeight: 1.55, margin: "8px 0 0", maxWidth: "72ch" }}>
-              Altitude is not modeled.{" "}
-              {raceConfig?.elevation?.max_ft != null
-                ? `This course runs as high as ${u.elev(raceConfig.elevation.max_ft)} ${u.elevUnit}, and `
-                : "This race is flagged as run at altitude, and "}
-              none of the paces behind these three numbers know it — every band here is a
-              lowland-equivalent projection. Read it as the optimistic edge, not the middle.
+              {alt.pct <= 0 || alt.max_penalty <= 0 ? (
+                <>
+                  <strong>Altitude is modeled, and you have it switched off.</strong>{" "}
+                  This course spends {u.dist(alt.miles_above_threshold, 0)} {u.distUnit} above{" "}
+                  {u.elev(ALTITUDE_THRESHOLD_FT)} {u.elevUnit} and peaks at a{" "}
+                  {u.elev(alt.max_seg_ele_ft)} {u.elevUnit} segment; at 100% the model would add{" "}
+                  {fmtElapsed(alt.added_h_at_full)} to the expected finish. The three numbers above are a
+                  lowland-equivalent projection until you turn the altitude slider back up.
+                </>
+              ) : (
+                <>
+                  <strong>Altitude adds {fmtElapsed(alt.added_h)}</strong> to the expected finish
+                  — that much of the band above is thin air, not fitness.{" "}
+                  {u.dist(alt.miles_above_threshold, 0)} {u.distUnit} of this course sit above{" "}
+                  {u.elev(ALTITUDE_THRESHOLD_FT)} {u.elevUnit}, and the highest segment averages{" "}
+                  {u.elev(alt.max_seg_ele_ft)} {u.elevUnit}, where the model charges{" "}
+                  +{(alt.max_penalty * 100).toFixed(1)}% on pace.{" "}
+                  {alt.home_assumed
+                    ? <><strong style={{ color: "var(--ember)" }}>Measured from sea level</strong> — nobody has told the
+                        planner where you live, so this is the worst case. Set your home elevation in the coach
+                        settings dialog and the penalty is measured from there instead.</>
+                    : <>Measured from your {u.elev(alt.home_ft)} {u.elevUnit} home elevation
+                        {alt.acclimation_days > 0
+                          ? <>, with {alt.acclimation_days} day{alt.acclimation_days === 1 ? "" : "s"} of acclimation credited.</>
+                          : <>, with no acclimation credited — this is the fly-in-and-run case.</>}</>}
+                  {alt.pct !== 100 && <> The altitude slider is at {alt.pct}%, so this is {alt.pct > 100 ? "more" : "less"} than
+                    the published curve asks for.</>}
+                </>
+              )}
             </p>
           )}
         </div>

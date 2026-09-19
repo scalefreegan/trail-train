@@ -32,10 +32,21 @@ export const DEFAULT_LONG_RUN_REF_MI = 20;
 
 /** The editable physiology fields, with the bounds the settings PUT enforces.
     `dflt` is what a missing/invalid value falls back to. KEEP IN SYNC with
-    the physiology block in config/profile.example.json. */
+    the physiology block in config/profile.example.json.
+
+    `optional: true` marks a field with no usable stand-in: it normalizes to
+    null and, unlike the others, says nothing when it is missing. A default
+    body mass still produces a roughly right caffeine band, so substituting
+    one and warning is the honest move. There is no such number for where
+    somebody lives — guessing sea level would quietly add hours of altitude
+    penalty to a Denver athlete's race plan — so the field stays null and the
+    views that use it ask for it by name. */
 export const PHYSIOLOGY_FIELDS = {
   body_kg: { lo: 30, hi: 200, dflt: DEFAULT_BODY_KG, label: "body mass (kg)" },
   long_run_ref_mi: { lo: 5, hi: 50, dflt: DEFAULT_LONG_RUN_REF_MI, label: "long-run reference (mi)" },
+  // −300 ft clears the Dead Sea and Death Valley; 15,000 ft clears every
+  // inhabited place on earth by a wide margin.
+  home_elevation_ft: { lo: -300, hi: 15000, dflt: null, optional: true, label: "home elevation (ft)" },
 };
 
 export const PHYSIOLOGY_KEYS = /** @type {const} */ (Object.keys(PHYSIOLOGY_FIELDS));
@@ -49,8 +60,12 @@ export const PHYSIOLOGY_KEYS = /** @type {const} */ (Object.keys(PHYSIOLOGY_FIEL
  * comes back in `warnings`, because a caffeine band computed against a
  * stand-in body mass looks exactly like one computed against the athlete's.
  *
+ * The one exception is an `optional` field (home_elevation_ft): it has no
+ * honest stand-in, so it normalizes to null in silence and the views that
+ * read it ask for it themselves.
+ *
  * @param {unknown} raw the profile's `physiology` value (may be undefined)
- * @returns {{ physiology: { body_kg: number, long_run_ref_mi: number }, warnings: string[] }}
+ * @returns {{ physiology: { body_kg: number, long_run_ref_mi: number, home_elevation_ft: number|null }, warnings: string[] }}
  */
 export function normalizePhysiology(raw) {
   const warnings = [];
@@ -63,10 +78,14 @@ export function normalizePhysiology(raw) {
     const v = block?.[key];
     if (v == null) {
       physiology[key] = spec.dflt;
-      warnings.push(
-        `config/profile.json: physiology.${key} is not set — falling back to ${spec.dflt} ` +
-          `(${spec.label}). Set it in the coach settings dialog so the plan is yours.`,
-      );
+      // an optional field's absence is not a substitution — nothing was
+      // stood in for, so there is nothing to announce
+      if (!spec.optional) {
+        warnings.push(
+          `config/profile.json: physiology.${key} is not set — falling back to ${spec.dflt} ` +
+            `(${spec.label}). Set it in the coach settings dialog so the plan is yours.`,
+        );
+      }
       continue;
     }
     if (typeof v !== "number" || !Number.isFinite(v) || v < spec.lo || v > spec.hi) {

@@ -194,13 +194,24 @@ export type Physiology = {
   body_kg: number;
   /** distance the fitted fitness pace is evaluated at, mi (pacing D_REF) */
   long_run_ref_mi: number;
+  /** the elevation the athlete is acclimated to, ft — the altitude term
+      measures the race's elevation against it. NULL means nobody has set
+      one: the model then falls back to sea level and every view that shows
+      the term says so, because silently assuming sea level would hand a
+      mountain-town athlete hours of penalty they do not owe. Unlike the two
+      above there is no default worth substituting — see PHYSIOLOGY_FIELDS'
+      `optional` in scripts/profile.mjs. */
+  home_elevation_ft: number | null;
 };
 
 /** KEEP IN SYNC with PHYSIOLOGY_FIELDS in scripts/profile.mjs — the server
     normalizes to the same numbers, these cover the endpoint being absent. */
-export const DEFAULT_PHYSIOLOGY: Physiology = { body_kg: 75, long_run_ref_mi: 20 };
+export const DEFAULT_PHYSIOLOGY: Physiology = { body_kg: 75, long_run_ref_mi: 20, home_elevation_ft: null };
 
 const isPhysNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
+/** Elevation is the one physiology number that may legitimately be 0 (or
+    below it — the Dead Sea, Death Valley), so it can't use isPhysNumber. */
+const isElevation = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= -300 && v <= 15000;
 
 export function usePhysiology() {
   const { key: refreshKey } = useRefresh();
@@ -224,7 +235,13 @@ export function usePhysiology() {
           setError(`config/profile.json has no usable physiology — planning against ${DEFAULT_PHYSIOLOGY.body_kg} kg / ${DEFAULT_PHYSIOLOGY.long_run_ref_mi} mi defaults`);
           return;
         }
-        setData({ body_kg: p.body_kg, long_run_ref_mi: p.long_run_ref_mi });
+        setData({
+          body_kg: p.body_kg,
+          long_run_ref_mi: p.long_run_ref_mi,
+          // absent until the athlete sets it (bead 02's settings field) —
+          // null, never a stand-in
+          home_elevation_ft: isElevation(p.home_elevation_ft) ? p.home_elevation_ft : null,
+        });
         setError(null);
       })
       .catch(() => {
