@@ -89,7 +89,13 @@ function stravaActivities(anchor, days) {
       start_time_local: `${isoDate(anchor, -back)}T06:30:00`,
       utc_offset_s: -25200,
       timezone: "America/Denver",
-      start_latlng: [35.11, -106.62],
+      // Deliberately near Null Island (0,0 — open ocean off West Africa, no
+      // trail within a thousand miles of it): a fixed real-world-looking
+      // coordinate here used to be the actual athlete's home city, unguarded
+      // by any check (r1-crew-tests.md HIGH/MEDIUM). This value is inert on
+      // purpose, and scripts/ui-fixtures.test.mjs's coordinate check keeps it
+      // that way — see NULL_ISLAND_LATLNG there for the shared reference.
+      start_latlng: [0.35, -0.62],
       title: `${RUN_ROUTES[out.length % RUN_ROUTES.length]}${long ? " long" : vert ? " vert" : ""}`,
       sport: "Run",
       type: long ? "long" : vert ? "vert" : workout ? "workout" : "easy",

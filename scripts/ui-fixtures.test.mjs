@@ -74,17 +74,94 @@ const FORBIDDEN = [
     // the GPX schema URL a GPX file is required to carry.
     allow: (m) => /^https?:\/\/(example\.invalid|www\.topografix\.com)\b/.test(m),
   },
+  {
+    what: "a real person's name",
+    // r1-crew-tests.md HIGH: the module comment above promised this check for
+    // two review rounds before it existed. NOT a generic "two capitalized
+    // words" shape — that would flag half the fixtures' own invented place
+    // names ("Rim Road", "Hell's Gate", "Cold Fork Aid"). Instead: a small,
+    // explicit list of real full names — the actual person this repo is
+    // built for (the one name that matters most, since it is the one a
+    // careless copy-paste from a real snapshot would actually carry), plus a
+    // handful of ordinary real names representative of the "shape" a real
+    // crew contact or coach note might carry in verbatim. Matched
+    // case-insensitively, whole-word, so a fixture's own invented names never
+    // collide with it.
+    re: new RegExp(
+      `\\b(${[
+        "Aaron Brooks",
+        "John Smith", "Sarah Johnson", "Michael Chen", "Emily Davis",
+        "David Martinez", "Jennifer Wilson", "Robert Garcia", "Lisa Anderson",
+      ].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`,
+      "gi",
+    ),
+    allow: () => false,
+  },
 ];
 
-test("no committed UI fixture contains anything that looks like personal data", async () => {
+/**
+ * A real-world lat/lon inside a region with actual personal significance —
+ * as opposed to the fixture courses' own real-world-SHAPED but INVENTED
+ * mountain ranges (races/_fixtures, e.g. mm-like-100's course.gpx), which
+ * are deliberately not flagged here. Narrow on purpose: this targets the
+ * specific place that actually leaked (r1-crew-tests.md — a fixed
+ * `start_latlng` equal to the athlete's real home city), not "any city
+ * anywhere", which the invented-range fixtures would trip on by accident.
+ */
+const REAL_REGIONS = [
+  { name: "Albuquerque, NM", latMin: 34.9, latMax: 35.3, lonMin: -106.9, lonMax: -106.4 },
+];
+
+/** Null Island (0°, 0° — open ocean, nowhere near a trail) is what
+    web/tests/fixtures/snapshots.mjs's synthetic `start_latlng` sits near; a
+    shared reference so a future fixture author has an obviously-safe value
+    to reach for instead of a plausible-looking real one. */
+export const NULL_ISLAND_LATLNG = [0, 0];
+
+/** Two numbers that LOOK like a [lat, lon] pair, in either shape a fixture
+    carries one: a JSON array (`"start_latlng": [35.11, -106.62]`) or a GPX
+    attribute pair (`lat="38.2" lon="-107.4"`). */
+const COORD_PATTERNS = [
+  /\[\s*(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*\]/g,
+  /\blat="(-?\d{1,3}(?:\.\d+)?)"\s+lon="(-?\d{1,3}(?:\.\d+)?)"/g,
+];
+
+/** Every coordinate-shaped number pair in `text` that falls inside a region
+    in REAL_REGIONS, as human-readable problem strings prefixed with `rel`. */
+function coordinateProblems(rel, text) {
   const problems = [];
-  for (const { rel, text } of await fixtureFiles()) {
-    for (const { what, re, allow } of FORBIDDEN) {
-      for (const m of text.match(new RegExp(re.source, re.flags)) ?? []) {
-        if (!allow(m)) problems.push(`${rel}: ${what} — ${JSON.stringify(m)}`);
+  for (const pattern of COORD_PATTERNS) {
+    for (const m of text.matchAll(new RegExp(pattern.source, pattern.flags))) {
+      const lat = Number(m[1]);
+      const lon = Number(m[2]);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      if (Math.abs(lat) > 90 || Math.abs(lon) > 180) continue; // not a plausible lat/lon at all
+      for (const region of REAL_REGIONS) {
+        if (lat >= region.latMin && lat <= region.latMax && lon >= region.lonMin && lon <= region.lonMax) {
+          problems.push(`${rel}: a coordinate inside ${region.name} — [${lat}, ${lon}]`);
+        }
       }
     }
   }
+  return problems;
+}
+
+/** Every problem `text` has, under both FORBIDDEN and the coordinate check —
+    the one function both tests below share, so they can never drift apart. */
+function personalDataProblems(rel, text) {
+  const problems = [];
+  for (const { what, re, allow } of FORBIDDEN) {
+    for (const m of text.match(new RegExp(re.source, re.flags)) ?? []) {
+      if (!allow(m)) problems.push(`${rel}: ${what} — ${JSON.stringify(m)}`);
+    }
+  }
+  problems.push(...coordinateProblems(rel, text));
+  return problems;
+}
+
+test("no committed UI fixture contains anything that looks like personal data", async () => {
+  const problems = [];
+  for (const { rel, text } of await fixtureFiles()) problems.push(...personalDataProblems(rel, text));
   assert.deepEqual(problems, [], `\n${problems.join("\n")}\n`);
 });
 
@@ -95,13 +172,70 @@ test("the generated snapshots contain nothing that looks like personal data eith
     path.join(ROOT, "web", "tests", "fixtures", "snapshots.mjs")
   );
   const text = JSON.stringify({ ...buildSnapshots(new Date()), plan: buildGenericPlan(new Date()) });
-  const problems = [];
-  for (const { what, re, allow } of FORBIDDEN) {
-    for (const m of text.match(new RegExp(re.source, re.flags)) ?? []) {
-      if (!allow(m)) problems.push(`generated snapshots: ${what} — ${JSON.stringify(m)}`);
-    }
-  }
+  const problems = personalDataProblems("generated snapshots", text);
   assert.deepEqual(problems, [], `\n${problems.join("\n")}\n`);
+});
+
+/* --------------------------------------------------------------------- */
+/*  Proof the checks actually bite — r1-crew-tests.md HIGH: the header    */
+/*  promised name/coordinate coverage for two review rounds before either */
+/*  existed. These plant a deliberately real value in an IN-MEMORY string */
+/*  (never a committed fixture) and assert the checker flags it, so a     */
+/*  future edit that quietly guts either check fails loudly here rather   */
+/*  than by omission.                                                     */
+/* --------------------------------------------------------------------- */
+
+test("the name check bites on a real name planted in fixture-shaped text", () => {
+  const clean = `{"crew_info": {"driving": "forest roads, high clearance"}}`;
+  assert.deepEqual(personalDataProblems("planted", clean), []);
+
+  const planted = `{"crew_info": {"driving": "ask for Sarah Johnson at the gate"}}`;
+  const problems = personalDataProblems("planted", planted);
+  assert.ok(
+    problems.some((p) => p.includes("a real person's name") && p.includes("Sarah Johnson")),
+    `expected a name-check hit, got: ${JSON.stringify(problems)}`,
+  );
+});
+
+test("the name check is whole-word and does not flag the fixtures' own invented place names", () => {
+  const placeNames = `{"aid_stations": ["Rim Road", "Hell's Gate", "Cold Fork Aid", "Quartz Bench Aid", "Dust Devil 25K"]}`;
+  assert.deepEqual(personalDataProblems("places", placeNames), []);
+});
+
+test("the coordinate check bites on a real coordinate inside the denylisted region", () => {
+  // The athlete's actual home city, exactly the shape r1-crew-tests.md found
+  // hardcoded in snapshots.mjs before it was fixed.
+  const planted = `{"start_latlng": [35.11, -106.62]}`;
+  const problems = coordinateProblems("planted", planted);
+  assert.ok(
+    problems.some((p) => p.includes("Albuquerque")),
+    `expected a coordinate-check hit, got: ${JSON.stringify(problems)}`,
+  );
+
+  // The GPX attribute shape, same region.
+  const gpx = `<wpt lat="35.05" lon="-106.55"><name>Trailhead</name></wpt>`;
+  assert.ok(coordinateProblems("planted", gpx).some((p) => p.includes("Albuquerque")));
+});
+
+test("the coordinate check does not flag the fixture courses' own invented mountain ranges", () => {
+  // races/_fixtures/mm-like-100/course.gpx's actual range — real-world
+  // SHAPED, deliberately not the athlete's real training grounds. The check
+  // must stay narrow to REAL_REGIONS or every fixture course would trip it.
+  const invented = `{"aid_stations": [{"lat": 38.2, "lon": -107.4}, {"lat": 38.53, "lon": -107.3}]}`;
+  assert.deepEqual(coordinateProblems("invented", invented), []);
+});
+
+test("web/tests/fixtures/snapshots.mjs's own start_latlng is near Null Island, not a real one", async () => {
+  const { buildSnapshots } = await import(path.join(ROOT, "web", "tests", "fixtures", "snapshots.mjs"));
+  const runs = buildSnapshots(new Date())["strava.json"].activities.filter((a) => a.start_latlng);
+  assert.ok(runs.length > 0, "expected at least one synthetic run carrying start_latlng");
+  for (const run of runs) {
+    const [lat, lon] = run.start_latlng;
+    assert.ok(
+      Math.abs(lat - NULL_ISLAND_LATLNG[0]) < 1 && Math.abs(lon - NULL_ISLAND_LATLNG[1]) < 1,
+      `start_latlng ${JSON.stringify(run.start_latlng)} is not near Null Island`,
+    );
+  }
 });
 
 test("every fixture race.json is a valid race.json", async () => {

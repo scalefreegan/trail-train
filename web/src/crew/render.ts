@@ -102,13 +102,31 @@ export function stationRows(
   const start = raceStart(data.race.date, data.race.start_time, data.race.timezone);
   const clock = (h: number) => fmtRaceClock(start, h, data.race.timezone);
   const goalSource = live && live.stations.length === frozen.length ? live.stations : null;
+  // A station at or before the checkpoint is a fact the crew already watched
+  // happen, not a prediction — it must never be re-dated by the shift a
+  // clamped ratio produces. It keeps whatever it was showing before this
+  // checkpoint (the live/unadjusted re-projection, `goalSource`), and the
+  // checkpoint's own row is pinned to exactly the clock the crew typed.
+  // Downstream of the checkpoint, the re-projection is floored so a clamp
+  // can never place an ETA before the checkpoint itself or before the gun.
+  const floor = cp ? cp.observed_h : 0;
   return frozen.map((row, i) => {
     const s = source.stations[i];
-    const eta: Record<Scenario, number> = {
-      best: s.eta_h.best + shift,
-      avg: s.eta_h.avg + shift,
-      worst: s.eta_h.worst + shift,
-    };
+    const passed = cp != null && i <= cp.index;
+    const priorRow = goalSource ? goalSource[i] : null;
+    const eta: Record<Scenario, number> = passed
+      ? cp!.index === i
+        ? { best: cp!.observed_h, avg: cp!.observed_h, worst: cp!.observed_h }
+        : {
+            best: priorRow ? priorRow.eta_h.best : row.eta_h.best,
+            avg: priorRow ? priorRow.eta_h.avg : row.eta_h.avg,
+            worst: priorRow ? priorRow.eta_h.worst : row.eta_h.worst,
+          }
+      : {
+          best: Math.max(s.eta_h.best + shift, floor, 0),
+          avg: Math.max(s.eta_h.avg + shift, floor, 0),
+          worst: Math.max(s.eta_h.worst + shift, floor, 0),
+        };
     const goal = goalSource ? goalSource[i].goal_eta_h : row.goal_eta_h;
     return {
       ...row,

@@ -118,8 +118,19 @@ export function AddTuneUp({ parentSlug, parentName, parentTimezone, parentDate, 
     }
   };
 
+  // Synchronous re-entrancy guard, same shape and reason as App.tsx's
+  // RaceSwitcher.choose(): `setBusy(true)` is a React state update, which
+  // does not repaint the button's `disabled` attribute until the next
+  // render commits, so a burst of clicks landing in the same tick (a
+  // double-tap, a key repeat) can all pass the `!canSubmit` check before any
+  // of them sees `busy: true`. Checked and set before anything async
+  // happens, so the 2nd and 3rd clicks in such a burst never issue a POST.
+  const busyRef = useRef(false);
+
   const submit = async () => {
     if (!canSubmit) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -152,6 +163,7 @@ export function AddTuneUp({ parentSlug, parentName, parentTimezone, parentDate, 
     } catch (e) {
       setError(friendlyFetchError(e));
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };

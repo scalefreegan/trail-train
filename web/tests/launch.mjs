@@ -272,16 +272,6 @@ export function freePort() {
 }
 
 /**
- * Start `vite` on a free port against `root`, and resolve once it answers.
- *
- * Never port 38100: that is the developer's own dev server, pinned and
- * strictPort'd, and a test run must not be able to take it or be confused by
- * it. The suite's own port is picked per run.
- *
- * @param {{root: string, fakeAgentFile?: string, crewShell?: string, port?: number}} opts
- * @returns {Promise<{baseURL: string, port: number, stop: () => Promise<void>, log: () => string}>}
- */
-/**
  * Build the single-file crew shell from THIS checkout and return its path, for
  * TRAIL_CREW_SHELL.
  *
@@ -299,8 +289,17 @@ export async function buildCrewShell() {
   return ensureShell(REPO_ROOT)
 }
 
-export async function startServer({ root, fakeAgentFile, crewShell, port: given }) {
-  const port = given ?? (await freePort())
+/** One attempt: spawn vite on `port` and wait for it to answer. Rejects with
+ *  `.exitedEarly = true` when the process itself exited before ever
+ *  answering HTTP (as opposed to `waitForHttp`'s own readiness timeout,
+ *  which means vite is up but the app never became ready — a real failure,
+ *  not a port race, and never retried).
+ *
+ *  @param {number} port
+ *  @param {{root: string, fakeAgentFile?: string, crewShell?: string}} opts
+ *  @returns {Promise<{baseURL: string, port: number, stop: () => Promise<void>, log: () => string}>}
+ */
+async function attemptStart(port, { root, fakeAgentFile, crewShell }) {
   const baseURL = `http://127.0.0.1:${port}`
   const proc = spawn(
     process.execPath,
@@ -325,7 +324,11 @@ export async function startServer({ root, fakeAgentFile, crewShell, port: given 
   proc.stderr.on('data', (d) => { log += d })
 
   const exited = new Promise((_, reject) => {
-    proc.on('exit', (code) => reject(new Error(`vite exited ${code} before it was ready:\n${log}`)))
+    proc.on('exit', (code) => {
+      const err = new Error(`vite exited ${code} before it was ready:\n${log}`)
+      err.exitedEarly = true
+      reject(err)
+    })
   })
   await Promise.race([waitForHttp(`${baseURL}/`, 30_000), exited])
 
@@ -339,6 +342,38 @@ export async function startServer({ root, fakeAgentFile, crewShell, port: given 
     })
   }
   return { baseURL, port, stop, log: () => log }
+}
+
+/**
+ * Start `vite` on a free port against `root`, and resolve once it answers.
+ *
+ * Never port 38100: that is the developer's own dev server, pinned and
+ * strictPort'd, and a test run must not be able to take it or be confused by
+ * it. The suite's own port is picked per run.
+ *
+ * @param {{root: string, fakeAgentFile?: string, crewShell?: string, port?: number}} opts
+ * @returns {Promise<{baseURL: string, port: number, stop: () => Promise<void>, log: () => string}>}
+ */
+export async function startServer({ root, fakeAgentFile, crewShell, port: given }) {
+  const port = given ?? (await freePort())
+  const opts = { root, fakeAgentFile, crewShell }
+  try {
+    return await attemptStart(port, opts)
+  } catch (e) {
+    // freePort()'s own TOCTOU window: another process can grab the port in
+    // the microseconds between the probe socket closing and vite's own
+    // listen, and vite (--strictPort) exits immediately rather than hopping.
+    // That squatter is very often transient — frequently another process
+    // doing the very same probe-then-close dance — so one bounded retry on
+    // the SAME port, after a short pause, resolves it without picking a new
+    // port a caller may already have baked into fixture data (globalSetup
+    // writes a fixture race's `links.site` against this exact port before
+    // startServer is ever called). A readiness-timeout failure (vite is up,
+    // the app never answered) is not retried — that is a real failure.
+    if (!e.exitedEarly) throw e
+    await new Promise((r) => setTimeout(r, 300))
+    return attemptStart(port, opts)
+  }
 }
 
 /** Poll until the server answers anything at all, or the deadline passes. */
