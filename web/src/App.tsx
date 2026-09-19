@@ -1458,12 +1458,24 @@ function Trajectory() {
     <section>
       <SectionTag
         right={
-          <div style={{ display: "flex", gap: 16 }}>
-            <div style={{ display: "flex", gap: 6 }}>
+          // SectionTag's own row is a non-wrapping flex (atoms.tsx) — at
+          // 320/390 the title plus four un-shrinkable chip buttons in one
+          // line ran the document 417px wide. flexWrap here lets the two
+          // button groups drop to a second line (or scroll if they still
+          // don't fit) instead of forcing the whole row wider than the
+          // viewport; minWidth: 0 lets THIS box shrink inside SectionTag's
+          // row rather than claiming its full unwrapped intrinsic width.
+          <div
+            style={{
+              display: "flex", flexWrap: "wrap", gap: 8, rowGap: 4,
+              justifyContent: "flex-end", minWidth: 0, maxWidth: "100%",
+            }}
+          >
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               <button className={"chip" + (mode === "cum" ? " active" : "")} onClick={() => setMode("cum")}>cumulative</button>
               <button className={"chip" + (mode === "wk" ? " active" : "")} onClick={() => setMode("wk")}>weekly</button>
             </div>
-            <div style={{ display: "flex", gap: 6 }}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               <button className={"chip" + (view === "dist" ? " active" : "")} onClick={() => setView("dist")}>dist</button>
               <button className={"chip" + (view === "elev" ? " active" : "")} onClick={() => setView("elev")}>vert</button>
             </div>
