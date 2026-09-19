@@ -235,9 +235,16 @@ a { color: inherit; }
 .commandbar-mid { display: flex; align-items: center; gap: 0; }
 
 /* the header row — wordmark+switcher, view chips, mid stats, sync cluster
-   — as one nowrap flex row on desktop (unchanged look ≥988px), wrapping
+   — as one nowrap flex row on desktop (unchanged look ≥1201px), wrapping
    below that so nothing (units toggle, resync, settings) is pushed off
-   the right edge of a phone-width viewport. */
+   the right edge of the viewport. The nowrap row's real (unsquashed)
+   content width runs to ~1113px with an active race (wordmark+switcher +
+   view chips + "block week NN/NN" + "race in NNN days" + "race day mon d"
+   + the sync cluster's "synced Nh Nm ago" + coach/units/resync/settings) —
+   987px left a 988-1112px band where the row was still nowrap but too
+   narrow for its own content, forcing document-level horizontal scroll.
+   1200px clears that with margin while still being comfortably below the
+   1280px breakpoint where the coach rail itself drops below the content. */
 .command-bar {
   display: flex;
   align-items: center;
@@ -247,7 +254,7 @@ a { color: inherit; }
 }
 .command-bar-sync { flex-shrink: 0; }
 
-@media (max-width: 987px) {
+@media (max-width: 1200px) {
   .command-bar {
     flex-wrap: wrap;
     height: auto;
