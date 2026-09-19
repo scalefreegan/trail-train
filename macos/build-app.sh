@@ -52,15 +52,24 @@ PLIST="$BUILD_DIR/$APP_NAME.app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.scalefreegan.basecamp" "$PLIST" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.scalefreegan.basecamp" "$PLIST"
 
-# 3b. helper app: "Basecamp Server.app" — a faceless bundle whose executable
-# is a shell script that keeps the dev server as its child. Empirically the
-# only helper shape whose Documents access survives on this machine (a
-# compiled-applet variant of the same bundle id was silently denied).
+# 3b. helper app: "Basecamp Server.app" — a faceless bundle that keeps the
+# dev server as its child. Its executable is a COMPILED shim (server-shim.c)
+# that execs server-runner.sh from Resources. History, because this doctrine
+# has now inverted twice: pre-26.6.2, the script-as-executable bundle was the
+# shape whose Documents grant stuck and a compiled applet was silently
+# denied; macOS 26.6.2 flipped it — a script executable runs as /bin/zsh (a
+# platform binary tccd will neither prompt for nor match a grant to), so no
+# NEW grant could ever be established (silent deny, no prompt, Full Disk
+# Access rows never matching). Basecamp outlived the update only because its
+# pre-update grant row kept being honored; wine-guide, whose row was lost,
+# died and proved the mechanism (2026-08-29). A real Mach-O restores a
+# promptable identity.
 HELPER="Basecamp Server"
 HELPER_APP="$BUILD_DIR/$APP_NAME.app/Contents/Helpers/$HELPER.app"
 mkdir -p "$HELPER_APP/Contents/MacOS" "$HELPER_APP/Contents/Resources"
-cp server-runner.sh "$HELPER_APP/Contents/MacOS/BasecampServer"
-chmod +x "$HELPER_APP/Contents/MacOS/BasecampServer"
+clang -O2 -o "$HELPER_APP/Contents/MacOS/BasecampServer" server-shim.c
+cp server-runner.sh "$HELPER_APP/Contents/Resources/server-runner.sh"
+chmod +x "$HELPER_APP/Contents/Resources/server-runner.sh"
 cp "$BUILD_DIR/$APP_NAME.app/Contents/Resources/applet.icns" "$HELPER_APP/Contents/Resources/helper.icns"
 cat > "$HELPER_APP/Contents/Info.plist" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>

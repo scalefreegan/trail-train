@@ -5,9 +5,16 @@ from Strava and Oura, plots it against a configurable training block, and
 delegates coaching to a headless Claude Code agent that has read access to
 every snapshot.
 
-Built for the [Mogollon Monster 100](https://www.aravaiparunning.com/mogollon-monster-2/)
-(102.3 mi · 15,900 ft · Sept 12, 2026). All numbers, weekly targets, race
-date, and aid stations are real.
+A **race is a folder**, not a hard-coded assumption. Everything race-specific
+— name, date, timezone, aid chart, cutoffs, climbs, crew rules, fueling —
+lives in `races/<slug>/`, and `config/active-race.json` points at the one in
+play. Point it somewhere else and the whole app follows: countdown, course
+profile, pacing model, crew sheet, fuel plan, coach prompts.
+
+With no active race the app runs in **generic mode**: the race panels hide and
+training is driven by `config/goals.json` (event class, horizon, phase, volume
+band) on a rolling block instead of a fixed countdown. Finished races are
+archived in place and stay readable.
 
 ## What's in it
 
@@ -17,11 +24,11 @@ amber accent — instead of a sectioned scroll:
 - **Command bar** — block week, race countdown, streaming resync status, and
   the imperial/metric toggle, always pinned on top.
 - **Race ribbon** — countdown plus the course elevation profile with aid
-  stations, compressed into one band.
+  stations, compressed into one band. Hidden in generic mode.
 - **Vitals** — load and recovery in one grammar: 7d distance/vert, ACR,
   block-vs-plan, readiness, HRV, RHR, sleep — each with a 30-day sparkline
   and trend delta, plus last night's sleep stages inline.
-- **Trajectory** — the 20-week cumulative actual-vs-plan chart with
+- **Trajectory** — the cumulative actual-vs-plan chart for the block with
   projection, expected/actual/delta stats embedded in the panel.
 - **The road ahead** — next 14 calendar days (Google Calendar, classified)
   fused with the agent's next-6-weeks `plan_blocks` and key sessions.
@@ -49,15 +56,179 @@ Or launch it as a Mac app — `./macos/build-app.sh` installs **Basecamp.app**
 to `/Applications`: the Dock icon starts the server and opens the dashboard,
 and quitting it stops the server. See `macos/README.md`.
 
+### Pick a race (or don't)
+
+```bash
+ls races/                       # the folders you have
+$EDITOR config/active-race.json # {"slug": "<folder name>"} — or {"slug": null}
+```
+
+`config/active-race.json` is gitignored: which race you are training for is a
+per-machine choice, and a fresh checkout starts at `{"slug": null}` rather
+than silently adopting somebody else's race.
+
+- **Race mode** (`slug` set) — the block, countdown, course views, crew sheet
+  and fuel plan all come from that folder.
+- **Generic mode** (`slug: null`) — the race panels hide, and the training
+  block is driven by `config/goals.json` (gitignored, like the pointer):
+  ```json
+  { "event_class": "100mi", "horizon_weeks": 24, "phase": "base", "volume_band": [40, 60] }
+  ```
+  Panel gating is live; the rolling-window block that reads `goals.json` is
+  still landing, so scripts currently fall back to the most recent race
+  folder when nothing is active.
+
+A race folder holds (see `docs/PRD-modular-races.md` §5):
+
+| file | what | committed? |
+|---|---|---|
+| `race.json` | name, date, timezone, distance, elevation, aid chart with cutoffs, climb windows, crew info, coach notes, sources | yes |
+| `course.gpx` | the organizer's route export | yes |
+| `block.json` | weekly mileage + vert targets for this build | yes |
+| `nutrition.json` | fueling constants + per-station drop-bag gear | yes |
+| `plan.json` | the coach agent's current 6-week plan | no |
+| `result.json` | the finish, once it happens | no |
+| `crew.private.json` | crew base address + emergency numbers | no |
+| `build/` | generated `course.json` / `crew-base.json` | no |
+
+Folders whose name starts with `_` are templates, never races
+(`races/_fixtures/` holds the test ones).
+
+### How a race looks
+
+A race can recolour Basecamp; it cannot rebrand it. `race.json`'s `visual`
+block picks one of five presets in `web/src/themes/presets.ts` —
+`basecamp-default` (today's palette), `desert`, `alpine`, `forest`, `night` —
+each a variation on the same pre-dawn identity, same token structure and same
+three typefaces, changing only hue and temperature.
+
+```json
+"visual": {
+  "theme_preset": "desert",
+  "accent": "#e58045",
+  "hero": "rim.jpg",
+  "overrides": { "--panel": "#191310" }
+}
+```
+
+- `theme_preset` selects the palette. Generic mode (no race) is always
+  `basecamp-default`.
+- `accent` is enough on its own: the pressed and washed variants
+  (`--lamp-deep`, `--lamp-glow`) are derived from it.
+- `overrides` sets individual tokens — any of the custom properties `:root`
+  declares in `web/src/index.css` — and wins over both.
+- `hero` is an image **in the race folder** (`.jpg`/`.png`/`.webp`, 8 MB cap).
+  It renders behind the elevation profile in the ribbon, masked away from the
+  name and the countdown. Without one, the ribbon looks exactly as it always
+  has. The dev server serves it from `GET /api/races/:slug/asset/:name`, and
+  only that one nominated file — nothing else in the folder is reachable.
+
+Switching race swaps the palette in place: the resolved tokens are written
+onto `:root` with a `data-theme` attribute, no reload and no re-render of any
+data. Nothing is persisted — the pointer is the only state.
+
+`scripts/visual.test.mjs` and `scripts/theme-presets.test.mjs` hold the rules:
+every preset keeps body text at 4.5:1 and its accent at 3:1 against both the
+page field and a raised panel, and a `visual` block that names an unknown
+preset, a colour that is not a colour, a token that does not exist, or a hero
+that is a path rather than a filename is refused when the folder is written.
+The Mac app icon and the favicon are Basecamp's, not the race's, and never
+change.
+
+### Build the course
+
+The Race views read a `course.json` derived from the folder's GPX: aid
+stations snapped to the track, climbs detected and matched to `race.json`'s
+windows, a smoothed elevation profile, and the overview-map polyline.
+
+```bash
+cd web
+npm run course:build                                # the active race
+npm run course:build -- --race <slug>               # a specific folder
+```
+
+It writes `races/<slug>/build/course.json` (and `build/crew-base.json` whenever
+the folder has a `crew.private.json` — the race-week lodging in it is optional,
+the emergency numbers stand on their own) — generated output, gitignored. The
+dev server serves them at `/course.json` and `/crew-base.json`. With no active
+race and no `--race`, the command lists the slugs it could have built rather
+than guessing.
+
+Aid stations are resolved to GPX waypoints by the authored `gpx_wpt` first,
+then by name, then by charted mile. A station the matcher can't place
+confidently warns and falls back to a distance snap — an unseen GPX from a
+race site never fails the build.
+
+### Checks
+
+```bash
+cd web
+npm run check:races                       # the whole harness
+TRAIL_CHECK_QUIET=1 npm run check:races   # one line per section
+npm run check:races -- --live             # + re-fetch a draft's sources
+```
+
+The regression harness for the race pipeline. Five sections, each printing
+PASS, FAIL or SKIP with a reason; any FAIL exits non-zero.
+
+1. **Race literals** — the grep gate. A race is a folder, so no race's name,
+   short code, trailhead town or aid-station name may appear in code again.
+   It scans `scripts/`, `web/src/`, `web/vite.config.ts`, `macos/`,
+   `README.md` and `web/index.html`, skipping `*.test.mjs` (the retired race
+   *is* their fixture) and the checker itself. A line whose first non-space
+   characters open or continue a comment is history, not coupling, and prints
+   as an INFO mention; every other hit fails. Two constants are listed
+   exceptions in `scripts/check-races.mjs`, each named with its reason —
+   `LEGACY_KNOB_SLUG` (the one-time localStorage migration target for pacing
+   knobs saved before knobs were per-race) and `STYLE_REFERENCE_SLUG` (the
+   hand-authored block and nutrition pair the intake planner shows its agent
+   as a style reference). Add a third only by adding it there, with a reason.
+2. **Folders** — every folder under `races/` validates. Drafts get draft
+   semantics (a hole they declared in `unresolved[]` is allowed); active and
+   archived folders must validate outright. At most one folder may be active,
+   and each `block.json` / `nutrition.json` has to pass both its writer-side
+   validator and the loader the client uses.
+3. **Reference rebuild** — the archived reference race is copied to a temp
+   dir with every `gpx_wpt` and its sun times stripped, then put back through
+   stage 2. The matcher has to recover the waypoints from names alone, the
+   snapped miles have to walk forwards, the recomputed sunrise and sunset have
+   to land within five minutes of the committed pair, and not one field
+   stamped `user` or `agent` may be rewritten. Nothing is written into
+   `races/`, and no network call is made.
+4. **Draft expectations** — the validation case in `docs/PRD-modular-races.md`
+   §12, asserted against that draft folder: the station count, timezone,
+   cutoff, feature flags, high point, first crew access, results host, and
+   that the transcription of the organizer's image-only aid chart is still
+   flagged for a human. The draft is uncommitted, so this section SKIPs with
+   a notice in a fresh checkout.
+5. **Build and tests** — `npm run build` and `npm test`, with their tails.
+
+`--live` adds one thing to section 4: each source the draft cites is
+re-fetched and hashed against the cached copy in its `sources/`, so an
+organizer who has revised the manual, the chart or the GPX since intake shows
+up as `CHANGED`. It is the only part of the harness that touches the network,
+it is off by default, and it is not a re-intake — re-running the agent is what
+"refresh from sources" does.
+
 ### Athlete profile
 
-The agent uses your name, location, and local trail names in its prompts. Copy
+The agent uses your name, location, local trail names and the title words you
+give your long runs (`long_run_name_patterns`) in its prompts and in Strava
+classification. The race planner uses the `physiology` block: `body_kg` drives
+every mg/kg caffeine figure and `long_run_ref_mi` is the distance the pacing
+fit is read at (your own long-run regime, not the race distance). All of it is
+yours rather than any race's, so a race folder can be shared without it. Copy
 the example and personalize — this file is gitignored:
 
 ```bash
 cp config/profile.example.json config/profile.json
 $EDITOR config/profile.json
 ```
+
+The physiology numbers are also editable in the dashboard's ⚙ settings dialog.
+Leave them out and the plan still builds, against impersonal defaults (75 kg,
+20 mi) it tells you it is using. Race-week lodging and emergency numbers are
+NOT here — they live in `races/<slug>/crew.private.json`.
 
 The dashboard initially shows empty states. Connect each data source:
 
@@ -147,23 +318,30 @@ watch-outs, recommendations, and 6 weeks of `plan_blocks` with key sessions).
 
 ## Persistent agentic state
 
-`web/public/state.json` (gitignored) holds the parts of the system that should
-survive across syncs and server restarts:
+State is split in two: what is true about the **athlete** stays in
+`web/public/state.json` (gitignored, v3), and what is true about a **race**
+lives in that race's folder under `races/<slug>/`.
 
-- **race meta** — name, date, distance, elevation, course notes
-- **block targets** — 20 weeks of planned mileage + vert
-- **plan_blocks** — the agent's current 6-week recommendations (focus, key
-  session, quality count). Persists across runs — the agent **modifies**
-  this rather than regenerating from scratch each time.
+`state.json` (v3):
+
 - **agent_notes** — running list of observations the coach has made and
   wants to remember (capped at 30, newest kept).
 - **preferences** — athlete-set rules (training philosophy, weekly rest
-  day, fueling target, heat threshold). Agent reads but doesn't modify.
+  day, fueling target, heat threshold, coach context sections and dated
+  temporary constraints). Agent reads them and may only APPEND context.
 
-Bootstrapped from defaults the first time `sync-strava` or `coach` runs.
-After that the file is the source of truth — edit it directly to change
+The race side is the folder table under **Setup → Pick a race**.
+
+`state.json` is bootstrapped from defaults the first time `sync-strava` or
+`coach` runs. A v2 file (race + block + plan_blocks inside state.json) is
+migrated on first load: it is copied to `web/public/state.v2.backup.json`
+first — the split refuses to run if that backup cannot be written — and the
+race data is written into the folder, never overwriting a file already there.
+After that the files are the source of truth — edit them directly to change
 block targets, preferences, etc. `coach.mjs` merges agent updates atomically
-(write-then-rename) so a malformed agent response can never corrupt state.
+(write-then-rename) so a malformed agent response can never corrupt state;
+plan_blocks land in the active race's `plan.json`, or `config/generic-plan.json`
+when no race is active.
 
 ## Weather
 
@@ -172,8 +350,8 @@ block targets, preferences, etc. `coach.mjs` merges agent updates atomically
 apparent_avg_c / humidity_avg` during the run window. Cached to
 `~/.cache/trail-train/weather.json` so re-syncs don't re-hit the API. The
 agent uses these to flag heat exposure (≥24 °C / 75 °F = "hot run") and
-suggest acclimation work — important when the race is in 80 °F+ Pine, AZ
-canyons. Skip with `--no-weather` if you ever need to.
+suggest acclimation work — which matters as much as the race's own heat
+profile in `race.json`. Skip with `--no-weather` if you ever need to.
 
 ## Live resync
 
@@ -187,6 +365,35 @@ Both endpoints are dev-only Vite middleware.
 npm run sync:all     # strava + oura
 npm run coach        # regenerate readout + plan
 ```
+
+## Race day on your phone
+
+`#/race-day` is the phone view: race-local now, elapsed (or a countdown
+before the gun), the next station with its best/expected/worst ETA and
+cutoff margin, what to pick up there from the fuel plan, the drop-bag
+contents, the crew drive with a leave-by time, and the two stations after
+that. Same projection the planner and the printed cards use, so the numbers
+agree. Tap **just left…** or type a mile if the clock has drifted from where
+you actually are. To reach it from a phone on the same Wi-Fi, start the
+server with `cd web && npx vite --host` and open
+`http://<your-laptop's-LAN-IP>:38100/#/race-day` — but `--host` alone only
+serves the page: the state-changing endpoints pin both `Origin` and `Host`
+to loopback and will 403 from the LAN. Name the origin you are allowing, and
+only that one, in `TRAIL_ALLOWED_ORIGINS` (comma-separated exact origins, no
+wildcard, read at startup — restart to change it):
+
+```bash
+cd web
+TRAIL_ALLOWED_ORIGINS=http://192.168.1.42:38100 npx vite --host
+```
+
+Unset — the default — nothing changes and the server stays loopback-only.
+Only do this on a network you trust: there is still no auth, so anyone on
+that Wi-Fi who knows the port can drive the dashboard. A reload with the
+laptop asleep or out of range falls back to the last race payload and
+course profile this phone loaded, labelled as such; that cache is
+`localStorage`, **not** a service worker, so the *first* load of the day
+still needs the server reachable.
 
 ## Safety & backups
 

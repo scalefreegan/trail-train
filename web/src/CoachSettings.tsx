@@ -2,12 +2,56 @@
 // Opened from the "⚙ settings" chip in the command bar. Edits:
 //   - scalar preferences + free-text context sections + dated temporary
 //     notes  → state.json preferences (via PUT /api/settings)
-//   - childcare markers + calendar keywords → config/profile.json
+//   - childcare markers + calendar keywords + athlete physiology (body mass,
+//     long-run reference distance) → config/profile.json
+//   - generic-mode goals (event class, phase, volume band, notes)
+//     → config/goals.json
 // Dev-only like chat/resync: the endpoints live in vite dev middleware.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useDialog } from "./race/dialogChrome";
 import { usePersistentState, type CoachContext, type TemporaryContextItem } from "./data";
+
+/** PRD §5.3 — KEEP IN SYNC with GOAL_PHASES in scripts/goals.mjs. */
+const GOAL_PHASES = ["recovery", "return_to_run", "base", "build", "peak", "taper", "maintain"] as const;
+
+type Goals = {
+  event_class: string;
+  horizon: string;
+  phase: string;
+  weekly_volume_band: { dist_mi: [number, number]; vert_ft: [number, number] };
+  notes: string;
+};
+
+// "" while a band field is being retyped — the save refuses rather than
+// committing a 0 the athlete didn't mean
+type GoalsForm = Omit<Goals, "weekly_volume_band"> & {
+  weekly_volume_band: { dist_mi: (number | "")[]; vert_ft: (number | "")[] };
+};
+
+/** PRD §5.4 — the athlete's own numbers. KEEP THE BOUNDS IN SYNC with
+    PHYSIOLOGY_BOUNDS in web/vite.config.ts and PHYSIOLOGY_FIELDS in
+    scripts/profile.mjs; the server rejects anything outside them. */
+const PHYSIOLOGY_META = [
+  {
+    key: "body_kg" as const,
+    label: "body mass (kg)",
+    hint: "every mg/kg caffeine figure in the race plan scales with this — it lives here, not in a race folder, so a race can be shared without it",
+    min: 30, max: 200, step: 0.1,
+  },
+  {
+    key: "long_run_ref_mi" as const,
+    label: "long-run reference (mi)",
+    hint: "the distance the pacing fit is read at: your own long-run regime, not the race distance. The projection evaluates fitness pace here and lets the fatigue curve carry everything past it",
+    min: 5, max: 50, step: 1,
+  },
+];
+
+type PhysiologyKey = (typeof PHYSIOLOGY_META)[number]["key"];
+// "" while a field is being retyped — the save refuses rather than committing
+// a 0 the athlete didn't mean (same rule as the volume band)
+type PhysiologyForm = Record<PhysiologyKey, number | "">;
 
 type SettingsPayload = {
   preferences: {
@@ -19,6 +63,12 @@ type SettingsPayload = {
   };
   calendar: { childcare_markers: string[]; calendar_keywords: Record<string, string[]> };
   calendar_error?: string | null;
+  goals?: Partial<Goals> | null;
+  goals_error?: string | null;
+  physiology?: Partial<Record<PhysiologyKey, number>> | null;
+  /** what the loader substituted, and why — shown so a plan built on the
+      impersonal defaults says so instead of looking personal */
+  physiology_warnings?: string[] | null;
   today: string;
 };
 
@@ -33,6 +83,8 @@ type FormState = {
   temporary: TemporaryContextItem[];
   childcare_markers: string[];
   calendar_keywords: Record<string, string[]>;
+  goals: GoalsForm;
+  physiology: PhysiologyForm;
 };
 
 const SECTION_META: { key: keyof CoachContext["sections"]; label: string; hint: string }[] = [
@@ -112,6 +164,35 @@ function Block({ children }: { children: React.ReactNode }) {
   return <div style={{ marginBottom: 26 }}>{children}</div>;
 }
 
+/* One [lo, hi] row of the weekly volume band. A field cleared mid-edit stays
+   "" rather than snapping to 0 — the save refuses on a blank instead. */
+function BandRow({ label, hint, value, step, onChange }: {
+  label: string;
+  hint: string;
+  step?: number;
+  value: (number | "")[];
+  onChange: (next: (number | "")[]) => void;
+}) {
+  const set = (i: number, raw: string) => {
+    const next = [...value];
+    next[i] = raw === "" ? "" : Number(raw);
+    onChange(next);
+  };
+  return (
+    <div>
+      <Hint style={{ marginTop: 0, marginBottom: 4 }}>{label}</Hint>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input type="number" min={0} step={step} className="numerals" aria-label={`${label} low`}
+          style={{ ...inputStyle, width: 88 }} value={value[0]} onChange={(e) => set(0, e.target.value)} />
+        <span style={{ color: "var(--mist-mute)", fontSize: 12 }}>–</span>
+        <input type="number" min={0} step={step} className="numerals" aria-label={`${label} high`}
+          style={{ ...inputStyle, width: 88 }} value={value[1]} onChange={(e) => set(1, e.target.value)} />
+      </div>
+      <Hint>{hint}</Hint>
+    </div>
+  );
+}
+
 export default function CoachSettings({ onClose }: { onClose: () => void }) {
   const { reload } = usePersistentState();
   const [form, setForm] = useState<FormState | null>(null);
@@ -119,6 +200,8 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [calendarError, setCalendarError] = useState<string | null>(null);
+  const [goalsError, setGoalsError] = useState<string | null>(null);
+  const [physiologyNote, setPhysiologyNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [newNote, setNewNote] = useState({ text: "", expires: "" });
@@ -131,6 +214,17 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
   // section text at load time — lets the server re-apply agent appends that
   // landed while the dialog was open instead of clobbering them
   const sectionsBaselineRef = useRef<CoachContext["sections"] | null>(null);
+  // Which physiology fields the athlete actually typed into this time (PR
+  // #23 review round 1, generic finding 3): the dialog shows the server's
+  // documented FALLBACK numbers as if they were real values (that's the
+  // point — "physiologyNote" explains the substitution), so saving the
+  // whole physiology object on every save — even one that only touched
+  // "fuel kcal/h" — silently committed a guessed 75 kg / 20 mi as though the
+  // athlete had entered it, permanently losing the "this is a stand-in"
+  // warning. Only a field actually edited this session goes in the PUT body;
+  // the server already merges by key (web/vite.config.ts's settings PUT), so
+  // an untouched field is simply not present rather than being resent.
+  const physiologyDirtyRef = useRef<Set<PhysiologyKey>>(new Set());
   const backdropMouseDown = useRef(false);
 
   // discarding a long edit deserves one confirmation; a clean form closes
@@ -140,11 +234,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
     if ((!dirty && !newNote.text.trim()) || window.confirm("discard unsaved changes?")) onClose();
   }, [dirty, saving, newNote.text, onClose]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") requestClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [requestClose]);
+  const { titleId, dialogProps } = useDialog({ onClose: requestClose, locked: saving, label: "coach settings" });
 
   useEffect(() => {
     fetch("/api/settings")
@@ -161,6 +251,11 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
         const p = d.preferences ?? {};
         setToday(d.today);
         setCalendarError(d.calendar_error ?? null);
+        setGoalsError(d.goals_error ?? null);
+        physiologyDirtyRef.current = new Set();
+        // the server already fell back to defaults; the dialog shows them as
+        // real values and explains, once, that they are stand-ins
+        setPhysiologyNote(d.physiology_warnings?.length ? d.physiology_warnings.join(" · ") : null);
         setNewNote({ text: "", expires: plusDays(d.today, 30) });
         knownIdsRef.current = (p.context?.temporary ?? []).map((t) => t.id);
         sectionsBaselineRef.current = {
@@ -181,6 +276,20 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
           temporary: p.context?.temporary ?? [],
           childcare_markers: d.calendar?.childcare_markers ?? [],
           calendar_keywords: d.calendar?.calendar_keywords ?? {},
+          physiology: {
+            body_kg: d.physiology?.body_kg ?? "",
+            long_run_ref_mi: d.physiology?.long_run_ref_mi ?? "",
+          },
+          goals: {
+            event_class: d.goals?.event_class ?? "",
+            horizon: d.goals?.horizon ?? "",
+            phase: d.goals?.phase ?? "maintain",
+            notes: d.goals?.notes ?? "",
+            weekly_volume_band: {
+              dist_mi: d.goals?.weekly_volume_band?.dist_mi ?? [0, 0],
+              vert_ft: d.goals?.weekly_volume_band?.vert_ft ?? [0, 0],
+            },
+          },
         });
       })
       .catch((e) => setLoadError((e as Error).message));
@@ -191,8 +300,37 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
     setForm((f) => (f ? { ...f, ...p } : f));
   }, []);
 
+  /** Which band fields are blank or reversed — the save refuses on any. */
+  const goalsBandProblem = (g: GoalsForm): string | null => {
+    for (const [key, label] of [["dist_mi", "weekly miles"], ["vert_ft", "weekly vert"]] as const) {
+      const [lo, hi] = g.weekly_volume_band[key];
+      if (lo === "" || hi === "") return `${label}: the volume band needs both a low and a high number`;
+      if (lo > hi) return `${label}: the low end (${lo}) is above the high end (${hi})`;
+    }
+    return null;
+  };
+
+  /** Which physiology field is blank or out of the server's range. Only a
+      field the athlete actually edited this session is checked (and later
+      sent) — an untouched one is already a valid, server-supplied number
+      (real or a documented fallback) that this save isn't claiming as the
+      athlete's own. */
+  const physiologyProblem = (ph: PhysiologyForm): string | null => {
+    for (const { key, label, min, max } of PHYSIOLOGY_META) {
+      if (!physiologyDirtyRef.current.has(key)) continue;
+      const v = ph[key];
+      if (v === "") return `${label}: needs a number`;
+      if (!Number.isFinite(v) || v < min || v > max) return `${label}: must be between ${min} and ${max}`;
+    }
+    return null;
+  };
+
   const save = async () => {
     if (!form || saving) return;
+    const bandProblem = goalsBandProblem(form.goals);
+    if (bandProblem) { setSaveError(bandProblem); return; }
+    const physProblem = physiologyProblem(form.physiology);
+    if (physProblem) { setSaveError(physProblem); return; }
     setSaving(true);
     setSaveError(null);
     try {
@@ -213,13 +351,32 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
               known_ids: knownIdsRef.current,
             },
           },
-          // a corrupt profile.json makes calendar edits refusable server-side;
-          // don't send them at all in that case
+          goals: {
+            ...form.goals,
+            weekly_volume_band: {
+              dist_mi: form.goals.weekly_volume_band.dist_mi as number[],
+              vert_ft: form.goals.weekly_volume_band.vert_ft as number[],
+            },
+          },
+          // a corrupt profile.json makes every profile-owned edit refusable
+          // server-side; don't send them at all in that case
           ...(calendarError ? {} : {
             calendar: {
               childcare_markers: form.childcare_markers,
               calendar_keywords: form.calendar_keywords,
             },
+            // Sparse: only a field the athlete actually edited this session
+            // (physiologyDirtyRef) — the server merges by key (PUT
+            // /api/settings), so an untouched field is simply left out
+            // rather than resending the displayed fallback as if it were a
+            // real entry. Omitted altogether when nothing was touched.
+            ...(physiologyDirtyRef.current.size > 0 ? {
+              physiology: Object.fromEntries(
+                PHYSIOLOGY_META
+                  .filter(({ key }) => physiologyDirtyRef.current.has(key))
+                  .map(({ key }) => [key, form.physiology[key] as number]),
+              ),
+            } : {}),
           }),
         }),
       });
@@ -309,6 +466,92 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
           </div>
         </Block>
 
+        <Block>
+          <Eyebrow>physiology · yours, not the race's</Eyebrow>
+          <Hint style={{ marginTop: 0, marginBottom: 12 }}>
+            the two numbers the race plan needs about your body (config/profile.json, gitignored) ·
+            they used to be hard-coded in a race folder and in the pacing model
+          </Hint>
+          {calendarError && (
+            <p style={{ fontSize: 11.5, color: "var(--ember)", marginBottom: 10 }}>
+              config/profile.json could not be parsed — physiology edits are disabled until it is fixed by hand
+            </p>
+          )}
+          {physiologyNote && (
+            <p style={{ fontSize: 11.5, color: "var(--lamp)", marginBottom: 10 }}>{physiologyNote}</p>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            {PHYSIOLOGY_META.map(({ key, label, hint, min, max, step }) => (
+              <label key={key}>
+                <Hint style={{ marginTop: 0, marginBottom: 4 }}>{label}</Hint>
+                <input type="number" min={min} max={max} step={step} className="numerals" disabled={!!calendarError}
+                  style={{ ...inputStyle, width: "100%" }} value={form.physiology[key]}
+                  onChange={(e) => {
+                    physiologyDirtyRef.current.add(key);
+                    patch({
+                      physiology: { ...form.physiology, [key]: e.target.value === "" ? "" : Number(e.target.value) },
+                    });
+                  }} />
+                <Hint>{hint}</Hint>
+              </label>
+            ))}
+          </div>
+        </Block>
+
+        <Block>
+          <Eyebrow>goals · when no race is active</Eyebrow>
+          <Hint style={{ marginTop: 0, marginBottom: 12 }}>
+            what the coach trains you toward between races (config/goals.json) · the volume band also
+            sets the weekly targets of the rolling 12-week window, for any week the coach hasn't planned
+          </Hint>
+          {goalsError && (
+            <p style={{ fontSize: 11.5, color: "var(--ember)", marginBottom: 10 }}>{goalsError}</p>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <label style={{ gridColumn: "1 / -1" }}>
+              <Hint style={{ marginTop: 0, marginBottom: 4 }}>event class</Hint>
+              <input style={{ ...inputStyle, width: "100%" }} maxLength={200} value={form.goals.event_class}
+                placeholder="e.g. 100 mi mountain race"
+                onChange={(e) => patch({ goals: { ...form.goals, event_class: e.target.value } })} />
+            </label>
+            <label>
+              <Hint style={{ marginTop: 0, marginBottom: 4 }}>horizon</Hint>
+              <input style={{ ...inputStyle, width: "100%" }} maxLength={200} value={form.goals.horizon}
+                placeholder="e.g. next A-race ~Aug 2027"
+                onChange={(e) => patch({ goals: { ...form.goals, horizon: e.target.value } })} />
+            </label>
+            <label>
+              <Hint style={{ marginTop: 0, marginBottom: 4 }}>phase</Hint>
+              <select style={{ ...inputStyle, width: "100%" }} value={form.goals.phase}
+                onChange={(e) => patch({ goals: { ...form.goals, phase: e.target.value } })}>
+                {GOAL_PHASES.map((ph) => (
+                  <option key={ph} value={ph}>{ph.replace(/_/g, " ")}</option>
+                ))}
+              </select>
+            </label>
+            <BandRow
+              label="weekly miles" hint="low–high band the coach plans inside"
+              value={form.goals.weekly_volume_band.dist_mi}
+              onChange={(next) => patch({ goals: { ...form.goals, weekly_volume_band: { ...form.goals.weekly_volume_band, dist_mi: next } } })}
+            />
+            <BandRow
+              label="weekly vert (ft)" hint="its midpoint is the rolling window's target" step={100}
+              value={form.goals.weekly_volume_band.vert_ft}
+              onChange={(next) => patch({ goals: { ...form.goals, weekly_volume_band: { ...form.goals.weekly_volume_band, vert_ft: next } } })}
+            />
+          </div>
+          <div style={{ marginTop: 14 }}>
+            <Hint style={{ marginTop: 0, marginBottom: 4 }}>goals notes</Hint>
+            <AutoGrowArea
+              value={form.goals.notes} minHeight={64} maxLength={2000}
+              placeholder="injuries and their reassessment dates, why this phase, anything that caps the week"
+              onChange={(v) => patch({ goals: { ...form.goals, notes: v } })}
+              aria-label="goals notes"
+            />
+            <Hint>sent to the coach verbatim in place of the race paragraph</Hint>
+          </div>
+        </Block>
+
         {SECTION_META.map(({ key, label, hint }) => (
           <Block key={key}>
             <Eyebrow>{label}</Eyebrow>
@@ -317,6 +560,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
               onChange={(v) => patch({ sections: { ...form.sections, [key]: v } })}
               minHeight={key === "calendar_conventions" ? 140 : 88}
               maxLength={4000}
+              aria-label={label}
             />
             <Hint>{hint} · sent to the coach verbatim</Hint>
           </Block>
@@ -335,7 +579,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
             {form.temporary.length === 0 && (
               <span style={{ fontSize: 12, color: "var(--mist-mute)" }}>none yet</span>
             )}
-            {form.temporary.map((t) => {
+            {form.temporary.map((t, i) => {
               const expired = t.expires < today;
               return (
                 <div key={t.id} style={{
@@ -348,6 +592,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                       type="date" value={t.expires} className="numerals"
                       onChange={(e) => patch({ temporary: form.temporary.map((x) => x.id === t.id ? { ...x, expires: e.target.value } : x) })}
                       style={{ ...inputStyle, fontSize: 11, padding: "3px 7px", colorScheme: "dark" }}
+                      aria-label={`temporary note ${i + 1} expiry`}
                     />
                     {t.source === "agent" && (
                       <span className="eyebrow" style={{ fontSize: 8, border: "1px dashed var(--edge-bright)", padding: "2px 6px", color: "var(--lamp)" }}>agent</span>
@@ -364,6 +609,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                     value={t.text} minHeight={40} maxLength={2000}
                     onChange={(v) => patch({ temporary: form.temporary.map((x) => x.id === t.id ? { ...x, text: v } : x) })}
                     style={{ border: "1px solid var(--edge)", fontSize: 12 }}
+                    aria-label={`temporary note ${i + 1} text`}
                   />
                 </div>
               );
@@ -376,6 +622,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                   type="date" value={newNote.expires} className="numerals"
                   onChange={(e) => setNewNote((n) => ({ ...n, expires: e.target.value }))}
                   style={{ ...inputStyle, fontSize: 11, padding: "3px 7px", colorScheme: "dark" }}
+                  aria-label="new note expiry"
                 />
                 <button className="chip" style={{ fontSize: 9, padding: "2px 10px", marginLeft: "auto" }} onClick={addNote}
                   disabled={!newNote.text.trim() || !newNote.expires}
@@ -386,6 +633,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                 onChange={(v) => setNewNote((n) => ({ ...n, text: v }))}
                 placeholder="e.g. travel, a niggle, a schedule change…"
                 style={{ border: "1px solid var(--edge)", fontSize: 12 }}
+                aria-label="new note text"
               />
             </div>
           </div>
@@ -422,6 +670,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                 }
               }}
               style={{ ...inputStyle, width: 130, fontSize: 11, padding: "4px 8px" }}
+              aria-label="add childcare marker"
             />
             {markerHint && <span style={{ fontSize: 10.5, color: "var(--ember)" }}>{markerHint}</span>}
           </div>
@@ -452,6 +701,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                     }
                   }}
                   style={{ ...inputStyle, width: 100, fontSize: 11, padding: "4px 8px" }}
+                  aria-label={`add ${cls} keyword`}
                 />
               </div>
             ))}
@@ -473,6 +723,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
       }}
     >
       <div
+        {...dialogProps}
         className="panel notch"
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -486,7 +737,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
           borderBottom: "1px solid var(--edge)", padding: "16px 28px", flexShrink: 0,
         }}>
           <div>
-            <div className="eyebrow" style={{ color: "var(--mist-dim)" }}>⚙ coach settings</div>
+            <div id={titleId} className="eyebrow" style={{ color: "var(--mist-dim)" }}>⚙ coach settings</div>
             <div style={{ fontSize: 11.5, color: "var(--mist-mute)", marginTop: 3 }}>
               the context the coach reads before every readout and chat reply
             </div>

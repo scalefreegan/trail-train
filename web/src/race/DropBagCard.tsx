@@ -1,8 +1,8 @@
 import React, { useEffect } from "react";
 import { createPortal } from "react-dom";
-import { useBlockConfig } from "../data";
-import { fmtRaceClock } from "./pacing";
 import type { FuelPlan, NutritionConfig } from "./nutrition";
+import { useRacePlan } from "./useRacePlan";
+import { useDialog } from "./dialogChrome";
 
 /* ------------------------------------------------------------------ */
 /*  Drop-bag card — one 3×5in page: what to pack in each drop bag      */
@@ -22,7 +22,7 @@ export function DropBagCard({ plan, cfg, onClose }: {
   cfg: NutritionConfig;
   onClose: () => void;
 }) {
-  const { race } = useBlockConfig();
+  const { race } = useRacePlan();
 
   // the vest note must match the FIRST leg's fill instruction on the fuel
   // card (a long opening carry can demand the 4th/5th flask at the gun),
@@ -47,6 +47,8 @@ export function DropBagCard({ plan, cfg, onClose }: {
     return () => document.body.classList.remove("card-printing");
   }, []);
 
+  const { dialogProps } = useDialog({ onClose, label: `${race.name} — drop bag card` });
+
   const cell: React.CSSProperties = {
     padding: "3px 4px", borderBottom: `0.5px solid ${RULE}`, fontSize: "9.5px",
     color: INK, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums", textAlign: "right",
@@ -58,6 +60,7 @@ export function DropBagCard({ plan, cfg, onClose }: {
 
   return createPortal(
     <div
+      {...dialogProps}
       className="runner-card"
       style={{
         position: "fixed", inset: 0, zIndex: 100, overflow: "auto",
@@ -122,9 +125,10 @@ export function DropBagCard({ plan, cfg, onClose }: {
                 </thead>
                 <tbody>
                   {plan.drop_bags.map((bag) => {
-                    // the group separator lives on the LAST row of each bag —
-                    // a gear-less bag must not visually merge into the next
-                    const bagCell = { ...cell, ...(bag.gear.length > 0 ? { borderBottom: "none" } : null) };
+                    // the group separator lives on the LAST row of each bag,
+                    // which is always the gear row — a bag with no gear planned
+                    // says so rather than silently dropping the line
+                    const bagCell = { ...cell, borderBottom: "none" };
                     return (
                     <React.Fragment key={bag.station}>
                       <tr>
@@ -132,7 +136,7 @@ export function DropBagCard({ plan, cfg, onClose }: {
                           {bag.station === "Start" ? "Vest @ start" : bag.station}
                         </td>
                         <td style={{ ...bagCell, fontSize: "8.5px", color: MUTED }}>
-                          {bag.atH > 0 ? fmtRaceClock(race.date, bag.atH) : "—"}
+                          {bag.atH > 0 ? race.clock(bag.atH) : "—"}
                         </td>
                         <td style={{ ...bagCell, textAlign: "left", fontSize: "8.5px", color: MUTED }}>{bag.covers}</td>
                         <td style={{ ...bagCell, fontWeight: 700 }}>{bag.gels}</td>
@@ -151,13 +155,14 @@ export function DropBagCard({ plan, cfg, onClose }: {
                           })()}
                         </td>
                       </tr>
-                      {bag.gear.length > 0 && (
-                        <tr>
-                          <td colSpan={8} style={{ ...cell, textAlign: "left", fontSize: "7px", color: MUTED, paddingTop: 0 }}>
-                            <b style={{ color: INK }}>gear:</b> {bag.gear.join(" · ")}
-                          </td>
-                        </tr>
-                      )}
+                      <tr>
+                        <td colSpan={8} style={{ ...cell, textAlign: "left", fontSize: "7px", color: MUTED, paddingTop: 0 }}>
+                          <b style={{ color: INK }}>gear:</b>{" "}
+                          {bag.gear.length > 0
+                            ? bag.gear.join(" · ")
+                            : <i>unplanned — add this station to drop_bag_gear in the race folder&rsquo;s nutrition.json</i>}
+                        </td>
+                      </tr>
                     </React.Fragment>
                     );
                   })}

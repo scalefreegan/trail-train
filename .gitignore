@@ -16,11 +16,38 @@ web/public/cross-train.json
 web/public/oura.json
 web/public/coach.json
 web/public/state.json
+# …and the one-shot v2 backup the v3 split leaves behind (same contents).
+web/public/state.v2.backup.json
 web/public/google-cal.json
 web/public/climbs.json
-# crew-base.json holds the race-week lodging address + drive times (from
-# profile.json race_base) — personal, never commit.
+# crew-base.json holds the race-week lodging address + drive times and the
+# emergency numbers (from races/<slug>/crew.private.json) — never commit.
 web/public/crew-base.json
+
+# Race folders — the configs themselves are committed; these are not.
+# *.private.json holds crew addresses and emergency numbers, sources/ caches
+# fetched pages and PDFs for re-intake diffs, build/ is generated output.
+races/*/*.private.json
+races/*/sources/
+races/*/build/
+# The re-intake shadow folder: a whole second copy of the race, produced by
+# "Refresh from sources" and deleted on Accept or Reject (scripts/race-refresh.mjs).
+races/*/.refresh/
+# plan.json is agent-managed (the coach rewrites it every resync) and
+# result.json records a real finish — both are personal/local like state.json.
+# race.json, course.gpx, block.json and nutrition.json ARE committed.
+races/*/plan.json
+races/*/result.json
+# Same for the generic-mode plan the coach writes when no race is active.
+config/generic-plan.json
+# The active-race pointer is a per-machine choice (and may name a draft that
+# only exists locally) — never a committed one.
+config/active-race.json
+
+# Generic-mode goals (event class, phase, volume band, injury notes). Same
+# deal as the profile: goals.example.json is committed, goals.json is not and
+# is bootstrapped from the example on first run.
+config/goals.json
 
 # Athlete profile (name, location, local trails). The committed file is the
 # example with generic placeholders; copy it to profile.json and personalize.
@@ -61,3 +88,12 @@ lerna-debug.log*
 web/.claude/
 web/.shots/
 web/public/pace-grade.json
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+
+# Gas City residue (orchestrator dropped 2026-09-18; something still recreates an empty events log)
+.gc/

@@ -3,6 +3,7 @@
 // files). All contexts + hooks live in data.ts; the components live here.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTheme } from "./themes/useTheme";
 import {
   RefreshContext, useRefresh, type RefreshStep, type StepStatus, type RefreshCtx,
   UnitsContext, useUnits, type System, type UnitsCtx,
@@ -101,9 +102,15 @@ export function RefreshProvider({ children }: { children: React.ReactNode }) {
     }
   }, [syncing, system]);
 
+  // The pulse without the sync: every snapshot hook is keyed on `key`, so a
+  // bump is all it takes to make the whole dashboard re-read its files. The
+  // race switcher uses it — a different race means different race/course/
+  // nutrition files, and nothing at all about Strava, Oura or the calendar.
+  const reload = useCallback(() => setKey((k) => k + 1), []);
+
   const value = useMemo<RefreshCtx>(() => ({
-    key, syncing, lastSync, status, currentStep, lastLog, refresh,
-  }), [key, syncing, lastSync, status, currentStep, lastLog, refresh]);
+    key, syncing, lastSync, status, currentStep, lastLog, refresh, reload,
+  }), [key, syncing, lastSync, status, currentStep, lastLog, refresh, reload]);
 
   return <RefreshContext.Provider value={value}>{children}</RefreshContext.Provider>;
 }
@@ -141,10 +148,26 @@ export function UnitsProvider({ children }: { children: React.ReactNode }) {
       paceUnit: metric ? "/km" : "/mi",
       tempUnit: metric ? "°C" : "°F",
       temp: (f) => String(Math.round(metric ? (f - 32) * 5 / 9 : f)),
-      dist: (mi, digits = 1) => distVal(mi).toLocaleString("en-US", {
-        minimumFractionDigits: digits, maximumFractionDigits: digits,
-      }),
-      elev: (ft) => Math.round(elevVal(ft)).toLocaleString("en-US"),
+      // D4: a render before the data these come from has loaded (e.g. the
+      // moment right after a reload, before /api/race/active answers) can
+      // pass `undefined` here. In METRIC mode `undefined * MI_TO_KM` is NaN,
+      // and NaN.toLocaleString() harmlessly prints "NaN" — but in IMPERIAL
+      // mode distVal returns `undefined` untouched, and undefined has no
+      // .toLocaleString, which threw and white-screened the whole app. That
+      // white screen is what read as "the units toggle doesn't survive a
+      // reload": the toggle persisted fine, imperial mode just couldn't
+      // render the very first frame. Both modes now render "0" for that one
+      // frame instead of one of them crashing.
+      dist: (mi, digits = 1) => {
+        const v = distVal(mi);
+        return Number.isFinite(v)
+          ? v.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })
+          : "0";
+      },
+      elev: (ft) => {
+        const v = elevVal(ft);
+        return Number.isFinite(v) ? Math.round(v).toLocaleString("en-US") : "0";
+      },
       paceFmt: (sec, mi) => {
         if (!mi || !Number.isFinite(sec)) return "—";
         const distanceUnits = metric ? mi * MI_TO_KM : mi;
@@ -378,4 +401,18 @@ export function StateProvider({ children }: { children: React.ReactNode }) {
   const reload = useCallback(() => setNonce((n) => n + 1), []);
   const value = useMemo(() => ({ data, missing, reload }), [data, missing, reload]);
   return <PersistentStateContext.Provider value={value}>{children}</PersistentStateContext.Provider>;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Race theme — the race on screen wears its own palette (PRD §7)     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Renders nothing; applies the viewed race's `visual` to :root. A leaf, not
+ * a provider, so a theme swap costs eighteen setProperty calls and no
+ * re-render. Mount it once, anywhere inside RefreshProvider.
+ */
+export function RaceTheme() {
+  useTheme();
+  return null;
 }

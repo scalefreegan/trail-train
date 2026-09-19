@@ -1,9 +1,10 @@
 import { useMemo } from "react";
-import { useStrava, useMeasuredWidth } from "../data";
+import { useStrava, useMeasuredWidth, useUnits } from "../data";
 import { SectionTag } from "../atoms";
 import { useRacePlan } from "./useRacePlan";
-import { ANCHOR_HI_MI, ANCHOR_LO_MI, BIAS_WORTH_ACTING_ON, calibrate, type Band, type Flag } from "./calibration";
-import { D_REF, fmtElapsed } from "./pacing";
+import { useRaceResult } from "./useRaceData";
+import { BIAS_WORTH_ACTING_ON, calibrate, type Band, type Flag } from "./calibration";
+import { fmtElapsed } from "./pacing";
 
 /* ------------------------------------------------------------------ */
 /*  Model check — how much to trust the number above.                  */
@@ -69,11 +70,14 @@ function BandRow({ b, max }: { b: Band; max: number }) {
   );
 }
 
-/** best — expected — worst as a scale, with the goal marked on it. */
-function Band3({ best, avg, worst, goal }: { best: number; avg: number; worst: number; goal: number | null }) {
+/** best — expected — worst as a scale, with the goal — and, once the race has
+    been run, the actual finish — marked on it. */
+function Band3({ best, avg, worst, goal, actual = null }: {
+  best: number; avg: number; worst: number; goal: number | null; actual?: number | null;
+}) {
   const { ref, width } = useMeasuredWidth();
-  const lo = Math.min(best, goal ?? best);
-  const hi = Math.max(worst, goal ?? worst);
+  const lo = Math.min(best, goal ?? best, actual ?? best);
+  const hi = Math.max(worst, goal ?? worst, actual ?? worst);
   const span = hi - lo || 1;
   const x = (h: number) => ((h - lo) / span) * 100;
   const H = 54;
@@ -89,6 +93,11 @@ function Band3({ best, avg, worst, goal }: { best: number; avg: number; worst: n
         ))}
         {goal != null && (
           <rect x={x(goal) - 0.15} y={10} width={0.3} height={28} fill="var(--creek)" strokeDasharray="2 2" />
+        )}
+        {/* what actually happened: full height, solid, the loudest mark on the
+            scale — every other tick is a prediction */}
+        {actual != null && (
+          <rect x={x(actual) - 0.25} y={4} width={0.5} height={40} fill="var(--mist)" />
         )}
       </svg>
       {/* Labels are pinned to the same scale as the ticks, not spread with
@@ -138,6 +147,20 @@ function Band3({ best, avg, worst, goal }: { best: number; avg: number; worst: n
           ));
         })()}
       </div>
+      {actual != null && (
+        <div style={{ fontSize: 11.5, color: "var(--mist-dim)", lineHeight: 1.6, marginTop: 8 }}>
+          You finished in <span className="numerals" style={{ color: "var(--mist)" }}>{fmtElapsed(actual)}</span>{" "}
+          {actual < best
+            ? <>— <strong style={{ color: "var(--pine)" }}>faster than the best case</strong> this model can produce, {fmtElapsed(best - actual)} under it. The projection was built from training that did not know what you had.</>
+            : actual > worst
+            ? <>— <strong style={{ color: "var(--ember)" }}>slower than the worst case</strong>, {fmtElapsed(actual - worst)} past it. Something the model does not carry — heat, altitude, stomach, a bad night — cost more than its spread allows for.</>
+            : Math.abs(actual - avg) < 1 / 120
+            ? <>— <strong style={{ color: "var(--mist)" }}>on</strong> the expected case.</>
+            : actual < avg
+            ? <>— inside the band, {fmtElapsed(avg - actual)} <strong style={{ color: "var(--pine)" }}>faster than expected</strong>.</>
+            : <>— inside the band, {fmtElapsed(actual - avg)} <strong style={{ color: "var(--ember)" }}>slower than expected</strong>.</>}
+        </div>
+      )}
       {goal != null && (
         <div style={{ fontSize: 11.5, color: "var(--mist-dim)", lineHeight: 1.6, marginTop: 8 }}>
           Your goal of <span className="numerals" style={{ color: "var(--creek)" }}>{fmtElapsed(goal)}</span>{" "}
@@ -162,8 +185,14 @@ function Band3({ best, avg, worst, goal }: { best: number; avg: number; worst: n
 }
 
 export function ModelCheck() {
-  const { course, proj, fit, paceGrade, settings } = useRacePlan();
+  const u = useUnits();
+  const { course, proj, fit, paceGrade, settings, features, panels, raceConfig } = useRacePlan();
   const { activities } = useStrava();
+  // An archived race puts its real finish on the band it was projected into.
+  // Only a finish: a DNF has no time to compare, and saying so is the race
+  // view's job, not this scale's.
+  const { result } = useRaceResult(raceConfig?.status === "archived" ? raceConfig.slug : null);
+  const actualFinishH = result?.status === "finished" ? result.finish_h : null;
 
   const cal = useMemo(
     () => calibrate({
@@ -174,6 +203,7 @@ export function ModelCheck() {
   );
 
   if (!proj || !cal) return null;
+  if (!panels.model_check) return null;
 
   const maxErr = Math.max(
     5,
@@ -197,7 +227,22 @@ export function ModelCheck() {
         {/* ---- where the goal sits ---- */}
         <div>
           <span className="eyebrow" style={{ fontSize: 8.5, display: "block", marginBottom: 8 }}>projection band</span>
-          <Band3 best={proj.finish_h.best} avg={proj.finish_h.avg} worst={proj.finish_h.worst} goal={proj.goal_h} />
+          <Band3 best={proj.finish_h.best} avg={proj.finish_h.avg} worst={proj.finish_h.worst} goal={proj.goal_h} actual={actualFinishH} />
+          {/* PRD §2: the altitude flag buys a caveat, not pacing math. The fit
+              is built from training runs at whatever elevation you train at,
+              and nothing downstream corrects for the race's — so the band
+              above is silently optimistic and the honest move is to say so
+              rather than invent an adjustment nobody validated. */}
+          {features.altitude && (
+            <p style={{ fontSize: 11.5, color: "var(--lamp)", lineHeight: 1.55, margin: "8px 0 0", maxWidth: "72ch" }}>
+              Altitude is not modeled.{" "}
+              {raceConfig?.elevation?.max_ft != null
+                ? `This course runs as high as ${u.elev(raceConfig.elevation.max_ft)} ${u.elevUnit}, and `
+                : "This race is flagged as run at altitude, and "}
+              none of the paces behind these three numbers know it — every band here is a
+              lowland-equivalent projection. Read it as the optimistic edge, not the middle.
+            </p>
+          )}
         </div>
 
         {/* ---- is the fit any good ---- */}
@@ -231,11 +276,11 @@ export function ModelCheck() {
                 </span>
               </span>
               <span className="eyebrow numerals" style={{ fontSize: 9, color: cal.anchor_n < THIN_BAND_N ? "var(--lamp)" : undefined }}>
-                n{cal.anchor_n} · {ANCHOR_LO_MI}–{ANCHOR_HI_MI} mi{cal.anchor_n < THIN_BAND_N ? " · thin sample" : ""}
+                n{cal.anchor_n} · {cal.anchor_lo_mi.toFixed(0)}–{cal.anchor_hi_mi.toFixed(0)} mi{cal.anchor_n < THIN_BAND_N ? " · thin sample" : ""}
               </span>
             </div>
             <p style={{ fontSize: 11.5, color: "var(--mist-dim)", lineHeight: 1.6, margin: "6px 0 0", maxWidth: "72ch" }}>
-              The projection evaluates its fitness pace at a single {D_REF}-mile reference point; past it the
+              The projection evaluates its fitness pace at a single {cal.d_ref_mi.toFixed(0)}-mile reference point; past it the
               slowdown comes from the fatigue curve and your restraint setting. This band is the held-out check
               on how the model behaves around that point, so error here scales into the race time.{" "}
               {Math.abs(anchor) < BIAS_WORTH_ACTING_ON
