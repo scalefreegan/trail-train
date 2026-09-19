@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildRace } from "./race-build.mjs";
+import { buildCourse } from "./build-course.mjs";
 import { LOW_CONFIDENCE } from "./aid-match.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -302,4 +303,84 @@ test("MM100's stations resolve from names alone, gpx_wpt stripped", async () => 
   for (const m of r.matched.filter((x) => x.written)) {
     assert.equal(rebuilt.provenance[`aid_stations[${m.index}].gpx_wpt`].by, "matcher");
   }
+});
+
+/* ------------------------ distance/gain sanity guard ---------------------- */
+
+test("a GPX far shorter than race.json's distance_mi is flagged structurally, not just an SSE line", async () => {
+  const slug = "truncated-gpx-2027";
+  const race = draftRace(slug);
+  // 17% off — enough to clear MISMATCH_THRESHOLD without the scale distortion
+  // large enough to also perturb aid-station snap ordering (a separate,
+  // legitimate build-course.mjs guard this test is not about).
+  race.distance_mi = 36;
+  const { root } = await makeRoot(slug, { race });
+
+  const r = await buildRace({ root, slug });
+  assert.ok(r.unresolved.includes("course.gpx"), r.unresolved.join(", "));
+  assert.ok(
+    r.warnings.some((w) => /course\.gpx measures 29\.9 mi vs race\.json's 36 mi/.test(w)),
+    r.warnings.join(" | "),
+  );
+});
+
+test("a GPX within normal drift of race.json's distance_mi (and gain) raises nothing", async () => {
+  const slug = "normal-drift-2027";
+  const race = draftRace(slug);
+  // The synthetic profile's own measured gain (~399 ft) is unrelated to the
+  // fixture's default gain_ft (1200, itself >15% off) — pinned to the real
+  // measured value here so this test isolates the DISTANCE comparison.
+  race.gain_ft = 399;
+  const { root } = await makeRoot(slug, { race }); // distance_mi (30) vs the ~29.9 mi track
+  const r = await buildRace({ root, slug });
+  assert.ok(!r.unresolved.includes("course.gpx"), r.unresolved.join(", "));
+  assert.ok(!r.warnings.some((w) => /GPX may be truncated or the wrong file/.test(w)), r.warnings.join(" | "));
+});
+
+test("the fixture's own default gain_ft (1200) is far enough off to be flagged on its own", async () => {
+  // Documents the pre-existing fixture property the test above works around:
+  // draftRace()'s gain_ft was never calibrated to the synthetic profile's
+  // measured gain, so unmodified it already trips the gain half of the guard.
+  const slug = "default-gain-mismatch-2027";
+  const { root } = await makeRoot(slug);
+  const r = await buildRace({ root, slug });
+  assert.ok(r.unresolved.includes("course.gpx"), r.unresolved.join(", "));
+  assert.ok(r.warnings.some((w) => /ft of gain vs race\.json's 1,200 ft/.test(w)), r.warnings.join(" | "));
+});
+
+test("an unresolved (null) distance_mi fails the course build with an actionable error, not Infinity/NaN", async () => {
+  const slug = "null-distance-2027";
+  const race = draftRace(slug);
+  race.distance_mi = null;
+  const { root } = await makeRoot(slug, { race });
+  await assert.rejects(buildRace({ root, slug }), /distance_mi is not a positive number/);
+});
+
+/* ------------------------------ race_climbs -------------------------------- */
+
+test("validateRaceJson now refuses a reversed race_climbs approx_mi window outright — buildRace never reaches build-course.mjs with one", async () => {
+  const slug = "reversed-climb-2027";
+  const race = draftRace(slug);
+  race.status = "active"; // draft or active, validateRaceJson checks this shape either way
+  race.race_climbs = [{ id: "bad", label: "Backwards Climb", approx_mi: [15, 10] }];
+  const { root } = await makeRoot(slug, { race });
+  await assert.rejects(buildRace({ root, slug }), /race_climbs\[0\]\.approx_mi.*required \(got \[15,10\]\)/s);
+});
+
+test("build-course.mjs's own guard drops a reversed race_climbs window when called directly (the CLI's path, which validates nothing itself)", async () => {
+  // buildRace (race-build.mjs) now refuses this race.json before build-course
+  // ever sees it (previous test) — but `node scripts/build-course.mjs --race
+  // <slug>` calls buildCourse directly with no schema validation of its own,
+  // so this defensive guard is what protects THAT path, not a redundant one.
+  const slug = "reversed-climb-direct-2027";
+  const race = draftRace(slug);
+  race.race_climbs = [{ id: "bad", label: "Backwards Climb", approx_mi: [15, 10] }];
+  const { root, dir } = await makeRoot(slug, { race });
+
+  const warnings = [];
+  const course = await buildCourse(root, slug, { warn: (m) => warnings.push(m) });
+  assert.equal(course.race_climbs, 0, "the malformed climb must not appear in course.json at all");
+  assert.ok(warnings.some((w) => /Backwards Climb.*not an ascending window/.test(w)), warnings.join(" | "));
+  const written = await readJson(path.join(dir, "build", "course.json"));
+  assert.deepEqual(written.race_climbs, []);
 });

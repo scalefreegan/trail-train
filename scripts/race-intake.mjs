@@ -667,6 +667,18 @@ export function validateAgentDraft(draft) {
       if (isObj(c) && (c.gain_ft !== undefined || c.grade_pct !== undefined || c.len_mi !== undefined)) {
         errors.push(`race_climbs[${i}]: climb metrics are computed from the GPX — emit only id, label and approx_mi`);
       }
+      // build-course.mjs scales and snaps this window directly; a reversed
+      // or malformed one (e.g. [15, 10]) has no honest fallback (it built
+      // negative length_mi, garbage gain, an empty profile — build-course.mjs
+      // now drops the climb and warns, but the draft should not validate
+      // with one in the first place).
+      if (isObj(c) && c.approx_mi !== undefined) {
+        const [a, b] = Array.isArray(c.approx_mi) ? c.approx_mi : [];
+        const numOk = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+        if (!Array.isArray(c.approx_mi) || c.approx_mi.length !== 2 || !numOk(a) || !numOk(b) || a >= b) {
+          errors.push(`race_climbs[${i}].approx_mi: [start, end] with 0 <= start < end required (got ${JSON.stringify(c.approx_mi)})`);
+        }
+      }
     });
   }
   return { ok: errors.length === 0, errors };

@@ -61,6 +61,18 @@ async function readIfPresent(p) {
  * (scripts/race-intake.mjs cacheName) so races/<slug>/sources/ stays one kind
  * of thing whichever stage filled it.
  */
+/** Text-file counterpart of lib.mjs's writeJsonAtomic (temp file + rename) —
+    course.gpx and its sources/ cache copy are text, not JSON, but deserve the
+    same "never a truncated file on disk" guarantee: a crash mid-`fs.writeFile`
+    used to be able to leave a partial GPX where the build (or the next
+    refresh's diff) would read it as a real, if truncated, course. */
+async function writeTextAtomic(p, text) {
+  await fs.mkdir(path.dirname(p), { recursive: true });
+  const tmp = `${p}.tmp.${process.pid}`;
+  await fs.writeFile(tmp, text);
+  await fs.rename(tmp, p);
+}
+
 function gpxCacheName(url) {
   const u = new URL(url);
   const base = kebab(`${u.hostname}${u.pathname}`) || "course";
@@ -249,8 +261,8 @@ export async function buildRace({ root, slug, dir = raceDir(root, slug), onProgr
     // Two copies on purpose: course.gpx is what the build reads, sources/ is
     // the cache a re-intake diffs against (same rule as the stage-1 sources).
     await fs.mkdir(path.join(dir, "sources"), { recursive: true });
-    await fs.writeFile(path.join(dir, "sources", gpxCacheName(link)), got.text);
-    await fs.writeFile(gpxPath, got.text);
+    await writeTextAtomic(path.join(dir, "sources", gpxCacheName(link)), got.text);
+    await writeTextAtomic(gpxPath, got.text);
     gpxText = got.text;
     say("gpx", `saved races/${slug}/course.gpx (${(got.text.length / 1024).toFixed(0)} KB)`);
   }
@@ -281,9 +293,17 @@ export async function buildRace({ root, slug, dir = raceDir(root, slug), onProgr
       sunChanged = true;
       say("sun", `sunrise ${race.sun.sunrise ?? "—"} · sunset ${race.sun.sunset ?? "—"}`);
     } catch (e) {
-      // Missing date or timezone: a draft is allowed not to know them yet.
-      warnings.push(`sun not computed: ${e.message}`);
-      say("sun", `sun not computed: ${e.message}`, { stream: "err" });
+      // computeRaceSun throws TypeError for exactly two documented cases —
+      // missing date, missing timezone — which a draft is allowed not to
+      // know yet. Anything else (a RangeError from the underlying Intl API
+      // on a syntactically-present but invalid IANA zone, e.g. an
+      // agent-hallucinated "America/Durango") is a real validation defect,
+      // not a known gap, and must not file under the same bucket.
+      const msg = e instanceof TypeError
+        ? `sun not computed: ${e.message}`
+        : `sun not computed — race.timezone ${JSON.stringify(race.timezone)} may be invalid: ${e.message}`;
+      warnings.push(msg);
+      say("sun", msg, { stream: "err" });
     }
     step("sun", "done", { computed: sunChanged });
   }
@@ -300,8 +320,17 @@ export async function buildRace({ root, slug, dir = raceDir(root, slug), onProgr
   const course = await buildCourse(root, slug, {
     dir,
     log: (line) => say("build", line),
-    warn: (line) => say("build", line, { stream: "err" }),
+    // Threaded into this function's own structured `warnings` (not just the
+    // SSE log stream, which scrolls by and is gone once the build dialog
+    // closes) — the ">1.5 mi off official on a confident snap" warning and
+    // the distance/gain mismatch warning below both go through here.
+    warn: (line) => { warnings.push(line); say("build", line, { stream: "err" }); },
   });
+  // A GPX far enough off race.json's official distance/gain to not be normal
+  // drift is promoted from "warning" to "unresolved" too: a course this
+  // wrong should block activation until a human confirms the GPX is right,
+  // the same way an unmatched aid station does.
+  if (course.mismatches?.length) unresolved.add("course.gpx");
   step("build", "done", { aid_stations: course.aid_stations, race_climbs: course.race_climbs });
 
   return {
