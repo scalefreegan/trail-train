@@ -1052,9 +1052,17 @@ export async function quickCreateRace({
   // guard — is on disk.
   // A concurrent create that derived the same slug loses the O_EXCL race
   // here rather than half-writing a second folder; re-tagged so it is the
-  // same 409 the plain existence check above produces.
-  await assertSlugAvailable(root, slug).catch(() => {
-    throw refuse("conflict", `races/${slug}/race.json is being created by another request`);
+  // same 409 the plain existence check above produces. Only the actual
+  // "somebody else claimed it first" outcome (EEXIST, via slugTakenMessage)
+  // gets that reassuring 409 — anything else (EACCES, ENOSPC, EMFILE, a
+  // read-only races/) is a real filesystem problem and must say so: a
+  // rewritten "another request" message would send whoever's debugging it
+  // looking for a duplicate POST instead of the disk. The caller (raceCreateApi
+  // in web/vite.config.ts) already `console.error`s anything that lands on the
+  // 500 branch, which is exactly where an unrecognised code falls through to.
+  await assertSlugAvailable(root, slug).catch((e) => {
+    if (e.message === slugTakenMessage(slug)) throw refuse("conflict", e.message);
+    throw e;
   });
   try {
     if (gpxPath) await fs.copyFile(gpxPath, path.join(dir, "course.gpx"));
