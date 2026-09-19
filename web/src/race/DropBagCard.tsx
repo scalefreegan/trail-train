@@ -2,6 +2,7 @@ import React, { useEffect } from "react";
 import { createPortal } from "react-dom";
 import type { FuelPlan, NutritionConfig } from "./nutrition";
 import { useRacePlan } from "./useRacePlan";
+import { useDialog } from "./dialogChrome";
 
 /* ------------------------------------------------------------------ */
 /*  Drop-bag card — one 3×5in page: what to pack in each drop bag      */
@@ -46,6 +47,8 @@ export function DropBagCard({ plan, cfg, onClose }: {
     return () => document.body.classList.remove("card-printing");
   }, []);
 
+  const { dialogProps } = useDialog({ onClose, label: `${race.name} — drop bag card` });
+
   const cell: React.CSSProperties = {
     padding: "3px 4px", borderBottom: `0.5px solid ${RULE}`, fontSize: "9.5px",
     color: INK, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums", textAlign: "right",
@@ -57,6 +60,7 @@ export function DropBagCard({ plan, cfg, onClose }: {
 
   return createPortal(
     <div
+      {...dialogProps}
       className="runner-card"
       style={{
         position: "fixed", inset: 0, zIndex: 100, overflow: "auto",

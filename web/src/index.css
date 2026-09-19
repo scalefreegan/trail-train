@@ -234,18 +234,65 @@ a { color: inherit; }
 
 .commandbar-mid { display: flex; align-items: center; gap: 0; }
 
+/* the header row — wordmark+switcher, view chips, mid stats, sync cluster
+   — as one nowrap flex row on desktop (unchanged look ≥988px), wrapping
+   below that so nothing (units toggle, resync, settings) is pushed off
+   the right edge of a phone-width viewport. */
+.command-bar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 28px;
+  height: 52px;
+}
+.command-bar-sync { flex-shrink: 0; }
+
+@media (max-width: 987px) {
+  .command-bar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 52px;
+    padding: 10px 16px;
+    row-gap: 10px;
+  }
+  /* each group (wordmark, chips, mid stats, sync cluster) may itself need
+     more than one line once it's on its own row */
+  .command-bar > div { flex-wrap: wrap; row-gap: 6px; }
+  .command-bar-sync { margin-left: 0 !important; flex-basis: 100%; }
+  .commandbar-mid { min-width: 0; }
+}
+
 /* ---- crew sheet printing: only the sheet reaches paper ----
    The sheet portals to <body> (outside #root), so the app can be fully
    display:none'd — no blank trailing pages from hidden layout. */
 @media print {
+  /* the dark app background would otherwise show through every page after
+     the first — .crew-sheet no longer pins to one page box (below), so
+     without this the spillover paints the app's near-black body color */
+  html:has(body.crew-printing), body.crew-printing,
+  html:has(body.card-printing), body.card-printing {
+    background: #fff !important;
+    background-image: none !important;
+  }
+
   body.crew-printing #root { display: none !important; }
   body.crew-printing .crew-sheet {
-    position: absolute !important;
-    inset: 0 !important;
+    /* static, not absolute/fixed: an absolutely positioned box with
+       inset:0 is pinned to the height of ONE page box, so content past
+       that height spilled onto the page's own (dark) background instead
+       of flowing onto page 2+. Static lets it sit in normal flow and
+       paginate across as many pages as its content needs. */
+    position: static !important;
     overflow: visible !important;
     background: #fff !important;
+    min-height: 0 !important;
   }
   body.crew-printing .no-print { display: none !important; }
+  /* paginate the table by row, not mid-row, and keep the map + each crew
+     note together rather than splitting across a page break */
+  body.crew-printing table { break-inside: auto; }
+  body.crew-printing tr { break-inside: avoid; }
+  body.crew-printing svg { break-inside: avoid; }
 
   /* runner card: same isolation; each face becomes one 5×3in page */
   body.card-printing #root { display: none !important; }
