@@ -24,8 +24,10 @@ import {
   draftValidationErrors,
   kebab,
   pdfPageCount,
+  renderManifestPdfs,
   renderPdfPages,
   detectPdfTools,
+  summarizeManifestGpx,
   validateAgentDraft,
 } from "./race-intake.mjs";
 
@@ -161,6 +163,23 @@ test("buildRaceJson writes a draft with agent provenance on every field it took"
   assert.equal("sun" in race, false);
   assert.deepEqual(race.sources.map((s) => s.kind), ["url", "pdf"]);
   assert.equal(race.review_notes.startsWith("The aid chart is an image"), true);
+});
+
+test("buildRaceJson persists the run's warnings onto race.json — durable, not just SSE progress text", async () => {
+  const draft = await loadDraft();
+  const withWarnings = buildRaceJson(draft, {
+    slug: "cinder-cone-50k-2027", year: 2027, manifest: MANIFEST,
+    warnings: ["manual-2026.pdf: no PDF renderer on this machine — the PDF is passed as text only"],
+  });
+  assert.deepEqual(withWarnings.intake_warnings, ["manual-2026.pdf: no PDF renderer on this machine — the PDF is passed as text only"]);
+  assert.equal(validateRaceJson(withWarnings).ok, false, "date is still null in the fixture, unrelated to this field");
+  assert.deepEqual(validateRaceJson(withWarnings).errors.filter((e) => /intake_warnings/.test(e)), []);
+
+  // no warnings at all: the key does not appear rather than an empty array —
+  // consistent with review_notes and every other "only when there is
+  // something to say" optional field in this file.
+  const clean = buildRaceJson(draft, { slug: "cinder-cone-50k-2027", year: 2027, manifest: MANIFEST });
+  assert.equal("intake_warnings" in clean, false);
 });
 
 test("a draft with a known unknown validates; the same hole unlisted does not", async () => {
@@ -317,4 +336,96 @@ test("the chosen renderer actually produces page PNGs on this machine", async (t
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
+});
+
+test("renderManifestPdfs persists a failing renderer's warning onto the manifest entry, not just the transient log", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "intake-render-fail-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const sourcesDir = path.join(dir, "sources");
+  await fs.mkdir(sourcesDir, { recursive: true });
+  await fs.writeFile(path.join(sourcesDir, "manual-2026.pdf"), miniPdf(3));
+
+  const manifest = [
+    { kind: "pdf", ref: "https://example.org/manual-2026.pdf", file: "manual-2026.pdf", status: 200 },
+  ];
+  // tools: {} forces choosePdfRenderer to give up honestly — no sips, no
+  // Quartz, no osascript, no qlmanage — deterministically, on any machine.
+  const said = [];
+  const { images, warnings, rendererUsed } = await renderManifestPdfs(manifest, {
+    sourcesDir,
+    tools: {},
+    say: (m) => said.push(m),
+  });
+
+  assert.equal(images.length, 0);
+  assert.equal(rendererUsed, null);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /no PDF renderer on this machine/);
+  // the durable half: the manifest entry itself, not just the returned
+  // (equally transient) warnings array — this is what a reviewer opening
+  // sources/manifest.json later actually sees.
+  assert.equal(manifest[0].warning, warnings[0]);
+  assert.equal(manifest[0].pages_rendered, 0);
+  assert.equal(manifest[0].page_count, 3);
+  assert.ok(said.some((m) => /⚠/.test(m)), "the failure is also surfaced as progress text");
+});
+
+test("renderManifestPdfs clears a prior warning on a manifest entry that DOES render", async (t) => {
+  const tools = await detectPdfTools();
+  const renderer = choosePdfRenderer({ pageCount: 1, tools });
+  if (!renderer.id || renderer.scope !== "all") {
+    return t.skip("needs a renderer with no page-1-only warning on this machine");
+  }
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "intake-render-ok-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const sourcesDir = path.join(dir, "sources");
+  await fs.mkdir(sourcesDir, { recursive: true });
+  await fs.writeFile(path.join(sourcesDir, "manual.pdf"), miniPdf(1));
+
+  const manifest = [{ kind: "pdf", ref: "https://example.org/manual.pdf", file: "manual.pdf", status: 200 }];
+  const { warnings } = await renderManifestPdfs(manifest, { sourcesDir, tools });
+  assert.deepEqual(warnings, []);
+  assert.equal(manifest[0].warning, null);
+  assert.equal(manifest[0].pages_rendered, 1);
+});
+
+test("summarizeManifestGpx persists a read/parse failure onto the manifest entry", async (t) => {
+  // parseGpx (aid-match.mjs) is a lenient regex scan that never throws on bad
+  // XML — the realistic failure this catches is the file not being where the
+  // manifest says it is (a moved/renamed cache entry, a permissions error).
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "intake-gpx-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const sourcesDir = path.join(dir, "sources");
+  await fs.mkdir(sourcesDir, { recursive: true });
+  // route.gpx is deliberately never written — the manifest names a file that
+  // is not on disk.
+
+  const manifest = [{ kind: "gpx", ref: "https://example.org/route.gpx", file: "route.gpx", status: 200 }];
+  const { gpxSummary, warning } = await summarizeManifestGpx(manifest, { sourcesDir });
+
+  assert.equal(gpxSummary, null);
+  assert.match(warning, /GPX https:\/\/example\.org\/route\.gpx could not be parsed/);
+  assert.equal(manifest[0].warning, warning, "the failure survives on the manifest entry, not just the return value");
+});
+
+test("summarizeManifestGpx leaves the manifest entry alone when nothing is wrong", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "intake-gpx-ok-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const sourcesDir = path.join(dir, "sources");
+  await fs.mkdir(sourcesDir, { recursive: true });
+  const gpx = `<?xml version="1.0"?><gpx><trk><trkseg>` +
+    `<trkpt lat="37.0" lon="-107.8"><ele>2600</ele></trkpt>` +
+    `<trkpt lat="37.01" lon="-107.81"><ele>2650</ele></trkpt>` +
+    `</trkseg></trk></gpx>`;
+  await fs.writeFile(path.join(sourcesDir, "route.gpx"), gpx);
+
+  const manifest = [{ kind: "gpx", ref: "https://example.org/route.gpx", file: "route.gpx", status: 200 }];
+  const { warning } = await summarizeManifestGpx(manifest, { sourcesDir });
+  assert.equal(warning, null);
+  assert.equal("warning" in manifest[0], false);
+});
+
+test("summarizeManifestGpx is a no-op when the manifest has no GPX", async () => {
+  const result = await summarizeManifestGpx([{ kind: "url", ref: "x", file: "x.html" }], { sourcesDir: "/nonexistent" });
+  assert.deepEqual(result, { gpxSummary: null, warning: null });
 });

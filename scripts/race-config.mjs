@@ -429,6 +429,15 @@ export function validateRaceJson(obj) {
       if (!isStr(s.ref)) bad(`sources[${i}].ref: non-empty string required`);
     });
   }
+  // A durable record of what intake couldn't read cleanly (a PDF chart with
+  // no renderer available, a GPX that failed to parse) — see race-intake.mjs.
+  // Distinct from `unresolved` (fields the schema still needs) because these
+  // are readable/not-readable facts about a SOURCE, not a hole in the race.
+  if (obj.intake_warnings !== undefined) {
+    if (!Array.isArray(obj.intake_warnings) || obj.intake_warnings.some((w) => typeof w !== "string")) {
+      bad("intake_warnings: array of strings required");
+    }
+  }
 
   validateAidStations(obj.aid_stations, bad);
   return { ok: errors.length === 0, errors };

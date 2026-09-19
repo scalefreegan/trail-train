@@ -728,10 +728,10 @@ export function collectUnresolved(race, agentUnresolved = []) {
  * status), the agent's fields as given, per-field provenance, and the source
  * list. Nothing is filled in on the agent's behalf — a null stays null.
  * @param {object} draft the validated agent output
- * @param {{slug: string, year: number, manifest: object[], at?: string}} ctx
+ * @param {{slug: string, year: number, manifest: object[], warnings?: string[], at?: string}} ctx
  * @returns {object} race.json
  */
-export function buildRaceJson(draft, { slug, year, manifest = [], at = new Date().toISOString() }) {
+export function buildRaceJson(draft, { slug, year, manifest = [], warnings = [], at = new Date().toISOString() }) {
   const agentFields = [
     "name", "short", "date", "start_time", "timezone", "location", "format",
     "distance_mi", "gain_ft", "elevation", "cutoff_h", "features", "aid_stations",
@@ -763,6 +763,13 @@ export function buildRaceJson(draft, { slug, year, manifest = [], at = new Date(
   if (typeof draft.review_notes === "string" && draft.review_notes.trim()) {
     race.review_notes = draft.review_notes.trim();
   }
+  // A PDF-render or GPX-parse failure is otherwise only ever seen as
+  // transient SSE progress text — gone the moment the stream ends. This is
+  // the folder's durable record of it, for a reviewer opening the draft
+  // later (and for manifest.json's per-entry `warning`, which says WHICH
+  // source; this says it happened at all, in one place the review dialog
+  // can show without re-reading the manifest).
+  if (warnings.length) race.intake_warnings = [...warnings];
   return race;
 }
 
@@ -775,6 +782,80 @@ function summarizeGpx(text) {
   const miles = track.length ? track[track.length - 1].cum_mi.toFixed(1) : "?";
   const names = waypoints.slice(0, 40).map((w) => w.name).filter(Boolean);
   return `  track: ${track.length} points, ${miles} mi end to end\n  waypoints (${waypoints.length}): ${names.join(", ") || "none named"}`;
+}
+
+/**
+ * Render every PDF the manifest names, deduping byte-identical copies (the
+ * runner manual routinely arrives twice: linked from the site AND uploaded
+ * by the owner).
+ *
+ * Mutates each entry with `pages_rendered`, `page_count` and `warning` — the
+ * manifest is the durable record a re-opened draft folder reads back later;
+ * the `warnings` this returns are the SSE-progress copy of the same facts,
+ * gone once the run's stream ends. `0 pages_rendered` alone cannot tell a
+ * reviewer "no renderer was available" from "this PDF has no image pages",
+ * which is exactly the gap `entry.warning` closes.
+ *
+ * @param {object[]} manifest sources/manifest.json entries (mutated in place)
+ * @param {{sourcesDir: string, tools: object, say?: (msg: string) => void}} opts
+ * @returns {Promise<{images: {label: string, images: string[]}[], warnings: string[], rendererUsed: string|null}>}
+ */
+export async function renderManifestPdfs(manifest, { sourcesDir, tools, say = () => {} }) {
+  const pdfs = manifest.filter((m) => m.file && (m.kind === "pdf" || PDF_RE.test(m.file)));
+  const images = [];
+  const warnings = [];
+  let rendererUsed = null;
+  const seenPdfs = new Map();
+  for (const entry of pdfs) {
+    const pdfPath = path.join(sourcesDir, entry.file);
+    const buf = await fs.readFile(pdfPath);
+    const digest = crypto.createHash("sha256").update(buf).digest("hex");
+    if (seenPdfs.has(digest)) {
+      entry.duplicate_of = seenPdfs.get(digest);
+      say(`${path.basename(entry.file)}: byte-identical to ${seenPdfs.get(digest)} — not rendered twice`);
+      continue;
+    }
+    seenPdfs.set(digest, entry.file);
+    const pageCount = pdfPageCount(buf);
+    const renderer = choosePdfRenderer({ pageCount, tools });
+    const outDir = path.join(sourcesDir, "pages", kebab(path.basename(entry.file, ".pdf")));
+    say(`${path.basename(entry.file)}: ${pageCount} page(s) via ${renderer.id ?? "no renderer"}`);
+    const result = await renderPdfPages(pdfPath, outDir, { renderer, tools });
+    rendererUsed = rendererUsed ?? result.renderer;
+    if (result.warning) {
+      warnings.push(result.warning);
+      say(`  ⚠ ${result.warning}`);
+    }
+    entry.warning = result.warning ?? null;
+    if (result.images.length) images.push({ label: entry.ref, images: result.images });
+    entry.pages_rendered = result.images.length;
+    entry.page_count = pageCount;
+  }
+  return { images, warnings, rendererUsed };
+}
+
+/**
+ * The GPX cross-check: find the manifest's GPX (if any), summarize it for the
+ * agent, and — like renderManifestPdfs above — stamp a parse failure onto the
+ * manifest entry itself rather than only the transient `warnings` array, so
+ * a reviewer opening the draft later can see the track was never checked.
+ * @param {object[]} manifest sources/manifest.json entries (mutated in place)
+ * @param {{sourcesDir: string, say?: (msg: string) => void}} opts
+ * @returns {Promise<{gpxSummary: string|null, warning: string|null}>}
+ */
+export async function summarizeManifestGpx(manifest, { sourcesDir, say = () => {} }) {
+  const gpxEntry = manifest.find((m) => m.file && (m.kind === "gpx" || GPX_RE.test(m.file)));
+  if (!gpxEntry) return { gpxSummary: null, warning: null };
+  try {
+    const gpxSummary = summarizeGpx(await fs.readFile(path.join(sourcesDir, gpxEntry.file), "utf8"));
+    say(`gpx: ${gpxSummary?.split("\n")[0].trim() ?? "unreadable"}`);
+    return { gpxSummary, warning: null };
+  } catch (e) {
+    const warning = `GPX ${gpxEntry.ref} could not be parsed: ${e.message}`;
+    gpxEntry.warning = warning;
+    say(`  ⚠ ${warning}`);
+    return { gpxSummary: null, warning };
+  }
 }
 
 /**
@@ -872,52 +953,23 @@ export async function runIntake({
     /* 2. PDFs → per-page PNGs */
     onProgress({ step: "render", status: "start", label: "rendering PDF pages" });
     const tools = await detectPdfTools();
-    const pdfs = manifest.filter((m) => m.file && (m.kind === "pdf" || PDF_RE.test(m.file)));
-    const images = [];
-    let rendererUsed = null;
-    // The runner manual routinely arrives twice — linked from the site AND
-    // uploaded by the owner. Rendering both hands the agent two identical
-    // stacks of page images and invites it to spend turns on the copy.
-    const seenPdfs = new Map();
-    for (const entry of pdfs) {
-      const pdfPath = path.join(sourcesDir, entry.file);
-      const buf = await fs.readFile(pdfPath);
-      const digest = crypto.createHash("sha256").update(buf).digest("hex");
-      if (seenPdfs.has(digest)) {
-        entry.duplicate_of = seenPdfs.get(digest);
-        say("render", `${path.basename(entry.file)}: byte-identical to ${seenPdfs.get(digest)} — not rendered twice`);
-        continue;
-      }
-      seenPdfs.set(digest, entry.file);
-      const pageCount = pdfPageCount(buf);
-      const renderer = choosePdfRenderer({ pageCount, tools });
-      const outDir = path.join(sourcesDir, "pages", kebab(path.basename(entry.file, ".pdf")));
-      say("render", `${path.basename(entry.file)}: ${pageCount} page(s) via ${renderer.id ?? "no renderer"}`);
-      const result = await renderPdfPages(pdfPath, outDir, { renderer, tools });
-      rendererUsed = rendererUsed ?? result.renderer;
-      if (result.warning) {
-        warnings.push(result.warning);
-        say("render", `  ⚠ ${result.warning}`, { stream: "err" });
-      }
-      if (result.images.length) images.push({ label: entry.ref, images: result.images });
-      entry.pages_rendered = result.images.length;
-      entry.page_count = pageCount;
-    }
-    if (!pdfs.length) say("render", "no PDFs to render");
+    const hadPdfs = manifest.some((m) => m.file && (m.kind === "pdf" || PDF_RE.test(m.file)));
+    const { images, warnings: renderWarnings, rendererUsed } = await renderManifestPdfs(manifest, {
+      sourcesDir,
+      tools,
+      say: (m) => say("render", m, /^\s*⚠/.test(m) ? { stream: "err" } : {}),
+    });
+    warnings.push(...renderWarnings);
+    if (!hadPdfs) say("render", "no PDFs to render");
     onProgress({ step: "render", status: "done", renderer: rendererUsed });
 
     /* 3. GPX sanity check — the matcher is stage 2; this is only a cross-check
           the agent can hold its aid list against. */
-    let gpxSummary = null;
-    const gpxEntry = manifest.find((m) => m.file && (m.kind === "gpx" || GPX_RE.test(m.file)));
-    if (gpxEntry) {
-      try {
-        gpxSummary = summarizeGpx(await fs.readFile(path.join(sourcesDir, gpxEntry.file), "utf8"));
-        say("render", `gpx: ${gpxSummary?.split("\n")[0].trim() ?? "unreadable"}`);
-      } catch (e) {
-        warnings.push(`GPX ${gpxEntry.ref} could not be parsed: ${e.message}`);
-      }
-    }
+    const { gpxSummary, warning: gpxWarning } = await summarizeManifestGpx(manifest, {
+      sourcesDir,
+      say: (m) => say("render", m, /^\s*⚠/.test(m) ? { stream: "err" } : {}),
+    });
+    if (gpxWarning) warnings.push(gpxWarning);
 
     /* 4. the agent */
     onProgress({ step: "agent", status: "start", label: "reading sources with the intake agent" });
@@ -967,7 +1019,7 @@ export async function runIntake({
 
     await assertSlugAvailable(root, slug, { refresh, outDir });
 
-    const race = buildRaceJson(draft, { slug, year: Number(year), manifest });
+    const race = buildRaceJson(draft, { slug, year: Number(year), manifest, warnings });
     const unresolved = collectUnresolved(race, draft.unresolved ?? []);
     const { errors, excused } = draftValidationErrors(race, unresolved);
     if (errors.length) {
