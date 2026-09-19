@@ -651,7 +651,7 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
       background: "rgba(12, 17, 14, 0.92)", backdropFilter: "blur(10px)",
       borderBottom: "1px solid var(--edge)",
     }}>
-      <div style={{ maxWidth: 1680, margin: "0 auto", padding: "0 28px", height: 52, display: "flex", alignItems: "center", gap: 18 }}>
+      <div className="command-bar" style={{ maxWidth: 1680, margin: "0 auto" }}>
         {/* wordmark */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 4 }}>
           <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden>
@@ -685,7 +685,7 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
         </div>
 
         {/* sync cluster */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
+        <div className="command-bar-sync" style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
           <span
             className="eyebrow"
             title={lastLog}

@@ -234,6 +234,34 @@ a { color: inherit; }
 
 .commandbar-mid { display: flex; align-items: center; gap: 0; }
 
+/* the header row — wordmark+switcher, view chips, mid stats, sync cluster
+   — as one nowrap flex row on desktop (unchanged look ≥988px), wrapping
+   below that so nothing (units toggle, resync, settings) is pushed off
+   the right edge of a phone-width viewport. */
+.command-bar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 28px;
+  height: 52px;
+}
+.command-bar-sync { flex-shrink: 0; }
+
+@media (max-width: 987px) {
+  .command-bar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 52px;
+    padding: 10px 16px;
+    row-gap: 10px;
+  }
+  /* each group (wordmark, chips, mid stats, sync cluster) may itself need
+     more than one line once it's on its own row */
+  .command-bar > div { flex-wrap: wrap; row-gap: 6px; }
+  .command-bar-sync { margin-left: 0 !important; flex-basis: 100%; }
+  .commandbar-mid { min-width: 0; }
+}
+
 /* ---- crew sheet printing: only the sheet reaches paper ----
    The sheet portals to <body> (outside #root), so the app can be fully
    display:none'd — no blank trailing pages from hidden layout. */
