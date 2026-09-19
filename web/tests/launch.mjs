@@ -79,9 +79,16 @@ export const FIXTURE_RACES = [
     // off those stay exercised. Shared with scripts/features.test.mjs and
     // scripts/coach-prompt.test.mjs, which read it straight out of the repo —
     // so nothing here may edit the committed copy, only the temp-root copy.
+    //
+    // It is also the one the refresh spec re-reads: `siteFixture` points its
+    // (committed-as-empty) links.site at a page this server serves, so a
+    // refresh fetches 127.0.0.1 instead of the internet. Nothing else in the
+    // suite asserts on this folder, which is what makes it safe for the one
+    // flow that ACCEPTS a rewrite of a race.json.
     slug: 'crewless-50k',
     dateOffsetDays: 96,
     buildCourse: false,
+    siteFixture: 'dry-wash-50k.html',
   },
 ]
 
@@ -93,6 +100,10 @@ export const DRAFT_SLUG = 'unresolved-draft-50k'
 export const CREWLESS_SLUG = 'crewless-50k'
 /** The archived race with a result.json. */
 export const ARCHIVED_SLUG = 'rimrock-50k'
+/** The race the refresh spec re-reads — see FIXTURE_RACES' `siteFixture`. */
+export const REFRESH_SLUG = 'crewless-50k'
+/** The canned stage-1 agent reply TRAIL_FAKE_AGENT points at. */
+export const FAKE_AGENT_FILE = path.join(FIXTURES, 'agent', 'refresh-stage1.json')
 
 const p2 = (n) => String(n).padStart(2, '0')
 const localDate = (offsetDays, now = new Date()) => {
@@ -143,7 +154,7 @@ function mondayOf(iso) {
  * @param {{now?: Date}} [opts]
  * @returns {Promise<string>} the absolute temp root
  */
-export async function makeProjectRoot({ now = new Date() } = {}) {
+export async function makeProjectRoot({ now = new Date(), siteBase = null } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'trail-train-ui-'))
 
   /* config/ — the pointer starts in generic mode; the switcher spec is what
@@ -167,6 +178,17 @@ export async function makeProjectRoot({ now = new Date() } = {}) {
     await writeJson(path.join(publicDir, name), body)
   }
 
+  /* fixture-site/ — the synthetic race website the refresh flow re-reads.
+     scripts/race-intake.mjs fetches links.site for real, over the network, so
+     the alternative is a suite that depends on DNS and on somebody else's
+     server. Serving it from this same vite means the fetch is a loopback
+     request to a page committed beside the spec that asserts on it. */
+  const siteDir = path.join(publicDir, 'fixture-site')
+  await fs.mkdir(siteDir, { recursive: true })
+  for (const name of await fs.readdir(path.join(FIXTURES, 'site'))) {
+    await fs.copyFile(path.join(FIXTURES, 'site', name), path.join(siteDir, name))
+  }
+
   /* races/ — one folder per fixture, dates re-anchored, courses built. */
   for (const fx of FIXTURE_RACES) {
     const src = path.join(REPO_ROOT, 'races', '_fixtures', fx.slug)
@@ -175,6 +197,12 @@ export async function makeProjectRoot({ now = new Date() } = {}) {
     const racePath = path.join(dst, 'race.json')
     const race = JSON.parse(await fs.readFile(racePath, 'utf8'))
     race.date = localDate(fx.dateOffsetDays, now)
+    // Only now is the base URL known (global setup picks the port before it
+    // builds the root), so this is where a fixture race learns where its own
+    // "official site" lives.
+    if (fx.siteFixture && siteBase) {
+      race.links = { ...(race.links ?? {}), site: `${siteBase}/fixture-site/${fx.siteFixture}` }
+    }
     if (fx.startedHoursAgo != null) {
       Object.assign(race, startedHoursAgo(fx.startedHoursAgo, race.timezone, now))
     }
@@ -245,11 +273,11 @@ export function freePort() {
  * strictPort'd, and a test run must not be able to take it or be confused by
  * it. The suite's own port is picked per run.
  *
- * @param {{root: string, fakeAgentFile?: string}} opts
+ * @param {{root: string, fakeAgentFile?: string, port?: number}} opts
  * @returns {Promise<{baseURL: string, port: number, stop: () => Promise<void>, log: () => string}>}
  */
-export async function startServer({ root, fakeAgentFile }) {
-  const port = await freePort()
+export async function startServer({ root, fakeAgentFile, port: given }) {
+  const port = given ?? (await freePort())
   const baseURL = `http://127.0.0.1:${port}`
   const proc = spawn(
     process.execPath,

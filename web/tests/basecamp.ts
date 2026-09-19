@@ -64,6 +64,10 @@ export const MM = { slug: 'mm-like-100', name: 'Mesa Monster 100', short: 'MM100
 export const DRAFT = { slug: 'unresolved-draft-50k', name: 'Nine Mile Flat 50K', short: 'NMF50K' }
 /** races/_fixtures/rimrock-50k — archived, with a result.json. */
 export const ARCHIVED = { slug: 'rimrock-50k', name: 'Rimrock Ramble 50K', short: 'RR50K' }
+/** races/_fixtures/crewless-50k — the crewless draft the refresh spec re-reads.
+    It is the one folder the suite is allowed to REWRITE (refresh + accept), so
+    nothing else may assert on its contents. */
+export const CREWLESS = { slug: 'crewless-50k', name: 'Dry Wash 50K', short: 'DW50K' }
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -138,16 +142,48 @@ export async function chooseRace(page: Page, name: string | RegExp) {
  * (App.tsx emits race, Review…, Refresh… as siblings of one Fragment).
  */
 export async function openReviewFor(page: Page, raceName: string) {
+  await clickSubRowFor(page, raceName, '↳ Review')
+  const dialog = page.getByRole('dialog', { name: 'review · draft race' })
+  await expect(dialog).toBeVisible()
+  return dialog
+}
+
+/**
+ * Click the "↳ Refresh from sources…" row under one race, and wait for the
+ * dialog it opens.
+ *
+ * Unlike Review, this row is offered for ANY parseable race (App.tsx's
+ * `isRefreshable` is just `!r.error`) — draft, active or archived — so the
+ * race has to be named to get the right one.
+ */
+export async function openRefreshFor(page: Page, raceName: string) {
+  await clickSubRowFor(page, raceName, '↳ Refresh')
+  const dialog = page.getByRole('dialog', { name: `refresh from sources · ${raceName}` })
+  await expect(dialog).toBeVisible()
+  return dialog
+}
+
+/**
+ * Click the sub-row whose label starts with `prefix` under `raceName`.
+ *
+ * Every draft has its own "↳ Review…" row and every race its own "↳ Refresh
+ * from sources…" row, all indistinguishable by accessible name, so this finds
+ * the race's row first and takes the next matching sub-row after it in menu
+ * order — which is exactly how they are rendered (App.tsx emits race, Review…,
+ * Refresh…, Run course again… as siblings of one Fragment).
+ */
+async function clickSubRowFor(page: Page, raceName: string, prefix: string) {
   const rows = page.getByRole('menu', { name: 'race' }).locator('button')
   const labels = await rows.allInnerTexts()
   const raceIdx = labels.findIndex((t) => t.startsWith(raceName))
   if (raceIdx < 0) throw new Error(`no switcher row for "${raceName}" in: ${JSON.stringify(labels)}`)
-  const reviewIdx = labels.findIndex((t, i) => i > raceIdx && t.startsWith('↳ Review'))
-  if (reviewIdx < 0) throw new Error(`"${raceName}" has no Review row — is it still a draft?`)
-  await rows.nth(reviewIdx).click()
-  const dialog = page.getByRole('dialog', { name: 'review · draft race' })
-  await expect(dialog).toBeVisible()
-  return dialog
+  // The next race row ends this race's block — without that bound, a race
+  // missing the sub-row would silently click the NEXT race's one.
+  const endIdx = labels.findIndex((t, i) => i > raceIdx && !t.startsWith('↳'))
+  const limit = endIdx < 0 ? labels.length : endIdx
+  const hitIdx = labels.findIndex((t, i) => i > raceIdx && i < limit && t.startsWith(prefix))
+  if (hitIdx < 0) throw new Error(`"${raceName}" has no "${prefix}…" row in: ${JSON.stringify(labels.slice(raceIdx, limit))}`)
+  await rows.nth(hitIdx).click()
 }
 
 /**
