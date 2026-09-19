@@ -10,9 +10,9 @@
 //     up into scripts/ (nothing there survives the production build).
 //
 // So a list like the legal race statuses used to be typed out once per
-// runtime under a "KEEP IN SYNC" comment, and a drift between the copies was
-// invisible until a value the dialog happily saved was rejected by the
-// loader that read it back.
+// runtime, each copy under a comment asking the next person to keep them in
+// step, and a drift between them was invisible until a value the dialog
+// happily saved was rejected by the loader that read it back.
 //
 // This module is the single source. The direction is one-way: scripts import
 // it here; `npm run contracts` (scripts/gen-contracts.mjs) writes

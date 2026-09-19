@@ -262,15 +262,23 @@ test("the committed profile.example.json is complete, impersonal and race_base-f
   assert.equal(example.race_base, undefined, "race_base must be gone from the example profile");
 });
 
-test("the settings PUT bounds match the loader's (KEEP IN SYNC comment, enforced)", async () => {
-  // vite.config.ts can't import from scripts/, so the bounds are typed twice.
-  // A silent drift means the dialog saves a value the loader then rejects and
-  // replaces with a default — the exact silent-substitution this bead removed.
+test("the settings PUT validates against the shared bounds, not a second copy", async () => {
+  // vite.config.ts can't import from scripts/, so its bounds used to be typed
+  // out again by hand; a silent drift meant the dialog saved a value the
+  // loader then rejected and replaced with a default — the exact silent
+  // substitution the physiology block exists to end. They now come from the
+  // generated web/src/contracts.ts, and this is the guard against somebody
+  // pasting the numbers back in.
   const vite = await fs.readFile(path.join(PROJECT_ROOT, "web", "vite.config.ts"), "utf8");
+  assert.match(
+    vite,
+    /import \{[^}]*\bPHYSIOLOGY_FIELDS\b[^}]*\} from '\.\/src\/contracts'/,
+    "web/vite.config.ts must import PHYSIOLOGY_FIELDS from the generated contracts",
+  );
   for (const [key, spec] of Object.entries(PHYSIOLOGY_FIELDS)) {
     assert.ok(
-      vite.includes(`${key}: [${spec.lo}, ${spec.hi}]`),
-      `web/vite.config.ts PHYSIOLOGY_BOUNDS is missing "${key}: [${spec.lo}, ${spec.hi}]"`,
+      !vite.includes(`${key}: [${spec.lo}, ${spec.hi}]`),
+      `web/vite.config.ts hand-types bounds for "${key}" again — read them from PHYSIOLOGY_FIELDS`,
     );
   }
 });
