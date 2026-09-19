@@ -38,6 +38,7 @@ import { registerHooks } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import { arg, projectRoot } from "./lib.mjs";
+import { DEFAULT_ACCLIMATION_DAYS } from "./contracts.mjs";
 import { loadRaceFolder } from "./race-config.mjs";
 import { raceLocalParts, raceStart } from "./clock.mjs";
 import { DEFAULT_LONG_RUN_REF_MI, loadProfile } from "./profile.mjs";
@@ -203,20 +204,27 @@ async function readJsonIfPresent(p) {
 }
 
 /**
- * The rows fitPacing wants, out of web/public/strava.json. Identical to what
- * providers.tsx hands the browser's fit: the same filter happens inside
- * fitPacing, so only the unit conversion belongs here.
+ * The rows fitPacing wants, out of web/public/strava.json — EVERY activity in
+ * the snapshot, converted to imperial and nothing else.
+ *
+ * No sport filter, because providers.tsx has none: the browser hands fitPacing
+ * the whole mapped list and lets fitPacing's own floors (≥2 mi, moving time,
+ * an elevation figure) decide what is usable. This file used to keep
+ * `sport === "Run"`, which silently dropped every activity Strava labels
+ * TrailRun — 57 of 148 in the current snapshot, 12 of them long enough to
+ * clear the ≥8 mi tier the fit prefers. The crew sheet was then projected off
+ * a DIFFERENT fit from the planner it was exported out of, which is the one
+ * thing this export exists not to do. Keeping the snapshot free of non-running
+ * sports is sync-strava.mjs's job, at the point where the sport is known.
  */
 function fitRows(strava) {
-  return (strava?.activities ?? [])
-    .filter((a) => a.sport === "Run" || a.sport == null)
-    .map((a) => ({
-      distance_mi: (a.distance_m ?? 0) / M_PER_MI,
-      elevation_ft: (a.elevation_m ?? 0) / M_PER_FT,
-      moving_s: a.moving_s ?? 0,
-      date: a.date,
-      avg_hr: a.avg_hr ?? null,
-    }));
+  return (strava?.activities ?? []).map((a) => ({
+    distance_mi: (a.distance_m ?? 0) / M_PER_MI,
+    elevation_ft: (a.elevation_m ?? 0) / M_PER_FT,
+    moving_s: a.moving_s ?? 0,
+    date: a.date,
+    avg_hr: a.avg_hr ?? null,
+  }));
 }
 
 /** race.json's crew-facing subset — see CrewRace in web/src/crew/crewData.ts. */
@@ -292,7 +300,14 @@ export async function buildCrewData(root, slug, { knobs = {}, now = new Date() }
     ? {
         pct: crewData.DEFAULT_ALTITUDE_PCT,
         homeElevationFt: profile?.physiology?.home_elevation_ft ?? null,
-        acclimationDays: 0,
+        // The planner's own fallback, not zero: useRacePlan resolves the
+        // calendar (or the athlete's override) and lands on
+        // DEFAULT_ACCLIMATION_DAYS when it has neither — the same table both
+        // sides read, out of scripts/contracts.mjs. A CLI export that assumed
+        // "fly in and run" priced the altitude term harder than the screen the
+        // athlete was looking at. The planner's export button sends the
+        // RESOLVED count, which still wins over this.
+        acclimationDays: DEFAULT_ACCLIMATION_DAYS,
       }
     : null;
   const resolved = {

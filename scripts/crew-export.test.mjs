@@ -24,6 +24,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { raceLocalParts, raceStart } from "./clock.mjs";
 import {
   MAX_EXPORT_BYTES,
   buildCrewData,
@@ -265,8 +266,9 @@ test("the payload carries the projection, its inputs, and the crew's own data", 
   assert.equal(data.knobs.goalH, 12, "goal defaults to 85% of the 14 h cutoff, to the nearest half hour");
   assert.deepEqual(
     data.knobs.altitude,
-    { pct: 100, homeElevationFt: 5300, acclimationDays: 0 },
-    "the altitude term is resolved from the athlete's own acclimated elevation",
+    { pct: 100, homeElevationFt: 5300, acclimationDays: 1 },
+    "the altitude term is resolved from the athlete's own acclimated elevation, at the " +
+      "planner's own acclimation fallback rather than a harsher zero",
   );
 
   // the evaluated projection
@@ -421,6 +423,206 @@ test("the altitude term rides along, gated by the race's own feature flag", asyn
     without.projection.finish_h.avg,
     "…and the same finish the term-less projection gives",
   );
+});
+
+/* ---------------- the handout's own content (bead tt-cv1b0.8) ---------------- */
+
+/** "13:40" — a race-local wall clock `h` hours after the gun. */
+function raceHHMM(race, h) {
+  const start = raceStart(race.date, race.start_time, race.timezone);
+  const p = raceLocalParts(new Date(start.getTime() + h * 3_600_000), race.timezone);
+  return `${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
+}
+
+/** The instant `h` hours into the race, for checkpointHold's day picking. */
+function raceInstant(race, h) {
+  return new Date(raceStart(race.date, race.start_time, race.timezone).getTime() + h * 3_600_000);
+}
+
+/** localStorage, minus the browser. */
+function fakeStorage() {
+  const map = new Map();
+  return {
+    getItem: (k) => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => void map.set(k, String(v)),
+    removeItem: (k) => void map.delete(k),
+    get size() {
+      return map.size;
+    },
+  };
+}
+
+test("the sheet carries every section a crew chief needs, and no link out", async () => {
+  const data = await buildCrewData(root, SLUG, { now: NOW });
+  const { projectRace } = await import("../web/src/race/pacing.ts");
+  const { projectOptions } = await import("../web/src/crew/crewData.ts");
+  const { renderCrewPage } = await import("../web/src/crew/render.ts");
+  const html = renderCrewPage(data, projectRace(data.course, data.fit, projectOptions(data)));
+
+  for (const id of [
+    "sheet-head", "emergency", "updater", "checkpoint-form", "cp-station", "cp-clock",
+    "stations", "pickups", "crew-notes", "course-map", "course-profile",
+  ]) {
+    assert.match(html, new RegExp(`id="${id}"`), `the sheet is missing #${id}`);
+  }
+  assert.equal((html.match(/<tr class="station/g) ?? []).length, 4, "one row per station");
+  assert.equal((html.match(/class="pickup"/g) ?? []).length, 2, "one block per crew-access stop");
+
+  // the crew's own half, in prose rather than in a link
+  assert.match(html, /555-0100/, "the emergency numbers are on the sheet");
+  assert.match(html, /55m/, "the drive time to the crew stop is on the row");
+  assert.match(html, /park below the trailhead/, "the start directions are on the sheet");
+  assert.match(html, /no service past mile 10/, "the cell-service line is on the sheet");
+  assert.match(html, /34\.4500, -111\.5500/, "station coordinates are printed as text");
+  assert.equal(/<a\s/i.test(html), false, "a crew sheet in a canyon has nothing to click through to");
+
+  // the fuel plan, phrased as a handover
+  assert.match(html, /hand over:/);
+  assert.match(html, /leg out:/);
+  assert.match(html, /drop bag here:/);
+
+  // the drawings are inline SVG over the embedded track and profile
+  assert.match(html, /<svg id="course-map"[\s\S]*?<path d="M /);
+  assert.match(html, /<svg id="course-profile"[\s\S]*?class="profile-line"/);
+});
+
+test("a checkpoint re-projects everything downstream and pins the row it was typed on", async () => {
+  const data = await buildCrewData(root, SLUG, { now: NOW });
+  const { projectRace } = await import("../web/src/race/pacing.ts");
+  const { projectOptions } = await import("../web/src/crew/crewData.ts");
+  const { applyCheckpoint } = await import("../web/src/crew/checkpoint.ts");
+  const { renderCrewPage, stationRows } = await import("../web/src/crew/render.ts");
+  const live = projectRace(data.course, data.fit, projectOptions(data));
+
+  const planned = data.projection.stations[1].eta_h.avg; // Hell's Gate, mi 15
+  const late = planned + 1; // an hour down at the half
+  const clock = raceHHMM(data.race, late);
+  const outcome = applyCheckpoint(data, live, { station: "Hell's Gate", clock }, {
+    now: raceInstant(data.race, late + 0.1),
+  });
+  assert.equal(outcome.ok, true, outcome.ok ? "" : outcome.reason);
+  const cp = outcome.result;
+  assert.equal(cp.index, 1);
+  assert.equal(cp.mile, 15);
+  assert.ok(Math.abs(cp.observed_h - late) < 1 / 60, "the observed time is the clock that was typed");
+  assert.ok(cp.ratio > 1, "an hour down at halfway is a pace ratio above 1");
+  assert.equal(cp.clamped, false);
+
+  const before = stationRows(data, live, null);
+  const after = stationRows(data, live, cp);
+  assert.ok(
+    Math.abs(after[1].eta_h.avg - cp.observed_h) < 1 / 3600,
+    "the checkpoint row reads back exactly the time the crew typed",
+  );
+  assert.ok(after[3].eta_h.avg > before[3].eta_h.avg + 1, "the finish moves out by more than the hour lost");
+  assert.ok(after[2].eta_h.avg > before[2].eta_h.avg, "every downstream station moves with it");
+  assert.ok(after[3].eta_h.best > before[3].eta_h.best, "the whole band moves, not just the expected line");
+  assert.equal(after[3].goal_eta_h, before[3].goal_eta_h, "the GOAL is a decision, not a prediction");
+  assert.ok(
+    after[3].cutoff_margin_h < before[3].cutoff_margin_h,
+    "the cutoff margin is recomputed against the new arrival",
+  );
+
+  const html = renderCrewPage(data, live, cp, "updated from <strong>Hell&#x27;s Gate</strong>");
+  assert.match(html, /updated from/);
+  assert.match(html, /class="station crew passed at"/, "the row the split was typed on is marked");
+
+  // and clearing it is exactly the exported plan again
+  assert.deepEqual(
+    stationRows(data, live, null).map((r) => r.clock.avg),
+    data.projection.stations.map((r) => r.clock.avg),
+  );
+});
+
+test("a checkpoint the sheet cannot place is refused by name, not guessed at", async () => {
+  const data = await buildCrewData(root, SLUG, { now: NOW });
+  const { projectRace } = await import("../web/src/race/pacing.ts");
+  const { projectOptions } = await import("../web/src/crew/crewData.ts");
+  const { applyCheckpoint } = await import("../web/src/crew/checkpoint.ts");
+  const live = projectRace(data.course, data.fit, projectOptions(data));
+  const at = (station, clock) => applyCheckpoint(data, live, { station, clock }, {
+    now: raceInstant(data.race, 6),
+  });
+
+  assert.match(at("Nowhere Springs", "08:00").reason, /aid chart/);
+  assert.match(at("Hell's Gate", "quarter past").reason, /HH:MM/);
+  assert.match(at("", "08:00").reason, /pick the station/);
+  // 04:00 with a 05:00 gun resolves to the NEXT day, which is a legitimate
+  // (very slow) 23-hour split — the refusal to test is a projection-free page
+  assert.match(applyCheckpoint(data, null, { station: "Hell's Gate", clock: "08:00" }).reason, /re-run/);
+
+  // a wild typo is capped rather than extrapolated, but the time still lands
+  const typo = at("Hell's Gate", raceHHMM(data.race, 0.2));
+  assert.equal(typo.ok, true);
+  assert.equal(typo.result.clamped, true, "0.2 h to mile 15 is a clamped ratio");
+  assert.ok(typo.result.observed_h < 0.3, "…and the observed time is still honoured");
+});
+
+test("a sheet opened long after the gun still places a split inside the race", async () => {
+  // checkpointHold resolves a bare HH:MM to its latest occurrence before
+  // `now`. An archived sheet opened a week later would otherwise read
+  // "13:40" as 13:40 SEVEN DAYS ON — a 163-hour split — so the crew page
+  // clamps the horizon to the race's own window (cutoff + slack).
+  const data = await buildCrewData(root, SLUG, { now: NOW });
+  const { projectRace } = await import("../web/src/race/pacing.ts");
+  const { projectOptions } = await import("../web/src/crew/crewData.ts");
+  const { applyCheckpoint } = await import("../web/src/crew/checkpoint.ts");
+  const live = projectRace(data.course, data.fit, projectOptions(data));
+
+  const planned = data.projection.stations[1].eta_h.avg;
+  const outcome = applyCheckpoint(
+    data,
+    live,
+    { station: "Hell's Gate", clock: raceHHMM(data.race, planned) },
+    { now: raceInstant(data.race, 24 * 7) },
+  );
+  assert.equal(outcome.ok, true, outcome.ok ? "" : outcome.reason);
+  assert.ok(
+    Math.abs(outcome.result.observed_h - planned) < 1 / 60,
+    `resolved to ${outcome.result.observed_h.toFixed(2)} h, expected ~${planned.toFixed(2)} h`,
+  );
+});
+
+test("the last checkpoint survives a reload, and “clear” forgets it", async () => {
+  const { checkpointKey, clearCheckpoint, loadCheckpoint, saveCheckpoint } =
+    await import("../web/src/crew/checkpoint.ts");
+  const store = fakeStorage();
+  assert.equal(loadCheckpoint(SLUG, store), null);
+  saveCheckpoint(SLUG, { station: "Hell's Gate", clock: "13:40" }, store);
+  assert.deepEqual(loadCheckpoint(SLUG, store), { station: "Hell's Gate", clock: "13:40" });
+  assert.match(checkpointKey(SLUG), /crew.*fixture-crew-50/);
+  clearCheckpoint(SLUG, store);
+  assert.equal(loadCheckpoint(SLUG, store), null);
+
+  // a page with no storage at all (file:// in a private window) must not throw
+  assert.equal(loadCheckpoint(SLUG, null), null);
+  saveCheckpoint(SLUG, { station: "x", clock: "00:00" }, null);
+  store.setItem(checkpointKey(SLUG), "{not json");
+  assert.equal(loadCheckpoint(SLUG, store), null, "junk in storage is forgotten, not fatal");
+});
+
+test("the fit is trained on every run in the snapshot, sport labels and all", async () => {
+  // A snapshot Strava labels TrailRun is the same running the planner fits on:
+  // web/src/providers.tsx applies no sport filter, so neither may this export.
+  // With one, a TrailRun-only athlete exported a sheet off no fit at all.
+  const stravaPath = path.join(root, "web", "public", "strava.json");
+  const original = await fs.readFile(stravaPath, "utf8");
+  const labelled = JSON.parse(original);
+  for (const a of labelled.activities) a.sport = "TrailRun";
+
+  const unlabelled = (await buildCrewData(root, SLUG, { now: NOW })).projection.stations.at(-1).eta_h.avg;
+  try {
+    await fs.writeFile(stravaPath, JSON.stringify(labelled));
+    const data = await buildCrewData(root, SLUG, { now: NOW });
+    assert.ok(Number.isFinite(data.fit.base), "a TrailRun-only snapshot still produces a pacing fit");
+    assert.equal(
+      data.projection.stations.at(-1).eta_h.avg,
+      unlabelled,
+      "…and the same finish, because the sport label was never a model input",
+    );
+  } finally {
+    await fs.writeFile(stravaPath, original);
+  }
 });
 
 /* ---------------- refusals ---------------- */
