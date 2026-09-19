@@ -47,6 +47,53 @@ const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..")
 const M_PER_FT = 0.3048;
 const OUT_GRID_MI = 0.05; // profile resolution written to course.json
 
+// A GPX whose measured distance or gain is wildly off race.json's chart
+// figures (a truncated download, the wrong file entirely) is not the normal
+// 1-3% drift a GPX always has against the organizer's stated numbers — it is
+// a strong signal this course.gpx is not the race's real course, and
+// everything downstream (snap windows, climb detection, projected splits)
+// would be silently wrong.
+export const MISMATCH_THRESHOLD = 0.15; // 15% — comfortably above normal GPX drift
+
+/**
+ * Compare a GPX-measured distance/gain against race.json's official chart
+ * figures and report anything far enough off to not be normal drift.
+ * Exported so the review dialog (scripts/race-edit.mjs loadReview) can
+ * re-derive the same check live from build/course.json's already-measured
+ * figures against race.json's CURRENT official ones — the same "recompute,
+ * don't trust a snapshot" treatment an unmatched aid station already gets —
+ * instead of only buildCourse ever seeing it once, mid-build.
+ * @param {{distance_mi: number, gain_ft: number}} measured
+ * @param {{distance_mi: number, gain_ft: number}} official
+ * @returns {string[]}
+ */
+export function courseMismatches(measured, official) {
+  const mismatches = [];
+  const officialDist = official?.distance_mi;
+  const officialGain = official?.gain_ft;
+  const measuredDist = measured?.distance_mi;
+  const measuredGain = measured?.gain_ft;
+  if (!Number.isFinite(officialDist) || officialDist <= 0 || !Number.isFinite(measuredDist)) return mismatches;
+  const distPctOff = Math.abs(measuredDist / officialDist - 1);
+  const gainPctOff = Number.isFinite(officialGain) && officialGain > 0 && Number.isFinite(measuredGain)
+    ? Math.abs(measuredGain / officialGain - 1)
+    : null;
+  if (distPctOff > MISMATCH_THRESHOLD) {
+    mismatches.push(
+      `course.gpx measures ${measuredDist.toFixed(1)} mi vs race.json's ${officialDist} mi ` +
+        `(${(distPctOff * 100).toFixed(0)}% off — normal GPX drift is 1-3%); this GPX may be truncated or the wrong file`
+    );
+  }
+  if (gainPctOff !== null && gainPctOff > MISMATCH_THRESHOLD) {
+    mismatches.push(
+      `course.gpx measures ${Math.round(measuredGain).toLocaleString()} ft of gain vs race.json's ` +
+        `${officialGain.toLocaleString()} ft (${(gainPctOff * 100).toFixed(0)}% off — normal GPX drift is 1-3%); ` +
+        "this GPX may be truncated or the wrong file"
+    );
+  }
+  return mismatches;
+}
+
 /** ± window, in measured miles, for snapping a waypoint onto the track. */
 const SNAP_WINDOW_MI = 5;
 
@@ -343,34 +390,13 @@ export async function buildCourse(root, slug, opts = {}) {
   log(`track points: ${track.length} · grid points: ${grid.length}`);
   log("");
 
-  // A GPX whose measured distance or gain is wildly off race.json's chart
-  // figures (a truncated download, the wrong file entirely) is not the
-  // normal 1-3% drift a GPX always has against the organizer's stated
-  // numbers — it is a strong signal this course.gpx is not the race's real
-  // course, and everything downstream (snap windows, climb detection,
-  // projected splits) would be silently wrong. Flagged distinctly from the
-  // ordinary log lines above so race-build.mjs can promote it to a
-  // structured, review-dialog-visible warning/unresolved entry rather than
-  // an SSE line that scrolls by and is gone.
-  const MISMATCH_THRESHOLD = 0.15; // 15% — comfortably above normal GPX drift
-  const distPctOff = Math.abs(measuredDist / officialDist - 1);
-  const gainPctOff = Number.isFinite(officialGain) && officialGain > 0
-    ? Math.abs(measuredGain / officialGain - 1)
-    : null;
-  const mismatches = [];
-  if (distPctOff > MISMATCH_THRESHOLD) {
-    mismatches.push(
-      `course.gpx measures ${measuredDist.toFixed(1)} mi vs race.json's ${officialDist} mi ` +
-        `(${(distPctOff * 100).toFixed(0)}% off — normal GPX drift is 1-3%); this GPX may be truncated or the wrong file`
-    );
-  }
-  if (gainPctOff !== null && gainPctOff > MISMATCH_THRESHOLD) {
-    mismatches.push(
-      `course.gpx measures ${Math.round(measuredGain).toLocaleString()} ft of gain vs race.json's ` +
-        `${officialGain.toLocaleString()} ft (${(gainPctOff * 100).toFixed(0)}% off — normal GPX drift is 1-3%); ` +
-        "this GPX may be truncated or the wrong file"
-    );
-  }
+  // Flagged distinctly from the ordinary log lines above so race-build.mjs
+  // can promote it to a structured, review-dialog-visible warning/unresolved
+  // entry rather than an SSE line that scrolls by and is gone.
+  const mismatches = courseMismatches(
+    { distance_mi: measuredDist, gain_ft: measuredGain },
+    { distance_mi: officialDist, gain_ft: officialGain }
+  );
   for (const m of mismatches) warn(m);
 
   // ── Aid stations: resolve to a waypoint, then snap to the track ─────────

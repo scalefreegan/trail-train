@@ -207,6 +207,30 @@ function matchStations(race, gpx, unresolved, warnings, at) {
 }
 
 /**
+ * Add or remove one entry from race.json's persisted `unresolved` array, in
+ * place, without disturbing anything else already there (a null-valued
+ * schema field intake left, a hand-added unresolved_fills note). The
+ * course.gpx distance/gain mismatch is the one unresolved reason buildRace
+ * discovers for itself, mid-build, rather than carrying forward from
+ * validateForBuild's snapshot — so it is the one entry this function owns:
+ * dedupe on add, and cleared the moment a later build's GPX passes the check
+ * again (a corrected course.gpx un-flags itself, it isn't left stuck true
+ * forever the way `mergeFile`'s "absence is not removal" rule would treat a
+ * plain merge).
+ * @param {object} race mutated in place
+ * @param {string} key
+ * @param {boolean} present
+ * @returns {boolean} whether race.unresolved changed
+ */
+function setPersistedUnresolvedEntry(race, key, present) {
+  const current = Array.isArray(race.unresolved) ? race.unresolved : [];
+  const has = current.includes(key);
+  if (present === has) return false;
+  race.unresolved = present ? [...current, key].sort() : current.filter((u) => u !== key);
+  return true;
+}
+
+/**
  * Run stage 2 over races/<slug>/ — or over `dir`, when a re-intake is building
  * a shadow copy of the folder (scripts/race-refresh.mjs). `root` still points
  * at the repo either way; only the folder being written moves.
@@ -329,9 +353,19 @@ export async function buildRace({ root, slug, dir = raceDir(root, slug), onProgr
   // A GPX far enough off race.json's official distance/gain to not be normal
   // drift is promoted from "warning" to "unresolved" too: a course this
   // wrong should block activation until a human confirms the GPX is right,
-  // the same way an unmatched aid station does.
-  if (course.mismatches?.length) unresolved.add("course.gpx");
+  // the same way an unmatched aid station does. Persisted onto race.json
+  // itself (not just returned in-memory) so it survives past this run's SSE
+  // stream — loadReview also re-derives it live from build/course.json, but
+  // race.json is the ground truth check-races.mjs and a bare CLI build see.
+  const hasMismatch = Boolean(course.mismatches?.length);
+  if (hasMismatch) unresolved.add("course.gpx");
+  const unresolvedPersistChanged = setPersistedUnresolvedEntry(race, "course.gpx", hasMismatch);
   step("build", "done", { aid_stations: course.aid_stations, race_climbs: course.race_climbs });
+
+  if (unresolvedPersistChanged) {
+    await writeJsonAtomic(path.join(dir, "race.json"), race);
+    say("build", `wrote races/${slug}/race.json (course.gpx mismatch ${hasMismatch ? "flagged" : "cleared"})`);
+  }
 
   return {
     slug, dir, unresolved: [...unresolved].sort(), warnings, matched, course,

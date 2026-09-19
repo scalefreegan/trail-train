@@ -481,3 +481,45 @@ test("loadReview surfaces block_stale without touching block.json — the athlet
   // and loadReview is read-only — the file on disk is exactly what was written
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir, "block.json"), "utf8")), block);
 });
+
+test("loadReview re-derives the course.gpx mismatch live from build/course.json, and clears a stale persisted entry a plain carry-forward could never drop", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "race-edit-review-mismatch-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const slug = "test-race-2027";
+  const dir = path.join(root, "races", slug);
+  await fs.mkdir(path.join(dir, "build"), { recursive: true });
+
+  // race.json still carries a stale "course.gpx" entry from a build that
+  // once mismatched. recomputeUnresolved's carry-forward rule reads
+  // valueAtPath(race, "course.gpx"), which is always undefined for this
+  // synthetic path, so it can never clear on its own — loadReview has to
+  // recompute the comparison live instead of trusting the carried value.
+  const r = race({ unresolved: ["course.gpx"], distance_mi: 100, gain_ft: 20000 });
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(r, null, 2));
+  // A course.json whose measured figures are within MISMATCH_THRESHOLD of
+  // the current official ones — the underlying problem is actually fixed.
+  await fs.writeFile(
+    path.join(dir, "build", "course.json"),
+    JSON.stringify({ distance_mi: 101, gain_ft: 19800 }, null, 2)
+  );
+
+  const clean = await loadReview(root, slug);
+  assert.ok(!clean.unresolved.includes("course.gpx"), clean.unresolved.join(", "));
+  assert.equal(clean.activation.ok, true, JSON.stringify(clean.activation.errors));
+
+  // Now point course.json at a genuine mismatch — race.json's persisted
+  // `unresolved` is never touched — and confirm loadReview flags it live,
+  // and that validateStatusTransition (which is handed loadReview's own
+  // `unresolved`) blocks activation on it.
+  await fs.writeFile(
+    path.join(dir, "build", "course.json"),
+    JSON.stringify({ distance_mi: 40, gain_ft: 19800 }, null, 2)
+  );
+  const mismatched = await loadReview(root, slug);
+  assert.ok(mismatched.unresolved.includes("course.gpx"), mismatched.unresolved.join(", "));
+  assert.equal(mismatched.activation.ok, false);
+  assert.ok(
+    mismatched.activation.errors.some((e) => /course\.gpx/.test(e)),
+    mismatched.activation.errors.join(" | ")
+  );
+});

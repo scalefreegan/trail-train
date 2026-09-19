@@ -348,6 +348,41 @@ test("the fixture's own default gain_ft (1200) is far enough off to be flagged o
   assert.ok(r.warnings.some((w) => /ft of gain vs race\.json's 1,200 ft/.test(w)), r.warnings.join(" | "));
 });
 
+test("the course.gpx mismatch is persisted onto race.json's unresolved list, and clears on a later build whose GPX passes", async () => {
+  const slug = "truncated-gpx-persist-2027";
+  const race = draftRace(slug);
+  race.distance_mi = 36; // 17% off — same shape as the "flagged structurally" test above
+  const { root, dir } = await makeRoot(slug, { race });
+
+  const r1 = await buildRace({ root, slug });
+  assert.ok(r1.unresolved.includes("course.gpx"), r1.unresolved.join(", "));
+  // On disk, not just in buildRace's in-memory return value — this is the
+  // whole point of the fix: race.json is the thing check-races.mjs and a
+  // bare CLI build see after this run's SSE stream is long gone.
+  const onDiskMismatched = await readJson(path.join(dir, "race.json"));
+  assert.ok(
+    Array.isArray(onDiskMismatched.unresolved) && onDiskMismatched.unresolved.includes("course.gpx"),
+    JSON.stringify(onDiskMismatched.unresolved)
+  );
+
+  // Fix the underlying problem — here, correcting race.json's official
+  // figures to match the real GPX stands in for "the owner dropped in a
+  // corrected course.gpx"; either way the comparison is the same — and
+  // rebuild: a passing GPX un-flags the entry instead of leaving it stuck
+  // true the way a plain field-absence merge would.
+  onDiskMismatched.distance_mi = 30;
+  onDiskMismatched.gain_ft = 399; // ~ the synthetic profile's real measured gain
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(onDiskMismatched, null, 2));
+
+  const r2 = await buildRace({ root, slug });
+  assert.ok(!r2.unresolved.includes("course.gpx"), r2.unresolved.join(", "));
+  const onDiskFixed = await readJson(path.join(dir, "race.json"));
+  assert.ok(
+    !(onDiskFixed.unresolved ?? []).includes("course.gpx"),
+    JSON.stringify(onDiskFixed.unresolved)
+  );
+});
+
 test("an unresolved (null) distance_mi fails the course build with an actionable error, not Infinity/NaN", async () => {
   const slug = "null-distance-2027";
   const race = draftRace(slug);
