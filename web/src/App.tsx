@@ -34,7 +34,8 @@ import type { RaceView } from "./data";
 import { raceClockHM } from "./race/pacing";
 import { ThemePreview } from "./themes/ThemePreview";
 import type { VisualInput } from "./themes/visual";
-import type { RaceKind } from "./race/types";
+import type { ActiveRaceResponse, RaceKind } from "./race/types";
+import { isTuneUp } from "./race/features";
 
 /* ================================================================== */
 /*  BASECAMP — pre-dawn ops surface for ultra training                 */
@@ -133,8 +134,25 @@ const isAppView = (v: string | null): v is AppView => v != null && (ALL_APP_VIEW
 /** The views this athlete actually has. Race and fuel are a race's views:
     with none active there is no course to project and no start clock to fuel
     against, so they are hidden rather than shown empty (PRD §6). */
-function appViews(race: RaceView | null): AppView[] {
-  return race ? ALL_APP_VIEWS : ["training"];
+function appViews(race: RaceView | null, hideFuel = false): AppView[] {
+  if (!race) return ["training"];
+  return hideFuel ? ALL_APP_VIEWS.filter((v) => v !== "nutrition") : ALL_APP_VIEWS;
+}
+
+/**
+ * Whether the "fuel" chip is worth offering at all.
+ *
+ * The fuel view is built on races/<slug>/nutrition.json, and with no file it
+ * falls back to the impersonal defaults (nutrition.ts) — which is the right
+ * behaviour for an A race: a hundred always needs a fuel plan, and defaults
+ * with a warning beat no page. A tune-up is the opposite case (PRD-v2 §3):
+ * the quick form writes no nutrition.json, and a whole carb/caffeine plan
+ * derived from nobody's numbers for a Saturday 50k is furniture, not advice.
+ * So for kind "b" ONLY, the chip is hidden until the folder actually has a
+ * nutrition.json — write one and it comes straight back.
+ */
+function fuelViewHidden(payload: ActiveRaceResponse | null): boolean {
+  return isTuneUp(payload?.race ?? null) && (payload?.nutrition ?? null) == null;
 }
 
 const VIEW_LABEL: Record<AppView, string> = { training: "training", race: "race", nutrition: "fuel" };
@@ -914,7 +932,10 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
   const { syncing, lastSync, refresh, currentStep, lastLog, status } = useRefresh();
   const { fetchedAt, currentWeek } = useStrava();
   const { race, viewing, totalWeeks } = useBlockConfig();
-  const views = appViews(race);
+  // the raw payload, for the one question RaceView cannot answer: is the
+  // folder on screen a tune-up, and does it carry a nutrition.json?
+  const { activeRace } = useActiveRace();
+  const views = appViews(race, fuelViewHidden(activeRace));
   const stamp = fetchedAt ? fetchedAt.getTime() : lastSync;
   // null in generic mode — every countdown below is gated on it, not faked —
   // and null while browsing, where "race in -371 days" is both useless and a
@@ -1564,12 +1585,31 @@ function weekDates(wk: number, blockStart: string): string {
   return `${f(start)} – ${f(end)}`;
 }
 
+/** A tune-up's marker label: initials plus the distance in the name, the
+    same rule scripts/race-intake.mjs's shortFromName writes into race.json's
+    `short` ("Deadman Peaks 50k" → "DP50K"). A cosmetic twin, not a contract —
+    the payload's b_races carry the full name and no short, and a chart axis
+    has room for about five characters. */
+function tuneUpTag(name: string): string {
+  const words = String(name ?? "").split(/\s+/).filter(Boolean);
+  const initials = words.filter((w) => /^[a-z]/i.test(w)).map((w) => w[0].toUpperCase()).join("");
+  const distance = words.map((w) => /^(\d+(?:\.\d+)?)(k|km|mi|m|h)?$/i.exec(w)).find(Boolean);
+  const tail = distance ? `${distance[1]}${(distance[2] ?? "").toUpperCase()}` : "";
+  return `${initials}${tail}`.slice(0, 8) || name.slice(0, 8).toUpperCase() || "TUNE-UP";
+}
+
 function Trajectory() {
   const u = useUnits();
   const { weekly, currentWeek } = useStrava();
   // `mode` below is the CHART mode (cumulative/weekly); the block's own mode
   // is renamed so the two never get confused in this component.
   const { targets, totalWeeks, blockStart, mode: blockMode, loading } = useBlockConfig();
+  /* The tune-ups inside THIS block (PRD-v2 §3), straight off the payload —
+     the server counts `weeks_out` in the A race's own zone, so the marker
+     sits on the same week the coach is told to taper into. Empty in view and
+     generic mode, where there is no block for one to belong to. */
+  const { activeRace } = useActiveRace();
+  const bRaces = activeRace?.b_races ?? [];
   const [view, setView] = useState<"dist" | "elev">("dist");
   const [mode, setMode] = useState<"cum" | "wk">("cum");
   const [hoverWk, setHoverWk] = useState<number | null>(null); // 0-indexed
@@ -1707,6 +1747,28 @@ function Trajectory() {
   // last KEPT label, then re-check the final pair since the last week is
   // pinned to the true end of the block regardless of the every-5 stride
   // and can still collide with whatever the walk kept just before it.
+  /* One marker per tune-up, placed by the week the server counted: the A
+     race IS the last week of the block, so a race `weeks_out` weeks before
+     it sits at index totalWeeks - 1 - weeks_out. A tune-up whose date the
+     folder never had (weeks_out null), or one that lands outside the block
+     entirely (a date after race day — negative weeks_out — or one from
+     before the block started), gets NO marker rather than a clamped one on
+     a week it is not in: a marker is a claim about a week.
+
+     Only in race mode. Generic mode's rolling window ends on today rather
+     than on a start line, and the payload sends no b_races there anyway. */
+  const bMarkers = (blockMode === "race" ? bRaces : [])
+    .map((b) => ({ b, idx: b.weeks_out == null ? -1 : totalWeeks - 1 - b.weeks_out }))
+    .filter(({ idx }) => idx >= 0 && idx <= totalWeeks - 1)
+    .map(({ b, idx }) => ({
+      slug: b.slug,
+      tag: tuneUpTag(b.name),
+      x: wx(idx),
+      // the native SVG tooltip: what it is, when it is, how far out
+      tip: `${b.name}${b.date ? ` · ${b.date}` : ""} · ${b.weeks_out === 0 ? "race week" : `${b.weeks_out} wk out`}`
+        + (b.distance_mi != null ? ` · ${b.distance_mi} mi` : ""),
+    }));
+
   const WEEK_LABEL_W = 34; // px — "WK NN" at fontSize 9 / letterSpacing 1
   const WEEK_LABEL_GAP = 3; // px — minimum clear space between labels
   const weekLabelExtent = (w: number): [number, number] => {
@@ -1837,6 +1899,29 @@ function Trajectory() {
                     </text>
                   ))}
     
+                  {/* tune-up markers — one per B race in this block, at its
+                      own week (PRD-v2 §3). Drawn under the plan/actual
+                      lines so they never hide the data they sit behind. */}
+                  {bMarkers.map((m) => (
+                    <g key={`b-${m.slug}`} data-tune-up={m.slug}>
+                      <title>{m.tip}</title>
+                      <line
+                        x1={m.x} x2={m.x} y1={PAD.top + 14} y2={H - PAD.bottom}
+                        stroke="var(--creek)" strokeWidth="1" strokeDasharray="2 4" opacity="0.7"
+                      />
+                      <path
+                        d={`M ${m.x} ${H - PAD.bottom - 4.5} L ${m.x + 4} ${H - PAD.bottom} L ${m.x} ${H - PAD.bottom + 4.5} L ${m.x - 4} ${H - PAD.bottom} Z`}
+                        fill="var(--creek)"
+                      />
+                      <text
+                        x={m.x} y={PAD.top + 10} textAnchor="middle"
+                        fontSize="8" fontFamily="Spline Sans Mono" letterSpacing="1" fill="var(--creek)"
+                      >
+                        {m.tag}
+                      </text>
+                    </g>
+                  ))}
+
                   {mode === "cum" ? (
                     <>
                       {/* plan target */}
@@ -3153,7 +3238,7 @@ function AppBody() {
   const { race, viewing } = useBlockConfig();
   // the slug ON SCREEN, for the crash boundary's message and its "back to
   // generic mode" pointer reset — same source useRacePlanInstance itself reads.
-  const { viewing: viewingSlug } = useActiveRace();
+  const { activeRace, viewing: viewingSlug } = useActiveRace();
   const hash = useHashRoute();
   const [view, setViewState] = useState<AppView>(() => {
     // validate rather than cast — a stale or hand-edited key would otherwise
@@ -3179,7 +3264,7 @@ function AppBody() {
   // WITHOUT rewriting the preference: once a race is active again the
   // athlete gets the view they last chose back, instead of having had it
   // quietly overwritten by a loading frame.
-  const views = appViews(race);
+  const views = appViews(race, fuelViewHidden(activeRace));
   const activeView = views.includes(view) ? view : "training";
   // Race-day mode takes the whole screen: the command bar and the agent
   // rail are desk furniture, and on a phone they cost a third of the page
