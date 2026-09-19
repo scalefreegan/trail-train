@@ -30,9 +30,24 @@
 
 import * as opensplittime from "./opensplittime.mjs";
 import * as maprogress from "./maprogress.mjs";
+import * as fixture from "./fixture.mjs";
 
-/** Registration order is match order; the first adapter claiming a host wins. */
-export const ADAPTERS = [opensplittime, maprogress];
+/**
+ * Registration order is match order; the first adapter claiming a host wins.
+ *
+ * The fixture adapter (bead tt-cv1b0.6) is appended ONLY under
+ * TRAIL_TEST_FIXTURES=1, the same flag the dev server's fixture route is
+ * gated on. It claims URLs by PATH (/__fixtures__/trackers/<file>), which no
+ * real tracker uses, so it cannot shadow opensplittime or maprogress even
+ * when it is loaded — but it is kept out of the list entirely unless asked
+ * for, so a production run's registry is byte-identical to what it was
+ * before the flag existed.
+ */
+export const ADAPTERS = [
+  opensplittime,
+  maprogress,
+  ...(process.env.TRAIL_TEST_FIXTURES === "1" ? [fixture] : []),
+];
 
 /** How long one slug's answer is reused before the tracker is asked again. */
 export const CACHE_TTL_MS = 60_000;
