@@ -232,7 +232,6 @@ export type RaceProvenanceEntry = {
 
 export type RaceSource = { kind: "url" | "pdf" | "gpx"; ref: string; fetched_at?: string };
 
-/** races/<slug>/race.json */
 /** PRD §4 — which live tracker race day polls, and who to look for on it.
     `url` is seeded by intake from the race site's tracking link; `bib` and
     `name` are the athlete's and are filled in the review screen, so all
@@ -285,10 +284,35 @@ export type TrackerCheckpoint = {
   runner_status: string;
 };
 
+/** A race folder is either an A race — the goal a training block counts back
+    from — or a B race: a tune-up entered INSIDE somebody else's block
+    (PRD-v2 §3). Absent in every folder written before v2, and absent means
+    "a"; a "b" folder is never status "active". */
+export type RaceKind = "a" | "b";
+
+/** One tune-up as the payload and the coach's facts carry it: enough to draw
+    a marker on the trajectory and to plan a taper around, no more. Built by
+    scripts/race-config.mjs's bRacesFor. */
+export type BRaceSummary = {
+  slug: string;
+  name: string;
+  date: string | null;
+  distance_mi: number | null;
+  gain_ft: number | null;
+  /** whole weeks between this race and the A race, counted in the A race's
+      own zone: positive = before it, 0 = race week, negative = after it */
+  weeks_out: number | null;
+};
+
+/** races/<slug>/race.json */
 export type RaceConfig = {
   schema_version: number;
   slug: string;
   status: RaceStatus;
+  /** "b" = a tune-up inside `parent_slug`'s block; absent = "a" */
+  kind?: RaceKind;
+  /** the A race this tune-up sits inside — only ever set on a kind "b" */
+  parent_slug?: string;
   name: string;
   short: string;
   edition_year?: number;
@@ -413,6 +437,10 @@ export type ActiveRaceResponse = {
     block: ActiveBlock | null;
     plan: RacePlan | null;
   } | null;
+  /** The tune-up races entered inside the TRAINING race's block, oldest
+      first (PRD-v2 §3). Always present; empty in view and generic mode,
+      where there is no A-race block for one to belong to. */
+  b_races?: BRaceSummary[];
   /** local config was broken and the server fell back to generic mode */
   warning?: string;
 };

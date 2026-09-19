@@ -297,6 +297,82 @@ test("checkFolders fails an active folder whose block was counted back from a di
   assert.deepEqual(r.warnings, []);
 });
 
+/* ------------------ checkFolders: B folders (PRD-v2 §3) ------------------ */
+
+/** A temp root holding one A race and one tune-up hanging off it, both
+    written the way quickCreateRace writes them: race.json alone, no
+    block.json, no nutrition.json, no plan. */
+async function tuneUpRoot(over = {}) {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "check-races-bfolder-"));
+  const parent = {
+    schema_version: 1,
+    slug: "san-juan-softie-100-2027",
+    status: "active",
+    name: "San Juan Softie 100",
+    short: "SJS100",
+    date: "2027-08-13",
+    start_time: "06:00",
+    timezone: "America/Denver",
+    distance_mi: 104,
+    gain_ft: 19000,
+    cutoff_h: 38,
+    aid_stations: [{ name: "Finish", total_mi: 104, cutoff_h: 38 }],
+  };
+  const tuneUp = {
+    schema_version: 1,
+    slug: "jemez-mountain-50k-2027",
+    kind: "b",
+    parent_slug: parent.slug,
+    status: "draft",
+    name: "Jemez Mountain 50K",
+    short: "JM50K",
+    date: "2027-05-22",
+    start_time: "06:00",
+    timezone: "America/Denver",
+    distance_mi: 31,
+    gain_ft: 5000,
+    cutoff_h: null,
+    unresolved: ["cutoff_h"],
+    aid_stations: [{ name: "Finish", total_mi: 31, cutoff_h: null, crew: false, drop_bag: false }],
+    ...over,
+  };
+  for (const race of [parent, tuneUp]) {
+    const dir = path.join(tmp, "races", race.slug);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(race, null, 2));
+  }
+  return tmp;
+}
+
+test("checkFolders accepts a tune-up folder that carries no block, plan or nutrition", async (t) => {
+  const tmp = await tuneUpRoot();
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+
+  const r = await checkFolders(tmp);
+  assert.equal(r.status, "PASS", JSON.stringify(r.detail));
+  assert.deepEqual(r.warnings, []);
+  // the folder line says which kind it is, so the "—"s read as the expected
+  // shape rather than as something missing
+  assert.ok(
+    r.info.some((line) => /jemez-mountain-50k-2027\s+tune-up of san-juan-softie-100-2027/.test(line)),
+    JSON.stringify(r.info),
+  );
+  // and the A race it hangs off is still the one active folder
+  assert.match(r.reason, /active: san-juan-softie-100-2027/);
+});
+
+test("checkFolders catches a tune-up whose parent folder is not there", async (t) => {
+  const tmp = await tuneUpRoot({ parent_slug: "deleted-race-2026" });
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+
+  const r = await checkFolders(tmp);
+  assert.equal(r.status, "FAIL");
+  assert.ok(
+    r.detail.some((e) => /jemez-mountain-50k-2027\/race\.json/.test(e) && /no race folder races\/deleted-race-2026\//.test(e)),
+    JSON.stringify(r.detail),
+  );
+});
+
 test("tail keeps the last non-blank lines", () => {
   assert.deepEqual(tail("a\n\nb\nc\n\n", 2), ["b", "c"]);
   assert.deepEqual(tail("only", 5), ["only"]);
