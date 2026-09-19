@@ -192,8 +192,17 @@ function CaffeineChart({ caf, clock, finishH, heat, night, kg }: {
           </g>
         ))}
 
-        <path d={`${path} L${px(x1).toFixed(1)} ${py(0).toFixed(1)} L${px(x0).toFixed(1)} ${py(0).toFixed(1)} Z`} fill="var(--lamp)" opacity={0.13} />
-        <path d={path} fill="none" stroke="var(--lamp)" strokeWidth={1.8} strokeLinejoin="round" />
+        {/* caf.curve is [] when sun is unknown (planCaffeine hands back an
+            empty, honest schedule rather than guessing — see caffeine.ts).
+            `path` is then "", and closing it into a fill/stroke would emit
+            a moveto-less "d" (" L… L… Z") that Chromium rejects outright —
+            skip both curve paths rather than draw from an empty point list. */}
+        {path && (
+          <>
+            <path d={`${path} L${px(x1).toFixed(1)} ${py(0).toFixed(1)} L${px(x0).toFixed(1)} ${py(0).toFixed(1)} Z`} fill="var(--lamp)" opacity={0.13} />
+            <path d={path} fill="none" stroke="var(--lamp)" strokeWidth={1.8} strokeLinejoin="round" />
+          </>
+        )}
 
         {caf.doses.map((d) => {
           const y = py(caf.curve[Math.min(caf.curve.length - 1, Math.round((d.h + 0.02 - x0) / (caf.curve[1].h - caf.curve[0].h)))]?.mg ?? 0);
@@ -320,7 +329,7 @@ export function NutritionPlan() {
   const u = useUnits();
   const { race } = useRacePlan();
   const { course, missing, error, proj, nutrition, fuelPlan, raceStart, timeZone, clock, sun,
-    nutritionError, physiology, physiologyError, features, panels, raceConfig } = useRacePlan();
+    nutritionError, nutritionSource, physiology, physiologyError, features, panels, raceConfig } = useRacePlan();
   const { reload } = useRefresh();
   // D8: "no course data" used to just tell the athlete to run a shell
   // command — the empty state now offers the same free, deterministic
@@ -434,6 +443,16 @@ export function NutritionPlan() {
           projection — move the pacing sliders in the planner and the legs, the drop bags and the caffeine schedule
           all follow.
         </div>
+        {/* nutritionSource is "default" both for a plain 404 (no error — the
+            file is optional tuning) and for a corrupt/unreadable file with no
+            cached copy to fall back to (which DOES set nutritionError, shown
+            separately below) — only speak up here for the silent case, so a
+            real failure doesn't get two overlapping messages. */}
+        {nutritionSource === "default" && !nutritionError && (
+          <div style={{ fontSize: 11.5, color: "var(--ember)", lineHeight: 1.5, marginTop: 10 }}>
+            using default fueling constants — races/{raceConfig.slug}/nutrition.json missing
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", gap: 1, background: "var(--edge)", border: "1px solid var(--edge)", marginTop: 14 }}>
           <Vital k="carbs" v={String(Math.round(fuelPlan.total_carb_g))} unit="g" />
           <Vital k="gels" v={String(fuelPlan.total_gels)} />

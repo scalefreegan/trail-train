@@ -21,6 +21,12 @@ export type { NutritionConfig, CaffeineConfig } from "./nutrition-config";
 /*  what you carry OUT of `from` to reach `to`.                        */
 /* ------------------------------------------------------------------ */
 
+/** Where the returned config actually came from — "default" is the one case
+    that used to be entirely silent (a 404 is expected/valid, but it still
+    means every number on the fuel page is the impersonal fallback, not this
+    race's own tuning), so callers that want to say so can. */
+export type NutritionSource = "file" | "cache" | "default";
+
 /** Same failure semantics as the useRaceData hooks, except a 404 silently
     falls back to DEFAULT_NUTRITION — the file is optional tuning, not data. */
 export function useNutrition() {
@@ -33,6 +39,7 @@ export function useNutrition() {
   const { viewing: slug, resolved } = useActiveRace();
   const [cfg, setCfg] = useState<NutritionConfig>(DEFAULT_NUTRITION);
   const [error, setError] = useState<string | null>(null);
+  const [source, setSource] = useState<NutritionSource>("default");
   useEffect(() => {
     if (!resolved) return;
     let stale = false;
@@ -44,26 +51,27 @@ export function useNutrition() {
       if (stale) return;
       const cached = cacheGet<unknown>(cacheKey);
       const norm = cached == null ? null : normalizeNutrition(cached);
-      if (norm) { setCfg(norm); setError(`${message} — showing the last saved copy`); }
-      else setError(message);
+      if (norm) { setCfg(norm); setError(`${message} — showing the last saved copy`); setSource("cache"); }
+      else { setError(message); setSource("default"); }
     };
     fetch(`/nutrition.json?t=${Date.now()}`)
       .then(async (r) => {
         if (stale) return;
-        if (r.status === 404) { setCfg(DEFAULT_NUTRITION); setError(null); return; }
+        if (r.status === 404) { setCfg(DEFAULT_NUTRITION); setError(null); setSource("default"); return; }
         if (!r.ok) { fallback(`nutrition.json failed to load (HTTP ${r.status})`); return; }
         const d = await r.json().catch(() => { throw new Error("parse"); });
         const norm = normalizeNutrition(d);
-        if (!norm) { if (!stale) setError("nutrition.json invalid — using previous config or defaults"); return; }
+        if (!norm) { if (!stale) { setError("nutrition.json invalid — using previous config or defaults"); setSource("default"); } return; }
         if (stale) return;
         cachePut(cacheKey, d);
         setCfg(norm);
         setError(null);
+        setSource("file");
       })
       .catch(() => fallback("nutrition.json corrupt or unreadable"));
     return () => { stale = true; };
   }, [refreshKey, resolved, slug]);
-  return { nutrition: cfg, error };
+  return { nutrition: cfg, error, source };
 }
 
 export type FuelSegment = {

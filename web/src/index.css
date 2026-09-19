@@ -235,9 +235,16 @@ a { color: inherit; }
 .commandbar-mid { display: flex; align-items: center; gap: 0; }
 
 /* the header row — wordmark+switcher, view chips, mid stats, sync cluster
-   — as one nowrap flex row on desktop (unchanged look ≥988px), wrapping
+   — as one nowrap flex row on desktop (unchanged look ≥1201px), wrapping
    below that so nothing (units toggle, resync, settings) is pushed off
-   the right edge of a phone-width viewport. */
+   the right edge of the viewport. The nowrap row's real (unsquashed)
+   content width runs to ~1113px with an active race (wordmark+switcher +
+   view chips + "block week NN/NN" + "race in NNN days" + "race day mon d"
+   + the sync cluster's "synced Nh Nm ago" + coach/units/resync/settings) —
+   987px left a 988-1112px band where the row was still nowrap but too
+   narrow for its own content, forcing document-level horizontal scroll.
+   1200px clears that with margin while still being comfortably below the
+   1280px breakpoint where the coach rail itself drops below the content. */
 .command-bar {
   display: flex;
   align-items: center;
@@ -247,7 +254,7 @@ a { color: inherit; }
 }
 .command-bar-sync { flex-shrink: 0; }
 
-@media (max-width: 987px) {
+@media (max-width: 1200px) {
   .command-bar {
     flex-wrap: wrap;
     height: auto;
@@ -266,11 +273,20 @@ a { color: inherit; }
    The sheet portals to <body> (outside #root), so the app can be fully
    display:none'd — no blank trailing pages from hidden layout. */
 @media print {
+  /* :root sets color-scheme: dark for the on-screen app; left alone, that
+     also makes the UA paint the page canvas (and the @page margin gutter
+     below) near-black — #121212 — everywhere the author background does
+     not explicitly cover, which on the 3x5 cards and the crew sheet's
+     margins is nearly the whole sheet. Printing only ever happens with
+     body.crew-printing/.card-printing set, so this is scoped to that. */
+  :root { color-scheme: light !important; }
+
   /* the dark app background would otherwise show through every page after
      the first — .crew-sheet no longer pins to one page box (below), so
      without this the spillover paints the app's near-black body color */
   html:has(body.crew-printing), body.crew-printing,
-  html:has(body.card-printing), body.card-printing {
+  html:has(body.card-printing), body.card-printing,
+  html, body {
     background: #fff !important;
     background-image: none !important;
   }
