@@ -63,6 +63,14 @@ type ReviewPayload = {
   unresolved_acknowledged: boolean;
   schema_errors: string[];
   activation: { ok: boolean; errors: string[] };
+  /** block.json's weeks were counted back from a race date that is no
+      longer race.json's — see scripts/race-edit.mjs's isBlockStale. Never
+      touches block.json itself; this is a notice, not a write. */
+  block_stale?: boolean;
+  /** A prior "Accept" on this folder's re-intake started writing and did not
+      finish (a crash, a closed tab) — some files may already be refreshed
+      beside others that are not. Re-running Accept repairs it. */
+  refresh_interrupted?: boolean;
 };
 
 /** Mirrors scripts/aid-match.mjs's LOW_CONFIDENCE — below it the match is a
@@ -749,6 +757,14 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
           )}
         </Block>
 
+        {data.refresh_interrupted && (
+          <Block>
+            <p style={{ fontSize: 11.5, color: "var(--ember)", margin: 0 }}>
+              a refresh didn't finish landing — some files here may be updated while others are not. Re-run Accept from the refresh review to repair it.
+            </p>
+          </Block>
+        )}
+
         <UnresolvedList
           unresolved={openHoles}
           race={race}
@@ -875,7 +891,12 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
           </div>
         </Block>
 
-        <BlockTargets block={data.block} edits={blockEdits} onEdit={(wk, patch) => setBlockEdits((p) => ({ ...p, [wk]: { ...p[wk], ...patch } }))} />
+        <BlockTargets
+          block={data.block}
+          edits={blockEdits}
+          onEdit={(wk, patch) => setBlockEdits((p) => ({ ...p, [wk]: { ...p[wk], ...patch } }))}
+          stale={data.block_stale === true}
+        />
         <NutritionSummary nutrition={data.nutrition} />
       </div>
 
@@ -1102,10 +1123,14 @@ function ProfilePreview({ course, hasGpx }: { course: Course | null; hasGpx: boo
 
 /** block.json's weekly targets — the only numbers in the folder that say what
     the athlete will actually do, so they are editable here and nowhere else. */
-function BlockTargets({ block, edits, onEdit }: {
+function BlockTargets({ block, edits, onEdit, stale }: {
   block: RaceBlock | null;
   edits: Record<number, { target_dist?: number; target_elev?: number }>;
   onEdit: (wk: number, patch: { target_dist?: number; target_elev?: number }) => void;
+  /** block.json's calendar was counted back from a race date this folder no
+      longer has (scripts/race-edit.mjs's isBlockStale) — the targets below
+      are unchanged, just possibly counting down to the wrong week. */
+  stale?: boolean;
 }) {
   if (!block) {
     return (
@@ -1118,6 +1143,11 @@ function BlockTargets({ block, edits, onEdit }: {
   return (
     <Block>
       <Eyebrow>block · {block.total_weeks} weeks from {block.start_date}</Eyebrow>
+      {stale && (
+        <p style={{ fontSize: 11.5, color: "var(--ember)", margin: "0 0 10px" }}>
+          this block was counted back from a different race date — re-run the block + fuel plan stage, or edit the targets by hand, to line the weeks back up.
+        </p>
+      )}
       <div style={{ overflowX: "auto" }}>
         <table style={{ borderCollapse: "collapse", fontSize: 11.5 }}>
           <thead>

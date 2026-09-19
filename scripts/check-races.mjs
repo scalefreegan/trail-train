@@ -33,6 +33,7 @@ import { fileURLToPath } from "node:url";
 import { listRaces, loadRaceFolder, validateRaceJson, validateSingleActive } from "./race-config.mjs";
 import { draftValidationErrors } from "./race-intake.mjs";
 import { validateBlockTargets, validateNutrition } from "./race-plan.mjs";
+import { isBlockStale } from "./race-edit.mjs";
 import { normalizeNutrition } from "../web/src/race/nutrition-config.ts";
 import { buildRace } from "./race-build.mjs";
 
@@ -247,12 +248,13 @@ async function checkLiterals(root) {
 
 /* ======================= 2. every folder validates ======================= */
 
-async function checkFolders(root) {
+export async function checkFolders(root) {
   const races = await listRaces(root);
   const errors = [];
   const info = [];
+  const warnings = [];
   if (!races.length) {
-    return { status: "SKIP", reason: "no race folders under races/", detail: [], info: [] };
+    return { status: "SKIP", reason: "no race folders under races/", detail: [], info: [], warnings: [] };
   }
 
   for (const r of races) {
@@ -274,6 +276,20 @@ async function checkFolders(root) {
         race: r.race,
       });
       for (const e of be) errors.push(`${r.slug}/block.json: ${e}`);
+
+      // The block's calendar was counted back from a race date this folder
+      // no longer has (race-edit.mjs's isBlockStale — the same check
+      // loadReview surfaces to the review dialog as block_stale). A draft's
+      // block is worked on right alongside a date that may still move, so
+      // this warns rather than failing the gate for one; an ACTIVE race
+      // training the athlete against a stale calendar is a real defect and
+      // fails it outright.
+      if (isBlockStale(folder.block, r.race)) {
+        const msg = `${r.slug}/block.json: block counted back from a race date this folder no longer has ` +
+          `(block.start_date ${folder.block.start_date}, ${folder.block.total_weeks} weeks vs race.json's date ${JSON.stringify(r.race.date)})`;
+        if (r.race.status === "draft") warnings.push(msg);
+        else errors.push(msg);
+      }
     }
     if (folder.nutrition) {
       const { errors: ne } = validateNutrition(folder.nutrition, r.race);
@@ -298,6 +314,7 @@ async function checkFolders(root) {
       : `${races.length === 1 ? "1 folder validates" : `${races.length} folders validate`} · active: ${single.active[0] ?? "none"}`,
     detail: errors,
     info,
+    warnings,
   };
 }
 
@@ -635,13 +652,19 @@ async function main() {
       r = { status: "FAIL", reason: `threw: ${e.message}`, detail: [String(e.stack ?? e)], info: [] };
     }
     results.push({ ...section, ...r });
+    // `warnings` — currently only checkFolders sets it (a draft's stale
+    // block) — is a fact worth acting on but never fails the gate the way
+    // `detail`/errors do, so it is printed distinctly in BOTH modes rather
+    // than folded into `info`, which quiet mode already drops entirely.
     if (quiet) {
       say(`${MARK[r.status]} ${r.status.padEnd(4)} ${section.title} — ${r.reason}`);
       for (const line of r.detail) say(`       ${line}`);
+      for (const line of r.warnings ?? []) say(`       ⚠ ${line}`);
       continue;
     }
     say(`  ${MARK[r.status]} ${r.status}  ${r.reason}`);
     for (const line of r.detail) say(`    ✗ ${line}`);
+    for (const line of r.warnings ?? []) say(`    ⚠ ${line}`);
     for (const line of r.info) say(`    · ${line}`);
     say();
   }
