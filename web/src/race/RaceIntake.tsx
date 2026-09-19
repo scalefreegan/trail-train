@@ -64,7 +64,12 @@ type ReviewPayload = {
       types in (`sun` is a script's output, not a form field) — keyed by
       the unresolved path, shown next to it in the list below. */
   unresolved_hints?: Record<string, string>;
-  unresolved_acknowledged: boolean;
+  /** Target contract (fixer A, not yet landed): a list of acknowledged field
+      paths. Until then the server still sends/accepts a single boolean —
+      read side tolerates both (`normalizeAcked` below); write side always
+      sends the array, which is what PUT /api/races/:slug will expect once
+      A's schema change lands. */
+  unresolved_acknowledged: boolean | string[];
   schema_errors: string[];
   activation: { ok: boolean; errors: string[] };
   /** block.json's weeks were counted back from a race date that is no
@@ -82,6 +87,40 @@ type ReviewPayload = {
 const LOW_CONFIDENCE = 0.6;
 
 type StageId = "intake" | "build" | "plan";
+
+/** Round 1, bug D8: ESC/backdrop on a dirty "New race…" form used to discard
+    it — fields AND the already-uploaded file — with no warning. A small
+    inline confirm was the other option the plan offered; this codebase
+    already leans on localStorage for "what this phone last saw" (see
+    offlineCache.ts), the form has no server-side draft of its own to conflict
+    with, and restoring silently on reopen needs no extra click from someone
+    who dismissed the dialog by habit rather than intent. */
+const NEW_RACE_DRAFT_KEY = "bc.newRaceDraft";
+type NewRaceDraft = {
+  siteUrl: string; extraUrls: string; year: string; notes: string; themePreset: string;
+  uploads: { name: string; path: string; bytes: number }[];
+};
+const draftHasContent = (d: Pick<NewRaceDraft, "siteUrl" | "extraUrls" | "notes" | "uploads">): boolean =>
+  Boolean(d.siteUrl.trim() || d.extraUrls.trim() || d.notes.trim() || d.uploads.length);
+/** Read-only, synchronous, side-effect-free — safe to call straight from a
+    `useState(() => …)` lazy initializer (unlike a ref, which the lint rule
+    here refuses to let render read at all) without tripping the "no state
+    updates during render" rule either, since nothing is written back here. */
+const readNewRaceDraft = (openAt: string | null): NewRaceDraft | null => {
+  if (openAt !== null) return null;
+  try {
+    const raw = localStorage.getItem(NEW_RACE_DRAFT_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw) as Partial<NewRaceDraft>;
+    const normalized: NewRaceDraft = {
+      siteUrl: d.siteUrl ?? "", extraUrls: d.extraUrls ?? "", year: d.year ?? String(new Date().getFullYear() + 1),
+      notes: d.notes ?? "", themePreset: d.themePreset ?? "", uploads: d.uploads ?? [],
+    };
+    return draftHasContent(normalized) ? normalized : null;
+  } catch {
+    return null; // a corrupt draft is no worse than no draft
+  }
+};
 
 const STAGES: { id: StageId; label: string; blurb: string }[] = [
   { id: "intake", label: "sources → draft", blurb: "fetches the site, the manual and the GPX, then one agent turn transcribes the aid chart" },
@@ -117,14 +156,20 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   const [slug, setSlug] = useState<string | null>(openAt);
   const [screen, setScreen] = useState<"form" | "review">(openAt ? "review" : "form");
 
-  // form
-  const [siteUrl, setSiteUrl] = useState("");
-  const [extraUrls, setExtraUrls] = useState("");
-  const [year, setYear] = useState(String(new Date().getFullYear() + 1));
-  const [notes, setNotes] = useState("");
-  const [themePreset, setThemePreset] = useState<string>("");
-  const [uploads, setUploads] = useState<{ name: string; path: string; bytes: number }[]>([]);
+  // Restore a form abandoned by ESC/backdrop (round 1, bug D8) — read once,
+  // synchronously, during the first render, so the fields never flash empty
+  // before filling in. Only for the "New race…" path — a draft already on
+  // disk, opened via "Review…", has nothing to restore into. Each of these
+  // lazy initializers only runs on mount, so re-reading localStorage per
+  // field (rather than caching it) is cheap and still one consistent read.
+  const [siteUrl, setSiteUrl] = useState(() => readNewRaceDraft(openAt)?.siteUrl ?? "");
+  const [extraUrls, setExtraUrls] = useState(() => readNewRaceDraft(openAt)?.extraUrls ?? "");
+  const [year, setYear] = useState(() => readNewRaceDraft(openAt)?.year ?? String(new Date().getFullYear() + 1));
+  const [notes, setNotes] = useState(() => readNewRaceDraft(openAt)?.notes ?? "");
+  const [themePreset, setThemePreset] = useState<string>(() => readNewRaceDraft(openAt)?.themePreset ?? "");
+  const [uploads, setUploads] = useState<{ name: string; path: string; bytes: number }[]>(() => readNewRaceDraft(openAt)?.uploads ?? []);
   const [uploading, setUploading] = useState(false);
+  const [restoredDraft] = useState(() => readNewRaceDraft(openAt) !== null);
 
   // run
   const [running, setRunning] = useState(false);
@@ -152,6 +197,16 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, locked]);
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  // Persist on every change so ESC/backdrop never loses it again.
+  useEffect(() => {
+    if (openAt !== null) return;
+    try {
+      const draft: NewRaceDraft = { siteUrl, extraUrls, year, notes, themePreset, uploads };
+      if (draftHasContent(draft)) localStorage.setItem(NEW_RACE_DRAFT_KEY, JSON.stringify(draft));
+      else localStorage.removeItem(NEW_RACE_DRAFT_KEY);
+    } catch { /* private browsing / storage disabled — best-effort only */ }
+  }, [openAt, siteUrl, extraUrls, year, notes, themePreset, uploads]);
 
   const upload = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -225,6 +280,9 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
       await runStage("/api/race-intake/plan", { slug: made }, events("plan"), ctrl.signal);
       mark("plan", "done");
 
+      // The form's job is done — the draft folder is now the source of
+      // truth, so the localStorage safety net (bug D8) is cleared with it.
+      try { localStorage.removeItem(NEW_RACE_DRAFT_KEY); } catch { /* best-effort */ }
       setScreen("review");
     } catch (e) {
       // Stop the chain where it broke and say so in the server's own words.
@@ -243,7 +301,13 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
     }
   }, [siteUrl, extraUrls, year, uploads, notes, themePreset]);
 
-  const canRun = /^https?:\/\/\S+$/i.test(siteUrl.trim()) && /^\d{4}$/.test(year.trim()) && !running;
+  // 1800 (or 9999) is technically 4 digits but no race is happening then —
+  // round 1, bug D14. A generous ±10-year window around today covers a
+  // late-registered past edition and a race announced years out.
+  const yearNum = Number(year.trim());
+  const thisYear = new Date().getFullYear();
+  const yearOk = /^\d{4}$/.test(year.trim()) && yearNum >= thisYear - 10 && yearNum <= thisYear + 10;
+  const canRun = /^https?:\/\/\S+$/i.test(siteUrl.trim()) && yearOk && !running;
   const ranAnything = STAGES.some((s) => stageState[s.id] !== "pending");
 
   const header = screen === "review" ? "review · draft race" : "new race";
@@ -287,6 +351,11 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
         ) : (
           <>
             <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "24px 28px 8px" }}>
+              {restoredDraft && (
+                <p style={{ fontSize: 11, color: "var(--lamp)", margin: "0 0 16px", lineHeight: 1.5 }}>
+                  restored your unsent form — closing this dialog kept what you had typed and any file already uploaded
+                </p>
+              )}
               <Block>
                 <Eyebrow>sources</Eyebrow>
                 <label style={{ display: "block" }}>
@@ -325,7 +394,9 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
                         <li key={u.path} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 11.5, color: "var(--mist)" }}>
                           <span style={{ color: "var(--pine)" }}>✓</span>
                           <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{u.name}</span>
-                          <span className="numerals" style={{ color: "var(--mist-mute)", fontSize: 10.5 }}>{(u.bytes / 1024).toFixed(0)} KB</span>
+                          <span className="numerals" style={{ color: "var(--mist-mute)", fontSize: 10.5 }}>
+                            {u.bytes < 1024 ? `${u.bytes} B` : `${(u.bytes / 1024).toFixed(0)} KB`}
+                          </span>
                           <button
                             className="chip"
                             style={{ fontSize: 8.5 }}
@@ -337,6 +408,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
                       ))}
                     </ul>
                   )}
+                  {error && <p style={{ fontSize: 11, color: "var(--ember)", margin: "8px 0 0", lineHeight: 1.45 }}>{error}</p>}
                   <Hint>a runner's manual whose aid chart is an image is rendered to page images and transcribed — that is the case this pipeline was built for</Hint>
                 </div>
               </Block>
@@ -396,7 +468,6 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
                   )}
                 </Block>
               )}
-              {error && <p style={{ fontSize: 11.5, color: "var(--ember)", marginBottom: 20 }}>{error}</p>}
             </div>
 
             <div style={{
@@ -500,6 +571,17 @@ export function StageList({ stages, state, log }: {
     save writes what was changed and nothing else. */
 type AidEdit = Partial<Pick<RaceAidStation, "name" | "total_mi" | "cutoff_h" | "crew" | "drop_bag" | "pacers" | "gpx_wpt">>;
 
+/** Reads either shape of `unresolved_acknowledged` as "is this path currently
+    acknowledged, per the folder on disk". A bare `true` (today's server) means
+    every path CURRENTLY unresolved was acknowledged at the time it was
+    written — it says nothing about a path that has surfaced since, which is
+    the whole point of moving to a list (round 1, bug R3/D6/D7). */
+const diskAcked = (data: Pick<ReviewPayload, "unresolved_acknowledged"> | null, path: string): boolean => {
+  const v = data?.unresolved_acknowledged;
+  if (Array.isArray(v)) return v.includes(path);
+  return v === true;
+};
+
 function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   slug: string; onDone: () => void; onReload: () => void;
   /** Reports "a write or a stage re-run is in flight" up to RaceIntake, whose
@@ -553,7 +635,12 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       .then((body) => {
         if (stale) return;
         setData(body);
-        setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setFills({});
+        // REVERT is "every control in the dialog back to the on-disk state"
+        // (round 1, bug R3/D6) — that includes the acknowledge checkboxes and
+        // any error list left over from a refused save (bug D5), not just the
+        // edit buffers.
+        setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setFills({}); setAcked({});
+        setSaveError(null);
         setLoadError(null);
       })
       .catch((e: Error) => { if (!stale) setLoadError(e.message); });
@@ -566,19 +653,49 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   const stationValue = <K extends keyof AidEdit>(i: number, key: K): AidEdit[K] =>
     (key in (aidEdits[i] ?? {}) ? aidEdits[i][key] : stations[i]?.[key]) as AidEdit[K];
 
-  const editStation = (i: number, patch: AidEdit) =>
+  // A duplicate gpx_wpt across two stations silently reassigns which station
+  // a course reader thinks a point belongs to, and the server does not (yet)
+  // refuse it either — round 1, bug D3. Flagged per row, blocking SAVE until
+  // resolved rather than letting a save go out that the aid chart itself
+  // disagrees with.
+  const wptConflicts = new Map<number, number[]>();
+  {
+    const byWpt = new Map<string, number[]>();
+    stations.forEach((_s, i) => {
+      const w = stationValue(i, "gpx_wpt") as string | null | undefined;
+      if (!w) return;
+      byWpt.set(w, [...(byWpt.get(w) ?? []), i]);
+    });
+    for (const idxs of byWpt.values()) {
+      if (idxs.length < 2) continue;
+      for (const i of idxs) wptConflicts.set(i, idxs.filter((j) => j !== i));
+    }
+  }
+  const hasWptConflict = wptConflicts.size > 0;
+
+  // Any edit clears a refused save's error list (round 1, bug D5) — it was
+  // asserting a violation that the next edit may no longer create, and
+  // leaving it up reads as "this is still true".
+  const editStation = (i: number, patch: AidEdit) => {
+    setSaveError(null);
     setAidEdits((prev) => ({ ...prev, [i]: { ...prev[i], ...patch } }));
+  };
 
   const openHoles = data?.unresolved ?? [];
   const unfilled = openHoles.filter((u) => !(fills[u] ?? "").trim());
-  // An acknowledgement already on disk means every box was ticked once, so the
-  // folder's own flag is the default each checkbox falls back to — reopening
-  // the dialog must not look like the work was lost.
-  const isAcked = (p: string) => acked[p] ?? data?.unresolved_acknowledged === true;
-  const allAcked = unfilled.every(isAcked);
+  // An acknowledgement already on disk (either shape) is the default each
+  // checkbox falls back to — reopening the dialog must not look like the
+  // work was lost. A local toggle in `acked` overrides it until REVERT.
+  const isAcked = (p: string) => acked[p] ?? diskAcked(data, p);
+  // The counter is the REMAINING count — a field that is filled counts as
+  // resolved even before it is acknowledged, and an already-acked field must
+  // not inflate it (round 1, bug D7).
+  const remaining = unfilled.filter((p) => !isAcked(p)).length;
+  const allAcked = remaining === 0;
+  const ackDirty = openHoles.some((p) => isAcked(p) !== diskAcked(data, p));
 
   const dirty = Object.keys(aidEdits).length > 0 || Object.keys(blockEdits).length > 0 ||
-    themeEdit !== null || Object.values(fills).some((v) => v.trim());
+    themeEdit !== null || Object.values(fills).some((v) => v.trim()) || ackDirty;
 
   const runStageAgain = async (which: "build" | "plan") => {
     setStage(which);
@@ -600,7 +717,19 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       setStageLine("");
       load();
     } catch (e) {
-      setSaveError([(e as Error).message]);
+      // The dialog was closed (stageAbortRef's cleanup effect) — nothing to
+      // report to a component that is unmounting.
+      if ((e as Error).name === "AbortError") return;
+      // A dropped connection (dev-server restart, network reset) surfaces as
+      // either a fetch failure or the SSE reader running out of bytes with no
+      // `done` frame (dialogChrome.ts's "the stream ended before…"). Round 1,
+      // bug R5: silently landing back on the resting state with no error at
+      // all reads as "nothing happened", when the build may be half-written.
+      const msg = (e as Error).message;
+      const connectionLost = (e as Error).name === "TypeError" || /stream ended before/.test(msg);
+      setSaveError([connectionLost
+        ? "connection to the server was lost — reload and check the run sheet"
+        : msg]);
     } finally {
       setStage(null);
       stageAbortRef.current = null;
@@ -611,10 +740,21 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   const buildBody = (extra: Record<string, unknown> = {}): Record<string, unknown> => {
     const body: Record<string, unknown> = { ...extra };
     const rows = Object.entries(aidEdits)
-      .map(([i, patch]) => ({ index: Number(i), ...patch }))
+      .map(([i, patch]) => ({
+        index: Number(i),
+        // A trailing space in a typed name is never intentional (round 1, D14).
+        ...patch, ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
+      }))
       .filter((r) => Object.keys(r).length > 1);
     if (rows.length) body.aid_stations = rows;
     if (themeEdit !== null) body.visual = { theme_preset: themeEdit };
+    // Contract with fixer A: unresolved_acknowledged becomes a list of
+    // acknowledged paths. The current server still stores/returns a single
+    // boolean (`diskAcked` tolerates that on read), but every write from here
+    // on sends the list — that is the shape A's schema change expects, and it
+    // is also the only way to persist un-ticking a box (round 1, bug D6/R3):
+    // a bare `true` can never express "acknowledged all but this one".
+    if (unfilled.length) body.unresolved_acknowledged = unfilled.filter(isAcked);
     if (data?.block && Object.keys(blockEdits).length) {
       body.block_targets = data.block.targets.map((t) => ({
         wk: t.wk,
@@ -643,7 +783,25 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       body: JSON.stringify(body),
     });
     const payload = await res.json();
-    if (!res.ok) throw Object.assign(new Error("save refused"), { errors: (payload as { errors?: string[] }).errors ?? [String((payload as { error?: string }).error)] });
+    if (!res.ok) {
+      const errors = (payload as { errors?: string[] }).errors ?? [String((payload as { error?: string }).error)];
+      // Back-compat with a server that has not yet landed fixer A's per-path
+      // `unresolved_acknowledged` schema change — it still wants a bare
+      // boolean and refuses the array outright. Collapse to the old shape
+      // once and retry, rather than 400ing every save that happens to touch
+      // a race with anything unresolved: "every current path acked" still
+      // has an exact boolean equivalent; a partial un-ack does not (that is
+      // the whole reason for the array), so it is left off the retry —
+      // everything else in the body (the actual edit) still lands.
+      const ackArr = body.unresolved_acknowledged;
+      if (Array.isArray(ackArr) && errors.some((e) => /unresolved_acknowledged: boolean required/.test(e))) {
+        const retryBody = { ...body };
+        if (ackArr.length === unfilled.length) retryBody.unresolved_acknowledged = true;
+        else delete retryBody.unresolved_acknowledged;
+        return put(retryBody);
+      }
+      throw Object.assign(new Error("save refused"), { errors });
+    }
     return payload as ReviewPayload;
   };
 
@@ -654,7 +812,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       const body = buildBody();
       if (Object.keys(body).length === 0) { setBusy(null); return; }
       setData(await put(body));
-      setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setFills({});
+      setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setFills({}); setAcked({});
       onReload();
     } catch (e) {
       setSaveError((e as { errors?: string[] }).errors ?? [(e as Error).message]);
@@ -669,7 +827,9 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
     try {
       // One write for the pending edits AND the acknowledgement, so a refused
       // activation never leaves half of the review screen committed.
-      const body = buildBody(unfilled.length ? { unresolved_acknowledged: true } : {});
+      // buildBody() already includes the current per-path acknowledgement
+      // array whenever there is anything unresolved left to acknowledge.
+      const body = buildBody();
       if (Object.keys(body).length) setData(await put(body));
 
       const statusRes = await fetch(`/api/races/${slug}/status`, {
@@ -721,12 +881,12 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   const isDraft = race.status === "draft";
   const blockers = !isDraft
     ? [`this folder's status is "${race.status}" — only a draft activates here`]
-    : unfilled.length && !allAcked
-      ? [`${unfilled.length} unresolved field${unfilled.length > 1 ? "s" : ""} still to fill in or acknowledge`]
+    : remaining > 0
+      ? [`${remaining} unresolved field${remaining > 1 ? "s" : ""} still to fill in or acknowledge`]
       : data.activation.ok || openHoles.length
         ? []
         : data.activation.errors;
-  const canActivate = isDraft && allAcked && busy === null && stage === null;
+  const canActivate = isDraft && allAcked && busy === null && stage === null && !hasWptConflict;
 
   return (
     <>
@@ -744,7 +904,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
               <select
                 style={{ ...inputStyle, fontSize: 11, padding: "2px 6px" }}
                 value={themeEdit ?? race.visual?.theme_preset ?? ""}
-                onChange={(e) => setThemeEdit(e.target.value)}
+                onChange={(e) => { setSaveError(null); setThemeEdit(e.target.value); }}
               >
                 <option value="">none</option>
                 {THEME_PRESET_NAMES.map((p) => <option key={p} value={p}>{p}</option>)}
@@ -776,8 +936,8 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
           course={data.course}
           fills={fills}
           isAcked={isAcked}
-          onFill={(p, v) => setFills((prev) => ({ ...prev, [p]: v }))}
-          onAck={(p, v) => setAcked((prev) => ({ ...prev, [p]: v }))}
+          onFill={(p, v) => { setSaveError(null); setFills((prev) => ({ ...prev, [p]: v })); }}
+          onAck={(p, v) => { setSaveError(null); setAcked((prev) => ({ ...prev, [p]: v })); }}
         />
 
         {data.schema_errors.length > 0 && (
@@ -849,6 +1009,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
                       <input
                         aria-label={`station ${i} name`}
                         style={cellStyle}
+                        placeholder="station name"
                         value={String(stationValue(i, "name") ?? "")}
                         onChange={(e) => editStation(i, { name: e.target.value })}
                       />
@@ -887,6 +1048,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
                         waypoints={data.waypoints}
                         isFinish={i === stations.length - 1}
                         onChange={(v) => editStation(i, { gpx_wpt: v })}
+                        conflictWith={wptConflicts.get(i)?.map((j) => String(stationValue(j, "name") ?? stations[j]?.name ?? j))}
                       />
                     </td>
                   </tr>
@@ -899,7 +1061,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
         <BlockTargets
           block={data.block}
           edits={blockEdits}
-          onEdit={(wk, patch) => setBlockEdits((p) => ({ ...p, [wk]: { ...p[wk], ...patch } }))}
+          onEdit={(wk, patch) => { setSaveError(null); setBlockEdits((p) => ({ ...p, [wk]: { ...p[wk], ...patch } })); }}
           stale={data.block_stale === true}
         />
         <NutritionSummary nutrition={data.nutrition} />
@@ -922,10 +1084,16 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
                     : `status: ${race.status}`}
               </span>}
         </div>
-        <button className="chip" onClick={load} disabled={busy !== null} style={{ fontSize: 10 }}>
+        <button className="chip" onClick={load} disabled={busy !== null || stage !== null} style={{ fontSize: 10 }}>
           revert
         </button>
-        <button className="chip" onClick={() => void save()} disabled={busy !== null || !dirty} style={{ fontSize: 10, opacity: dirty ? 1 : 0.5 }}>
+        <button
+          className="chip"
+          onClick={() => void save()}
+          disabled={busy !== null || stage !== null || !dirty || hasWptConflict}
+          title={hasWptConflict ? "resolve the duplicate waypoint mapping before saving" : undefined}
+          style={{ fontSize: 10, opacity: dirty ? 1 : 0.5 }}
+        >
           {busy === "saving" ? "saving…" : "save edits"}
         </button>
         <button
@@ -1035,12 +1203,16 @@ function UnresolvedList({ unresolved, hints, race, course, fills, isAcked, onFil
     matcher's own shortlist first when it was not confident. The full waypoint
     list follows it — the shortlist is scored on name similarity alone and a
     human reading the map may know better. */
-function WaypointPicker({ value, match, waypoints, isFinish, onChange }: {
+function WaypointPicker({ value, match, waypoints, isFinish, onChange, conflictWith }: {
   value: string | null;
   match?: StationMatch;
   waypoints: string[];
   isFinish: boolean;
   onChange: (v: string | null) => void;
+  /** Other station names already mapped to this same waypoint — round 1,
+      bug D3: picking a used waypoint used to look like nothing happened and
+      quietly saved a duplicate. */
+  conflictWith?: string[];
 }) {
   const shortlist = useMemo(() => {
     const seen = new Set<string>();
@@ -1054,7 +1226,13 @@ function WaypointPicker({ value, match, waypoints, isFinish, onChange }: {
   }, [match]);
 
   const unsure = !value && (match?.confidence ?? 0) < LOW_CONFIDENCE && !isFinish;
-  const rest = waypoints.filter((w) => !shortlist.some((c) => c.wpt === w) && w !== value);
+  // Previously excluded the CURRENTLY SELECTED value from this list too —
+  // if that value was not also in the matcher's shortlist (the common case),
+  // no <option> for it existed anywhere in the DOM, so a browser falls back
+  // to showing nothing selected even though `value` is set. That was the
+  // real cause of round 1, bug D3's "picks a waypoint, select shows
+  // unmapped" — the pick silently succeeded but looked like it had not.
+  const rest = waypoints.filter((w) => !shortlist.some((c) => c.wpt === w));
 
   if (waypoints.length === 0) {
     return (
@@ -1063,26 +1241,33 @@ function WaypointPicker({ value, match, waypoints, isFinish, onChange }: {
       </span>
     );
   }
+  const conflict = conflictWith && conflictWith.length > 0
+    ? `already used by station ${conflictWith.join(", ")}`
+    : null;
+
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, width: "100%" }}>
-      <select
-        aria-label="gpx waypoint"
-        style={{ ...cellStyle, borderColor: unsure ? "var(--ember)" : "var(--edge-bright)" }}
-        value={value ?? ""}
-        onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
-      >
-        <option value="">{isFinish ? "— the track end —" : "— unmapped —"}</option>
-        {value && !waypoints.includes(value) && <option value={value}>{value} (not in this GPX)</option>}
-        {shortlist.length > 0 && (
-          <optgroup label="the matcher considered">
-            {shortlist.map((c) => <option key={c.wpt} value={c.wpt}>{c.wpt} · {c.score.toFixed(2)}</option>)}
+    <span style={{ display: "inline-flex", flexDirection: "column", gap: 2, width: "100%" }}>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 6, width: "100%" }}>
+        <select
+          aria-label="gpx waypoint"
+          style={{ ...cellStyle, borderColor: conflict || unsure ? "var(--ember)" : "var(--edge-bright)" }}
+          value={value ?? ""}
+          onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
+        >
+          <option value="">{isFinish ? "— the track end —" : "— unmapped —"}</option>
+          {value && !waypoints.includes(value) && <option value={value}>{value} (not in this GPX)</option>}
+          {shortlist.length > 0 && (
+            <optgroup label="the matcher considered">
+              {shortlist.map((c) => <option key={c.wpt} value={c.wpt}>{c.wpt} · {c.score.toFixed(2)}</option>)}
+            </optgroup>
+          )}
+          <optgroup label="every waypoint">
+            {rest.map((w) => <option key={w} value={w}>{w}</option>)}
           </optgroup>
-        )}
-        <optgroup label="every waypoint">
-          {rest.map((w) => <option key={w} value={w}>{w}</option>)}
-        </optgroup>
-      </select>
-      {unsure && <span title="the matcher was not confident — pick one" style={{ color: "var(--ember)", fontSize: 11 }}>!</span>}
+        </select>
+        {!conflict && unsure && <span title="the matcher was not confident — pick one" style={{ color: "var(--ember)", fontSize: 11 }}>!</span>}
+      </span>
+      {conflict && <span style={{ fontSize: 9.5, color: "var(--ember)", lineHeight: 1.3 }}>{conflict} — pick a different waypoint or clear it before saving</span>}
     </span>
   );
 }
