@@ -19,6 +19,7 @@ import { resolveViewedRace } from "./race-config.mjs";
 import { loadPlanBlocks } from "./state.mjs";
 import { loadGoals } from "./goals.mjs";
 import { rollingBlock } from "./block.mjs";
+import { computeDaysUntilRace } from "./facts.mjs";
 
 /**
  * @param {string} root  project root
@@ -71,6 +72,7 @@ export async function activeRacePayload(root, now = Date.now()) {
   const block = folder.block ? { mode: "race", ...folder.block } : null;
 
   if (viewed.training) {
+    const daysUntil = computeDaysUntilRace(folder.race, now);
     return withWarning({
       active: folder.slug,
       mode: "train",
@@ -83,6 +85,13 @@ export async function activeRacePayload(root, now = Date.now()) {
       plan: { plan_blocks },
       nutrition: folder.nutrition ?? null,
       training: null,
+      // The race-day view used to keep projecting a finish time against an
+      // active race whose date had already gone by (PR #23 review round 1,
+      // resilience finding 12) — days_until goes negative once race day is
+      // over, and `past` is the client's cue to show "race day has passed"
+      // instead of a pace projection nobody is running anymore.
+      days_until: daysUntil,
+      past: typeof daysUntil === "number" && daysUntil < 0,
     });
   }
 

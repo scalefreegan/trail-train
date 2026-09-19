@@ -171,7 +171,16 @@ const SLUG_OP_LABEL: Record<string, string> = {
   archive: 'an archive',
   edit: 'a save',
   'refresh-review': 'a refresh accept/reject',
+  activate: 'an activation',
 }
+
+// The sentinel "slug" POST /api/race/activate locks under (PR #23 review
+// round 1, resilience findings 1 & 2). It is deliberately NOT a real slug:
+// config/active-race.json is a single file shared across every race, not
+// one per folder, so two activations for DIFFERENT slugs still write the
+// same file and must still serialize — a per-slug lock (acquireSlugLock's
+// usual key) would let them race each other exactly like before.
+const ACTIVATE_LOCK_KEY = '__active-race-pointer__'
 
 function slugLockKey(slug: string): string {
   return `slug:${slug}`
@@ -1343,6 +1352,19 @@ function raceSwitchApi(): Plugin {
       server.middlewares.use('/api/race/activate', async (req, res) => {
         if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
         if (crossSiteBlocked(req, res)) return
+        // Global, not per-slug (PR #23 review round 1, resilience findings 1
+        // & 2): config/active-race.json is ONE file regardless of which slug
+        // each request names, so two activations racing each other — even
+        // for two different races — must serialize on it. Refuses with 409
+        // rather than queuing: the loser's click is stale the instant it is
+        // rejected (the switcher/review dialog both re-read on the next
+        // render), so making it wait to overwrite whatever won would just
+        // reproduce the "last click silently wins, UI disagrees" bug this
+        // fixes.
+        if (!acquireSlugLock(ACTIVATE_LOCK_KEY, 'activate')) {
+          json(res, 409, { error: 'another race activation is already in progress — try again' })
+          return
+        }
         try {
           const chunks: Buffer[] = []
           let size = 0
@@ -1364,6 +1386,8 @@ function raceSwitchApi(): Plugin {
           if (code === 'not_found') { json(res, 404, { error: (e as Error).message }); return }
           if (code === 'bad_request') { json(res, 400, { error: (e as Error).message }); return }
           json(res, 500, { error: (e as Error).message })
+        } finally {
+          releaseSlugLock(ACTIVATE_LOCK_KEY)
         }
       })
     },
@@ -1505,7 +1529,7 @@ function raceEditApi(): Plugin {
   const BODY_MAX_BYTES = 512 * 1024
 
   type RaceEditMod = {
-    validateRaceEdit: (body: unknown, ctx: { stationCount: number; unresolved: string[] }) => { ok: boolean; errors: string[]; code: string | null }
+    validateRaceEdit: (body: unknown, ctx: { stationCount: number; unresolved: string[]; aidStations?: unknown[] }) => { ok: boolean; errors: string[]; code: string | null }
     applyRaceEdit: (race: Record<string, unknown>, body: Record<string, unknown>, opts: { at: string }) =>
       { race: Record<string, unknown>; written: string[]; block_targets: Record<string, number>[] | null }
     applyBlockTargetsEdit: (block: Record<string, unknown>, targets: Record<string, number>[], opts: { at: string }) =>
@@ -1630,7 +1654,11 @@ function raceEditApi(): Plugin {
           const review = await mod.loadReview(projectRoot, slug)
           const before = review.race as Record<string, unknown>
           const stationCount = Array.isArray(before.aid_stations) ? before.aid_stations.length : 0
-          const shape = mod.validateRaceEdit(body, { stationCount, unresolved: review.unresolved as string[] })
+          const shape = mod.validateRaceEdit(body, {
+            stationCount,
+            unresolved: review.unresolved as string[],
+            aidStations: Array.isArray(before.aid_stations) ? before.aid_stations : [],
+          })
           if (!shape.ok) { json(res, 400, { error: shape.errors.join('\n'), errors: shape.errors }); return }
 
           const applied = mod.applyRaceEdit(before, body, { at })
@@ -2487,6 +2515,19 @@ function courseFiles(): Plugin {
           body = await fs.promises.readFile(path.join(folder.dir, 'build', name), 'utf8')
         } catch (e) {
           if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+          // crew-base.json is ONLY written when the folder has a
+          // crew.private.json (PR #23 review round 1, draft finding 13) — a
+          // fresh intake never has one, so its absence is the ordinary "this
+          // race has no crew info" case, not a build the athlete forgot to
+          // run. course.json's absence stays a 404 (that really is "not
+          // built yet" and drives the client's own empty state), but
+          // crew-base.json answers with an empty, valid payload so it does
+          // not read as a server error in the console on every render.
+          if (name === 'crew-base.json') {
+            res.statusCode = 200
+            res.end(JSON.stringify({}))
+            return
+          }
           res.statusCode = 404
           res.end(JSON.stringify({
             error: `races/${folder.slug}/build/${name} has not been generated — run \`npm run course:build -- --race ${folder.slug}\``,

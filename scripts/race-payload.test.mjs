@@ -145,6 +145,53 @@ test("race mode: block.json, tagged, plus the folder's plan and nutrition", asyn
   assert.deepEqual(payload.nutrition, { kcal_per_hour: 260 });
 });
 
+test("an active race whose date has passed carries past:true and a negative days_until", async (t) => {
+  // PR #23 review round 1, resilience finding 12: race-day kept projecting a
+  // finish time against an active race whose date had already gone by,
+  // instead of saying the race was over.
+  const root = await tempRoot(t);
+  const slug = "san-juan-softie-100-2027";
+  const dir = path.join(root, "races", slug);
+  await fs.mkdir(dir, { recursive: true });
+  // NOW is 2026-09-18; a race dated 9 days earlier in its own zone.
+  await writeJson(path.join(dir, "race.json"), validRace({ date: "2026-09-09" }));
+  await writeJson(path.join(root, "config", "active-race.json"), { slug });
+
+  const payload = await activeRacePayload(root, NOW);
+  assert.equal(payload.active, slug);
+  assert.equal(payload.past, true);
+  assert.equal(payload.days_until, -9);
+});
+
+test("an active race whose date is still ahead carries past:false and a positive days_until", async (t) => {
+  const root = await tempRoot(t);
+  const slug = "san-juan-softie-100-2027";
+  const dir = path.join(root, "races", slug);
+  await fs.mkdir(dir, { recursive: true });
+  await writeJson(path.join(dir, "race.json"), validRace({ date: "2027-08-13" }));
+  await writeJson(path.join(root, "config", "active-race.json"), { slug });
+
+  const payload = await activeRacePayload(root, NOW);
+  assert.equal(payload.past, false);
+  assert.equal(payload.days_until, 329);
+});
+
+test("an active race ON its own race day is not yet past", async (t) => {
+  const root = await tempRoot(t);
+  const slug = "san-juan-softie-100-2027";
+  const dir = path.join(root, "races", slug);
+  await fs.mkdir(dir, { recursive: true });
+  // NOW is 2026-09-18T09:00 America/Denver — same race day, not past (even
+  // though the 06:00 gun has already gone off: `past` means race DAY has
+  // gone by, not merely that the start instant has).
+  await writeJson(path.join(dir, "race.json"), validRace({ date: "2026-09-18" }));
+  await writeJson(path.join(root, "config", "active-race.json"), { slug });
+
+  const payload = await activeRacePayload(root, NOW);
+  assert.ok(Math.abs(payload.days_until) < 1, payload.days_until);
+  assert.equal(payload.past, false);
+});
+
 test("an archived race is generic mode, with the rolling window", async (t) => {
   const root = await tempRoot(t);
   const slug = "san-juan-softie-100-2027";

@@ -204,7 +204,7 @@ test("getActiveRace bootstraps the pointer to null, never to a race", async (t) 
   assert.equal(await getActiveRace(root), "san-juan-softie-100-2027");
 });
 
-test("getActiveRace rejects a malformed pointer", async (t) => {
+test("getActiveRace rejects a malformed but well-formed-JSON pointer", async (t) => {
   const root = await tempRoot(t);
   await fs.mkdir(path.join(root, "config"), { recursive: true });
   const p = path.join(root, "config", "active-race.json");
@@ -214,6 +214,41 @@ test("getActiveRace rejects a malformed pointer", async (t) => {
   await assert.rejects(() => getActiveRace(root), /non-empty string or null/);
   await fs.writeFile(p, JSON.stringify({ slug: "san-juan", mode: "edit" }));
   await assert.rejects(() => getActiveRace(root), /mode must be one of/);
+});
+
+test("a pointer file that is not valid JSON degrades to generic mode with a warning, and is repaired in place", async (t) => {
+  // PR #23 review round 1, resilience findings 1 & 2: two activations racing
+  // writeJsonAtomic's old per-process temp name could interleave two writes
+  // into config/active-race.json, leaving it unparsable — GET /api/races
+  // then 500'd forever with no in-app way back. readActivePointer now
+  // tolerates exactly this (a JSON syntax error), never a well-formed but
+  // wrong SHAPE (still rejected above — that is a real typo to surface).
+  const root = await tempRoot(t);
+  await writeRaceFolder(root, "san-juan-softie-100-2027", { "race.json": validRace({ status: "active" }) });
+  await fs.mkdir(path.join(root, "config"), { recursive: true });
+  const p = path.join(root, "config", "active-race.json");
+  // The exact corruption shape the bug reports captured: two writers' JSON
+  // concatenated.
+  await fs.writeFile(p, '{\n  "slug": null,\n  "mode": "train"\n}",\n  "mode": "view"\n}');
+
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args.join(" "));
+  let pointer;
+  try {
+    pointer = await readActivePointer(root);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.deepEqual(pointer, { slug: null, mode: "train" });
+  assert.ok(warnings.some((w) => w.includes("active-race.json")), warnings.join("\n"));
+
+  // and the file itself is repaired, so the NEXT read doesn't warn again
+  assert.deepEqual(JSON.parse(await fs.readFile(p, "utf8")), { slug: null, mode: "train" });
+  assert.equal(await getActiveRace(root), null);
+  // /api/races' own read (listRaces + readActivePointer) never throws off it
+  await assert.doesNotReject(() => loadActiveRace(root));
 });
 
 /* --------------------- the pointer's train/view mode -------------------- */

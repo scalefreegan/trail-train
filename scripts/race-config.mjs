@@ -45,6 +45,25 @@ export const ACTIVE_MODES = ["train", "view"];
  */
 export const PROVENANCE_BY = ["user", "agent", "computed", "matcher"];
 
+/**
+ * race.json's `unresolved_acknowledged` (PR #23 review round 1, resilience
+ * finding 3): the review dialog's "I know it is missing, activate anyway"
+ * gate. It is `string[]` — the subset of `unresolved` paths the athlete has
+ * ticked — NOT the single boolean it started life as, so a field that
+ * becomes unresolved AFTER the last acknowledgement (e.g. a matcher re-run
+ * surfaces a fresh aid_stations[i].gpx_wpt) is never accidentally
+ * pre-acknowledged by an old blanket `true`.
+ *
+ * A folder written before per-field acknowledgement existed still carries
+ * the legacy boolean. `true` there meant "every path race.json's OWN
+ * `unresolved[]` named was acknowledged AS OF THAT SAVE" — never a live
+ * recompute — so scripts/race-edit.mjs's `acknowledgedPaths` migrates it
+ * against the folder's stored `unresolved`, not a freshly recomputed one,
+ * and every write from here on persists the array shape. `false`/absent
+ * migrates to `[]`. See scripts/race-edit.mjs's validateStatusTransition,
+ * pruneAcknowledgedNulls and loadReview for where this is read.
+ */
+
 /** Folders whose name starts with "_" are scratch/templates, never races. */
 const SKIP_PREFIXES = ["_", "."];
 
@@ -168,7 +187,24 @@ export async function listRaces(root) {
  */
 export async function readActivePointer(root) {
   const p = activeRacePointerPath(root);
-  const pointer = await readJson(p, { optional: true });
+  let pointer;
+  try {
+    pointer = await readJson(p, { optional: true });
+  } catch (e) {
+    // Unparsable JSON — not a missing file (that's the `optional` branch
+    // above) and not a hand-broken but well-formed shape (rejected below,
+    // deliberately, so a real typo in the pointer still surfaces). This is
+    // the write-torn-mid-flight case (PR #23 review round 1, resilience
+    // findings 1 & 2: two activations racing writeJsonAtomic's old
+    // per-process temp name could interleave two writes into one file). The
+    // athlete has no in-app way to fix a file GET /api/races can't even
+    // parse, so degrade to generic mode with a warning and repair the file
+    // in place rather than 500ing off it forever.
+    console.warn(`⚠︎ ${p}: ${e.message} — treating as no active race and rewriting it`);
+    const fresh = { slug: null, mode: "train" };
+    await writeJsonAtomic(p, fresh);
+    return fresh;
+  }
   if (pointer === null) {
     const fresh = { slug: null, mode: "train" };
     await writeJsonAtomic(p, fresh);
