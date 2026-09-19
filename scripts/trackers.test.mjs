@@ -76,11 +76,21 @@ test("detect: every registered adapter has the full shape", () => {
   for (const a of ADAPTERS) {
     assert.equal(typeof a.id, "string", "id");
     assert.equal(typeof a.label, "string", "label");
-    assert.ok(Array.isArray(a.hostnames) && a.hostnames.length, `${a.id}: hostnames`);
+    // Empty hostnames are legal for exactly one adapter: the test fixture
+    // (bead tt-cv1b0.6) is claimed by PATH, because it is served off
+    // whatever loopback or LAN address the dev server happens to have.
+    assert.ok(Array.isArray(a.hostnames) && (a.hostnames.length || a.id === "fixture"), `${a.id}: hostnames`);
     assert.equal(typeof a.matches, "function", `${a.id}: matches`);
     assert.equal(typeof a.fetchLastCheckpoint, "function", `${a.id}: fetchLastCheckpoint`);
   }
-  assert.deepEqual(ADAPTERS.map((a) => a.id), ["opensplittime", "maprogress"]);
+  assert.deepEqual(ADAPTERS.filter((a) => a.id !== "fixture").map((a) => a.id), ["opensplittime", "maprogress"]);
+  // The gate itself, both ways: a production run must not carry a test
+  // double in its tracker registry.
+  assert.equal(
+    ADAPTERS.some((a) => a.id === "fixture"),
+    process.env.TRAIL_TEST_FIXTURES === "1",
+    "the fixture adapter is in the registry if and only if TRAIL_TEST_FIXTURES=1",
+  );
 });
 
 test("fetchLastCheckpoint: a URL no adapter claims is not_found, not a crash", async () => {

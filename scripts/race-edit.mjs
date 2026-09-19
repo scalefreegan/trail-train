@@ -48,7 +48,7 @@ export const EDITABLE_AID_FIELDS = ["name", "total_mi", "cutoff_h", "crew", "dro
 /** Top-level keys PUT /api/races/:slug accepts. Anything else is refused BY
     NAME so the client gets told which field it invented rather than having it
     silently dropped. */
-export const EDITABLE_RACE_KEYS = ["aid_stations", "date", "visual", "unresolved_acknowledged", "block_targets", "unresolved_fills"];
+export const EDITABLE_RACE_KEYS = ["aid_stations", "date", "visual", "tracking", "unresolved_acknowledged", "block_targets", "unresolved_fills"];
 
 /** Roots `unresolved_fills` will never write, whatever the folder declares.
     The first four are the folder's identity and the server's own bookkeeping;
@@ -67,6 +67,19 @@ const UNFILLABLE_ROOTS = new Set([
 /** The only `visual` sub-key the review screen exposes — the preset picker.
     Per-token `overrides` are tt-yib.16's surface, not this one. */
 const EDITABLE_VISUAL_KEYS = ["theme_preset"];
+
+/** `tracking` (PRD v2 §4) in full: the live-tracker URL intake seeds, plus
+    the athlete's bib and name on it, which only a human knows and the review
+    screen therefore edits (bead tt-cv1b0.6). All three are independently
+    absent until they are known, so each is optional and each may be cleared
+    back to null. */
+const EDITABLE_TRACKING_KEYS = ["url", "bib", "name"];
+
+/** A bib is "999" and a tracker name is "Aaron Brooks". Past 40 characters
+    it is a paste accident, and these two strings are sent to a third-party
+    timing site's page as a search key — the same bound MAX_STATION_NAME_LEN
+    exists for, one size down. */
+const MAX_TRACKING_LEN = 40;
 
 /** One row of block.json's `targets`. */
 const BLOCK_TARGET_KEYS = ["wk", "target_dist", "target_elev"];
@@ -259,6 +272,40 @@ export function validateRaceEdit(body, { stationCount = 0, unresolved = [], aidS
     }
   }
 
+  if (body.tracking !== undefined && body.tracking !== null) {
+    if (!isObj(body.tracking)) bad("tracking: object required (url, bib, name)");
+    else {
+      for (const k of Object.keys(body.tracking)) {
+        if (!EDITABLE_TRACKING_KEYS.includes(k)) {
+          bad(`tracking.${k}: not an editable field (editable: ${EDITABLE_TRACKING_KEYS.join(", ")})`);
+        }
+      }
+      // The URL decides which adapter scripts/trackers/ hands the poll to,
+      // and the dev server fetches it server-side — so the scheme is checked
+      // here rather than trusted. http(s) only: a file:// or data: "tracker"
+      // would be read off the machine running the server.
+      const url = body.tracking.url;
+      if (url !== undefined && url !== null && url !== "") {
+        if (typeof url !== "string") bad("tracking.url: string, null or \"\" required");
+        else {
+          let parsed = null;
+          try { parsed = new URL(url.trim()); } catch { parsed = null; }
+          if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+            bad(`tracking.url: an http(s) URL, null or "" required (got ${JSON.stringify(url)})`);
+          }
+        }
+      }
+      for (const k of ["bib", "name"]) {
+        const v = body.tracking[k];
+        if (v === undefined || v === null) continue;
+        if (typeof v !== "string") bad(`tracking.${k}: string, null or "" required`);
+        else if (v.trim().length > MAX_TRACKING_LEN) {
+          bad(`tracking.${k}: at most ${MAX_TRACKING_LEN} characters (got ${v.trim().length})`);
+        }
+      }
+    }
+  }
+
   if (body.unresolved_acknowledged !== undefined) {
     const v = body.unresolved_acknowledged;
     // string[] is the current contract (see race-config.mjs's doc comment on
@@ -391,6 +438,21 @@ export function applyRaceEdit(race, body, { at = new Date().toISOString(), curre
       if (next.visual[k] === body.visual[k]) continue;
       next.visual[k] = body.visual[k];
       stamp(`visual.${k}`);
+    }
+  }
+
+  if (isObj(body.tracking)) {
+    next.tracking = isObj(next.tracking) ? { ...next.tracking } : {};
+    for (const k of EDITABLE_TRACKING_KEYS) {
+      if (!(k in body.tracking)) continue;
+      // "" is how a text input says "I cleared this" — stored as null, so a
+      // consumer only ever has to check for absence, never for emptiness
+      // (requireTracking in scripts/trackers/index.mjs reads it that way).
+      const raw = body.tracking[k];
+      const val = typeof raw === "string" ? (raw.trim() || null) : raw ?? null;
+      if ((next.tracking[k] ?? null) === val) continue;
+      next.tracking[k] = val;
+      stamp(`tracking.${k}`);
     }
   }
 

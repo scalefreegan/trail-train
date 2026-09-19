@@ -1757,6 +1757,68 @@ function raceResultApi(): Plugin {
   }
 }
 
+/* TEST-ONLY static route: scripts/fixtures/trackers/* at
+     GET /__fixtures__/trackers/<file>
+
+   Gated on TRAIL_TEST_FIXTURES=1 and mounted nowhere at all without it.
+   Race day's whole feature is a page that polls a live timing site, and the
+   only honest proof that the polling works is to actually poll something
+   over HTTP — so the Playwright run points a race folder's `tracking.url`
+   at this route and the committed, scrubbed OpenSplitTime spread answers
+   instead of the network. scripts/trackers/fixture.mjs is the adapter that
+   claims these URLs, registered under the same flag.
+
+   `no-store`, deliberately: a test that rewrites the fixture between two
+   polls must see the new page on the next one, which is exactly how "the
+   hold updates from the tracker" gets proved rather than asserted.
+
+   Read-only, GET/HEAD only, and the filename is a single path segment
+   matched against a strict pattern — no traversal, no directories, no
+   dotfiles — because this is still a route on a server that also holds the
+   athlete's private race folders. */
+const TEST_FIXTURES = process.env.TRAIL_TEST_FIXTURES === '1'
+const FIXTURE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+const FIXTURE_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.htm': 'text/html; charset=utf-8',
+  '.json': 'application/json',
+  '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/plain; charset=utf-8',
+}
+
+function trackerFixtureApi(): Plugin {
+  const dir = path.join(PROJECT_ROOT, 'scripts', 'fixtures', 'trackers')
+  return {
+    name: 'trail-train-tracker-fixtures',
+    apply: 'serve',
+    configureServer(server) {
+      if (!TEST_FIXTURES) return
+      console.log(`[dev-api] TRAIL_TEST_FIXTURES=1 — serving ${dir} at /__fixtures__/trackers/`)
+      server.middlewares.use('/__fixtures__/trackers', (req, res, next) => {
+        if (req.method !== 'GET' && req.method !== 'HEAD') { next(); return }
+        let name: string
+        try {
+          name = decodeURIComponent((req.url ?? '').split('?')[0].replace(/^\//, ''))
+        } catch { name = '' }
+        if (!FIXTURE_NAME.test(name)) { res.statusCode = 400; res.end('fixture: one plain filename required'); return }
+        const file = path.join(dir, name)
+        // The pattern already forbids "/" and a leading dot; this is the
+        // assertion that says so out loud.
+        if (path.dirname(file) !== dir) { res.statusCode = 400; res.end('fixture: no path traversal'); return }
+        fs.promises.readFile(file).then(
+          (buf) => {
+            res.statusCode = 200
+            res.setHeader('Content-Type', FIXTURE_TYPES[path.extname(name).toLowerCase()] ?? 'application/octet-stream')
+            res.setHeader('Cache-Control', 'no-store')
+            res.end(req.method === 'HEAD' ? undefined : buf)
+          },
+          () => { res.statusCode = 404; res.end(`fixture: scripts/fixtures/trackers/${name} not found`) },
+        )
+      })
+    },
+  }
+}
+
 /* Dev-only middleware for race day's live tracker (PRD §4):
      GET /api/races/:slug/tracker — poll the race's configured tracker and
        answer with the runner's last checkpoint.
@@ -3132,12 +3194,16 @@ export default defineConfig({
   // raceTrackerApi (/api/races/<slug>/tracker) and crewExportApi
   // (/api/races/<slug>/crew-export) join that same group — two more
   // /api/races routes that the list endpoint would otherwise answer.
+  // trackerFixtureApi is first and owns a prefix nothing else touches
+  // (/__fixtures__/trackers); under TRAIL_TEST_FIXTURES=1 it has to be ahead
+  // of Vite's own SPA fallback, which would otherwise answer a fixture
+  // request with index.html.
   // raceCreateApi is the only one mounted on the BARE prefix: POST /api/races
   // (the tune-up quick form) has to be given the request before raceSwitchApi,
   // whose list endpoint answers — or 405s — every method it sees there. It
   // hands on everything else, so the slug-path plugins above are unaffected by
   // where it sits among them.
-  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceTrackerApi(), crewExportApi(), raceAssetApi(), raceRefreshApi(), raceEditApi(), raceCreateApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
+  plugins: [react(), trackerFixtureApi(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceTrackerApi(), crewExportApi(), raceAssetApi(), raceRefreshApi(), raceEditApi(), raceCreateApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
   // The snapshots the dashboard fetches statically (/strava.json, /state.json,
   // /oura.json, /coach.json, …) live in web/public, so the static side has to
   // follow TRAIL_PROJECT_ROOT exactly like the API side does — otherwise a

@@ -4,10 +4,11 @@ import { raceLocalParts } from "./clock";
 import { clearHash } from "./hashRoute";
 import { fmtCarry, type DropBag, type FuelPlan, type FuelSegment } from "./nutrition";
 import { fmtElapsed, type StationProjection } from "./pacing";
+import { checkpointHold, type CheckpointHold } from "./checkpointHold";
 import { resolveHold } from "./raceDayHold";
 import { RacePlanProvider } from "./RacePlanProvider";
 import { RaceErrorBoundary } from "./RaceErrorBoundary";
-import { useCrewBase, useRaceResult } from "./useRaceData";
+import { useCrewBase, useRaceResult, useTracker } from "./useRaceData";
 import { useRacePlan, type RacePlan } from "./useRacePlan";
 import { useRunCourseAgain } from "./runCourseAgain";
 
@@ -49,14 +50,30 @@ function useNow(): number {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Manual position override                                           */
+/*  Where the runner actually is — three answers, one hold             */
 /*                                                                    */
 /*  The clock alone answers "where am I" only if the projection is     */
-/*  right, and by mile 60 it usually is not. So the runner can say so: */
-/*  "I'm at mile X", or "I just left <station>" (which is the same     */
-/*  statement with the mile filled in). Persisted per slug — an        */
-/*  override is a fact about one race, and a phone that sleeps mid-    */
-/*  climb must come back knowing it.                                   */
+/*  right, and by mile 60 it usually is not. So three things can say   */
+/*  otherwise, in the order they became possible:                      */
+/*                                                                    */
+/*    1. the runner, by mile or by station: "I'm at mile X" / "I just  */
+/*       left <station>" (the SET control);                            */
+/*    2. the runner, by checkpoint: "passed <station> at HH:MM" — the  */
+/*       same statement with a TIME on it, which is what makes it      */
+/*       comparable to the tracker's;                                  */
+/*    3. the race's own timing site, polled every 60 s (PRD v2 §4).    */
+/*                                                                    */
+/*  Both manual forms are persisted per slug — an override is a fact   */
+/*  about one race, and a phone that sleeps mid-climb must come back   */
+/*  knowing it. The tracker is not persisted: it re-polls.             */
+/*                                                                    */
+/*  WHO WINS. Not "whichever was entered most recently" — the tracker  */
+/*  re-polls every minute, so its poll timestamp is always the newest  */
+/*  thing on the page and it would bulldoze a manual entry a minute    */
+/*  after it was made. What is compared is when each one says the      */
+/*  runner was SEEN: a checkpoint at 21:40 typed by hand beats the     */
+/*  tracker's last sighting at 21:22, and stops beating it the moment  */
+/*  the tracker catches up at 22:10. Manual wins a tie.                */
 /*                                                                    */
 /*  The override moves WHICH station is next. It does NOT re-project:  */
 /*  the ETAs stay the shared plan's, so they still match the printed   */
@@ -64,29 +81,103 @@ function useNow(): number {
 /*  you'd be is shown as its own line instead of being silently        */
 /*  absorbed.                                                          */
 /* ------------------------------------------------------------------ */
-function usePosition(slug: string | null) {
-  const key = slug ? `race.${slug}.raceday_mi` : null;
-  const read = (): number | null => {
+
+/** What the runner said, as it is stored. Exactly one of `mi` (a mile off
+    the chart or typed) and `station` (+ optional `clock`) is set. */
+type ManualHold = {
+  mi: number | null;
+  station: string | null;
+  /** race-local HH:MM the station was passed at, when one was given */
+  clock: string | null;
+  /** ISO instant the entry was MADE — the fallback "when was this true?"
+      for a bare mile, which carries no clock of its own */
+  at: string;
+};
+
+/** What a hold written by the pre-tracker build (a bare number under
+    `raceday_mi`) is dated. Deliberately the epoch: it is a real hold and
+    still applies, but nothing is known about when it was made, so the
+    first tracker checkpoint of the race outranks it. */
+const LEGACY_HOLD_AT = new Date(0).toISOString();
+
+/**
+ * Per-slug localStorage state, re-read in the RENDER phase when the slug
+ * changes rather than in an effect — the slug arrives a fetch late, and an
+ * effect would flash the un-overridden station first (the same pattern
+ * useRacePlan's knobs use).
+ */
+function useSlugStored<T>(
+  slug: string | null,
+  name: string,
+  decode: (raw: string) => T | null,
+  encode: (v: T) => string,
+) {
+  const key = slug ? `race.${slug}.${name}` : null;
+  const read = (): T | null => {
     if (key == null || typeof localStorage === "undefined") return null;
     try {
       const raw = localStorage.getItem(key);
-      const n = raw == null ? NaN : Number(raw);
-      return Number.isFinite(n) ? n : null;
+      return raw == null ? null : decode(raw);
     } catch { return null; }
   };
-  // same render-phase re-read as useRacePlan's knobs: the slug arrives a
-  // fetch late, and an effect would flash the un-overridden station first
   const [state, setState] = useState(() => ({ key, v: read() }));
   if (state.key !== key) setState({ key, v: read() });
-  const set = (mi: number | null) => {
-    setState({ key, v: mi });
+  const set = (v: T | null) => {
+    setState({ key, v });
     if (key == null) return;
     try {
-      if (mi == null) localStorage.removeItem(key);
-      else localStorage.setItem(key, String(mi));
+      if (v == null) localStorage.removeItem(key);
+      else localStorage.setItem(key, encode(v));
     } catch { /* private mode */ }
   };
   return [state.v, set] as const;
+}
+
+function decodeManualHold(raw: string): ManualHold | null {
+  try {
+    const d = JSON.parse(raw) as Partial<ManualHold>;
+    const mi = typeof d?.mi === "number" && Number.isFinite(d.mi) ? d.mi : null;
+    const station = typeof d?.station === "string" && d.station.trim() ? d.station : null;
+    if (mi == null && station == null) return null;
+    return {
+      mi,
+      station,
+      clock: typeof d?.clock === "string" && d.clock.trim() ? d.clock : null,
+      at: typeof d?.at === "string" && !Number.isNaN(Date.parse(d.at)) ? d.at : LEGACY_HOLD_AT,
+    };
+  } catch { return null; } // a half-written entry
+}
+
+const decodeNumber = (raw: string): number | null => {
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+};
+
+/** The runner's own hold, whichever form it was entered in. */
+function useManualHold(slug: string | null) {
+  const [stored, setStored] = useSlugStored<ManualHold>(slug, "raceday_hold", decodeManualHold, JSON.stringify);
+  // Written by every build before this one: a bare mile, no timestamp.
+  const [legacyMi, setLegacyMi] = useSlugStored<number>(slug, "raceday_mi", decodeNumber, String);
+  const hold: ManualHold | null = stored
+    ?? (legacyMi != null ? { mi: legacyMi, station: null, clock: null, at: LEGACY_HOLD_AT } : null);
+  const set = (next: ManualHold | null) => {
+    setStored(next);
+    // Migrate on the first write of the session: leaving the old key behind
+    // would resurrect the old mile the next time AUTO cleared the new one.
+    if (legacyMi != null) setLegacyMi(null);
+  };
+  return [hold, set] as const;
+}
+
+/**
+ * Elapsed hours at or below which a tracker checkpoint is ignored, set by
+ * AUTO. The tracker keeps polling and will keep reporting the checkpoint
+ * that was just dismissed, so "AUTO clears the tracker hold" has to mean
+ * "and stays cleared until the tracker sees something NEW" — which it does,
+ * at the next aid station, and then the hold comes back on its own.
+ */
+function useTrackerMute(slug: string | null) {
+  return useSlugStored<number>(slug, "raceday_tracker_muted_h", decodeNumber, String);
 }
 
 /**
@@ -252,9 +343,13 @@ export function RaceDay() {
   const { crewBase } = useCrewBase();
   const { reload } = useRefresh();
   const now = useNow();
-  const [posMi, setPosMi] = usePosition(viewing);
+  const [manual, setManual] = useManualHold(viewing);
+  const [mutedH, setMutedH] = useTrackerMute(viewing);
   const [miDraft, setMiDraft] = useState("");
   const [stationDraft, setStationDraft] = useState("");
+  // the "passed <station> at HH:MM" form's two controls
+  const [cpStation, setCpStation] = useState("");
+  const [cpClock, setCpClock] = useState<string | null>(null);
   // D8: the same free, deterministic build the switcher's "Run course
   // again…" row and the fuel view's empty state call.
   const courseBuild = useRunCourseAgain(missing ? viewing : null, reload);
@@ -275,6 +370,59 @@ export function RaceDay() {
   // left to act on.
   const alreadyArchived = plan.raceConfig.status === "archived";
   const stations = proj?.stations ?? [];
+
+  /* ---- live tracker (PRD v2 §4) ---- */
+  // Polled only when the folder actually names a tracker: useTracker(null)
+  // fetches nothing at all, so a race with no `tracking.url` costs one
+  // conditional rather than a 404 a minute.
+  const trackerUrl = plan.raceConfig.tracking?.url?.trim() ?? "";
+  const { tracker, notice: trackerNotice } = useTracker(trackerUrl && !racePast ? viewing : null);
+  // The aid chart, in the shape checkpointHold reads. The projection's own
+  // stations, so a hold and an ETA can never be about different charts.
+  const chart = stations.map((sp) => sp.station);
+  const startMs = raceStart.getTime();
+  /** Race hours at an ISO instant — how a hold with no clock of its own is
+      dated, so it can still be compared against one that has a clock. */
+  const atElapsed = (iso: string | null | undefined): number | null => {
+    const ms = iso ? Date.parse(iso) : NaN;
+    return Number.isFinite(ms) ? (ms - startMs) / 3_600_000 : null;
+  };
+
+  const manualHold: CheckpointHold | null = manual == null ? null
+    : manual.station != null
+      ? checkpointHold(
+          { station: manual.station, clock: manual.clock, source: "manual" },
+          chart, raceStart, plan.timeZone, { now },
+        )
+      // A bare mile carries no station and no clock, so it is not something
+      // checkpointHold can resolve — it IS the answer already.
+      : manual.mi != null
+        ? { mile: manual.mi, elapsed_h: null, source: "manual", label: "held by hand" }
+        : null;
+  const manualObsH = manualHold ? manualHold.elapsed_h ?? atElapsed(manual?.at) : null;
+
+  const trackerHold = tracker ? checkpointHold(tracker, chart, raceStart, plan.timeZone, { now }) : null;
+  const trackerObsH = trackerHold ? trackerHold.elapsed_h ?? atElapsed(tracker?.at) : null;
+  // Dismissed by AUTO, and still dismissed until the tracker sees the runner
+  // somewhere NEW (see useTrackerMute).
+  const trackerMuted = mutedH != null && (trackerObsH == null || trackerObsH <= mutedH);
+  const liveHold = trackerMuted ? null : trackerHold;
+
+  // Whichever says the runner was seen LATER — not whichever was recorded
+  // most recently, which the tracker always would be. Manual wins a tie.
+  const manualWins = manualHold != null
+    && (liveHold == null || (manualObsH ?? -Infinity) >= (trackerObsH ?? -Infinity));
+  const hold = manualWins ? manualHold : liveHold;
+  // A checkpoint whose name is not on the aid chart is a real sighting with
+  // no mile attached (a timing mat, a renamed station). It is reported, but
+  // it must not move the runner to a mile nobody worked out.
+  const posMi = hold?.mile ?? null;
+  const holdOffChart = hold != null && hold.mile == null;
+  // The checkpoint form's default time. RACE-local: the runner may be in a
+  // different zone from the race (a phone that never left home time), and
+  // every other clock on this page is the race's.
+  const nowLocal = raceLocalParts(now, plan.timeZone);
+  const nowHHMM = `${String(nowLocal.hour).padStart(2, "0")}:${String(nowLocal.minute).padStart(2, "0")}`;
   // Where to measure "to go" from: the stated mile if the runner gave one,
   // otherwise the mile the plan has them at right now. Both are honest —
   // one is observed, the other is the projection's own answer — and the
@@ -418,7 +566,7 @@ export function RaceDay() {
                 // unparseable/negative mile) is a no-op — SET must never
                 // fall back to mile 0 (D1/D2).
                 if (resolved == null) return;
-                setPosMi(resolved);
+                setManual({ mi: resolved, station: null, clock: null, at: new Date(now).toISOString() });
                 setStationDraft("");
                 setMiDraft("");
               }}
@@ -439,10 +587,20 @@ export function RaceDay() {
               />
               <button type="submit" className="chip" style={{ minHeight: 44, padding: "0 14px" }}>set</button>
             </form>
-            {posMi != null && (
+            {hold != null && (
               <button
                 className="chip"
-                onClick={() => { setPosMi(null); setStationDraft(""); setMiDraft(""); }}
+                onClick={() => {
+                  // BOTH holds. Dropping only the manual one would leave the
+                  // tracker's still in force and AUTO would look broken; the
+                  // mute lifts by itself at the next new checkpoint.
+                  setManual(null);
+                  setMutedH(trackerHold ? trackerObsH ?? elapsedH : null);
+                  setStationDraft("");
+                  setMiDraft("");
+                  setCpStation("");
+                  setCpClock(null);
+                }}
                 style={{ minHeight: 44, padding: "0 14px" }}
               >
                 auto
@@ -479,15 +637,88 @@ export function RaceDay() {
               picked — press SET to hold here
             </div>
           )}
-          {posMi == null ? (
+
+          {/* ---------- passed <station> at HH:MM ---------- */}
+          {/* The same fact as a station pick, WITH A TIME on it. That time is
+              what makes a hand entry comparable to the tracker's last
+              sighting (see the header comment): without it, the tracker
+              would reclaim the hold on its very next poll. */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (cpStation === "") return;
+              setManual({
+                mi: null,
+                station: cpStation,
+                clock: cpClock ?? nowHHMM,
+                at: new Date(now).toISOString(),
+              });
+              setCpStation("");
+              setCpClock(null);
+              setStationDraft("");
+              setMiDraft("");
+            }}
+            style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}
+          >
+            <select
+              value={cpStation}
+              onChange={(e) => setCpStation(e.target.value)}
+              aria-label="passed a station"
+              style={{
+                flex: "2 1 150px", minWidth: 0, minHeight: 44, padding: "0 10px", fontSize: 15,
+                background: "var(--night-deep)", border: "1px solid var(--edge-bright)",
+                color: "var(--mist)", fontFamily: "var(--font-body)",
+              }}
+            >
+              <option value="">passed…</option>
+              {stations.map((sp) => (
+                <option key={sp.station.name} value={sp.station.name}>
+                  {sp.station.name}
+                </option>
+              ))}
+            </select>
+            <input
+              type="time"
+              value={cpClock ?? nowHHMM}
+              onChange={(e) => setCpClock(e.target.value)}
+              aria-label="time passed (race time)"
+              className="numerals"
+              style={{
+                flex: "1 1 96px", minWidth: 0, minHeight: 44, padding: "0 8px", fontSize: 15,
+                background: "var(--night-deep)", border: "1px solid var(--edge-bright)", color: "var(--mist)",
+              }}
+            />
+            <button
+              type="submit"
+              className="chip"
+              disabled={cpStation === ""}
+              style={{ minHeight: 44, padding: "0 14px", opacity: cpStation === "" ? 0.5 : 1 }}
+            >
+              at
+            </button>
+          </form>
+
+          {hold == null ? (
             <div className="numerals" style={{ fontSize: 12, color: "var(--mist-mute)", marginTop: 8, lineHeight: 1.6 }}>
               auto — position and “to go” come from the projection against the clock.
               Say where you actually are if it has drifted.
+              {trackerUrl && !trackerNotice && (
+                <div>Watching the race tracker — it will take over as soon as it sees you.</div>
+              )}
+            </div>
+          ) : holdOffChart ? (
+            // A sighting with no mile: reported, never guessed at. The
+            // projection keeps the position.
+            <div className="numerals" style={{ fontSize: 12, color: "var(--mist-dim)", marginTop: 8, lineHeight: 1.6 }}>
+              seen at <b style={{ color: "var(--mist)" }}>{manualWins ? manual?.station : tracker?.station}</b>
+              {" "}({hold.label}) — that checkpoint is not on this race's aid chart, so the position
+              below is still the projection's.
             </div>
           ) : (
             <div className="numerals" style={{ fontSize: 12, color: "var(--mist-dim)", marginTop: 8, lineHeight: 1.6 }}>
-              held at <b style={{ color: "var(--mist)" }}>{u.dist(posMi)} {u.distUnit}</b>
-              {proj && started && (() => {
+              held at <b style={{ color: "var(--mist)" }}>{u.dist(posMi ?? 0)} {u.distUnit}</b>
+              {" · "}<span style={{ color: hold.source === "manual" ? "var(--mist-mute)" : "var(--creek)" }}>{hold.label}</span>
+              {proj && started && posMi != null && (() => {
                 const planMi = proj.mileAtElapsed(elapsedH);
                 const d = posMi - planMi;
                 if (Math.abs(d) < 0.15) return <> · on plan</>;
@@ -500,6 +731,8 @@ export function RaceDay() {
               </div>
             </div>
           )}
+
+          {trackerNotice && <Notice tone="mute">{trackerNotice}</Notice>}
         </>
       )}
     </Shell>
