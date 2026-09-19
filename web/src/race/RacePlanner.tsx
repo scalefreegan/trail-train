@@ -467,7 +467,20 @@ export function RacePlanner() {
     const sources = course?.sources ?? [];
     const manual = sources.find((s) => /manual|guide|handbook/i.test(s.ref));
     const ref = (manual ?? sources.find((s) => s.kind !== "gpx"))?.ref;
-    return ref ? ref.replace(/\s*\([^)]*\)\s*$/, "") : "the official runner manual";
+    const fallback = `the runner manual${raceConfig.edition_year ? ` (${raceConfig.edition_year})` : ""}`;
+    if (!ref) return fallback;
+    const stripped = ref.replace(/\s*\([^)]*\)\s*$/, "");
+    // The common case is a manual's own PDF link — the caption's caps
+    // styling turns a 70-character URL into a wall of slug (round 2,
+    // draft finding 6: "CUTOFFS FROM HTTPS://…RUNNERS-MANUAL-2026…PDF").
+    // The hostname is the fact an athlete actually recognizes a source by;
+    // anything that isn't a URL at all (a bare document title) is short
+    // enough to print as-is.
+    try {
+      return new URL(stripped).hostname.replace(/^www\./, "");
+    } catch {
+      return stripped || fallback;
+    }
   })();
 
   if (missing || !course) {
