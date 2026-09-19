@@ -547,7 +547,11 @@ export function raceStateBlock(state) {
       : cp.delta_min === 0
         ? ", exactly on plan"
         : `, ${Math.abs(cp.delta_min)} min ${cp.delta_min < 0 ? "AHEAD of" : "BEHIND"} plan`;
-    lines.push(`- Last checkpoint${cp.source ? ` (${cp.source})` : ""}: ${where || "unnamed"}${when}${delta}.`);
+    // With no time attached this is a POSITION the athlete stated, not a
+    // split — calling it a checkpoint would invite the coach to reason about
+    // a pace nobody recorded.
+    const label = when || delta ? "Last checkpoint" : "Last reported position";
+    lines.push(`- ${label}${cp.source ? ` (${cp.source})` : ""}: ${where || "unnamed"}${when}${delta}.`);
   }
 
   if (!lines.length) return `${head}\nThe athlete has this race open but the planner has produced no numbers for it yet — do not invent any.`;

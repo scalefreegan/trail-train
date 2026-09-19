@@ -345,6 +345,35 @@ test("a checkpoint behind plan, and one exactly on it, are not phrased the same"
   assert.match(onPlan, /- Last checkpoint: Pinchot, mile 20 at 09:10, exactly on plan\./);
 });
 
+test("a bare mile with no time is a reported position, not a timed checkpoint", () => {
+  // what RaceDay's per-slug `race.<slug>.raceday_mi` actually holds today
+  const b = raceStateBlock(parseRaceState({ mode: "train", name: "X", checkpoint: { mi: 43.2, source: "manual" } }).state);
+  assert.match(b, /- Last reported position \(manual\): mile 43\.2\./);
+  assert.doesNotMatch(b, /checkpoint/i);
+  // and once a time IS attached it becomes a checkpoint again
+  const timed = raceStateBlock(parseRaceState({ mode: "train", name: "X", checkpoint: { mi: 43.2, clock: "14:02", source: "tracker" } }).state);
+  assert.match(timed, /- Last checkpoint \(tracker\): mile 43\.2 at 14:02\./);
+});
+
+test("the client's race_state keys are all keys the server keeps", async () => {
+  // The wire shape is declared in two places — web/src/race/raceState.ts's
+  // RaceState and parseRaceState here — and a field the client sends that the
+  // server silently drops is a feature that looks wired up and is not.
+  const client = await fs.readFile(path.join(ROOT, "web", "src", "race", "raceState.ts"), "utf8");
+  // RaceState is PlanSnapshot plus the send-time fields, so the declaration
+  // to read is both of them
+  const sent = client.slice(client.indexOf("export type PlanSnapshot"), client.indexOf("const snapshotKey"));
+  for (const key of ["mode", "slug", "name", "goal", "knobs", "fuel", "stations", "status", "checkpoint"]) {
+    assert.ok(sent.includes(key), `raceState.ts no longer declares ${key} — this guard is stale`);
+  }
+  // every top-level key the client can send survives a round trip
+  const { state } = parseRaceState({ ...RACE_STATE, slug: "s", name: "n" });
+  assert.deepEqual(
+    Object.keys(state).sort(),
+    ["checkpoint", "fuel", "goal", "knobs", "mode", "name", "slug", "stations", "status"],
+  );
+});
+
 test("a race open with no numbers yet says so instead of inviting invention", () => {
   const b = raceStateBlock(parseRaceState({ mode: "train", name: "Fresh 50K" }).state);
   assert.match(b, /the planner has produced no numbers for it yet — do not invent any/);
