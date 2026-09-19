@@ -83,6 +83,40 @@ const LOW_CONFIDENCE = 0.6;
 
 type StageId = "intake" | "build" | "plan";
 
+/** Round 1, bug D8: ESC/backdrop on a dirty "New race…" form used to discard
+    it — fields AND the already-uploaded file — with no warning. A small
+    inline confirm was the other option the plan offered; this codebase
+    already leans on localStorage for "what this phone last saw" (see
+    offlineCache.ts), the form has no server-side draft of its own to conflict
+    with, and restoring silently on reopen needs no extra click from someone
+    who dismissed the dialog by habit rather than intent. */
+const NEW_RACE_DRAFT_KEY = "bc.newRaceDraft";
+type NewRaceDraft = {
+  siteUrl: string; extraUrls: string; year: string; notes: string; themePreset: string;
+  uploads: { name: string; path: string; bytes: number }[];
+};
+const draftHasContent = (d: Pick<NewRaceDraft, "siteUrl" | "extraUrls" | "notes" | "uploads">): boolean =>
+  Boolean(d.siteUrl.trim() || d.extraUrls.trim() || d.notes.trim() || d.uploads.length);
+/** Read-only, synchronous, side-effect-free — safe to call straight from a
+    `useState(() => …)` lazy initializer (unlike a ref, which the lint rule
+    here refuses to let render read at all) without tripping the "no state
+    updates during render" rule either, since nothing is written back here. */
+const readNewRaceDraft = (openAt: string | null): NewRaceDraft | null => {
+  if (openAt !== null) return null;
+  try {
+    const raw = localStorage.getItem(NEW_RACE_DRAFT_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw) as Partial<NewRaceDraft>;
+    const normalized: NewRaceDraft = {
+      siteUrl: d.siteUrl ?? "", extraUrls: d.extraUrls ?? "", year: d.year ?? String(new Date().getFullYear() + 1),
+      notes: d.notes ?? "", themePreset: d.themePreset ?? "", uploads: d.uploads ?? [],
+    };
+    return draftHasContent(normalized) ? normalized : null;
+  } catch {
+    return null; // a corrupt draft is no worse than no draft
+  }
+};
+
 const STAGES: { id: StageId; label: string; blurb: string }[] = [
   { id: "intake", label: "sources → draft", blurb: "fetches the site, the manual and the GPX, then one agent turn transcribes the aid chart" },
   { id: "build", label: "course", blurb: "snaps the aid stations to the GPX track, computes sun and the elevation profile" },
@@ -117,14 +151,20 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   const [slug, setSlug] = useState<string | null>(openAt);
   const [screen, setScreen] = useState<"form" | "review">(openAt ? "review" : "form");
 
-  // form
-  const [siteUrl, setSiteUrl] = useState("");
-  const [extraUrls, setExtraUrls] = useState("");
-  const [year, setYear] = useState(String(new Date().getFullYear() + 1));
-  const [notes, setNotes] = useState("");
-  const [themePreset, setThemePreset] = useState<string>("");
-  const [uploads, setUploads] = useState<{ name: string; path: string; bytes: number }[]>([]);
+  // Restore a form abandoned by ESC/backdrop (round 1, bug D8) — read once,
+  // synchronously, during the first render, so the fields never flash empty
+  // before filling in. Only for the "New race…" path — a draft already on
+  // disk, opened via "Review…", has nothing to restore into. Each of these
+  // lazy initializers only runs on mount, so re-reading localStorage per
+  // field (rather than caching it) is cheap and still one consistent read.
+  const [siteUrl, setSiteUrl] = useState(() => readNewRaceDraft(openAt)?.siteUrl ?? "");
+  const [extraUrls, setExtraUrls] = useState(() => readNewRaceDraft(openAt)?.extraUrls ?? "");
+  const [year, setYear] = useState(() => readNewRaceDraft(openAt)?.year ?? String(new Date().getFullYear() + 1));
+  const [notes, setNotes] = useState(() => readNewRaceDraft(openAt)?.notes ?? "");
+  const [themePreset, setThemePreset] = useState<string>(() => readNewRaceDraft(openAt)?.themePreset ?? "");
+  const [uploads, setUploads] = useState<{ name: string; path: string; bytes: number }[]>(() => readNewRaceDraft(openAt)?.uploads ?? []);
   const [uploading, setUploading] = useState(false);
+  const [restoredDraft] = useState(() => readNewRaceDraft(openAt) !== null);
 
   // run
   const [running, setRunning] = useState(false);
@@ -152,6 +192,16 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, locked]);
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  // Persist on every change so ESC/backdrop never loses it again.
+  useEffect(() => {
+    if (openAt !== null) return;
+    try {
+      const draft: NewRaceDraft = { siteUrl, extraUrls, year, notes, themePreset, uploads };
+      if (draftHasContent(draft)) localStorage.setItem(NEW_RACE_DRAFT_KEY, JSON.stringify(draft));
+      else localStorage.removeItem(NEW_RACE_DRAFT_KEY);
+    } catch { /* private browsing / storage disabled — best-effort only */ }
+  }, [openAt, siteUrl, extraUrls, year, notes, themePreset, uploads]);
 
   const upload = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -225,6 +275,9 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
       await runStage("/api/race-intake/plan", { slug: made }, events("plan"), ctrl.signal);
       mark("plan", "done");
 
+      // The form's job is done — the draft folder is now the source of
+      // truth, so the localStorage safety net (bug D8) is cleared with it.
+      try { localStorage.removeItem(NEW_RACE_DRAFT_KEY); } catch { /* best-effort */ }
       setScreen("review");
     } catch (e) {
       // Stop the chain where it broke and say so in the server's own words.
@@ -243,7 +296,13 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
     }
   }, [siteUrl, extraUrls, year, uploads, notes, themePreset]);
 
-  const canRun = /^https?:\/\/\S+$/i.test(siteUrl.trim()) && /^\d{4}$/.test(year.trim()) && !running;
+  // 1800 (or 9999) is technically 4 digits but no race is happening then —
+  // round 1, bug D14. A generous ±10-year window around today covers a
+  // late-registered past edition and a race announced years out.
+  const yearNum = Number(year.trim());
+  const thisYear = new Date().getFullYear();
+  const yearOk = /^\d{4}$/.test(year.trim()) && yearNum >= thisYear - 10 && yearNum <= thisYear + 10;
+  const canRun = /^https?:\/\/\S+$/i.test(siteUrl.trim()) && yearOk && !running;
   const ranAnything = STAGES.some((s) => stageState[s.id] !== "pending");
 
   const header = screen === "review" ? "review · draft race" : "new race";
@@ -287,6 +346,11 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
         ) : (
           <>
             <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "24px 28px 8px" }}>
+              {restoredDraft && (
+                <p style={{ fontSize: 11, color: "var(--lamp)", margin: "0 0 16px", lineHeight: 1.5 }}>
+                  restored your unsent form — closing this dialog kept what you had typed and any file already uploaded
+                </p>
+              )}
               <Block>
                 <Eyebrow>sources</Eyebrow>
                 <label style={{ display: "block" }}>
@@ -325,7 +389,9 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
                         <li key={u.path} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 11.5, color: "var(--mist)" }}>
                           <span style={{ color: "var(--pine)" }}>✓</span>
                           <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{u.name}</span>
-                          <span className="numerals" style={{ color: "var(--mist-mute)", fontSize: 10.5 }}>{(u.bytes / 1024).toFixed(0)} KB</span>
+                          <span className="numerals" style={{ color: "var(--mist-mute)", fontSize: 10.5 }}>
+                            {u.bytes < 1024 ? `${u.bytes} B` : `${(u.bytes / 1024).toFixed(0)} KB`}
+                          </span>
                           <button
                             className="chip"
                             style={{ fontSize: 8.5 }}
@@ -337,6 +403,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
                       ))}
                     </ul>
                   )}
+                  {error && <p style={{ fontSize: 11, color: "var(--ember)", margin: "8px 0 0", lineHeight: 1.45 }}>{error}</p>}
                   <Hint>a runner's manual whose aid chart is an image is rendered to page images and transcribed — that is the case this pipeline was built for</Hint>
                 </div>
               </Block>
@@ -396,7 +463,6 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
                   )}
                 </Block>
               )}
-              {error && <p style={{ fontSize: 11.5, color: "var(--ember)", marginBottom: 20 }}>{error}</p>}
             </div>
 
             <div style={{
@@ -499,6 +565,17 @@ export function StageList({ stages, state, log }: {
     PUT /api/races/:slug wants them back. Anything not touched is absent, so a
     save writes what was changed and nothing else. */
 type AidEdit = Partial<Pick<RaceAidStation, "name" | "total_mi" | "cutoff_h" | "crew" | "drop_bag" | "pacers" | "gpx_wpt">>;
+
+/** Reads either shape of `unresolved_acknowledged` as "is this path currently
+    acknowledged, per the folder on disk". A bare `true` (today's server) means
+    every path CURRENTLY unresolved was acknowledged at the time it was
+    written — it says nothing about a path that has surfaced since, which is
+    the whole point of moving to a list (round 1, bug R3/D6/D7). */
+const diskAcked = (data: Pick<ReviewPayload, "unresolved_acknowledged"> | null, path: string): boolean => {
+  const v = data?.unresolved_acknowledged;
+  if (Array.isArray(v)) return v.includes(path);
+  return v === true;
+};
 
 function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   slug: string; onDone: () => void; onReload: () => void;
