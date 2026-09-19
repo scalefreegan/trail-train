@@ -60,6 +60,10 @@ type ReviewPayload = {
   waypoints: string[];
   matches: StationMatch[];
   unresolved: string[];
+  /** field-specific pointers for a path that isn't a value a human just
+      types in (`sun` is a script's output, not a form field) — keyed by
+      the unresolved path, shown next to it in the list below. */
+  unresolved_hints?: Record<string, string>;
   unresolved_acknowledged: boolean;
   schema_errors: string[];
   activation: { ok: boolean; errors: string[] };
@@ -767,6 +771,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
 
         <UnresolvedList
           unresolved={openHoles}
+          hints={data.unresolved_hints ?? {}}
           race={race}
           course={data.course}
           fills={fills}
@@ -949,8 +954,11 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
     filled in or consciously accepted. A suggestion is offered where the course
     build already knows the answer — `elevation.min_ft` is sitting in the
     profile, and making a human retype it would be theatre. */
-function UnresolvedList({ unresolved, race, course, fills, isAcked, onFill, onAck }: {
+function UnresolvedList({ unresolved, hints, race, course, fills, isAcked, onFill, onAck }: {
   unresolved: string[];
+  /** server-supplied pointers for a path that isn't a value a human just
+      types in (GET /api/races/:slug's unresolved_hints) */
+  hints: Record<string, string>;
   race: RaceConfig;
   course: Course | null;
   fills: Record<string, string>;
@@ -986,27 +994,35 @@ function UnresolvedList({ unresolved, race, course, fills, isAcked, onFill, onAc
         {unresolved.map((path) => {
           const filled = (fills[path] ?? "").trim() !== "";
           const hint = suggestion(path);
+          const serverHint = hints[path];
           return (
-            <li key={path} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <code style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: filled ? "var(--pine)" : "var(--ember)", minWidth: 190 }}>
-                {path}
-              </code>
-              <input
-                aria-label={`fill ${path}`}
-                style={{ ...inputStyle, fontSize: 11.5, padding: "4px 8px", width: 190 }}
-                placeholder={path === "date" ? "YYYY-MM-DD" : hint ? `e.g. ${hint}` : "leave empty to acknowledge"}
-                value={fills[path] ?? ""}
-                onChange={(e) => onFill(path, e.target.value)}
-              />
-              {hint && !filled && (
-                <button className="chip" style={{ fontSize: 8.5 }} onClick={() => onFill(path, hint)}>
-                  use {hint} from the profile
-                </button>
+            <li key={path} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <code style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: filled ? "var(--pine)" : "var(--ember)", minWidth: 190 }}>
+                  {path}
+                </code>
+                <input
+                  aria-label={`fill ${path}`}
+                  style={{ ...inputStyle, fontSize: 11.5, padding: "4px 8px", width: 190 }}
+                  placeholder={path === "date" ? "YYYY-MM-DD" : hint ? `e.g. ${hint}` : "leave empty to acknowledge"}
+                  value={fills[path] ?? ""}
+                  onChange={(e) => onFill(path, e.target.value)}
+                />
+                {hint && !filled && (
+                  <button className="chip" style={{ fontSize: 8.5 }} onClick={() => onFill(path, hint)}>
+                    use {hint} from the profile
+                  </button>
+                )}
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--mist-mute)", opacity: filled ? 0.4 : 1 }}>
+                  <input type="checkbox" checked={filled || isAcked(path)} disabled={filled} onChange={(e) => onAck(path, e.target.checked)} />
+                  acknowledge
+                </label>
+              </div>
+              {/* a path like `sun` isn't a value a human types in here — it's a
+                  script's output, so the review screen points at the fix instead */}
+              {serverHint && (
+                <div style={{ fontSize: 10.5, color: "var(--mist-mute)", paddingLeft: 2 }}>{serverHint}</div>
               )}
-              <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--mist-mute)", opacity: filled ? 0.4 : 1 }}>
-                <input type="checkbox" checked={filled || isAcked(path)} disabled={filled} onChange={(e) => onAck(path, e.target.checked)} />
-                acknowledge
-              </label>
             </li>
           );
         })}

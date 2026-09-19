@@ -25,7 +25,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-/** A minimal race.json that validateRaceJson accepts outright. */
+/** A minimal race.json that validateRaceJson accepts outright. `sun` is set
+    (features.night defaults to ON, and validateStatusTransition now refuses
+    activation of a night race with no computed sun) — the dedicated
+    sun-gate tests below override it back to null/absent explicitly. */
 function race(over = {}) {
   return {
     schema_version: 1,
@@ -39,6 +42,7 @@ function race(over = {}) {
     distance_mi: 100,
     gain_ft: 20000,
     cutoff_h: 36,
+    sun: { sunset: "20:14", sunrise: "06:02" },
     aid_stations: [
       { name: "Start", total_mi: 0, cutoff_h: null, crew: true, drop_bag: false, pacers: false },
       { name: "Cross Mountain", total_mi: 45.8, cutoff_h: 16, crew: true, drop_bag: true, pacers: true },
@@ -46,6 +50,7 @@ function race(over = {}) {
     ],
     provenance: {
       name: { by: "agent", at: "2026-01-01T00:00:00.000Z", source: "race-intake" },
+      sun: { by: "computed", at: "2026-01-01T00:00:00.000Z", source: "scripts/race-sun.mjs" },
     },
     ...over,
   };
