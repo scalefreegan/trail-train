@@ -55,6 +55,33 @@ const M_PER_FT = 0.3048;
     a bug, not a handout. The acceptance bound for the bead is 2 MB. */
 export const MAX_EXPORT_BYTES = 2 * 1024 * 1024;
 
+/**
+ * Every URL the exported document would actually FETCH: attribute targets and
+ * CSS `url()`s, minus `data:` URIs and in-page fragments. An empty result is
+ * what "self-contained" means — the file opens on a phone in a canyon, and
+ * anything in here is a broken image or a missing stylesheet out there.
+ *
+ * Deliberately not a grep for "http". The embedded JSON legitimately quotes
+ * the race's own web address and the organizer's manual, and a check that
+ * cannot tell a link in DATA from a reference in MARKUP would either fail on
+ * real data or pass on a broken file.
+ *
+ * Lives here rather than in a test so the unit test (scripts/crew-export
+ * .test.mjs) and the harness section (scripts/check-races.mjs) apply the same
+ * predicate instead of two copies that can drift apart.
+ *
+ * @param {string} html
+ * @returns {string[]}
+ */
+export function assetRefs(html) {
+  return [
+    ...String(html).matchAll(/(?:src|href)\s*=\s*["']([^"']+)["']/g),
+    ...String(html).matchAll(/url\(\s*["']?([^)"']+?)["']?\s*\)/g),
+  ]
+    .map((m) => m[1].trim())
+    .filter((v) => !v.startsWith("data:") && !v.startsWith("#"));
+}
+
 /* ---------------- type-stripped client imports ---------------- */
 
 let hooksRegistered = false;

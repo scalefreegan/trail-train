@@ -873,7 +873,7 @@ function chatApi(): Plugin {
            quiet fall-through to a real spawn. */
         const fakeAgentFile = (process.env.TRAIL_FAKE_AGENT || '').trim()
         if (fakeAgentFile) {
-          let canned = ''
+          let canned: string
           try { canned = fs.readFileSync(fakeAgentFile, 'utf8').trim() }
           catch (e) {
             send('error', { message: `TRAIL_FAKE_AGENT=${fakeAgentFile} could not be read: ${(e as Error).message}` })
