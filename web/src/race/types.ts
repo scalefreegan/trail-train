@@ -56,7 +56,13 @@ export type Course = {
   gain_ft: number;
   official_distance_mi: number;
   official_gain_ft: number;
-  sun: { sunset: string; sunrise: string };
+  /** null/absent when the folder's course was built before its date was
+      known (race-build.mjs runs stage-2 sun computation off race.date +
+      race.timezone; a draft written before either existed has neither, so
+      build-course.mjs copies through whatever race.json has — nothing).
+      Every consumer must treat this as an honest "not computed yet", never
+      dereference it unguarded — see useRacePlan's derived `sun`. */
+  sun?: { sunset: string; sunrise: string } | null;
   profile: CourseProfilePoint[];
   aid_stations: CourseAidStation[];
   race_climbs: RaceClimb[];

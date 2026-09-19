@@ -109,7 +109,7 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
   onClose: () => void;
 }) {
   const u = useUnits();
-  const { race } = useRacePlan();
+  const { race, sun } = useRacePlan();
   const base = crewBase?.base ?? null;
   const drives = crewBase?.drives ?? {};
   const emergency = crewBase?.emergency ?? course.crew_info?.emergency ?? [];
@@ -313,7 +313,10 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
           <b>Crew access:</b> {crewNames.join(", ")}{drivingNote ? ` — ${drivingNote}` : ""}<br />
           <b>Drop bags:</b> {dropNames.join(", ")}.
           {" "}<b>Pacers:</b> from {firstPacer?.name} ({u.dist(firstPacer?.total_mi ?? 0, 0)} {u.distUnit}) onward, one at a time.<br />
-          <b>Night:</b> sunset {course.sun.sunset} · sunrise {course.sun.sunrise} — night gear rides in the drop bags listed above.
+          <b>Night:</b>{" "}
+          {sun
+            ? <>sunset {sun.sunset} · sunrise {sun.sunrise} — night gear rides in the drop bags listed above.</>
+            : "sun unknown — run the course build after setting the date."}
           {" "}<b>If the runner drops:</b> they must report to an aid station captain — never leave the course unreported.<br />
           <span style={{ color: MUTED }}>
             ETAs from Basecamp's pacing model (best/worst = ± model band); cutoffs from {cutoffSource}.

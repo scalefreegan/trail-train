@@ -45,10 +45,15 @@ export const EDITABLE_RACE_KEYS = ["aid_stations", "date", "visual", "unresolved
 /** Roots `unresolved_fills` will never write, whatever the folder declares.
     The first four are the folder's identity and the server's own bookkeeping;
     `aid_stations` is excluded because the table editor above already owns it
-    with per-field validation, and a blanket path write would sneak past that. */
+    with per-field validation, and a blanket path write would sneak past that.
+    `sun` is excluded because it isn't a value a human types in — it's
+    `{sunset, sunrise}`, computed by scripts/race-sun.mjs, and the generic
+    fill path only ever writes a string/number/boolean/null, which would
+    silently replace the object with garbage. The only fix is re-running the
+    course build (see loadReview's unresolved_hints), or acknowledging it. */
 const UNFILLABLE_ROOTS = new Set([
   "schema_version", "slug", "status", "provenance", "sources",
-  "unresolved", "unresolved_acknowledged", "aid_stations",
+  "unresolved", "unresolved_acknowledged", "aid_stations", "sun",
 ]);
 
 /** The only `visual` sub-key the review screen exposes — the preset picker.
@@ -460,6 +465,19 @@ export function validateStatusTransition(race, req, { unresolved = [], otherActi
     );
   }
 
+  // A night race with no computed sun can't schedule caffeine dosing or draw
+  // night bands at all (web/src/race/nightWindow.ts degrades to "unknown"
+  // rather than crash, but "unknown" is not an acceptable answer for a race
+  // that actually runs through the dark) — unlike the unresolved-fields gate
+  // below, ticking "acknowledge" does not fix this, so it is its own,
+  // unconditional block. `features.night` defaults to ON when absent (see
+  // web/src/race/types.ts's RaceFeatures), so the check reads it the same way.
+  if (race.features?.night !== false && race.sun == null) {
+    return fail(
+      `this race has night sections (features.night) but no computed sun — run the course build again once the date is set`,
+    );
+  }
+
   // The review gate, in the order a human would ask it: is every hole either
   // filled or consciously accepted…
   const open = (unresolved ?? []).filter((u) => typeof u === "string" && u.trim());
@@ -594,12 +612,32 @@ export async function loadReview(root, slug) {
       ).length > 0
     : null;
 
+  // `sun` is a real race.json field, but `collectUnresolved` only catches
+  // NULL-valued fields — a draft that never had `sun` at all (stage 2 never
+  // ran it because `date` was still null) is simply missing the key, so
+  // nothing flags it once `date` is later filled in. Live-derived for the
+  // same reason courseMismatchLive is: a build run since this review screen
+  // was last saved may already have filled it in, or a later date edit may
+  // have made a previously-fine sun stale (see race-build.mjs's
+  // sunNeedsRecompute) — either way this reads race.json fresh, not a carry.
+  const sunUnresolvedLive = typeof race.date === "string" && race.date.trim() !== "" && race.sun == null;
+
   const unresolved = [...new Set([
     ...recomputeUnresolved(race, race.unresolved ?? [])
-      .filter((u) => u !== COURSE_MISMATCH_KEY || courseMismatchLive === null),
+      .filter((u) => u !== COURSE_MISMATCH_KEY || courseMismatchLive === null)
+      .filter((u) => u !== "sun"),
     ...(courseMismatchLive ? [COURSE_MISMATCH_KEY] : []),
+    ...(sunUnresolvedLive ? ["sun"] : []),
     ...gpxUnresolved,
   ])].sort();
+  // Field-specific pointers the review screen can show next to a path it
+  // can't otherwise explain — `sun` isn't a value a human types in like
+  // `elevation.min_ft`, it's an output of a script that hasn't run yet.
+  const unresolvedHints = {
+    ...(unresolved.includes("sun")
+      ? { sun: "run the course build again — it computes sunrise/sunset from the GPX start point once a date is set." }
+      : {}),
+  };
   const { errors: schemaErrors } = draftValidationErrors(race, unresolved);
   const otherActive = otherActiveSlugs(await listRaces(root), slug);
   // acceptRefresh writes this marker the moment it starts applying a refresh
@@ -630,6 +668,7 @@ export async function loadReview(root, slug) {
     waypoints,
     matches,
     unresolved,
+    unresolved_hints: unresolvedHints,
     unresolved_acknowledged: race.unresolved_acknowledged === true,
     schema_errors: schemaErrors,
     // Whether "Activate" can light up at all, answered by the same function

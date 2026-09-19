@@ -5,7 +5,7 @@ import { DEFAULT_NUTRITION, normalizeNutrition, parseHM } from "./nutrition-conf
 import type { NutritionConfig } from "./nutrition-config";
 import { raceClockH } from "./pacing";
 import type { projectRace } from "./pacing";
-import type { Course } from "./types";
+import { dailyOverlap, nightOverlapH, type SunTimes } from "./nightWindow";
 
 // The config shape, its defaults and its validator live next door — re-exported
 // here so every existing `from "./nutrition"` import keeps working.
@@ -147,23 +147,19 @@ export type FuelPlan = {
   sodium_gap_mg_hr: number;
 };
 
-/** total overlap (hours) of [a0,a1] with window [w0,w1] repeated every 24h.
-    Bounds are derived from the window edges themselves — a start bound of
-    floor(a0/24)-1 silently skipped the last repeat whenever w0 < 0 (e.g. an
-    evening race start putting the heat window at negative elapsed hours). */
-function dailyOverlap(a0: number, a1: number, w0: number, w1: number): number {
-  let total = 0;
-  for (let day = Math.floor((a0 - w1) / 24); day * 24 + w0 < a1; day++) {
-    const s = Math.max(a0, day * 24 + w0);
-    const e = Math.min(a1, day * 24 + w1);
-    if (e > s) total += e - s;
-  }
-  return total;
-}
+// dailyOverlap now lives in nightWindow.ts (zero imports, so it and the
+// night-band math around it can be unit-tested directly — see
+// scripts/sun-null.test.mjs); imported above, re-used by heatFluid below.
 
 export function planFuel(
   proj: NonNullable<ReturnType<typeof projectRace>>,
-  course: Course,
+  /** course.sun, with the raceConfig fallback already applied by
+      useRacePlan — null when nobody has computed it yet (a draft built
+      before its date was known). Every night annotation below degrades to
+      "none" rather than throwing when this is null. (planFuel otherwise
+      reads the course entirely through `proj`, so this is its only use
+      of a course.json field — no `course` parameter needed.) */
+  sun: SunTimes | null,
   raceStart: Date,
   cfg: NutritionConfig,
   timeZone: string,
@@ -174,8 +170,6 @@ export function planFuel(
   // clock-of-day windows converted to elapsed race hours
   const heat0 = parseHM(cfg.heat_window.start) - startH;
   const heat1 = parseHM(cfg.heat_window.end) - startH;
-  const sunset = parseHM(course.sun.sunset) - startH;
-  const sunriseNext = parseHM(course.sun.sunrise) - startH + 24;
 
   const phaseAt = (h: number) => {
     for (const p of cfg.phases) if (h < p.until_h) return p;
@@ -301,7 +295,7 @@ export function planFuel(
     const salt_tabs = Math.max(0, Math.round((naNeed - naFromDrink - naFromSupp) / cfg.salt_tab_mg));
 
     const heatH = dailyOverlap(departH, arriveH, heat0, heat1);
-    const nightH = dailyOverlap(departH, arriveH, sunset, sunriseNext);
+    const nightH = nightOverlapH(departH, arriveH, sun, startH);
 
     segments.push({
       fromIdx, toIdx,

@@ -17,7 +17,8 @@
 //                human confirms, because a wrong waypoint moves every crew ETA.
 //   4. course    build/course.json + build/crew-base.json (build-course.mjs).
 //   5. sun       sunrise/sunset from the start coordinates (race-sun.mjs) when
-//                race.json has none, or has one nobody stamped.
+//                race.json has none, has one nobody stamped, or has one that
+//                predates a later edit to `date`/`timezone` (sunNeedsRecompute).
 //
 // race.json is written before the course build (the builder reads the folder
 // off disk, so the matched waypoints and the computed sun have to be there
@@ -214,6 +215,34 @@ function matchStations(race, gpx, unresolved, warnings, at) {
 }
 
 /**
+ * Does this build need to (re)compute race.sun?
+ *
+ * A hand-entered sun WITH provenance stays (an owner-authored value is not
+ * the builder's to overwrite); an unstamped one is a transcription to
+ * replace — the two cases the original "sun == null || no provenance.sun"
+ * check covered. But a stamped one can still be STALE: `date` or `timezone`
+ * edited after the sun was computed (the exact tt bug fix-sun-null repro —
+ * a draft's course built while `date` was still null, then the date filled
+ * in during review) used to leave a sun that no longer matches what it was
+ * computed from, forever, because no later build ever revisited it.
+ * Provenance timestamps make that comparable: `date`/`timezone` are stamped
+ * by scripts/race-edit.mjs's applyRaceEdit (a user edit) or
+ * scripts/race-intake.mjs's buildRaceJson (the initial agent draft) — so
+ * recompute whenever either is newer than provenance.sun.at.
+ *
+ * @param {object} race
+ * @returns {boolean}
+ */
+export function sunNeedsRecompute(race) {
+  if (race.sun == null) return true;
+  const sunAt = race.provenance?.sun?.at;
+  if (typeof sunAt !== "string") return true;
+  const dateAt = race.provenance?.date?.at;
+  const tzAt = race.provenance?.timezone?.at;
+  return (typeof dateAt === "string" && dateAt > sunAt) || (typeof tzAt === "string" && tzAt > sunAt);
+}
+
+/**
  * Add or remove one entry from race.json's persisted `unresolved` array, in
  * place, without disturbing anything else already there (a null-valued
  * schema field intake left, a hand-added unresolved_fills note). The
@@ -366,10 +395,10 @@ export async function buildRace({ root, slug, dir = raceDir(root, slug), onProgr
   }
   step("match", "done", { written: matched.filter((m) => m.written).length });
 
-  /* 4. sun — only when nobody has stamped one (a hand-entered value with
-        provenance stays; an unstamped one is a transcription to replace) */
+  /* 4. sun — computed when it is missing, unstamped, or stale (date/timezone
+        edited after the stamp — see sunNeedsRecompute) */
   let sunChanged = false;
-  if (race.sun == null || !race.provenance?.sun) {
+  if (sunNeedsRecompute(race)) {
     step("sun", "start", { label: "computing sunrise / sunset" });
     try {
       race.sun = computeRaceSun(race, { lat: gpx.track[0].lat, lon: gpx.track[0].lon });

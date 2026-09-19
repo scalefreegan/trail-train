@@ -198,6 +198,72 @@ test("sun is computed from the start point and stamped by: computed", async () =
   assert.deepEqual(course.sun, raceAfter.sun);
 });
 
+/* --------------------------- fix-sun-null bug --------------------------- */
+//
+// The live repro: a draft's course got built while `date` was still null —
+// computeRaceSun's own TypeError guard leaves `sun: null` on the folder
+// (see the "sun not computed" catch above) — and no LATER build ever
+// revisited it once a date showed up, because the original condition only
+// asked "is sun missing or unstamped", never "is it now computable". Every
+// client that dereferenced course.sun unguarded (nutrition.ts, caffeine.ts,
+// RacePlanner/CrewSheet/RunnerCard) crashed the whole app on that folder.
+
+test("a folder with a date but no sun gets sun on the next build (course.gpx arrives late)", async () => {
+  const slug = "late-gpx-arrives-2027";
+  // No course.gpx yet: buildRace's `stop()` path returns before the sun step
+  // ever runs, exactly like a draft built before its date/GPX were known.
+  const { root, dir } = await makeRoot(slug, { withGpx: false, race: draftRace(slug) });
+  const first = await buildRace({ root, slug });
+  assert.equal(first.sun, null);
+  assert.ok(first.unresolved.includes("course.gpx"), first.unresolved.join(", "));
+  assert.equal((await readJson(path.join(dir, "race.json"))).sun, null);
+
+  // The GPX shows up (the same fix that unblocks the course build also
+  // unblocks sun, since both need the start coordinates) — the very next
+  // build must compute it, not leave it stuck at whatever the first run saw.
+  await fs.writeFile(path.join(dir, "course.gpx"), makeGpx(WAYPOINTS));
+  const second = await buildRace({ root, slug });
+  assert.match(second.sun.sunrise, /^\d{2}:\d{2}$/);
+  assert.match(second.sun.sunset, /^\d{2}:\d{2}$/);
+  const race = await readJson(path.join(dir, "race.json"));
+  assert.deepEqual(race.sun, second.sun);
+  assert.equal(race.provenance.sun.by, "computed");
+});
+
+test("a folder whose date was edited after the sun stamp gets it recomputed", async () => {
+  const slug = "date-edited-after-sun-2027";
+  const staleAt = "2026-01-01T00:00:00.000Z";
+  const editedAt = "2026-06-01T00:00:00.000Z";
+  const race = {
+    ...draftRace(slug),
+    // CURRENT date is winter — edited AFTER the stale sun below was computed
+    // for the folder's original summer date, at the same start point, so a
+    // recomputed sun reads measurably different from the stale one.
+    date: "2027-12-12",
+    sun: { sunset: "20:14", sunrise: "05:42" }, // a June Denver-area sun
+    provenance: {
+      ...draftRace(slug).provenance,
+      date: { by: "user", at: editedAt, source: "review" },
+      sun: { by: "computed", at: staleAt, source: "scripts/race-sun.mjs" },
+    },
+  };
+  const { root, dir } = await makeRoot(slug, { race });
+  const before = await readJson(path.join(dir, "race.json"));
+  assert.deepEqual(before.sun, { sunset: "20:14", sunrise: "05:42" }, "sanity: the stale sun is on disk before the build");
+
+  const result = await buildRace({ root, slug });
+  assert.notDeepEqual(result.sun, { sunset: "20:14", sunrise: "05:42" }, "a summer-vs-June-fixture stale value must not survive unchanged");
+  assert.match(result.sun.sunrise, /^\d{2}:\d{2}$/);
+
+  const after = await readJson(path.join(dir, "race.json"));
+  assert.deepEqual(after.sun, result.sun);
+  assert.equal(after.provenance.sun.by, "computed");
+  assert.ok(
+    Date.parse(after.provenance.sun.at) > Date.parse(staleAt),
+    `provenance.sun.at (${after.provenance.sun.at}) should move past the stale stamp (${staleAt})`,
+  );
+});
+
 test("a second run changes nothing but the build timestamp", async () => {
   const racePath = path.join(base.dir, "race.json");
   const coursePath = path.join(base.dir, "build", "course.json");

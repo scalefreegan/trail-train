@@ -4,6 +4,7 @@ import { clearHash } from "./hashRoute";
 import { fmtCarry, type DropBag, type FuelPlan, type FuelSegment } from "./nutrition";
 import { fmtElapsed, type StationProjection } from "./pacing";
 import { RacePlanProvider } from "./RacePlanProvider";
+import { RaceErrorBoundary } from "./RaceErrorBoundary";
 import { useCrewBase } from "./useRaceData";
 import { useRacePlan, type RacePlan } from "./useRacePlan";
 
@@ -211,9 +212,15 @@ export function RaceDayRoute() {
     );
   }
   return (
-    <RacePlanProvider>
-      <RaceDay />
-    </RacePlanProvider>
+    // outside the provider on purpose — useRacePlanInstance computes the
+    // whole plan during RacePlanScope's render, so a bad folder (a draft's
+    // course built before its date was known, say) throws before RaceDay
+    // itself ever mounts (tt bug fix-sun-null).
+    <RaceErrorBoundary slug={viewing}>
+      <RacePlanProvider>
+        <RaceDay />
+      </RacePlanProvider>
+    </RaceErrorBoundary>
   );
 }
 

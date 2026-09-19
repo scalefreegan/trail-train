@@ -56,7 +56,7 @@ function CardFace({ side, stations, course, proj, emergency }: {
   emergency: CrewBase["emergency"];
 }) {
   const u = useUnits();
-  const { race } = useRacePlan();
+  const { race, sun } = useRacePlan();
 
   const cell: React.CSSProperties = {
     padding: "1.5px 3px", borderBottom: `0.5px solid ${RULE}`, fontSize: "8.5px",
@@ -140,13 +140,15 @@ function CardFace({ side, stations, course, proj, emergency }: {
       {side === 1 ? (
         <div style={{ display: "flex", justifyContent: "space-between", gap: 6, fontSize: "6px", color: MUTED, paddingTop: 1.5, whiteSpace: "nowrap" }}>
           <span>C crew · D drop · P pacer · W water-only · <b>* no aid</b> · {u.paceUnit} + ↑ = segment into that station</span>
-          <span>sunset <b style={{ color: INK }}>{course.sun.sunset}</b></span>
+          {/* the card is 3×5in at 6px type — "sun unknown" is the terse form of
+              the longer prompt CrewSheet/RacePlanner show, not a different message */}
+          <span>{sun ? <>sunset <b style={{ color: INK }}>{sun.sunset}</b></> : <b style={{ color: INK }}>sun unknown</b>}</span>
         </div>
       ) : (
         <div style={{ fontSize: "6px", color: MUTED, paddingTop: 1.5, whiteSpace: "nowrap" }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
             <span>C crew · D drop · P pacer · W water-only · <b>* no aid</b></span>
-            <span>sunrise <b style={{ color: INK }}>{course.sun.sunrise}</b></span>
+            <span>{sun ? <>sunrise <b style={{ color: INK }}>{sun.sunrise}</b></> : <b style={{ color: INK }}>sun unknown</b>}</span>
           </div>
           <div>
             drop only at a station — tell the captain

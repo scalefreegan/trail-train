@@ -1,7 +1,7 @@
 import { raceClockH } from "./pacing";
 import type { CaffeineConfig, FuelPlan } from "./nutrition";
 import type { projectRace } from "./pacing";
-import type { Course } from "./types";
+import { darknessWindow, sunBoundsH, type SunTimes } from "./nightWindow";
 
 /* ------------------------------------------------------------------ */
 /*  Caffeine plan — WHEN to take the caffeinated gels, and what that   */
@@ -83,7 +83,12 @@ function loadAt(x: number, doses: Array<[number, number]>, k: number): number {
 
 export function planCaffeine(
   proj: NonNullable<ReturnType<typeof projectRace>>,
-  course: Course,
+  /** course.sun, with the raceConfig fallback already applied by
+      useRacePlan — null when nobody has computed it yet (a draft built
+      before its date was known). Caffeine dosing is entirely keyed off
+      darkness, so with no sun there is nothing to schedule: this returns an
+      empty plan with `note: "sun unknown"` rather than throwing. */
+  sun: SunTimes | null,
   fuel: FuelPlan,
   raceStart: Date,
   cfg: CaffeineConfig,
@@ -98,41 +103,25 @@ export function planCaffeine(
   const k = Math.LN2 / cfg.half_life_h;
   const finishH = proj.finish_h.avg;
   const startH = raceClockH(raceStart, timeZone);
-
-  const setClock = parseHM(course.sun.sunset);
-  const riseClock = parseHM(course.sun.sunrise);
-
-  // Nightfall in elapsed race hours. Taking the next sunset unconditionally
-  // skips a night the runner is ALREADY in: a 20:00 start would open its
-  // window 22.6 h in — the following evening — after ten hours of darkness
-  // with nothing. So when the gun goes off in the dark, the window opens
-  // immediately.
-  //
-  // Except when that darkness is a sliver. MM100 starts at 06:00 against a
-  // 06:05 sunrise (computed by scripts/race-sun.mjs — the folder used to carry
-  // a hand-entered 06:15): technically dark, but five minutes of it, and
-  // opening there would dose the fresh opening miles instead of the night 12 h
-  // later. The test is therefore whether enough darkness REMAINS to be worth
-  // dosing into — one min-spacing interval — not merely whether it is dark,
-  // which is why the sliver is read from course.sun rather than assumed.
-  const startsInDark = startH >= setClock || startH < riseClock;
-  const darkRemainingH = startsInDark
-    ? (startH >= setClock ? 24 - startH + riseClock : riseClock - startH)
-    : 0;
-  let duskH: number;
-  if (startsInDark && darkRemainingH >= cfg.min_spacing_h) {
-    duskH = 0;
-  } else {
-    duskH = setClock - startH;
-    if (duskH < 0) duskH += 24;
-  }
-  // darkness recurs daily, so test clock-of-day rather than elapsed hours
-  const isNight = (h: number) => {
-    const clock = (((startH + h) % 24) + 24) % 24;
-    return clock >= setClock || clock < riseClock;
-  };
-
   const band = { lo_mg: cfg.band_lo_mg_kg * bodyKg, hi_mg: cfg.band_hi_mg_kg * bodyKg };
+
+  // Nightfall in elapsed race hours, and a same-clock darkness test — see
+  // nightWindow.ts's darknessWindow for the sliver-of-dark reasoning (MM100
+  // starts at 06:00 against a 06:05 sunrise: technically dark, but five
+  // minutes of it). null here means the course has no computed sun times yet
+  // (a draft built before its date was known) — there is no window to plan
+  // caffeine into, so hand back an empty, honest schedule instead of guessing.
+  const dark = darknessWindow(sun, startH, cfg.min_spacing_h);
+  if (!dark) {
+    return {
+      doses: [], requested: cfg.gels, perSegment: fuel.segments.map(() => 0), perBag: {},
+      curve: [], peak: { h: 0, mg: 0, mg_kg: 0 },
+      total_mg: 0, gel_mg_total: 0, at_finish_mg: 0,
+      band, over_band: false, window: null,
+      note: "sun unknown — run the course build after setting the date",
+    };
+  }
+  const { duskH, isNight } = dark;
 
   // ---- background doses: race-morning coffee + aid-station cola ----
   const bg: Array<[number, number]> = [];
@@ -323,18 +312,10 @@ export function planCaffeine(
   };
 }
 
-/** Sunrise in elapsed race hours — exported for the chart's night band. */
-export function sunBounds(course: Course, raceStart: Date, horizonH: number, timeZone: string) {
-  const startH = raceClockH(raceStart, timeZone);
-  const set = parseHM(course.sun.sunset);
-  const rise = parseHM(course.sun.sunrise);
-  const out: Array<[number, number]> = [];
-  let s = set - startH;
-  if (s < 0) s += 24;
-  for (; s < horizonH; s += 24) out.push([Math.max(0, s), Math.min(horizonH, s + (24 - set + rise))]);
-  // a pre-dawn start runs in the dark before the first sunrise
-  if (startH < rise) out.unshift([0, Math.min(horizonH, rise - startH)]);
-  return out;
+/** Sunset→sunrise in elapsed race hours — exported for the chart's night
+    band. [] when `sun` is null (course built before its date was known). */
+export function sunBounds(sun: SunTimes | null, raceStart: Date, horizonH: number, timeZone: string) {
+  return sunBoundsH(sun, raceClockH(raceStart, timeZone), horizonH);
 }
 
 /** Heat windows in elapsed race hours, one per race day. */

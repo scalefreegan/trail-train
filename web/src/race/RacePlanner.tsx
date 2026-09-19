@@ -83,7 +83,7 @@ function ProfileChart({ course, proj, night }: {
   night: boolean;
 }) {
   const u = useUnits();
-  const { race } = useRacePlan();
+  const { race, sun } = useRacePlan();
   const { ref: measureRef, width } = useMeasuredWidth();
   const [hoverMi, setHoverMi] = useState<number | null>(null);
 
@@ -129,15 +129,18 @@ function ProfileChart({ course, proj, night }: {
     };
   }, [profile]);
 
-  // night bands, mapped from elapsed hours onto the mile axis via the projection
+  // night bands, mapped from elapsed hours onto the mile axis via the projection.
+  // nightIntervals is null-safe on sunset/sunrise (a draft's course built
+  // before its date was known has neither) — []'d out here too, before the
+  // mileAtElapsed mapping, since sun-unknown just means no bands to draw.
   const nights = useMemo(() => {
-    if (!proj || !night) return [];
+    if (!proj || !night || !sun) return [];
     // sunset/sunrise are race-local wall clocks, so the start has to be one too
     const horizon = Math.max(38, proj.finish_h.worst);
-    return nightIntervals(raceClockHM(race.date, race.timeZone), course.sun.sunset, course.sun.sunrise, horizon)
+    return nightIntervals(raceClockHM(race.date, race.timeZone), sun.sunset, sun.sunrise, horizon)
       .map(([s, e]) => [proj.mileAtElapsed(s), proj.mileAtElapsed(e)] as [number, number])
       .filter(([a, b]) => b - a > 0.2);
-  }, [proj, night, course.sun, race.date, race.timeZone]);
+  }, [proj, night, sun, race.date, race.timeZone]);
 
   const aidWithMi = useMemo(
     () => course.aid_stations
@@ -424,7 +427,7 @@ export function RacePlanner() {
   // one projectRace/planFuel call and one set of persisted sliders.
   const { course, missing, error, fit, proj, nutrition, fuelPlan, settings, set,
     paceGrade, paceGradeError, nutritionError, physiologyError, features, panels, columns,
-    raceConfig } = useRacePlan();
+    raceConfig, sun } = useRacePlan();
   // An archived race has a result: what actually happened, station by station
   // (PRD §10). Only then does the table grow an "actual" column — a race that
   // has not been run has nothing to put in it.
@@ -448,6 +451,17 @@ export function RacePlanner() {
   // the hold-back window is a fraction of THIS race (tt-yib.9), so the copy
   // that names its miles has to be computed, not typed
   const restraintWin = course ? restraintWindowMi(raceDistanceMi(course)) : null;
+  // "cutoffs from …" names the document they came from — same derivation as
+  // the crew sheet's cutoffSource (CrewSheet.tsx), duplicated here because
+  // the two views don't share a component. A plain expression (not
+  // useMemo): it has to run unconditionally above the early return below,
+  // and a scan of a handful of `sources` entries needs no memoizing.
+  const cutoffSource = (() => {
+    const sources = course?.sources ?? [];
+    const manual = sources.find((s) => /manual|guide|handbook/i.test(s.ref));
+    const ref = (manual ?? sources.find((s) => s.kind !== "gpx"))?.ref;
+    return ref ? ref.replace(/\s*\([^)]*\)\s*$/, "") : "the official runner manual";
+  })();
 
   if (missing || !course) {
     return (
@@ -887,7 +901,10 @@ export function RacePlanner() {
               )}
               <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)" }}>race</span>
               <span className="eyebrow" style={{ fontSize: 8.5, lineHeight: 1.9 }}>
-                cutoffs from 2025 manual · start {race.clock(0)} · sunset {course.sun.sunset} · sunrise {course.sun.sunrise}
+                cutoffs from {cutoffSource} · start {race.clock(0)} ·{" "}
+                {sun
+                  ? `sunset ${sun.sunset} · sunrise ${sun.sunrise}`
+                  : "sun unknown — run the course build after setting the date"}
               </span>
             </div>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 10, flexShrink: 0 }}>

@@ -25,7 +25,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-/** A minimal race.json that validateRaceJson accepts outright. */
+/** A minimal race.json that validateRaceJson accepts outright. `sun` is set
+    (features.night defaults to ON, and validateStatusTransition now refuses
+    activation of a night race with no computed sun) — the dedicated
+    sun-gate tests below override it back to null/absent explicitly. */
 function race(over = {}) {
   return {
     schema_version: 1,
@@ -39,6 +42,7 @@ function race(over = {}) {
     distance_mi: 100,
     gain_ft: 20000,
     cutoff_h: 36,
+    sun: { sunset: "20:14", sunrise: "06:02" },
     aid_stations: [
       { name: "Start", total_mi: 0, cutoff_h: null, crew: true, drop_bag: false, pacers: false },
       { name: "Cross Mountain", total_mi: 45.8, cutoff_h: 16, crew: true, drop_bag: true, pacers: true },
@@ -46,6 +50,7 @@ function race(over = {}) {
     ],
     provenance: {
       name: { by: "agent", at: "2026-01-01T00:00:00.000Z", source: "race-intake" },
+      sun: { by: "computed", at: "2026-01-01T00:00:00.000Z", source: "scripts/race-sun.mjs" },
     },
     ...over,
   };
@@ -522,6 +527,90 @@ test("loadReview re-derives the course.gpx mismatch live from build/course.json,
     mismatched.activation.errors.some((e) => /course\.gpx/.test(e)),
     mismatched.activation.errors.join(" | ")
   );
+});
+
+/* ------------------------------- fix-sun-null ---------------------------- */
+//
+// A draft's course built while `date` was still null leaves `sun` missing
+// forever unless something revisits it once the date is known — these pin
+// down the review screen's half of that (race-build.mjs's half, recomputing
+// it, is covered in race-build.test.mjs).
+
+test('loadReview lists "sun" in unresolved, with a hint to re-run the course build, once date is set but sun is still missing', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "race-edit-review-sun-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const slug = "test-race-2027";
+  const dir = path.join(root, "races", slug);
+  await fs.mkdir(dir, { recursive: true });
+
+  // the exact repro: a draft's course built before its date was known
+  // (sun and provenance.sun absent), then the date filled in during review.
+  const r = race();
+  delete r.sun;
+  delete r.provenance.sun;
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(r, null, 2));
+
+  const review = await loadReview(root, slug);
+  assert.ok(review.unresolved.includes("sun"), review.unresolved.join(", "));
+  assert.match(review.unresolved_hints.sun, /course build/);
+
+  // and it clears the moment a build fills sun back in — live, not carried,
+  // same treatment as the course.gpx mismatch above.
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(race(), null, 2));
+  const reviewed = await loadReview(root, slug);
+  assert.ok(!reviewed.unresolved.includes("sun"), reviewed.unresolved.join(", "));
+  assert.equal(reviewed.unresolved_hints.sun, undefined);
+});
+
+test("loadReview does not flag \"sun\" on a draft whose date isn't set yet — that's collectUnresolved's null, not this live check", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "race-edit-review-sun-nodate-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const slug = "test-race-2027";
+  const dir = path.join(root, "races", slug);
+  await fs.mkdir(dir, { recursive: true });
+  const r = race({ date: null });
+  delete r.sun;
+  delete r.provenance.sun;
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(r, null, 2));
+
+  const review = await loadReview(root, slug);
+  assert.ok(!review.unresolved.includes("sun"), review.unresolved.join(", "));
+  assert.ok(review.unresolved.includes("date"), review.unresolved.join(", "));
+});
+
+test("activation refuses a night race with no computed sun outright — acknowledging does not excuse it", () => {
+  const withoutSun = race({ features: { night: true } });
+  delete withoutSun.sun;
+  delete withoutSun.provenance.sun;
+
+  const blocked = validateStatusTransition(withoutSun, { status: "active" }, { unresolved: ["sun"] });
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.errors.join(" "), /night sections/);
+
+  const acked = validateStatusTransition(
+    { ...withoutSun, unresolved_acknowledged: true },
+    { status: "active" },
+    { unresolved: ["sun"] },
+  );
+  assert.equal(acked.ok, false, "unlike an ordinary hole, ticking acknowledge must not open the gate");
+  assert.match(acked.errors.join(" "), /night sections/);
+});
+
+test("a day race (features.night: false) with no sun is an ordinary unresolved hole, not a hard block", () => {
+  const dayRace = race({ features: { night: false } });
+  delete dayRace.sun;
+  delete dayRace.provenance.sun;
+
+  const unacked = validateStatusTransition(dayRace, { status: "active" }, { unresolved: ["sun"] });
+  assert.equal(unacked.ok, false);
+  assert.ok(!/night sections/.test(unacked.errors.join(" ")), unacked.errors.join(" | "));
+
+  const acked = validateStatusTransition(
+    { ...dayRace, unresolved_acknowledged: true },
+    { status: "active" },
+    { unresolved: ["sun"] },
+  );
+  assert.equal(acked.ok, true, JSON.stringify(acked.errors));
 });
 
 test("loadReview reports refresh_interrupted only when acceptRefresh's applying marker is on disk, not for an ordinary pending refresh", async (t) => {
