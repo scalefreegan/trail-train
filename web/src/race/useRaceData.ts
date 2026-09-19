@@ -359,11 +359,45 @@ export type TrackerState = {
   polledAt: string | null;
   /** one line for the race-day screen; null while everything is fine */
   notice: string | null;
-  /** true once polling has stopped for good (404/501) */
+  /** true once polling has stopped for good (404/501/409) */
   stopped: boolean;
 };
 
 const TRACKER_IDLE: TrackerState = { tracker: null, polledAt: null, notice: null, stopped: false };
+
+/**
+ * The notice for a poll that stops for good — a config problem no retry
+ * fixes, so polling does not resume on its own (see `stopped` above).
+ *
+ * 409 is `code: "ambiguous"` (web/vite.config.ts's raceTrackerApi): a bib/name
+ * ties across two or more entrants, which is the athlete's to resolve (set a
+ * bib on the review screen), not a transient failure worth retrying.
+ *
+ * Pure and exported so the copy is unit-testable without mocking `fetch` —
+ * see scripts/tracker-notice.test.mjs.
+ */
+export function stoppedTrackerNotice(status: 404 | 501 | 409, body: { error?: string } | null): string {
+  if (status === 409) return "several runners match — set your bib on the review screen";
+  if (body?.error) return `live tracking is off — ${body.error}`;
+  return status === 501
+    ? "this race's tracker can't be read automatically — use the manual checkpoint below"
+    : "no live tracker is configured for this race";
+}
+
+/**
+ * The notice for a SUCCESSFUL poll whose `tracker` came back null.
+ *
+ * `TrackerResponse.reason` is additive (scripts/trackers/index.mjs's
+ * `pollTracker`): null whenever a checkpoint was found, "no_checkpoint" for
+ * a matched runner who simply hasn't reached one yet — which needs no notice
+ * of its own, since the race-day screen's own "Watching the race tracker…"
+ * line (RaceDay.tsx, shown whenever there is no notice) already says exactly
+ * that — and "runner_not_found" for a bib/name that matches nobody on the
+ * tracker's page, which does.
+ */
+export function successTrackerNotice(reason: TrackerResponse["reason"]): string | null {
+  return reason === "runner_not_found" ? "runner not found on the tracker — check bib/name" : null;
+}
 
 /**
  * Poll this race's live tracker while the page is open.
@@ -413,18 +447,10 @@ export function useTracker(slug: string | null): TrackerState {
       try {
         const r = await fetch(`/api/races/${encodeURIComponent(slug)}/tracker?t=${Date.now()}`);
         if (stale) return;
-        if (r.status === 404 || r.status === 501) {
+        if (r.status === 404 || r.status === 501 || r.status === 409) {
           const body = await r.json().catch(() => null) as { error?: string } | null;
           stopped = true;
-          put((v) => ({
-            ...v,
-            stopped: true,
-            notice: body?.error
-              ? `live tracking is off — ${body.error}`
-              : r.status === 501
-                ? "this race's tracker can't be read automatically — use the manual checkpoint below"
-                : "no live tracker is configured for this race",
-          }));
+          put((v) => ({ ...v, stopped: true, notice: stoppedTrackerNotice(r.status as 404 | 501 | 409, body) }));
           return;
         }
         if (!r.ok) {
@@ -439,7 +465,7 @@ export function useTracker(slug: string | null): TrackerState {
         put(() => ({
           tracker: d.tracker ?? null,
           polledAt: d.polled_at ?? null,
-          notice: null,
+          notice: successTrackerNotice(d.reason),
           stopped: false,
         }));
         schedule(TRACKER_POLL_MS);
