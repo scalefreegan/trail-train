@@ -7,7 +7,7 @@ import {
   resolveFeatures, visibleColumns, visiblePanels,
   type ResolvedFeatures, type VisibleColumns, type VisiblePanels,
 } from "./features";
-import type { Course, RaceConfig } from "./types";
+import type { Acclimation, Course, RaceConfig } from "./types";
 import { migrateLegacyKnobs } from "./knobMigration";
 import type { SunTimes } from "./nightWindow";
 
@@ -64,6 +64,33 @@ export function usePersistedNumber(key: string | null, initial: number) {
   return [state.v, set] as const;
 }
 
+/**
+ * The same storage discipline for a knob whose "unset" is meaningful: an
+ * acclimation override of 0 days (lands race morning) is a real answer and
+ * must not read as "no override". Absent in storage — or cleared back to
+ * absent — is null; every number, including 0, is a value.
+ */
+export function usePersistedNullableNumber(key: string | null) {
+  const read = (): number | null => {
+    if (key == null || typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(key);
+    if (raw == null || raw.trim() === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  };
+  const [state, setState] = useState(() => ({ key, v: read() }));
+  if (state.key !== key) setState({ key, v: read() });
+  const set = (n: number | null) => {
+    setState({ key, v: n });
+    if (key == null) return;
+    try {
+      if (n == null) localStorage.removeItem(key);
+      else localStorage.setItem(key, String(n));
+    } catch { /* private mode */ }
+  };
+  return [state.v, set] as const;
+}
+
 export function usePersistedStops(key: string | null) {
   const read = (): Record<string, number> => {
     if (key == null || typeof localStorage === "undefined") return {};
@@ -96,6 +123,13 @@ export function usePersistedStops(key: string | null) {
  * `race.*` keys was set while planning it.
  */
 const LEGACY_KNOB_SLUG = "mogollon-monster-100-2026";
+
+/** What the planner assumes when the server told it nothing — a browsed
+    (view-mode) race, generic mode, or a server too old to send the field.
+    KEEP IN SYNC with scripts/acclimation.mjs's default branch: one day, the
+    fly-in-the-night-before case, and labelled "default" so the readout says
+    it is an assumption rather than a measurement. */
+const DEFAULT_ACCLIMATION_DAYS = 1;
 
 export type RacePlan = {
   course: Course | null;
@@ -150,16 +184,37 @@ export type RacePlan = {
   timeZone: string;
   /** an elapsed race hour on the race's wall clock ("6:00a", "2:14p+1") */
   clock: (elapsedH: number) => string;
+  /** The acclimation the projection actually used, after the per-slug
+      manual override is applied to what the server derived. `source` is what
+      the planner prints: an athlete reading "4 days" is entitled to know
+      whether that came off their calendar, off an assumption, or off their
+      own keyboard. */
+  acclimation: {
+    days: number;
+    source: Acclimation["source"];
+    /** YYYY-MM-DD when one is known (derived, or back-computed from an
+        override against race day) */
+    arrivalDate: string | null;
+    /** the calendar event's title, for source "calendar" */
+    event: string | null;
+    /** what the server derived, ignoring the override — so the planner can
+        say what it is overruling */
+    derived: Acclimation | null;
+  };
   settings: {
     fatigue: number; calibration: number; restraint: number; goalH: number;
     /** the altitude term's scale, % (100 = the model as published, 0 = off) */
     altitude: number;
+    /** the athlete's manual acclimation override, days — null = use the
+        server's derivation */
+    acclimationOverride: number | null;
     aidStopMin: number; crewStopMin: number; stopOverrides: Record<string, number>;
   };
   set: {
     fatigue: (n: number) => void; calibration: (n: number) => void;
     restraint: (n: number) => void; goalH: (n: number) => void;
     altitude: (n: number) => void;
+    acclimationOverride: (n: number | null) => void;
     aidStopMin: (n: number) => void; crewStopMin: (n: number) => void;
     stopOverride: (name: string, min: number | null) => void;
     clearStopOverrides: () => void;
@@ -199,7 +254,7 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
   // The slug ON SCREEN, not the training target: a goal time set while
   // browsing an archived race belongs to THAT race's knobs, and must not
   // leak into the next race the athlete actually trains for.
-  const { viewing: activeSlug, resolved: raceResolved } = useActiveRace();
+  const { viewing: activeSlug, resolved: raceResolved, activeRace } = useActiveRace();
   const { activities } = useStrava();
   const { course, missing, error: courseError } = useCourse();
   const { paceGrade, error: paceGradeError } = usePaceGrade();
@@ -239,9 +294,54 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
   // because the curve is a population average and bead 02's back-test will
   // have an opinion about this athlete's own number.
   const [altitude, setAltitude] = usePersistedNumber(knob("altitude_pct"), 100);
+  // The athlete's own answer to "how long will you have been up there?",
+  // overriding whatever the calendar derivation found. Nullable, not a
+  // sentinel: 0 (fly in and run) is a legitimate override and has to be
+  // distinguishable from "no override set".
+  const [acclimationOverride, setAcclimationOverride] =
+    usePersistedNullableNumber(knob("acclimation_days"));
   const [aidStopMin, setAidStopMin] = usePersistedNumber(knob("aid_stop_min"), 5);
   const [crewStopMin, setCrewStopMin] = usePersistedNumber(knob("crew_stop_min"), 10);
   const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops(knob("stop_overrides"));
+
+  // What the server derived from the calendar (train mode only — a browsed
+  // race carries no acclimation, and neither does a server that predates
+  // this field), and what the projection should actually use once the
+  // athlete's override is applied on top.
+  const derivedAcclimation = activeRace?.acclimation ?? null;
+  const acclimation = useMemo(() => {
+    const override =
+      acclimationOverride != null && Number.isFinite(acclimationOverride) && acclimationOverride >= 0
+        ? Math.floor(acclimationOverride)
+        : null;
+    if (override != null) {
+      // Back-compute the date the override implies so the readout can show
+      // one either way. race.date is the start INSTANT in the race's zone;
+      // its race-local calendar day is what the server counted to, and
+      // toISOString() would hand back the UTC day instead.
+      const raceDay = raceConfig.date ?? null;
+      const arrivalDate = raceDay
+        ? new Date(Date.parse(`${raceDay}T00:00:00Z`) - override * 86_400_000).toISOString().slice(0, 10)
+        : null;
+      return { days: override, source: "override" as const, arrivalDate, event: null, derived: derivedAcclimation };
+    }
+    if (derivedAcclimation && Number.isFinite(derivedAcclimation.days_at_altitude)) {
+      return {
+        days: Math.max(0, derivedAcclimation.days_at_altitude),
+        source: derivedAcclimation.source,
+        arrivalDate: derivedAcclimation.arrival_date,
+        event: derivedAcclimation.matched_event?.summary ?? null,
+        derived: derivedAcclimation,
+      };
+    }
+    return {
+      days: DEFAULT_ACCLIMATION_DAYS,
+      source: "default" as const,
+      arrivalDate: null,
+      event: null,
+      derived: null,
+    };
+  }, [acclimationOverride, derivedAcclimation, raceConfig.date]);
 
   const features = useMemo(() => resolveFeatures(raceConfig), [raceConfig]);
   const panels = useMemo(() => visiblePanels(raceConfig), [raceConfig]);
@@ -265,14 +365,15 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
       // whatever its profile says. The flag is the athlete's answer to "is
       // this run at altitude?", and a penalty applied where the views hide
       // the slider that controls it is a silent one.
-      // acclimation_days is 0 until bead 02 derives it from the calendar's
-      // travel events — "fly in and run", the pessimistic end of the curve.
+      // acclimationDays is the RESOLVED count (calendar derivation, or the
+      // athlete's override, or the day-before default) — see `acclimation`
+      // above, which also carries the provenance the planner prints.
       altitude: features.altitude
-        ? { pct: altitude, homeElevationFt: physiology.home_elevation_ft, acclimationDays: 0 }
+        ? { pct: altitude, homeElevationFt: physiology.home_elevation_ft, acclimationDays: acclimation.days }
         : null,
     }) : null),
     [course, fit, paceGrade, fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides,
-     altitude, physiology.home_elevation_ft, features.altitude],
+     altitude, physiology.home_elevation_ft, features.altitude, acclimation.days],
   );
 
   // course.sun is the freshest (it's what the last build actually computed);
@@ -292,11 +393,16 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
     paceGrade, paceGradeError, nutritionError, nutritionSource,
     fit, proj, nutrition, fuelPlan, physiology, physiologyError,
     raceStart: race.date, timeZone: race.timeZone, clock: race.clock,
-    raceConfig, race, features, panels, columns,
-    settings: { fatigue, calibration, restraint, goalH, altitude, aidStopMin, crewStopMin, stopOverrides },
+    raceConfig, race, features, panels, columns, acclimation,
+    settings: {
+      fatigue, calibration, restraint, goalH, altitude, acclimationOverride,
+      aidStopMin, crewStopMin, stopOverrides,
+    },
     set: {
       fatigue: setFatigue, calibration: setCalibration, restraint: setRestraint,
-      goalH: setGoalH, altitude: setAltitude, aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
+      goalH: setGoalH, altitude: setAltitude,
+      acclimationOverride: setAcclimationOverride,
+      aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
       stopOverride: setStopOverride, clearStopOverrides,
     },
   };

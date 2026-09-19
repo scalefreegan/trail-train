@@ -415,6 +415,23 @@ export type ActiveBlock = (RaceBlock & { mode: "race" }) | RollingBlock;
     in train mode; in view mode `active` is null, `viewing` names an archived
     or draft race being browsed read-only, and `training` carries the
     goals-based window the coach is really working from. */
+/** When the athlete reaches the race's elevation, and where that came from
+    — derived server-side by scripts/acclimation.mjs from the calendar's
+    classified travel events. The planner's manual override is NOT in here:
+    it lives in the browser, per slug, and is applied on top (so `source`
+    arrives as "calendar" or "default" and only ever becomes "override"
+    client-side). */
+export type Acclimation = {
+  /** YYYY-MM-DD, or null when the race has no date to count back from */
+  arrival_date: string | null;
+  /** whole days between arrival and race day, >= 0 */
+  days_at_altitude: number;
+  source: "calendar" | "default" | "override";
+  /** present only for source "calendar" — so the planner can name the event
+      instead of asking the athlete to trust a bare number */
+  matched_event?: { summary: string; start: string; end: string | null; location: string | null };
+};
+
 export type ActiveRaceResponse = {
   active: string | null;
   /** "train" = `viewing` is the training target; "view" = read-only browsing. */
@@ -441,6 +458,11 @@ export type ActiveRaceResponse = {
       first (PRD-v2 §3). Always present; empty in view and generic mode,
       where there is no A-race block for one to belong to. */
   b_races?: BRaceSummary[];
+  /** Train mode only (PRD-v2 §2): the arrival at altitude behind the
+      projection's acclimation credit. Absent in view and generic mode —
+      the planner then falls back to the same day-before default the server
+      would have derived. */
+  acclimation?: Acclimation;
   /** local config was broken and the server fell back to generic mode */
   warning?: string;
 };
