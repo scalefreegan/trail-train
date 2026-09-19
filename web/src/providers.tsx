@@ -148,10 +148,26 @@ export function UnitsProvider({ children }: { children: React.ReactNode }) {
       paceUnit: metric ? "/km" : "/mi",
       tempUnit: metric ? "°C" : "°F",
       temp: (f) => String(Math.round(metric ? (f - 32) * 5 / 9 : f)),
-      dist: (mi, digits = 1) => distVal(mi).toLocaleString("en-US", {
-        minimumFractionDigits: digits, maximumFractionDigits: digits,
-      }),
-      elev: (ft) => Math.round(elevVal(ft)).toLocaleString("en-US"),
+      // D4: a render before the data these come from has loaded (e.g. the
+      // moment right after a reload, before /api/race/active answers) can
+      // pass `undefined` here. In METRIC mode `undefined * MI_TO_KM` is NaN,
+      // and NaN.toLocaleString() harmlessly prints "NaN" — but in IMPERIAL
+      // mode distVal returns `undefined` untouched, and undefined has no
+      // .toLocaleString, which threw and white-screened the whole app. That
+      // white screen is what read as "the units toggle doesn't survive a
+      // reload": the toggle persisted fine, imperial mode just couldn't
+      // render the very first frame. Both modes now render "0" for that one
+      // frame instead of one of them crashing.
+      dist: (mi, digits = 1) => {
+        const v = distVal(mi);
+        return Number.isFinite(v)
+          ? v.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })
+          : "0";
+      },
+      elev: (ft) => {
+        const v = elevVal(ft);
+        return Number.isFinite(v) ? Math.round(v).toLocaleString("en-US") : "0";
+      },
       paceFmt: (sec, mi) => {
         if (!mi || !Number.isFinite(sec)) return "—";
         const distanceUnits = metric ? mi * MI_TO_KM : mi;

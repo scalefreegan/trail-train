@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useMeasuredWidth } from "../data";
+import { useMeasuredWidth, useRefresh, useUnits } from "../data";
 import { SectionTag } from "../atoms";
 import { useRacePlan } from "./useRacePlan";
 import { planCaffeine, heatBands, sunBounds, type CaffeinePlan } from "./caffeine";
@@ -7,6 +7,7 @@ import { fmtCarry, type FuelSegment } from "./nutrition";
 import { fmtElapsed, raceClockH } from "./pacing";
 import { raceLocalParts, raceWeekLabels } from "./clock";
 import { raceWeekProse } from "./raceWeek";
+import { useRunCourseAgain } from "./runCourseAgain";
 
 /* ------------------------------------------------------------------ */
 /*  Nutrition plan — the whole intake picture in one place: race week, */
@@ -316,9 +317,15 @@ function LegRow({ seg, caf, clock, last, show }: {
 /* ---- the view ---- */
 
 export function NutritionPlan() {
+  const u = useUnits();
   const { race } = useRacePlan();
   const { course, missing, error, proj, nutrition, fuelPlan, raceStart, timeZone, clock, sun,
     nutritionError, physiology, physiologyError, features, panels, raceConfig } = useRacePlan();
+  const { reload } = useRefresh();
+  // D8: "no course data" used to just tell the athlete to run a shell
+  // command — the empty state now offers the same free, deterministic
+  // build the switcher's "Run course again…" row calls.
+  const courseBuild = useRunCourseAgain(missing ? raceConfig.slug : null, reload);
   const cfg = nutrition.caffeine;
   // body mass comes from the athlete profile, not the race folder (tt-yib.9)
   const bodyKg = physiology.body_kg;
@@ -358,10 +365,26 @@ export function NutritionPlan() {
         <SectionTag>nutrition plan</SectionTag>
         <div className="panel notch" style={{ padding: "28px 26px" }}>
           <span className="eyebrow" style={{ color: missing || error ? "var(--ember)" : "var(--mist-mute)" }}>
-            {missing
-              ? "no course data — run `npm run course:build` to parse the race gpx"
-              : error ?? "loading course…"}
+            {missing ? "no course data yet" : error ?? "loading course…"}
           </span>
+          {missing && (
+            <div style={{ marginTop: 12 }}>
+              <button
+                className="chip"
+                onClick={courseBuild.run}
+                disabled={courseBuild.busy}
+                style={{ fontSize: 10, minHeight: 36, padding: "0 14px" }}
+              >
+                {courseBuild.busy ? "building…" : "run course build"}
+              </button>
+              <div style={{ fontSize: 11, color: "var(--mist-mute)", marginTop: 8, lineHeight: 1.5 }}>
+                Parses the stored GPX into a course profile — free, no agent turn.
+              </div>
+              {courseBuild.error && (
+                <div style={{ fontSize: 11, color: "var(--ember)", marginTop: 6 }}>{courseBuild.error}</div>
+              )}
+            </div>
+          )}
         </div>
       </section>
     );
@@ -532,7 +555,9 @@ export function NutritionPlan() {
             >
               <span className="numerals" style={{ fontSize: 12, color: "var(--lamp)" }}>{d.n}</span>
               <span className="numerals" style={{ fontSize: 12, color: "var(--mist)" }}>{clock(d.h)}</span>
-              <span className="numerals" style={{ fontSize: 10.5, color: "var(--mist-mute)" }}>mi {d.mi.toFixed(1)}</span>
+              <span className="numerals" style={{ fontSize: 10.5, color: "var(--mist-mute)" }}>
+                {u.dist(d.mi, 1)} {u.distUnit}
+              </span>
               <span style={{ fontSize: 12, color: "var(--mist-dim)" }}>
                 {d.station
                   ? <><B>{d.station}</B>, on the way out</>
@@ -786,7 +811,7 @@ export function NutritionPlan() {
               key={bag.station}
               title={bag.station === "Start" ? "Vest at start" : bag.station}
               accent={bagCaf > 0 ? "lamp" : undefined}
-              meta={bag.atH > 0 ? clock(bag.atH) : "mi 0"}
+              meta={bag.atH > 0 ? clock(bag.atH) : `0 ${u.distUnit}`}
               why={{
                 label: lastBag ? "last bag — no resupply after this" : "covers",
                 body: lastBag

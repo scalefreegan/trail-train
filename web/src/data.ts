@@ -704,10 +704,13 @@ export type CoachFacts = {
   // block
   block_dist_actual: number;
   block_dist_expected: number;
-  block_dist_delta_pct: number;
+  /** null when there is no block target to compare against yet (no
+      block.json — a freshly activated race, or one still awaiting a plan
+      run) — never a percentage computed against a faked-up denominator. */
+  block_dist_delta_pct: number | null;
   block_elev_actual: number;
   block_elev_expected: number;
-  block_elev_delta_pct: number;
+  block_elev_delta_pct: number | null;
 
   flags: Flag[];
   recommendations: string[];
@@ -770,8 +773,13 @@ export function computeCoachFacts(
   const block_elev_actual = sum(weekly.slice(0, currentWeek).map((w) => w.elev_ft));
   const block_dist_expected = sum(targets.slice(0, currentWeek).map((w) => w.target_dist));
   const block_elev_expected = sum(targets.slice(0, currentWeek).map((w) => w.target_elev));
-  const block_dist_delta_pct = ((block_dist_actual - block_dist_expected) / Math.max(1, block_dist_expected)) * 100;
-  const block_elev_delta_pct = ((block_elev_actual - block_elev_expected) / Math.max(1, block_elev_expected)) * 100;
+  // No targets (an active race with no block.json yet) is a real "no data"
+  // state, not a zero one — flooring the denominator at 1 turned a few
+  // hundred actual miles into a +53655% tile instead of an empty one.
+  const block_dist_delta_pct = block_dist_expected > 0
+    ? ((block_dist_actual - block_dist_expected) / block_dist_expected) * 100 : null;
+  const block_elev_delta_pct = block_elev_expected > 0
+    ? ((block_elev_actual - block_elev_expected) / block_elev_expected) * 100 : null;
 
   // acute:chronic ratio (1.0 = consistent, >1.5 = load spike, <0.8 = detraining)
   const acr_dist = d28_dist_mi > 0 ? d7_dist_mi / (d28_dist_mi / 4) : 1;
@@ -808,10 +816,12 @@ export function computeCoachFacts(
     flags.push({ severity: "watch", label: "readiness depressed",
       detail: `7d readiness avg ${readiness_d7.toFixed(0)}.` });
 
-  if (block_dist_delta_pct < -10)
+  // Both flags need a real block target to mean anything — suppressed
+  // (never computed from Math.max(1, 0)) for a race with no block.json yet.
+  if (block_dist_delta_pct != null && block_dist_delta_pct < -10)
     flags.push({ severity: "watch", label: "behind block plan · distance",
       detail: `${block_dist_delta_pct.toFixed(1)}% under expected cumulative.` });
-  if (block_elev_delta_pct > 15)
+  if (block_elev_delta_pct != null && block_elev_delta_pct > 15)
     flags.push({ severity: "info", label: "ahead on vert",
       detail: `+${block_elev_delta_pct.toFixed(0)}% over expected — banking climbing-specific fitness.` });
 
@@ -823,7 +833,7 @@ export function computeCoachFacts(
     recommendations.push("Protect Tuesday & Friday nights this week — no late screens, lights out by 22:30.");
   if (flags.some((f) => f.label === "HRV suppressed" || f.label === "RHR elevated"))
     recommendations.push("Skip caffeine after 14:00 and add a 10-min Z1 cooldown after every run.");
-  if (block_dist_delta_pct < -5 && !flags.some((f) => f.label === "HRV suppressed"))
+  if (block_dist_delta_pct != null && block_dist_delta_pct < -5 && !flags.some((f) => f.label === "HRV suppressed"))
     recommendations.push("Add one easy 60-90min Z1 day to the week without raising intensity.");
   if (flags.length === 0)
     recommendations.push("All systems green. Hold the current load, finish the block as planned.");
