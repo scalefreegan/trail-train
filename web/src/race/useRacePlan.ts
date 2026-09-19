@@ -261,12 +261,18 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
       fatiguePctPer10mi: fatigue, calibrationPct: calibration, restraintPct: restraint,
       gradeCurve: paceGrade,
       goalH: goalH > 0 ? goalH : null, aidStopMin, crewStopMin, stopOverridesMin: stopOverrides,
+      // A race that declares `features.altitude: false` gets no term at all,
+      // whatever its profile says. The flag is the athlete's answer to "is
+      // this run at altitude?", and a penalty applied where the views hide
+      // the slider that controls it is a silent one.
       // acclimation_days is 0 until bead 02 derives it from the calendar's
-      // travel events — "fly in and run", the pessimistic end of the curve
-      altitude: { pct: altitude, homeElevationFt: physiology.home_elevation_ft, acclimationDays: 0 },
+      // travel events — "fly in and run", the pessimistic end of the curve.
+      altitude: features.altitude
+        ? { pct: altitude, homeElevationFt: physiology.home_elevation_ft, acclimationDays: 0 }
+        : null,
     }) : null),
     [course, fit, paceGrade, fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides,
-     altitude, physiology.home_elevation_ft],
+     altitude, physiology.home_elevation_ft, features.altitude],
   );
 
   // course.sun is the freshest (it's what the last build actually computed);

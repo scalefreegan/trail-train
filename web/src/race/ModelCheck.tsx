@@ -187,7 +187,7 @@ function Band3({ best, avg, worst, goal, actual = null }: {
 
 export function ModelCheck() {
   const u = useUnits();
-  const { course, proj, fit, paceGrade, settings, features, panels, raceConfig } = useRacePlan();
+  const { course, proj, fit, paceGrade, settings, panels, raceConfig } = useRacePlan();
   const alt = proj?.altitude ?? null;
   const { activities } = useStrava();
   // An archived race puts its real finish on the band it was projected into.
@@ -237,7 +237,7 @@ export function ModelCheck() {
               change them, so the number can be argued with instead of
               believed. Shown only where the model does something: on a course
               that never reaches the threshold there is nothing to report. */}
-          {features.altitude && alt != null && alt.max_seg_ele_ft > ALTITUDE_THRESHOLD_FT && (
+          {alt != null && alt.max_seg_ele_ft > ALTITUDE_THRESHOLD_FT && (
             <p style={{ fontSize: 11.5, color: "var(--lamp)", lineHeight: 1.55, margin: "8px 0 0", maxWidth: "72ch" }}>
               {alt.pct <= 0 || alt.max_penalty <= 0 ? (
                 <>

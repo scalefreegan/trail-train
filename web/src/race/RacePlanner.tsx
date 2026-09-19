@@ -458,8 +458,10 @@ export function RacePlanner() {
   // nothing (same rule as the crew-stop number on a crewless race). The test
   // is the COURSE's elevation, not the knob's value, so turning the term down
   // to 0 doesn't make the control that did it disappear.
+  // (null already when the race declares features.altitude: false — see
+  // useRacePlan's projectRace call)
   const alt = proj?.altitude ?? null;
-  const showAltitude = features.altitude && alt != null && alt.max_seg_ele_ft > ALTITUDE_THRESHOLD_FT;
+  const showAltitude = alt != null && alt.max_seg_ele_ft > ALTITUDE_THRESHOLD_FT;
   // one printable document at a time — the print-isolation body classes
   // (crew-printing / card-printing) must never coexist
   const [openDoc, setOpenDoc] = useState<null | "crew" | "card" | "fuel" | "drops">(null);
