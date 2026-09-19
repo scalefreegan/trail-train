@@ -49,7 +49,17 @@ export function useCourse() {
       if (cached) { setData(cached); setError(`${message} — showing the last saved copy`); }
       else setError(message);
     };
-    fetch(`/course.json?t=${Date.now()}`)
+    // `?slug=` pins the response to THIS race regardless of the server's
+    // mutable pointer (config/active-race.json) — without it, a request left
+    // in flight across a race switch resolves against whichever folder the
+    // pointer names by the time the server gets to it, not the one this hook
+    // was fetching for, and the wrong race's course then gets cached under
+    // this (correct) slug's offline key (PR #23 review round 2, resilience
+    // finding 1). Omitted only in generic mode (`slug` null), where there is
+    // no specific race to pin to and the server's "most recent" fallback is
+    // the existing, harmless behavior.
+    const url = slug ? `/course.json?slug=${encodeURIComponent(slug)}&t=${Date.now()}` : `/course.json?t=${Date.now()}`;
+    fetch(url)
       .then(async (r) => {
         if (stale) return;
         if (r.status === 404) { setData(null); setMissing(true); setError(null); return; }
@@ -91,7 +101,9 @@ export function useCrewBase() {
       if (cached) { setData(cached); setError(`${message} — showing the last saved copy`); }
       else setError(message);
     };
-    fetch(`/crew-base.json?t=${Date.now()}`)
+    // see useCourse's comment on `?slug=` — same pointer race, same fix
+    const url = slug ? `/crew-base.json?slug=${encodeURIComponent(slug)}&t=${Date.now()}` : `/crew-base.json?t=${Date.now()}`;
+    fetch(url)
       .then(async (r) => {
         if (stale) return;
         if (r.status === 404) { setData(null); setError(null); return; }

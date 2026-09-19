@@ -1745,6 +1745,14 @@ function raceApi(): Plugin {
 // served from the active race — or, with none active, the most recent one —
 // and the client's fetch keeps working unchanged.
 // TODO(tt-yib.5): the client should read it from /api/race/active instead.
+//
+// `?slug=<slug>` pins the read to that folder regardless of the pointer (PR
+// #23 review round 2, resilience finding 1): without it, a request that is
+// still in flight when a switcher click flips config/active-race.json
+// resolves against the NEW pointer instead of the race the caller actually
+// meant — the classic "answer arrives, but for a different question" race.
+// The client (useNutrition, race/nutrition.ts) always sends it now; the
+// pointer-based fallback stays for any caller that doesn't (a bare curl).
 function nutritionFile(): Plugin {
   const projectRoot = path.resolve(__dirname, '..')
   return {
@@ -1757,10 +1765,19 @@ function nutritionFile(): Plugin {
         res.setHeader('Content-Type', 'application/json')
         res.setHeader('Cache-Control', 'no-store')
         try {
-          const { loadRaceOrMostRecent } = await import(path.join(projectRoot, 'scripts/race-config.mjs')) as {
+          const { loadRaceOrMostRecent, loadRaceFolder } = await import(path.join(projectRoot, 'scripts/race-config.mjs')) as {
             loadRaceOrMostRecent: (root: string) => Promise<{ slug: string; nutrition: unknown } | null>
+            loadRaceFolder: (root: string, slug: string) => Promise<{ slug: string; nutrition: unknown }>
           }
-          const folder = await loadRaceOrMostRecent(projectRoot)
+          const slugParam = new URL(req.url ?? '', 'http://internal').searchParams.get('slug')
+          let folder: { slug: string; nutrition: unknown } | null
+          if (slugParam != null) {
+            const slug = parseSlugParam(slugParam)
+            if (!slug) { res.statusCode = 400; res.end(JSON.stringify({ error: 'slug: malformed' })); return }
+            folder = await loadRaceFolder(projectRoot, slug).catch(() => null)
+          } else {
+            folder = await loadRaceOrMostRecent(projectRoot)
+          }
           if (!folder?.nutrition) {
             // The nutrition page falls back to its own DEFAULTS, but it should
             // say why rather than quietly showing somebody else's numbers.
@@ -2490,6 +2507,19 @@ function raceIntakeApi(): Plugin {
 // (races/<slug>/build/, written by scripts/build-course.mjs), so they are read
 // from the active race — or, with none active, the most recent one — and the
 // client's fetches keep working unchanged. Same shape as nutritionFile().
+//
+// `?slug=<slug>` pins the read to that folder, same reason and same client
+// convention as nutritionFile() above: `loadRaceOrMostRecent` re-reads the
+// mutable pointer file on every call, so a course.json request left in flight
+// across a race switch used to resolve against whichever folder the pointer
+// named by the time this handler's own await finally got to it — not the one
+// the caller's `viewing` slug was fetched for. That mismatched response then
+// got cached under the ORIGINAL (correct) slug's offline key (useRaceData.ts),
+// silently poisoning it with the other race's course until the next online
+// fetch happened to overwrite it — PR #23 review round 2, resilience finding
+// 1 (a trained race's header paired with a browsed race's aid stations once
+// offline). Pinning the read to an explicit slug closes the race outright:
+// the response can no longer depend on when the pointer happened to change.
 function courseFiles(): Plugin {
   const projectRoot = path.resolve(__dirname, '..')
   const serve = (name: 'course.json' | 'crew-base.json') =>
@@ -2499,10 +2529,19 @@ function courseFiles(): Plugin {
       res.setHeader('Content-Type', 'application/json')
       res.setHeader('Cache-Control', 'no-store')
       try {
-        const { loadRaceOrMostRecent } = await import(path.join(projectRoot, 'scripts/race-config.mjs')) as {
+        const { loadRaceOrMostRecent, raceDir } = await import(path.join(projectRoot, 'scripts/race-config.mjs')) as {
           loadRaceOrMostRecent: (root: string) => Promise<{ slug: string; dir: string } | null>
+          raceDir: (root: string, slug: string) => string
         }
-        const folder = await loadRaceOrMostRecent(projectRoot)
+        const slugParam = new URL(req.url ?? '', 'http://internal').searchParams.get('slug')
+        let folder: { slug: string; dir: string } | null
+        if (slugParam != null) {
+          const slug = parseSlugParam(slugParam)
+          if (!slug) { res.statusCode = 400; res.end(JSON.stringify({ error: 'slug: malformed' })); return }
+          folder = { slug, dir: raceDir(projectRoot, slug) }
+        } else {
+          folder = await loadRaceOrMostRecent(projectRoot)
+        }
         if (!folder) {
           // Generic mode with no race folders at all: 404 is what the client's
           // `missing` path already means ("not generated yet"), not an error.
