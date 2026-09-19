@@ -1,0 +1,58 @@
+{
+  "plan_blocks": [
+    {
+      "wk": 15,
+      "label": "build 3",
+      "dist_mi": 58,
+      "elev_ft": 9800,
+      "focus": "longest day of the block",
+      "key_session": "Hollow Mesa 24 mi",
+      "quality": 2
+    },
+    {
+      "wk": 16,
+      "label": "down",
+      "dist_mi": 42,
+      "elev_ft": 6800,
+      "focus": "absorb",
+      "key_session": "easy Slabtown Loop",
+      "quality": 0
+    },
+    {
+      "wk": 17,
+      "label": "peak",
+      "dist_mi": 42,
+      "elev_ft": 6200,
+      "focus": "race-effort segments",
+      "key_session": "Quartz Bench tempo",
+      "quality": 2
+    },
+    {
+      "wk": 18,
+      "label": "taper 1",
+      "dist_mi": 30,
+      "elev_ft": 4200,
+      "focus": "volume down, intensity brief",
+      "key_session": "short Lantern Draw",
+      "quality": 1
+    },
+    {
+      "wk": 19,
+      "label": "taper 2",
+      "dist_mi": 18,
+      "elev_ft": 2400,
+      "focus": "sleep and legs",
+      "key_session": "shakeout",
+      "quality": 1
+    },
+    {
+      "wk": 20,
+      "label": "race week",
+      "dist_mi": 100.4,
+      "elev_ft": 16400,
+      "focus": "race",
+      "key_session": "Mesa Monster 100",
+      "quality": 3
+    }
+  ]
+}

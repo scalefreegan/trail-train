@@ -25,11 +25,11 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { writeJsonAtomic } from "./lib.mjs";
+import { projectRoot, writeJsonAtomic } from "./lib.mjs";
 import { loadConfig, ensureToken } from "./strava-auth.mjs";
 import { smoothProfile, detectClimbs, gainBetween } from "./climb-lib.mjs";
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = projectRoot();
 const STRAVA_PATH = path.join(ROOT, "web", "public", "strava.json");
 const OUT_PATH = path.join(ROOT, "web", "public", "climbs.json");
 const PACE_GRADE_PATH = path.join(ROOT, "web", "public", "pace-grade.json");

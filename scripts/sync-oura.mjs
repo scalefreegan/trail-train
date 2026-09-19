@@ -21,7 +21,7 @@ import path from "node:path";
 import os from "node:os";
 import http from "node:http";
 import { exec } from "node:child_process";
-import { arg, writeJsonAtomic } from "./lib.mjs";
+import { arg, projectRoot, writeJsonAtomic } from "./lib.mjs";
 
 const CONFIG_PATH = path.join(os.homedir(), ".config", "oura", "config.json");
 // Resolve the output relative to this file, not the cwd. The documented way to
@@ -30,7 +30,7 @@ const CONFIG_PATH = path.join(os.homedir(), ".config", "oura", "config.json");
 // the dashboard (which reads web/public/) silently never saw the new data.
 // sync-strava.mjs and coach.mjs already use this pattern; this file was the
 // last holdout.
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = projectRoot();
 const OUT_PATH = path.join(ROOT, "web", "public", "oura.json");
 const API = "https://api.ouraring.com/v2/usercollection";
 const AUTHORIZE_URL = "https://cloud.ouraring.com/oauth/authorize";

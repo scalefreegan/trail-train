@@ -12,12 +12,12 @@ import path from "node:path";
 import { fetchWeather, flushWeatherCache } from "./weather.mjs";
 import { loadState } from "./state.mjs";
 import { loadProfile } from "./facts.mjs";
-import { arg, writeJsonAtomic } from "./lib.mjs";
+import { arg, projectRoot, writeJsonAtomic } from "./lib.mjs";
 import { loadConfig, ensureToken } from "./strava-auth.mjs";
 
 // resolve from the script location, not cwd — `npm run sync:strava` runs
 // from web/ and would otherwise write to a stray web/web/public/
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = projectRoot();
 const OUT_PATH = path.join(ROOT, "web", "public", "strava.json");
 const CROSS_OUT_PATH = path.join(ROOT, "web", "public", "cross-train.json");
 

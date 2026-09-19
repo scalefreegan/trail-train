@@ -29,7 +29,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { arg, writeJsonAtomic } from "./lib.mjs";
+import { arg, projectRoot, writeJsonAtomic } from "./lib.mjs";
 import { loadRaceFolder, loadRaceFolderAt, raceDir } from "./race-config.mjs";
 import { runClaudeJson, extractJson, agentModel } from "./agent-run.mjs";
 import { loadFactsFromRoot } from "./facts.mjs";
@@ -38,7 +38,7 @@ import { weekdayName } from "./clock.mjs";
 import { THEME_PRESET_NAMES } from "../web/src/themes/presets.ts";
 import { normalizeNutrition } from "../web/src/race/nutrition-config.ts";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = projectRoot();
 
 /** The folder whose hand-authored block and nutrition are the style reference. */
 export const STYLE_REFERENCE_SLUG = "mogollon-monster-100-2026";

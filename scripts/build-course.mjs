@@ -37,12 +37,12 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { writeJsonAtomic } from "./lib.mjs";
+import { projectRoot, writeJsonAtomic } from "./lib.mjs";
 import { haversine, smoothProfile, detectClimbs, gainBetween } from "./climb-lib.mjs";
 import { getActiveRace, listRaces, loadRaceFolder, loadRaceFolderAt } from "./race-config.mjs";
 import { matchAidStations, LOW_CONFIDENCE } from "./aid-match.mjs";
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = projectRoot();
 
 const M_PER_FT = 0.3048;
 const OUT_GRID_MI = 0.05; // profile resolution written to course.json

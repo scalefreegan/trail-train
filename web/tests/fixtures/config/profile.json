@@ -1,0 +1,26 @@
+{
+  "athlete_name": "the athlete",
+  "location": "an invented range",
+  "home_trails": [
+    "Tin Cup Ridge",
+    "Lantern Draw",
+    "Slabtown Loop"
+  ],
+  "long_run_name_patterns": [
+    "long",
+    "50k",
+    "100"
+  ],
+  "calendar_ids": [
+    "primary"
+  ],
+  "calendar_keywords": {
+    "travel": ["out of town"],
+    "family": ["club group run"]
+  },
+  "childcare_markers": ["kid duty"],
+  "physiology": {
+    "body_kg": 72,
+    "long_run_ref_mi": 20
+  }
+}

@@ -16,9 +16,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
-import { arg } from "./lib.mjs";
+import { arg, projectRoot } from "./lib.mjs";
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = projectRoot();
 const DEST_ROOT = arg("dest", path.join(os.homedir(), "Documents", "trail-train-backups"));
 const FROM = arg("from", null);
 const LIST = !!arg("list", false);

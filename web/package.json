@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "test": "node --test ../scripts/*.test.mjs",
+    "test:ui": "playwright test -c tests/playwright.config.ts",
     "build": "tsc -b && eslint . && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -30,6 +31,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.63.0",
     "@types/node": "^24.12.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

@@ -28,7 +28,7 @@ import { RACE_SCHEMA_VERSION, listRaces, raceDir, raceKind, validateRaceJson } f
 import { raceStart, isValidTimeZone } from "./clock.mjs";
 import { runClaudeJson, extractJson, agentModel } from "./agent-run.mjs";
 import { parseGpx } from "./aid-match.mjs";
-import { arg, writeJsonAtomic } from "./lib.mjs";
+import { arg, projectRoot, writeJsonAtomic } from "./lib.mjs";
 
 const exec = promisify(execFile);
 
@@ -1455,7 +1455,7 @@ async function saveRawOutput({ root, slug, outDir = null, staging, sourcesDir, r
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname);
 if (isMain) {
-  const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+  const ROOT = projectRoot();
   const collect = (flag) => process.argv.reduce((acc, a, i) => (a === `--${flag}` && process.argv[i + 1] ? [...acc, process.argv[i + 1]] : acc), []);
   const site = arg("site", null);
   const year = arg("year", null);

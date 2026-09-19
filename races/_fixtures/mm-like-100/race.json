@@ -1,0 +1,298 @@
+{
+  "schema_version": 1,
+  "slug": "mm-like-100",
+  "status": "active",
+  "name": "Mesa Monster 100",
+  "short": "MM100F",
+  "edition_year": 2027,
+  "date": "2027-09-11",
+  "start_time": "05:00",
+  "timezone": "America/Denver",
+  "location": "Invented for tests · a rim that does not exist",
+  "format": "point_to_point",
+  "distance_mi": 100.4,
+  "gain_ft": 16400,
+  "cutoff_h": 36,
+  "features": {
+    "crew": true,
+    "drop_bags": true,
+    "pacers": true,
+    "night": true,
+    "heat": true,
+    "altitude": true,
+    "water_crossings": false
+  },
+  "aid_stations": [
+    {
+      "name": "Start · Lantern Draw",
+      "gpx_wpt": "Lantern Draw TH",
+      "total_mi": 0,
+      "seg_mi": 0,
+      "seg_gain_ft": 0,
+      "cutoff_h": null,
+      "crew": true,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "menu": "full",
+      "notes": "start line"
+    },
+    {
+      "name": "Cold Fork",
+      "gpx_wpt": "Cold Fork Aid",
+      "total_mi": 12.4,
+      "seg_mi": 0,
+      "seg_gain_ft": 0,
+      "cutoff_h": 4,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": true,
+      "menu": "backcountry",
+      "notes": "water only — no road in"
+    },
+    {
+      "name": "Quartz Bench",
+      "gpx_wpt": "Quartz Bench Aid",
+      "total_mi": 23.8,
+      "seg_mi": 0,
+      "seg_gain_ft": 0,
+      "cutoff_h": 7.5,
+      "crew": true,
+      "crew_only": false,
+      "drop_bag": true,
+      "pacers": false,
+      "water_only": false,
+      "menu": "full",
+      "notes": "first crew point; first drop bag"
+    },
+    {
+      "name": "Nine Mile Flat",
+      "gpx_wpt": "Nine Mile Aid",
+      "total_mi": 34.1,
+      "seg_mi": 0,
+      "seg_gain_ft": 0,
+      "cutoff_h": 11,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "menu": "basic",
+      "notes": ""
+    },
+    {
+      "name": "Slabtown",
+      "gpx_wpt": "Slabtown Aid",
+      "total_mi": 44.6,
+      "seg_mi": 0,
+      "seg_gain_ft": 0,
+      "cutoff_h": 15,
+      "crew": true,
+      "crew_only": false,
+      "drop_bag": true,
+      "pacers": false,
+      "water_only": false,
+      "menu": "full",
+      "notes": "halfway; headlamp goes in here"
+    },
+    {
+      "name": "Bitterroot Bowl",
+      "gpx_wpt": "Bitterroot Aid",
+      "total_mi": 55,
+      "seg_mi": 0,
+      "seg_gain_ft": 0,
+      "cutoff_h": 19,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "menu": "basic",
+      "notes": ""
+    },
+    {
+      "name": "Stonecrop Saddle",
+      "gpx_wpt": "Stonecrop Aid",
+      "total_mi": 64.9,
+      "seg_mi": 0,
+      "seg_gain_ft": 0,
+      "cutoff_h": 23,
+      "crew": true,
+      "crew_only": false,
+      "drop_bag": true,
+      "pacers": true,
+      "water_only": false,
+      "menu": "full",
+      "notes": "pacers may join here"
+    },
+    {
+      "name": "Hollow Mesa",
+      "gpx_wpt": "Hollow Mesa Aid",
+      "total_mi": 74.2,
+      "seg_mi": 0,
+      "seg_gain_ft": 0,
+      "cutoff_h": 26.5,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "menu": "basic",
+      "notes": ""
+    },
+    {
+      "name": "Tin Cup",
+      "gpx_wpt": "Tin Cup Aid",
+      "total_mi": 83.7,
+      "seg_mi": 0,
+      "seg_gain_ft": 0,
+      "cutoff_h": 30,
+      "crew": true,
+      "crew_only": false,
+      "drop_bag": true,
+      "pacers": false,
+      "water_only": false,
+      "menu": "full",
+      "notes": "last crew point with parking"
+    },
+    {
+      "name": "Pinyon Gate",
+      "gpx_wpt": "Pinyon Gate Aid",
+      "total_mi": 92.8,
+      "seg_mi": 0,
+      "seg_gain_ft": 0,
+      "cutoff_h": 33,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "menu": "basic",
+      "notes": "last water"
+    },
+    {
+      "name": "Finish · Lantern Draw",
+      "gpx_wpt": null,
+      "total_mi": 100.4,
+      "seg_mi": 0,
+      "seg_gain_ft": 0,
+      "cutoff_h": 36,
+      "crew": true,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "menu": "full",
+      "notes": "finish line"
+    }
+  ],
+  "race_climbs": [
+    {
+      "id": "lantern-ridge",
+      "label": "Lantern Ridge",
+      "approx_mi": [
+        1.5,
+        5.5
+      ]
+    },
+    {
+      "id": "cold-fork",
+      "label": "Cold Fork Wall",
+      "approx_mi": [
+        14.5,
+        21
+      ]
+    },
+    {
+      "id": "quartz-bench",
+      "label": "Quartz Bench",
+      "approx_mi": [
+        33.5,
+        39.5
+      ]
+    },
+    {
+      "id": "slabtown",
+      "label": "Slabtown Stair",
+      "approx_mi": [
+        54,
+        61
+      ]
+    },
+    {
+      "id": "hollow-mesa",
+      "label": "Hollow Mesa",
+      "approx_mi": [
+        75,
+        81.5
+      ]
+    },
+    {
+      "id": "pinyon-gate",
+      "label": "Pinyon Gate",
+      "approx_mi": [
+        90.5,
+        95
+      ]
+    }
+  ],
+  "crew_info": {
+    "rules": [
+      "Crew access only at the five signed crew points; everywhere else the forest road is closed to crew vehicles.",
+      "A runner who stops must tell an aid captain before leaving the course.",
+      "Park in pull-offs only — the road is one lane with blind corners."
+    ],
+    "cell_strategy": "Signal exists on the rim road and nowhere below it. Wait in a pull-off inside coverage, then drive in when your runner is close.",
+    "station_notes": {
+      "Quartz Bench": "Turn off the rim road at the cattle guard; the aid is 1.4 mi in on the right.",
+      "Slabtown": "The only crew point with lights. Headlamps and the night layer go in the drop bag here.",
+      "Stonecrop Saddle": "Pacer pickup. Park nose-out — the turnaround is tight.",
+      "Tin Cup": "Last place with parking for more than three cars."
+    },
+    "start_notes": "Park at the trailhead lot the night before; the shuttle does not run."
+  },
+  "coach_notes": {
+    "terrain": "Rocky rim singletrack with six sustained climbs and long runnable benches between them.",
+    "climate": "Hot and dry on the benches from late morning; cold on the rim after dark.",
+    "altitude": "Everything sits between 7,000 and 10,000 ft, so the whole course is at altitude.",
+    "key_demands": "Climbing on tired legs, and eating through the hot middle third.",
+    "race_week": "Arrive two days early if possible — the altitude is the part that cannot be faked."
+  },
+  "links": {
+    "site": "https://example.invalid/mesa-monster-100",
+    "tracking": "https://example.invalid/mesa-monster-100/live"
+  },
+  "visual": {
+    "theme_preset": "alpine",
+    "panels": {
+      "climb_comparison": true,
+      "model_check": true,
+      "crew_sheet": true
+    }
+  },
+  "provenance": {
+    "aid_stations": {
+      "by": "user",
+      "at": "2026-09-19T00:00:00Z",
+      "source": "invented for the test suite"
+    },
+    "sun": {
+      "by": "computed",
+      "at": "2026-09-19T21:36:26.104Z",
+      "source": "scripts/race-sun.mjs"
+    }
+  },
+  "sources": [
+    {
+      "kind": "url",
+      "ref": "https://example.invalid/mesa-monster-100"
+    }
+  ],
+  "sun": {
+    "sunrise": "06:48",
+    "sunset": "19:25"
+  }
+}
