@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import {
   EDITABLE_AID_FIELDS,
   EDITABLE_RACE_KEYS,
+  applyBlockTargetsEdit,
   applyRaceEdit,
   applyStatus,
   otherActiveSlugs,
@@ -189,7 +190,26 @@ test("applyRaceEdit returns block targets narrowed to the three keys block.json 
   }, { at: AT });
   assert.deepEqual(block_targets, [{ wk: 1, target_dist: 40, target_elev: 6000 }]);
   assert.ok(written.includes("block.targets"));
-  assert.deepEqual(next.provenance["block.targets"], { by: "user", at: AT });
+  // Ownership is stamped on block.json itself (applyBlockTargetsEdit) — see
+  // that test below — not on race.provenance, which nothing ever read.
+  assert.ok(!("block.targets" in (next.provenance ?? {})));
+});
+
+test("applyBlockTargetsEdit stamps block.json's own provenance, keeping the rest of the file", () => {
+  const block = { start_date: "2027-05-24", total_weeks: 12, targets: [{ wk: 1, target_dist: 30, target_elev: 4000 }] };
+  const next = applyBlockTargetsEdit(block, [{ wk: 1, target_dist: 40, target_elev: 6000 }], { at: AT });
+  assert.deepEqual(next.targets, [{ wk: 1, target_dist: 40, target_elev: 6000 }]);
+  assert.deepEqual(next.provenance, { targets: { by: "user", at: AT } });
+  assert.equal(next.start_date, "2027-05-24", "unrelated block fields survive");
+  assert.equal(next.total_weeks, 12);
+  assert.deepEqual(block.targets, [{ wk: 1, target_dist: 30, target_elev: 4000 }], "the input block is not mutated");
+});
+
+test("applyBlockTargetsEdit preserves other provenance keys a future field might add", () => {
+  const block = { targets: [], provenance: { start_date: { by: "computed", at: "2027-01-01T00:00:00Z" } } };
+  const next = applyBlockTargetsEdit(block, [{ wk: 1, target_dist: 1, target_elev: 1 }], { at: AT });
+  assert.deepEqual(next.provenance.start_date, { by: "computed", at: "2027-01-01T00:00:00Z" });
+  assert.deepEqual(next.provenance.targets, { by: "user", at: AT });
 });
 
 test("applyRaceEdit records the acknowledgement as a user-provenance field", () => {

@@ -743,6 +743,47 @@ test("a full run writes the three files, stamps them, and keeps the owner's edit
   assert.deepEqual(result.unresolved, ["links.results"]);
 });
 
+test("user-owned block targets survive a re-plan — the agent's proposal is a warning, not a write", async (t) => {
+  const mm = await mm100();
+  if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+
+  const slug = "future-race-2027";
+  const dir = path.join(tmp, "races", slug);
+  await fs.cp(path.join(ROOT, "races", MM100), dir, { recursive: true });
+  const race = { ...mm.race, slug, status: "draft", date: "2027-08-13", distance_mi: 104, gain_ft: 19000 };
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(race, null, 2));
+
+  // The owner hand-edited a week's numbers through the review dialog
+  // (race-edit.mjs's applyBlockTargetsEdit stamps exactly this shape).
+  const handEditedBlock = {
+    start_date: "2027-05-24",
+    total_weeks: 1,
+    targets: [{ wk: 1, target_dist: 999, target_elev: 12345 }],
+    provenance: { targets: { by: "user", at: "2027-01-01T00:00:00Z" } },
+  };
+  await fs.writeFile(path.join(dir, "block.json"), JSON.stringify(handEditedBlock, null, 2));
+
+  const reply = await goodOutput();
+  const result = await planRace({
+    root: tmp,
+    slug,
+    today: new Date(2027, 4, 18),
+    runAgent: async () => ({ text: JSON.stringify(reply), wrapper: {}, retried: false }),
+  });
+
+  // block.json on disk is byte-for-byte what the owner authored.
+  const block = await readJson(path.join(dir, "block.json"));
+  assert.deepEqual(block, handEditedBlock);
+  assert.ok(!result.wrote.includes(`races/${slug}/block.json`), "block.json must not be reported as written");
+  assert.deepEqual(result.wrote, [`races/${slug}/nutrition.json`, `races/${slug}/race.json`]);
+  assert.ok(
+    result.warnings.some((w) => /block\.json targets are user-owned — kept as authored/.test(w) && /wk1 /.test(w)),
+    result.warnings.join(" | "),
+  );
+});
+
 test("a race with no date gets its nutrition and notes, but no block.json", async (t) => {
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);

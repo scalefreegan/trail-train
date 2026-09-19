@@ -293,16 +293,44 @@ export function applyRaceEdit(race, body, { at = new Date().toISOString() } = {}
     if (setAtPath(next, p, v)) stamp(p);
   }
 
-  // block.json carries no provenance block of its own, so the fact that a
-  // human wrote its targets is recorded on the race — the only file in the
-  // folder that remembers who said what.
+  // block.json now stamps its OWN provenance (applyBlockTargetsEdit, below) —
+  // race.provenance["block.targets"] used to carry this instead, but nothing
+  // ever read it (race-plan.mjs's planRace and race-merge.mjs's mergeBlock
+  // both check a field's owner on the file the field actually lives in), so a
+  // hand edit here was recorded and then silently clobbered by the next
+  // re-plan. `written` still reports the change for the API response; it is
+  // no longer a race.provenance key.
   let blockTargets = null;
   if (Array.isArray(body.block_targets)) {
     blockTargets = body.block_targets.map((t) => ({ wk: t.wk, target_dist: t.target_dist, target_elev: t.target_elev }));
-    stamp("block.targets");
+    written.push("block.targets");
   }
 
   return { race: next, written, block_targets: blockTargets };
+}
+
+/**
+ * Merge a user's edited week targets into block.json, stamping
+ * `block.provenance.targets = {by: "user", at}` on the file that actually
+ * holds them. race-plan.mjs's planRace and race-merge.mjs's mergeBlock both
+ * read a field's ownership off the file it lives in (the same mechanism
+ * mergeFile already uses for race.json), so this stamp is what makes a
+ * hand-edited block survive the next re-plan or refresh.
+ *
+ * Pure — the dev server's PUT /api/races/:slug reads block.json, calls this,
+ * and writes the result back; `node --test` asks the same question directly.
+ *
+ * @param {object} block the parsed block.json (not mutated)
+ * @param {{wk: number, target_dist: number, target_elev: number}[]} targets
+ *   already-validated rows (see BLOCK_TARGET_KEYS above)
+ * @param {{at?: string}} [opts]
+ * @returns {object} the block.json to write
+ */
+export function applyBlockTargetsEdit(block, targets, { at = new Date().toISOString() } = {}) {
+  const next = isObj(block) ? { ...block } : {};
+  next.targets = targets;
+  next.provenance = { ...(isObj(next.provenance) ? next.provenance : {}), targets: { by: "user", at } };
+  return next;
 }
 
 /**

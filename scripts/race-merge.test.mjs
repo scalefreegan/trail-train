@@ -354,6 +354,22 @@ test("block.json gains no provenance object just by being merged", () => {
   assert.ok(!("provenance" in merged), "a file that never had provenance does not grow one");
 });
 
+test("hand-edited block.json targets survive a refresh merge — the incoming set is a kept diff entry", () => {
+  // The shape race-edit.mjs's applyBlockTargetsEdit stamps: block.json owns
+  // its own provenance, not race.provenance["block.targets"] (nothing reads
+  // that any more — see race-plan.test.mjs and race-edit.test.mjs).
+  const block = { ...baseBlock(), provenance: { targets: { by: "user", at: "2027-01-01T00:00:00Z" } } };
+  const incoming = structuredClone(block);
+  delete incoming.provenance;
+  incoming.targets = incoming.targets.map((t) => ({ ...t, target_dist: t.target_dist + 1 }));
+
+  const { merged, diff, conflicts } = mergeBlock(block, incoming);
+  assert.deepEqual(merged.targets, block.targets, "the owner's numbers are untouched");
+  assert.deepEqual(paths(diff), ["kept:targets"]);
+  assert.deepEqual(conflicts, diff, "the whole diff is a conflict — the owner should see the agent's proposal");
+  assert.deepEqual(merged.provenance, { targets: { by: "user", at: "2027-01-01T00:00:00Z" } }, "ownership itself is untouched");
+});
+
 /* ---------------------------- nutrition.json ------------------------------ */
 
 const baseNutrition = () => ({

@@ -1117,7 +1117,20 @@ export async function planRace({
   step("write", "start", { label: "writing the folder" });
   const wrote = [];
   let block = null;
-  if (window) {
+  // block.json carries its own provenance (stamped by race-edit.mjs's
+  // applyBlockTargetsEdit when the review dialog's owner hand-edits a week's
+  // numbers). That is the same "by: user survives a re-plan" invariant every
+  // other field in this app gets — checked here, not on race.provenance,
+  // because block.json is the file whose targets are actually at stake.
+  const blockTargetsUserOwned = folder.block?.provenance?.targets?.by === "user";
+  if (window && blockTargetsUserOwned) {
+    block = folder.block;
+    const proposed = out.block.targets
+      .map((t) => `wk${t.wk} ${t.target_dist}mi/${t.target_elev}ft`)
+      .join("  ");
+    warnings.push(`races/${slug}/block.json targets are user-owned — kept as authored; the agent proposed: ${proposed}`);
+    say("write", warnings[warnings.length - 1], { stream: "err" });
+  } else if (window) {
     block = {
       start_date: window.start_date,
       total_weeks: window.total_weeks,

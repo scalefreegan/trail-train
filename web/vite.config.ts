@@ -1415,6 +1415,8 @@ function raceEditApi(): Plugin {
     validateRaceEdit: (body: unknown, ctx: { stationCount: number; unresolved: string[] }) => { ok: boolean; errors: string[]; code: string | null }
     applyRaceEdit: (race: Record<string, unknown>, body: Record<string, unknown>, opts: { at: string }) =>
       { race: Record<string, unknown>; written: string[]; block_targets: Record<string, number>[] | null }
+    applyBlockTargetsEdit: (block: Record<string, unknown>, targets: Record<string, number>[], opts: { at: string }) =>
+      Record<string, unknown>
     recomputeUnresolved: (race: Record<string, unknown>, prior: string[]) => string[]
     unresolvedFromMatches: (stations: unknown[], matches: unknown[], waypoints: string[]) => string[]
     validateStatusTransition: (race: unknown, req: unknown, ctx: { unresolved?: string[]; otherActive?: string[] }) =>
@@ -1541,7 +1543,7 @@ function raceEditApi(): Plugin {
               return
             }
             const block = JSON.parse(fs.readFileSync(blockPath, 'utf8')) as Record<string, unknown>
-            await writeJsonAtomic(blockPath, { ...block, targets: applied.block_targets })
+            await writeJsonAtomic(blockPath, mod.applyBlockTargetsEdit(block, applied.block_targets, { at }))
           }
           await writeJsonAtomic(path.join(dir, 'race.json'), next_)
 
