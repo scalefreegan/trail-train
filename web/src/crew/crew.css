@@ -5,14 +5,25 @@
 /*  offline, so a webfont would either hang the paint or fall back     */
 /*  silently. The system stack below is what the device already has.   */
 /*  Same reason there is no dark mode: this is paper on a screen, and  */
-/*  the app's dark palette prints as a black rectangle.                */
+/*  the app's dark palette prints as a black rectangle. The page       */
+/*  declares color-scheme: light so a phone in dark mode cannot invert */
+/*  it on us either (crew.html carries the meta tag as well).          */
+/*                                                                     */
+/*  Two layouts, one document: a 390-px phone in a parking lot, and    */
+/*  Letter paper. Everything below is sized for the phone first, with  */
+/*  @media print doing page breaks, ink economy and nothing else.      */
 /* ------------------------------------------------------------------ */
 
 :root {
+  color-scheme: light;
   --ink: #1c1c1c;
   --muted: #6b6b6b;
   --accent: #b05c10;
+  --good: #3d7a48;
+  --bad: #a33b2a;
+  --night: #3b4a7a;
   --rule: #d8d4cc;
+  --shade: #f6f1e9;
   --paper: #fdfcfa;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
@@ -29,26 +40,149 @@ body {
   -webkit-text-size-adjust: 100%;
 }
 
-#root { max-width: 780px; margin: 0 auto; }
+#root { max-width: 820px; margin: 0 auto; }
 
 h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -0.01em; }
+h2 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
+  margin: 26px 0 6px; padding-bottom: 3px; border-bottom: 2px solid var(--ink);
+}
+h3 { font-size: 13px; margin: 0 0 3px; }
+p { margin: 4px 0; }
+
 .sub { margin: 2px 0; color: var(--muted); font-size: 12.5px; }
 .sub strong { color: var(--ink); }
+.stamp { margin-top: 6px; color: var(--muted); font-size: 10.5px; }
+.lead { color: var(--muted); font-size: 11.5px; margin-bottom: 10px; }
 
-table { width: 100%; border-collapse: collapse; margin-top: 18px; }
-caption { text-align: left; color: var(--muted); font-size: 11px; padding-bottom: 6px; }
-th, td { padding: 6px 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+header { border-bottom: 3px solid var(--ink); padding-bottom: 10px; }
+.headline {
+  display: flex; flex-wrap: wrap; gap: 4px 18px;
+  margin-top: 10px; font-size: 13px; font-variant-numeric: tabular-nums;
+}
+.headline .best { color: var(--good); font-weight: 700; }
+.headline .exp { color: var(--accent); font-weight: 700; }
+.headline .worst { color: var(--bad); font-weight: 700; }
+.headline .exp em { color: var(--muted); font-style: normal; font-weight: 400; }
+.headline .stopped { color: var(--muted); }
+
+/* ---------------- emergency ---------------- */
+
+#emergency {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 20px;
+  border: 2px solid var(--ink); padding: 7px 10px; margin-top: 14px; font-size: 12.5px;
+}
+#emergency .tag { letter-spacing: 0.08em; }
+#emergency .num { white-space: nowrap; color: var(--muted); }
+#emergency .num strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* ---------------- the updater ---------------- */
+
+#updater { margin-top: 20px; background: var(--shade); border: 1px solid var(--rule); padding: 10px 12px 12px; }
+#updater h2 { margin-top: 0; border: none; padding: 0; }
+#checkpoint-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+#checkpoint-form label { font-size: 12px; color: var(--muted); }
+#checkpoint-form select,
+#checkpoint-form input,
+#checkpoint-form button {
+  font: inherit; font-size: 13px; min-height: 40px;
+  border: 1px solid var(--ink); background: #fff; color: var(--ink); border-radius: 0;
+}
+#checkpoint-form select { flex: 1 1 170px; padding: 0 6px; max-width: 100%; }
+#checkpoint-form input { width: 5.6em; padding: 0 8px; font-family: var(--mono); }
+#checkpoint-form button { padding: 0 14px; cursor: pointer; }
+#cp-apply { background: var(--ink); color: #fff; font-weight: 600; }
+#cp-clear[disabled] { opacity: 0.4; cursor: default; }
+#cp-status { font-size: 12px; line-height: 1.5; margin-top: 8px; }
+#cp-status.idle { color: var(--muted); }
+#cp-status.applied { color: var(--ink); }
+#cp-status.applied strong { color: var(--accent); }
+#cp-status.warn { color: var(--bad); }
+#cp-status em { font-style: normal; color: var(--bad); }
+
+/* ---------------- the station table ---------------- */
+
+table { width: 100%; border-collapse: collapse; }
+caption { text-align: left; color: var(--muted); font-size: 10.5px; padding-bottom: 6px; }
+th, td { padding: 6px 5px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
 thead th {
-  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--muted); font-weight: 600; border-bottom: 1.5px solid var(--ink);
 }
-tbody th { font-weight: 500; }
-tbody tr.crew th { font-weight: 700; }
-tbody tr.crew { background: #f6f1e9; }
-.num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.eta { color: var(--accent); font-weight: 600; }
-.access { display: block; font-size: 10px; color: var(--muted); font-weight: 400; letter-spacing: 0.04em; }
-.elapsed { display: block; font-size: 10px; color: var(--muted); font-weight: 400; }
+thead th span { display: block; font-size: 8.5px; letter-spacing: 0.04em; text-transform: none; }
+tbody th { font-weight: 500; font-size: 12px; }
+tbody tr.crew { background: var(--shade); }
+tbody tr.crew .name { font-weight: 700; }
+tbody tr.passed { color: var(--muted); }
+tbody tr.passed .eta .exp { color: var(--muted); }
+tbody tr.at .eta .exp { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+
+.name { display: block; }
+.access { display: block; font-size: 9.5px; color: var(--accent); letter-spacing: 0.04em; }
+tbody tr:not(.crew) .access { color: var(--muted); }
+.stop, .note, .dir, .gps { display: block; font-size: 9.5px; color: var(--muted); font-weight: 400; }
+.dir { margin-top: 2px; }
+.gps { font-family: var(--mono); font-size: 9px; }
+
+.num { font-variant-numeric: tabular-nums; }
+.mi { font-family: var(--mono); font-weight: 600; white-space: nowrap; }
+.eta { white-space: nowrap; }
+.eta .exp { display: block; color: var(--accent); font-weight: 700; font-size: 13px; }
+.eta .elapsed, .eta .band, .eta .goal { display: block; font-size: 9.5px; color: var(--muted); }
+.cut .clock { display: block; white-space: nowrap; }
+.cut .margin { display: block; font-size: 9.5px; color: var(--good); }
+.cut .margin.tight { color: var(--accent); font-weight: 700; }
+.cut .margin.late { color: var(--bad); font-weight: 700; }
+.drive { white-space: nowrap; font-size: 12px; }
+.drive .miles { display: block; font-size: 9.5px; color: var(--muted); }
+
+/* ---------------- pickups ---------------- */
+
+.pickup { border-top: 1px solid var(--rule); padding: 8px 0 6px; break-inside: avoid; }
+.pickup:first-of-type { border-top: none; }
+.pickup h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.pickup .when { font-size: 10.5px; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pickup p { font-size: 11.5px; line-height: 1.55; }
+.pickup .hand { color: var(--ink); }
+.pickup .hand b, .pickup .leg b, .pickup .bag b { color: var(--accent); }
+.pickup .fill { font-family: var(--mono); font-weight: 700; }
+.pickup .leg, .pickup .bag { color: var(--muted); }
+.pickup .covers { color: var(--muted); }
+.pickup .night { color: var(--night); }
+.pickup .heat { color: var(--bad); }
+
+/* ---------------- rules + directions ---------------- */
+
+.facts { margin: 0; padding-left: 16px; font-size: 11.5px; line-height: 1.6; }
+.rules { margin: 8px 0 0; padding-left: 18px; font-size: 11px; line-height: 1.55; color: var(--muted); }
+.rules li { margin-bottom: 2px; }
+#directions { margin-top: 10px; }
+#directions p { font-size: 11px; line-height: 1.55; color: var(--muted); break-inside: avoid; }
+#directions b { color: var(--accent); }
+.fineprint { margin-top: 10px; font-size: 10px; color: var(--muted); line-height: 1.5; }
+
+/* ---------------- drawings ---------------- */
+
+#map, #profile { margin-top: 8px; break-inside: avoid; }
+svg { width: 100%; display: block; height: auto; }
+.track { fill: none; stroke: #8a8578; stroke-width: 1.6; stroke-linejoin: round; }
+.aid-dot { fill: #fff; stroke: var(--muted); stroke-width: 1; }
+.crew-dot { fill: var(--accent); stroke: #fff; stroke-width: 1.2; }
+.crew-label { font: 600 10.5px var(--sans); fill: var(--accent); }
+.start-dot { fill: var(--ink); }
+.start-label { font: 700 11px var(--sans); fill: var(--ink); }
+.base-dot { fill: var(--ink); stroke: #fff; stroke-width: 1.2; }
+.base-label { font: 700 10.5px var(--sans); fill: var(--ink); }
+.legend { font: 9px var(--sans); fill: var(--muted); }
+.profile-fill { fill: #e8e2d6; }
+.profile-line { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-linejoin: round; }
+.grid { stroke: var(--rule); stroke-width: 0.8; }
+.axis { font: 9px var(--mono); fill: var(--muted); }
+.tick { stroke: var(--rule); stroke-width: 0.8; }
+.tick.crew { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 2 2; }
+.tick-label { font: 600 9px var(--sans); fill: var(--accent); }
+
+/* ---------------- footer ---------------- */
 
 footer { margin-top: 22px; color: var(--muted); font-size: 10.5px; }
 footer p { margin: 3px 0; }
@@ -56,8 +190,20 @@ footer p { margin: 3px 0; }
 code { font-family: var(--mono); font-size: 0.92em; }
 
 @media print {
-  body { padding: 0; background: #fff; }
-  tbody tr.crew { background: #efe9df; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* Paper is white and has no interaction: the updater goes, the shading
+     stays (it is how a crew stop is found at a glance), and each major
+     section starts far enough from the previous one that a station table
+     never orphans its last two rows onto a page of its own. */
+  body { padding: 0; background: #fff; font-size: 10.5px; }
+  .no-print { display: none !important; }
+  #root { max-width: none; }
+  h1 { font-size: 17px; }
+  h2 { margin-top: 14px; }
+  tbody tr.crew, #updater { background: var(--shade); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   table { page-break-inside: auto; }
   tr { page-break-inside: avoid; }
+  thead { display: table-header-group; }
+  #pickups, #crew-notes, #drawings { break-before: page; page-break-before: always; }
+  .pickup, #directions p, #map, #profile { break-inside: avoid; page-break-inside: avoid; }
+  footer { margin-top: 12px; }
 }
