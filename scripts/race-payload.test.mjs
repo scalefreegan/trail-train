@@ -370,3 +370,92 @@ test("no A-race block, no tune-ups: the key is always there and empty", async (t
   assert.equal(generic.active, null);
   assert.deepEqual(generic.b_races, []);
 });
+
+/* ================== acclimation (PRD-v2 §2) ======================== */
+
+test("train mode carries the acclimation derived from the calendar's travel events", async (t) => {
+  const root = await tempRoot(t);
+  const slug = "san-juan-softie-100-2027";
+  await fs.mkdir(path.join(root, "races", slug), { recursive: true });
+  await writeJson(path.join(root, "races", slug, "race.json"), validRace());
+  await writeJson(path.join(root, "config", "active-race.json"), { slug, mode: "train" });
+  // validRace() is at Durango, CO on 2027-08-13; NOW is 2026-09-18, so the
+  // trip is still ahead and stays a candidate.
+  await writeJson(path.join(root, "web", "public", "google-cal.json"), {
+    fetched_at: "2026-09-18T00:00:00Z",
+    events: [
+      { summary: "Chicago work trip", start: "2027-08-01", end: "2027-08-04", classification: "travel" },
+      { summary: "Drive to Durango", start: "2027-08-09", end: "2027-08-16", classification: "travel" },
+    ],
+  });
+
+  const payload = await activeRacePayload(root, NOW);
+  assert.equal(payload.acclimation.source, "calendar");
+  assert.equal(payload.acclimation.arrival_date, "2027-08-09");
+  assert.equal(payload.acclimation.days_at_altitude, 4);
+  assert.equal(payload.acclimation.matched_event.summary, "Drive to Durango");
+});
+
+test("no calendar file at all: acclimation is the day-before default, not absent", async (t) => {
+  const root = await tempRoot(t);
+  const slug = "san-juan-softie-100-2027";
+  await fs.mkdir(path.join(root, "races", slug), { recursive: true });
+  await writeJson(path.join(root, "races", slug, "race.json"), validRace());
+  await writeJson(path.join(root, "config", "active-race.json"), { slug, mode: "train" });
+
+  const payload = await activeRacePayload(root, NOW);
+  assert.equal(payload.acclimation.source, "default");
+  assert.equal(payload.acclimation.days_at_altitude, 1);
+  assert.equal(payload.acclimation.arrival_date, "2027-08-12");
+});
+
+test("a corrupt google-cal.json degrades to the default rather than a 500", async (t) => {
+  const root = await tempRoot(t);
+  const slug = "san-juan-softie-100-2027";
+  await fs.mkdir(path.join(root, "races", slug), { recursive: true });
+  await writeJson(path.join(root, "races", slug, "race.json"), validRace());
+  await writeJson(path.join(root, "config", "active-race.json"), { slug, mode: "train" });
+  await fs.writeFile(path.join(root, "web", "public", "google-cal.json"), "{not json");
+
+  const payload = await activeRacePayload(root, NOW);
+  assert.equal(payload.acclimation.source, "default");
+});
+
+test("view mode carries no acclimation — nothing is being trained for", async (t) => {
+  const root = await tempRoot(t);
+  const slug = "san-juan-softie-100-2027";
+  await fs.mkdir(path.join(root, "races", slug), { recursive: true });
+  await writeJson(path.join(root, "races", slug, "race.json"), validRace({ status: "archived" }));
+  await writeJson(path.join(root, "config", "active-race.json"), { slug, mode: "view" });
+
+  const payload = await activeRacePayload(root, NOW);
+  assert.equal(payload.mode, "view");
+  assert.equal(payload.acclimation, undefined);
+});
+
+test("the coach digest and the dashboard payload agree on the acclimation", async (t) => {
+  const root = await tempRoot(t);
+  const slug = "san-juan-softie-100-2027";
+  await fs.mkdir(path.join(root, "races", slug), { recursive: true });
+  // loadFactsFromRoot takes no injectable clock, so it derives against the
+  // real one. A far-future race keeps "the trip has not happened yet" true
+  // for both callers however long this test lives.
+  await writeJson(path.join(root, "races", slug, "race.json"), validRace({ date: "2040-08-13" }));
+  await writeJson(path.join(root, "config", "active-race.json"), { slug, mode: "train" });
+  await writeJson(path.join(root, "web", "public", "google-cal.json"), {
+    fetched_at: "2026-09-18T00:00:00Z",
+    events: [{ summary: "Durango race week", start: "2040-08-10", end: "2040-08-16", classification: "travel" }],
+  });
+  await writeJson(path.join(root, "web", "public", "strava.json"), {
+    fetched_at: "2026-09-18T00:00:00Z",
+    window: { days: 183 },
+    activities: [],
+  });
+
+  const payload = await activeRacePayload(root, NOW);
+  const facts = await loadFactsFromRoot(root);
+  assert.equal(facts.race.acclimation.arrival_date, payload.acclimation.arrival_date);
+  assert.equal(facts.race.acclimation.days_at_altitude, payload.acclimation.days_at_altitude);
+  assert.equal(facts.race.acclimation.source, "calendar");
+  assert.deepEqual(facts.race.acclimation, payload.acclimation);
+});

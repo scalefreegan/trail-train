@@ -22,6 +22,7 @@ const HOT_THRESHOLD_C = 24;
 // cheaper import for vite.config.ts than all of facts.mjs. Re-exported here
 // so every existing `import { loadProfile } from "./facts.mjs"` still works.
 import { loadProfile } from "./profile.mjs";
+import { deriveArrival } from "./acclimation.mjs";
 export { loadProfile };
 
 // Generic mode's window length. Re-exported because this module was its
@@ -437,9 +438,12 @@ export function computeFacts(strava, oura, ctx, now = Date.now()) {
  * Nothing here throws on race absence: generic mode is the default state of
  * the app, and even a broken pointer degrades to it with a warning rather
  * than taking the dashboard down.
+ * @param {string} projectRoot
+ * @param {object|null} [calendar] web/public/google-cal.json, already loaded
+ *   by the caller — the acclimation derivation reads its travel events
  * @returns {Promise<{race: object|null, block: object|null, goals: object|null, plan_blocks: object[]}>}
  */
-async function trainingContext(projectRoot) {
+async function trainingContext(projectRoot, calendar = null) {
   const folder = await loadActiveRaceFolder(projectRoot).catch((e) => {
     console.warn(`• active race unreadable (${e.message}) — coaching in generic mode`);
     return null;
@@ -501,6 +505,14 @@ async function trainingContext(projectRoot) {
       // function, so the coach cannot plan a taper around a race the
       // trajectory does not show.
       b_races: bRacesFor(races, { ...race, slug: folder.slug }),
+      // When the athlete reaches the race's elevation, and where that came
+      // from (PRD-v2 §2). Same function the dashboard payload calls
+      // (scripts/race-payload.mjs), so the coach cannot be planning a taper
+      // around a different arrival than the planner is projecting off. The
+      // planner's manual override lives in the browser and is NOT visible
+      // here — `source` therefore reads "calendar" or "default" only, and
+      // the prompt should treat the number as the derived one.
+      acclimation: deriveArrival({ race, calendar }),
     },
     block: block ?? null,
     goals: null,
@@ -586,7 +598,7 @@ export async function loadFactsFromRoot(projectRoot) {
   ]);
   // state.json no longer carries race/block/plan_blocks (v3) — the race (or
   // the goals that stand in for it) comes from the folder, not from state.
-  const ctx = { ...state, ...(await trainingContext(projectRoot)) };
+  const ctx = { ...state, ...(await trainingContext(projectRoot, cal)) };
   if (!strava) throw new Error("strava.json missing — run sync:strava");
   const base = {
     profile,

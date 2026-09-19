@@ -430,7 +430,7 @@ export function RacePlanner() {
   // one projectRace/planFuel call and one set of persisted sliders.
   const { course, missing, error, fit, proj, nutrition, fuelPlan, settings, set,
     paceGrade, paceGradeError, nutritionError, nutritionSource, physiologyError, features, panels, columns,
-    raceConfig, sun } = useRacePlan();
+    raceConfig, sun, acclimation } = useRacePlan();
   const { reload } = useRefresh();
   // D8: "no course data" used to just tell the athlete to run a shell
   // command — the empty state now offers the same free, deterministic
@@ -450,10 +450,20 @@ export function RacePlanner() {
   }, [result]);
   const hasActual = actualByStation.size > 0;
   const gridClass = "race-grid" + (hasActual ? " has-actual" : "");
-  const { fatigue, calibration, restraint, goalH, altitude, aidStopMin, crewStopMin, stopOverrides } = settings;
+  const { fatigue, calibration, restraint, goalH, altitude, acclimationOverride,
+    aidStopMin, crewStopMin, stopOverrides } = settings;
   const { fatigue: setFatigue, calibration: setCalibration, restraint: setRestraint,
-    goalH: setGoalH, altitude: setAltitude, aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
+    goalH: setGoalH, altitude: setAltitude, acclimationOverride: setAcclimationOverride,
+    aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
     stopOverride: setStopOverride, clearStopOverrides } = set;
+  // Where the acclimation day count came from, in the fewest words that can
+  // still be argued with. The distinction matters: "4 days" off the calendar
+  // is evidence, "1 day" off the default is an assumption the athlete may
+  // never have noticed being made for them.
+  const acclimSource =
+    acclimation.source === "calendar" ? `from calendar (${acclimation.event ?? "travel event"})`
+    : acclimation.source === "override" ? "your override"
+    : "default — the night before";
   // The altitude slider appears only where the model would do something: a
   // course that never gets above the threshold would give it a knob wired to
   // nothing (same rule as the crew-stop number on a crewless race). The test
@@ -582,6 +592,48 @@ export function RacePlanner() {
                   onChange={(e) => setAltitude(Number(e.target.value))}
                   style={{ width: 70, accentColor: "var(--lamp)" }}
                 />
+              </label>
+            )}
+            {/* Days at altitude before the gun — the other half of the term
+                the slider above scales. Shown beside it because the two are
+                read together: 12,000 ft after four days and 12,000 ft after
+                one are different races, and the athlete cannot check the
+                second number unless the planner prints where it came from. */}
+            {showAltitude && (
+              <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                title={`days at altitude before race day, scaling the penalty down the acclimatization curve (about half the available relief by day 3, ~90% by day 14 — and it is never total). Currently ${acclimation.days} day${acclimation.days === 1 ? "" : "s"}, ${acclimSource}${acclimation.arrivalDate ? `, arriving ${acclimation.arrivalDate}` : ""}. Type a number to override it; the × puts it back.`}>
+                acclim
+                <input
+                  type="number" min={0} max={60} step={1} value={acclimation.days}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    // an emptied field is "no override", not zero days
+                    if (raw.trim() === "") { setAcclimationOverride(null); return; }
+                    setAcclimationOverride(Math.min(60, Math.max(0, Math.floor(Number(raw) || 0))));
+                  }}
+                  className="numerals"
+                  style={{
+                    width: 42, background: "var(--night-deep)", border: "1px solid var(--edge-bright)",
+                    color: "var(--mist)", fontSize: 11, padding: "3px 6px",
+                  }}
+                />
+                d
+                <span style={{ color: acclimation.source === "default" ? "var(--mist-mute)" : "var(--creek)" }}>
+                  {acclimation.source}
+                </span>
+                {acclimationOverride != null && (
+                  <button
+                    type="button"
+                    onClick={() => setAcclimationOverride(null)}
+                    title={acclimation.derived
+                      ? `back to the derived ${acclimation.derived.days_at_altitude} day${acclimation.derived.days_at_altitude === 1 ? "" : "s"} (${acclimation.derived.source})`
+                      : "clear the override"}
+                    style={{
+                      background: "none", border: "none", color: "var(--mist-mute)",
+                      cursor: "pointer", fontSize: 11, padding: 0, lineHeight: 1,
+                    }}
+                  >×</button>
+                )}
               </label>
             )}
             <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -932,6 +984,10 @@ export function RacePlanner() {
                       <> · altitude {altitude}%: {alt.max_penalty > 0
                         ? <>up to +{(alt.max_penalty * 100).toFixed(1)}% pace on the high segments, {fmtElapsed(alt.added_h)} added, measured from {alt.home_assumed ? "SEA LEVEL (set your home elevation in settings)" : `${u.elev(alt.home_ft)} ${u.elevUnit} home`}</>
                         : <>off</>}</>
+                    )}
+                    {showAltitude && (
+                      <> · acclimation {acclimation.days} day{acclimation.days === 1 ? "" : "s"} · {acclimSource}
+                        {acclimation.arrivalDate && <> (arrive {acclimation.arrivalDate})</>}</>
                     )}
                   </span>
                 </>

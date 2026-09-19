@@ -124,12 +124,26 @@ export type TrainingClimb = {
   strava_url?: string;
 };
 
+/** One run's distance-weighted mean elevation, out of its cached altitude
+    stream. The streams themselves live in a gitignored cache the browser
+    cannot read, so this one number rides along in climbs.json for the
+    altitude back-test (web/src/race/calibration.ts). */
+export type ActivityElevation = {
+  activity_id: string | number;
+  date: string;
+  mean_ele_ft: number;
+};
+
 export type ClimbsSnapshot = {
   fetched_at: string;
   window_days: number;
   activities_scanned: number;
   activities_pending: number;
   climbs: TrainingClimb[];
+  /** Optional: a climbs.json written before PRD-v2 §2 has none, and the
+      back-test then reports "no per-activity elevations yet" rather than
+      treating every run as low. */
+  activity_elevations?: ActivityElevation[];
 };
 
 /* ------------------------------------------------------------------ */
@@ -415,6 +429,23 @@ export type ActiveBlock = (RaceBlock & { mode: "race" }) | RollingBlock;
     in train mode; in view mode `active` is null, `viewing` names an archived
     or draft race being browsed read-only, and `training` carries the
     goals-based window the coach is really working from. */
+/** When the athlete reaches the race's elevation, and where that came from
+    — derived server-side by scripts/acclimation.mjs from the calendar's
+    classified travel events. The planner's manual override is NOT in here:
+    it lives in the browser, per slug, and is applied on top (so `source`
+    arrives as "calendar" or "default" and only ever becomes "override"
+    client-side). */
+export type Acclimation = {
+  /** YYYY-MM-DD, or null when the race has no date to count back from */
+  arrival_date: string | null;
+  /** whole days between arrival and race day, >= 0 */
+  days_at_altitude: number;
+  source: "calendar" | "default" | "override";
+  /** present only for source "calendar" — so the planner can name the event
+      instead of asking the athlete to trust a bare number */
+  matched_event?: { summary: string; start: string; end: string | null; location: string | null };
+};
+
 export type ActiveRaceResponse = {
   active: string | null;
   /** "train" = `viewing` is the training target; "view" = read-only browsing. */
@@ -441,6 +472,11 @@ export type ActiveRaceResponse = {
       first (PRD-v2 §3). Always present; empty in view and generic mode,
       where there is no A-race block for one to belong to. */
   b_races?: BRaceSummary[];
+  /** Train mode only (PRD-v2 §2): the arrival at altitude behind the
+      projection's acclimation credit. Absent in view and generic mode —
+      the planner then falls back to the same day-before default the server
+      would have derived. */
+  acclimation?: Acclimation;
   /** local config was broken and the server fell back to generic mode */
   warning?: string;
 };
