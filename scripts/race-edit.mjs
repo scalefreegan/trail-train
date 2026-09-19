@@ -24,6 +24,14 @@ import { LOW_CONFIDENCE, matchAidStations, parseGpx } from "./aid-match.mjs";
 import { RACE_STATUSES, applyingPath, listRaces, raceDir, loadRaceFolder, validateRaceJson } from "./race-config.mjs";
 import { collectUnresolved, draftValidationErrors } from "./race-intake.mjs";
 import { courseMismatches } from "./build-course.mjs";
+import { raceStart, raceLocalParts, isValidTimeZone } from "./clock.mjs";
+
+/** An aid-station name past this is not a transcription, it's abuse (PR #23
+    review round 1, resilience finding 10: an unbounded name survived a save
+    with no layout guard on the other end). Generous on purpose — the
+    longest real names here run to "Cross Mountain / Cunningham Creek #5" —
+    but 5,000 characters is not a name. */
+const MAX_STATION_NAME_LEN = 80;
 
 /** The synthetic (not a real race.json field path) unresolved entry name the
     course.gpx distance/gain mismatch is flagged under — shared with
@@ -127,14 +135,18 @@ function deleteAtPath(obj, pathStr) {
  * saves a whole table at once and a one-error-at-a-time save is a slot machine.
  *
  * @param {unknown} body
- * @param {{stationCount?: number, unresolved?: string[]}} ctx
+ * @param {{stationCount?: number, unresolved?: string[], aidStations?: object[]}} ctx
  *   unresolved: the folder's CURRENT unresolved list — `unresolved_fills` may
  *   only name a path that is on it, which is what keeps a free-form path write
  *   from being a way around the whitelist.
+ *   aidStations: the folder's CURRENT race.aid_stations, used only to name a
+ *   station in a message (its own or the one it collides with) and to detect
+ *   a gpx_wpt handed to two stations at once — never mutated.
  * @returns {{ok: boolean, errors: string[], code: "bad_request"|null}}
  */
-export function validateRaceEdit(body, { stationCount = 0, unresolved = [] } = {}) {
+export function validateRaceEdit(body, { stationCount = 0, unresolved = [], aidStations = [] } = {}) {
   const open = (unresolved ?? []).filter((u) => typeof u === "string");
+  const current = Array.isArray(aidStations) ? aidStations : [];
   const errors = [];
   const bad = (m) => errors.push(m);
   const done = () => ({ ok: errors.length === 0, errors, code: errors.length ? "bad_request" : null });
@@ -156,31 +168,75 @@ export function validateRaceEdit(body, { stationCount = 0, unresolved = [] } = {
 
   if (body.aid_stations !== undefined) {
     if (!Array.isArray(body.aid_stations)) bad("aid_stations: array of {index, …} edits required");
-    else body.aid_stations.forEach((row, i) => {
-      const at = `aid_stations[${i}]`;
-      if (!isObj(row)) { bad(`${at}: object required`); return; }
-      if (!isInt(row.index) || row.index < 0 || row.index >= stationCount) {
-        bad(`${at}.index: integer 0..${Math.max(0, stationCount - 1)} required (got ${JSON.stringify(row.index)})`);
-      }
-      for (const k of Object.keys(row)) {
-        if (k !== "index" && !EDITABLE_AID_FIELDS.includes(k)) {
-          bad(`${at}.${k}: not an editable aid-station field (editable: ${EDITABLE_AID_FIELDS.join(", ")})`);
+    else {
+      // The message names the STATION being edited (its resolved index into
+      // race.aid_stations, plus its current name), not its position inside
+      // this request's own patch array (PR #23 review round 1, resilience
+      // finding 9: a save touching only station 3 reported errors as
+      // "aid_stations[0]" — the patch's own index 0 — leaving the athlete to
+      // guess which of the 13 rows the message meant). Falls back to the
+      // patch position only when the row's own index doesn't resolve to a
+      // real station, since there is no station to name yet.
+      const label = (row, i) => {
+        const idxValid = isInt(row?.index) && row.index >= 0 && row.index < stationCount;
+        const at = idxValid ? `aid_stations[${row.index}]` : `aid_stations[${i}]`;
+        const name = idxValid ? current[row.index]?.name : undefined;
+        return isStr(name) ? `${at} (${name})` : at;
+      };
+      body.aid_stations.forEach((row, i) => {
+        const at = label(row, i);
+        if (!isObj(row)) { bad(`${at}: object required`); return; }
+        if (!isInt(row.index) || row.index < 0 || row.index >= stationCount) {
+          bad(`${at}.index: integer 0..${Math.max(0, stationCount - 1)} required (got ${JSON.stringify(row.index)})`);
+        }
+        for (const k of Object.keys(row)) {
+          if (k !== "index" && !EDITABLE_AID_FIELDS.includes(k)) {
+            bad(`${at}.${k}: not an editable aid-station field (editable: ${EDITABLE_AID_FIELDS.join(", ")})`);
+          }
+        }
+        if (row.name !== undefined && !isStr(row.name)) bad(`${at}.name: non-empty string required`);
+        if (row.name !== undefined && isStr(row.name) && row.name.length > MAX_STATION_NAME_LEN) {
+          bad(`${at}.name: at most ${MAX_STATION_NAME_LEN} characters (got ${row.name.length})`);
+        }
+        if (row.total_mi !== undefined && (!isNum(row.total_mi) || row.total_mi < 0)) {
+          bad(`${at}.total_mi: non-negative number required`);
+        }
+        if (row.cutoff_h !== undefined && row.cutoff_h !== null && (!isNum(row.cutoff_h) || row.cutoff_h <= 0)) {
+          bad(`${at}.cutoff_h: positive number or null required`);
+        }
+        for (const k of ["crew", "drop_bag", "pacers"]) {
+          if (row[k] !== undefined && typeof row[k] !== "boolean") bad(`${at}.${k}: boolean required`);
+        }
+        if (row.gpx_wpt !== undefined && row.gpx_wpt !== null && !isStr(row.gpx_wpt)) {
+          bad(`${at}.gpx_wpt: non-empty string or null required`);
+        }
+      });
+
+      // A waypoint already mapped to a DIFFERENT station (PR #23 review
+      // round 1, draft finding 3): picking it for this row used to render as
+      // "unmapped" client-side while silently saving the duplicate — both
+      // stations end up snapped to the same GPX point, and the one that
+      // "lost" the pick drops out of `unresolved` unnoticed. Checked against
+      // the EFFECTIVE table (current stations with this request's own edits
+      // applied), so two rows in the same save that swap waypoints with each
+      // other are not flagged against their own pre-edit values.
+      const effectiveWpt = current.map((s) => (isStr(s?.gpx_wpt) ? s.gpx_wpt : null));
+      for (const row of body.aid_stations) {
+        if (isObj(row) && isInt(row.index) && row.index >= 0 && row.index < stationCount && "gpx_wpt" in row) {
+          effectiveWpt[row.index] = isStr(row.gpx_wpt) ? row.gpx_wpt : null;
         }
       }
-      if (row.name !== undefined && !isStr(row.name)) bad(`${at}.name: non-empty string required`);
-      if (row.total_mi !== undefined && (!isNum(row.total_mi) || row.total_mi < 0)) {
-        bad(`${at}.total_mi: non-negative number required`);
+      for (const row of body.aid_stations) {
+        if (!isObj(row) || !isStr(row.gpx_wpt)) continue;
+        if (!isInt(row.index) || row.index < 0 || row.index >= stationCount) continue;
+        const otherIdx = effectiveWpt.findIndex((w, idx) => idx !== row.index && w === row.gpx_wpt);
+        if (otherIdx === -1) continue;
+        const thisLabel = label(row, row.index);
+        const otherName = current[otherIdx]?.name;
+        const otherLabel = isStr(otherName) ? `aid_stations[${otherIdx}] (${otherName})` : `aid_stations[${otherIdx}]`;
+        bad(`${thisLabel}.gpx_wpt: "${row.gpx_wpt}" is already mapped to ${otherLabel} — a waypoint can only name one station`);
       }
-      if (row.cutoff_h !== undefined && row.cutoff_h !== null && (!isNum(row.cutoff_h) || row.cutoff_h <= 0)) {
-        bad(`${at}.cutoff_h: positive number or null required`);
-      }
-      for (const k of ["crew", "drop_bag", "pacers"]) {
-        if (row[k] !== undefined && typeof row[k] !== "boolean") bad(`${at}.${k}: boolean required`);
-      }
-      if (row.gpx_wpt !== undefined && row.gpx_wpt !== null && !isStr(row.gpx_wpt)) {
-        bad(`${at}.gpx_wpt: non-empty string or null required`);
-      }
-    });
+    }
   }
 
   if (body.date !== undefined && body.date !== null) {
@@ -203,8 +259,17 @@ export function validateRaceEdit(body, { stationCount = 0, unresolved = [] } = {
     }
   }
 
-  if (body.unresolved_acknowledged !== undefined && typeof body.unresolved_acknowledged !== "boolean") {
-    bad("unresolved_acknowledged: boolean required");
+  if (body.unresolved_acknowledged !== undefined) {
+    const v = body.unresolved_acknowledged;
+    // string[] is the current contract (see race-config.mjs's doc comment on
+    // the field) — the specific paths the athlete ticked. A plain `boolean`
+    // is still accepted for a caller that only ever meant "acknowledge
+    // everything currently open" (or "nothing"); applyRaceEdit expands
+    // `true` against the folder's own `unresolved` before it is stamped, so
+    // nothing downstream of a save ever sees the legacy shape again.
+    if (typeof v !== "boolean" && !(Array.isArray(v) && v.every((p) => typeof p === "string"))) {
+      bad("unresolved_acknowledged: boolean or array of unresolved field paths required");
+    }
   }
 
   if (body.unresolved_fills !== undefined) {
@@ -268,6 +333,20 @@ export function applyRaceEdit(race, body, { at = new Date().toISOString() } = {}
   const written = [];
   const stamp = (field) => { next.provenance[field] = { by: "user", at }; written.push(field); };
 
+  // seg_mi (every station's distance) and cutoff_clock (this station's own
+  // cutoff, as a wall-clock time) are DERIVED, not entered — but they were
+  // never recomputed when the value they derive from changed (PR #23 review
+  // round 1, draft finding 9), so an edited total_mi or cutoff_h left
+  // race.json internally inconsistent: correct for anything that reads
+  // total_mi/cutoff_h (the web client does), silently stale for anything
+  // that trusts seg_mi/cutoff_clock straight off the file (a script, the
+  // crew-sheet generator, a future consumer). Tracked before the edit loop
+  // mutates anything, so a same-value write (station[k] === row[k], skipped
+  // below) does not trigger a recompute it doesn't need.
+  const touchedMileOrCutoff = (body.aid_stations ?? []).some(
+    (row) => isObj(row) && ("total_mi" in row || "cutoff_h" in row),
+  );
+
   for (const row of body.aid_stations ?? []) {
     const station = next.aid_stations?.[row.index];
     if (!isObj(station)) continue;
@@ -278,6 +357,8 @@ export function applyRaceEdit(race, body, { at = new Date().toISOString() } = {}
       stamp(`aid_stations[${row.index}].${k}`);
     }
   }
+
+  if (touchedMileOrCutoff) recomputeSegAndCutoffClock(next);
 
   if ("date" in body && next.date !== body.date) {
     next.date = body.date;
@@ -294,9 +375,22 @@ export function applyRaceEdit(race, body, { at = new Date().toISOString() } = {}
     }
   }
 
-  if ("unresolved_acknowledged" in body && next.unresolved_acknowledged !== body.unresolved_acknowledged) {
-    next.unresolved_acknowledged = body.unresolved_acknowledged;
-    stamp("unresolved_acknowledged");
+  // A legacy boolean (or absent/false) is migrated to the concrete list it
+  // meant on THIS folder's own stored `unresolved` (see acknowledgedPaths and
+  // race-config.mjs's doc comment on the field) unconditionally, so the
+  // on-disk shape moves to string[] on the very next save regardless of
+  // whether this save touches acknowledgement itself.
+  next.unresolved_acknowledged = acknowledgedPaths(race);
+
+  if ("unresolved_acknowledged" in body) {
+    const raw = body.unresolved_acknowledged;
+    const newVal = typeof raw === "boolean"
+      ? acknowledgedPaths({ unresolved_acknowledged: raw, unresolved: race.unresolved })
+      : [...new Set((Array.isArray(raw) ? raw : []).filter(isStr))].sort();
+    if (JSON.stringify(newVal) !== JSON.stringify(next.unresolved_acknowledged)) {
+      next.unresolved_acknowledged = newVal;
+      stamp("unresolved_acknowledged");
+    }
   }
 
   for (const [p, v] of Object.entries(body.unresolved_fills ?? {})) {
@@ -318,6 +412,54 @@ export function applyRaceEdit(race, body, { at = new Date().toISOString() } = {}
   }
 
   return { race: next, written, block_targets: blockTargets };
+}
+
+/** Recompute every station's `seg_mi` (from the previous station's total_mi)
+    and, where the race's own clock fields support it, its `cutoff_clock` —
+    called whenever an edit touches any station's total_mi or cutoff_h (PR
+    #23 review round 1, draft finding 9: editing one station's mile or cutoff
+    left BOTH that station's own seg_mi/cutoff_clock and the NEXT station's
+    seg_mi stale, since neither derived field was ever recomputed off the new
+    total_mi/cutoff_h — invisible to the web client, which recomputes both
+    itself, but wrong for anything that reads race.json directly). Mutates
+    `race.aid_stations` in place; not stamped in `written` — these are
+    computed, not something the athlete typed.
+    @param {object} race a race object already holding the edited total_mi/
+      cutoff_h values (mutated by the caller's own edit loop, just above) */
+function recomputeSegAndCutoffClock(race) {
+  const stations = Array.isArray(race.aid_stations) ? race.aid_stations : [];
+  let prevMi = 0;
+  for (const s of stations) {
+    if (!isObj(s)) continue;
+    if (isNum(s.total_mi)) {
+      // Rounded: total_mi is entered to a tenth of a mile, and a bare
+      // subtraction (80.2 - 71.3) lands on 8.899999999999999 in IEEE 754.
+      s.seg_mi = Math.round((s.total_mi - prevMi) * 1000) / 1000;
+      prevMi = s.total_mi;
+    }
+    s.cutoff_clock = computeCutoffClock(race, s.cutoff_h);
+  }
+}
+
+/** The wall-clock time a station's cutoff_h falls at, in the race's own
+    zone — "HH:MM", 24-hour; a day-offset marker ("+1") is a display concern
+    the client's own clock formatter already owns, not something race.json
+    carries. null when there is nothing to derive it from: no posted cutoff,
+    or a race whose date/start_time/timezone are not all set yet (legal for
+    a draft).
+    @param {object} race
+    @param {unknown} cutoffH
+    @returns {string|null} */
+function computeCutoffClock(race, cutoffH) {
+  if (!isNum(cutoffH)) return null;
+  if (!isStr(race.date) || !isStr(race.start_time) || !isValidTimeZone(race.timezone)) return null;
+  let start;
+  try { start = raceStart(race.date, race.start_time, race.timezone); }
+  catch { return null; }
+  if (Number.isNaN(start.getTime())) return null;
+  const at = new Date(start.getTime() + cutoffH * 3600000);
+  const { hour, minute } = raceLocalParts(at, race.timezone);
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
 /**
@@ -398,6 +540,27 @@ export function unresolvedFromMatches(stations = [], matches = [], waypointNames
 }
 
 /**
+ * `unresolved_acknowledged` normalized to the string[] contract (see
+ * race-config.mjs's doc comment on the field): the specific unresolved paths
+ * the athlete has ticked. A legacy boolean `true` is migrated against THIS
+ * SAME race object's own stored `unresolved` — never a freshly recomputed
+ * one — so a field that only becomes unresolved later (e.g. a matcher
+ * re-run surfaces a fresh aid_stations[i].gpx_wpt) is not swept in by an old
+ * blanket acknowledgement (PR #23 review round 1, resilience finding 3).
+ * `false`/absent/anything else is "nothing acknowledged".
+ * @param {object} race
+ * @returns {string[]}
+ */
+export function acknowledgedPaths(race) {
+  const v = race?.unresolved_acknowledged;
+  if (Array.isArray(v)) return v.filter((p) => typeof p === "string");
+  if (v === true) {
+    return (Array.isArray(race?.unresolved) ? race.unresolved : []).filter((p) => typeof p === "string");
+  }
+  return [];
+}
+
+/**
  * Drop the acknowledged holes, so they read as "not known" instead of "null".
  *
  * The schema's way of saying a field is unknown is for the key to be ABSENT:
@@ -417,9 +580,11 @@ export function unresolvedFromMatches(stations = [], matches = [], waypointNames
 export function pruneAcknowledgedNulls(race, unresolved = []) {
   const next = structuredClone(race);
   const pruned = [];
-  if (next.unresolved_acknowledged !== true) return { race: next, pruned };
+  const acked = new Set(acknowledgedPaths(race));
+  if (acked.size === 0) return { race: next, pruned };
   for (const p of unresolved) {
     if (typeof p !== "string" || UNFILLABLE_ROOTS.has(p.split(/[.[]/)[0])) continue;
+    if (!acked.has(p)) continue;
     if (valueAtPath(next, p) !== null) continue;
     if (deleteAtPath(next, p)) pruned.push(p);
   }
@@ -479,12 +644,18 @@ export function validateStatusTransition(race, req, { unresolved = [], otherActi
   }
 
   // The review gate, in the order a human would ask it: is every hole either
-  // filled or consciously accepted…
+  // filled or consciously accepted — per field, against the CURRENT
+  // unresolved list, not a blanket flag (PR #23 review round 1, resilience
+  // finding 3: a global "acknowledged" boolean let a field that only became
+  // unresolved after the last acknowledgement — a matcher re-run's fresh
+  // aid_stations[i].gpx_wpt — through unacknowledged).
   const open = (unresolved ?? []).filter((u) => typeof u === "string" && u.trim());
-  if (open.length && race.unresolved_acknowledged !== true) {
+  const acked = new Set(acknowledgedPaths(race));
+  const missing = open.filter((p) => !acked.has(p));
+  if (missing.length) {
     return fail([
-      `${open.length} unresolved field${open.length > 1 ? "s" : ""} — fill them in or acknowledge each one before activating:`,
-      ...open,
+      `${missing.length} unresolved field${missing.length > 1 ? "s" : ""} — fill them in or acknowledge each one before activating:`,
+      ...missing,
     ]);
   }
 
@@ -519,6 +690,10 @@ export function otherActiveSlugs(races, slug) {
 export function applyStatus(race, status, { at = new Date().toISOString(), unresolved = [] } = {}) {
   const { race: next } = pruneAcknowledgedNulls(race, unresolved);
   next.status = status;
+  // Normalize the legacy boolean here too: activation is the one moment a
+  // folder is guaranteed to get a fresh write, so it is also the last place
+  // a race that never went through a PUT edit could still be carrying `true`.
+  next.unresolved_acknowledged = acknowledgedPaths(race);
   next.provenance = isObj(next.provenance) ? { ...next.provenance } : {};
   next.provenance.status = { by: "user", at };
   return next;
@@ -669,7 +844,13 @@ export async function loadReview(root, slug) {
     matches,
     unresolved,
     unresolved_hints: unresolvedHints,
-    unresolved_acknowledged: race.unresolved_acknowledged === true,
+    // string[] of acknowledged paths (PR #23 review round 1, resilience
+    // finding 3) — NOT the old blanket boolean. A legacy `true` is migrated
+    // against race.json's OWN stored `unresolved`, so a path this same read
+    // just surfaced live (gpxUnresolved, courseMismatchLive, sunUnresolvedLive
+    // above) and that was never in that stored list comes back UNacknowledged
+    // — the client checks a path's presence in this array, not a flag.
+    unresolved_acknowledged: acknowledgedPaths(race),
     schema_errors: schemaErrors,
     // Whether "Activate" can light up at all, answered by the same function
     // the POST will use — so the button and the server never disagree.

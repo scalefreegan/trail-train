@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import {
   EDITABLE_AID_FIELDS,
   EDITABLE_RACE_KEYS,
+  acknowledgedPaths,
   applyBlockTargetsEdit,
   applyRaceEdit,
   applyStatus,
@@ -24,6 +25,7 @@ import {
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { raceStart, raceLocalParts } from "./clock.mjs";
 
 /** A minimal race.json that validateRaceJson accepts outright. `sun` is set
     (features.night defaults to ON, and validateStatusTransition now refuses
@@ -154,6 +156,67 @@ test("validateRaceEdit collects every problem rather than stopping at the first"
   assert.equal(r.errors.length, 3, r.errors.join(" | "));
 });
 
+/* -------------- 400 messages name the STATION, not the patch position (R9) ------------- */
+
+test("a validation error names the resolved station — index and name — not its position in the patch array", () => {
+  // PR #23 review round 1, resilience finding 9: a save touching only
+  // station 2 (patch array position 0) used to report "aid_stations[0]",
+  // the patch's own index — not station 2's real index or name.
+  const aidStations = race().aid_stations;
+  const r = validateRaceEdit({ aid_stations: [{ index: 2, total_mi: -5 }] }, { ...ctx, aidStations });
+  assert.equal(r.ok, false);
+  assert.match(r.errors.join(" | "), /aid_stations\[2\] \(Finish\)\.total_mi: non-negative number required/);
+  assert.ok(!r.errors.join(" | ").includes("aid_stations[0]"));
+});
+
+test("a validation error falls back to the patch position when the row's own index does not resolve", () => {
+  const r = validateRaceEdit({ aid_stations: [{ index: 99, name: "" }] }, { ...ctx, aidStations: race().aid_stations });
+  assert.match(r.errors.join(" | "), /aid_stations\[0\]\.index: integer 0\.\.2 required/);
+});
+
+/* -------------------------- duplicate gpx_wpt (D3) ----------------------- */
+
+test("validateRaceEdit refuses a gpx_wpt already mapped to a different station, naming both", () => {
+  const aidStations = race().aid_stations.map((s, i) => (i === 1 ? { ...s, gpx_wpt: "#1 Cascade" } : s));
+  const r = validateRaceEdit({ aid_stations: [{ index: 0, gpx_wpt: "#1 Cascade" }] }, { ...ctx, aidStations });
+  assert.equal(r.ok, false);
+  assert.match(
+    r.errors.join(" | "),
+    /aid_stations\[0\] \(Start\)\.gpx_wpt: "#1 Cascade" is already mapped to aid_stations\[1\] \(Cross Mountain\)/,
+  );
+});
+
+test("validateRaceEdit allows two stations in the same save to swap waypoints with each other", () => {
+  const aidStations = race().aid_stations.map((s, i) => (
+    i === 0 ? { ...s, gpx_wpt: "A" } : i === 1 ? { ...s, gpx_wpt: "B" } : s
+  ));
+  const r = validateRaceEdit(
+    { aid_stations: [{ index: 0, gpx_wpt: "B" }, { index: 1, gpx_wpt: "A" }] },
+    { ...ctx, aidStations },
+  );
+  assert.equal(r.ok, true, r.errors.join("; "));
+});
+
+test("validateRaceEdit does not flag a gpx_wpt against itself when the row also carries other edits", () => {
+  const aidStations = race().aid_stations.map((s, i) => (i === 1 ? { ...s, gpx_wpt: "#1 Cascade" } : s));
+  const r = validateRaceEdit(
+    { aid_stations: [{ index: 1, name: "Cross Mtn", gpx_wpt: "#1 Cascade" }] },
+    { ...ctx, aidStations },
+  );
+  assert.equal(r.ok, true, r.errors.join("; "));
+});
+
+/* --------------------------- name length cap (R10) ------------------------ */
+
+test("validateRaceEdit caps an aid-station name (R10)", () => {
+  const r = validateRaceEdit({ aid_stations: [{ index: 0, name: "Z".repeat(5000) }] }, ctx);
+  assert.equal(r.ok, false);
+  assert.match(r.errors.join(" | "), /name: at most 80 characters \(got 5000\)/);
+
+  const ok = validateRaceEdit({ aid_stations: [{ index: 0, name: "Z".repeat(80) }] }, ctx);
+  assert.equal(ok.ok, true, ok.errors.join("; "));
+});
+
 /* --------------------------- provenance stamp --------------------------- */
 
 test("applyRaceEdit stamps user provenance on every field it changes", () => {
@@ -194,6 +257,52 @@ test("applyRaceEdit does not mutate the race it is given", () => {
   assert.deepEqual(before, snapshot);
 });
 
+/* ------------------- seg_mi / cutoff_clock stay consistent (D9) ---------- */
+
+test("applyRaceEdit recomputes seg_mi and cutoff_clock when total_mi or cutoff_h changes", () => {
+  const before = race({
+    aid_stations: [
+      { name: "Start", total_mi: 0, cutoff_h: null, crew: true, drop_bag: false, pacers: false },
+      { name: "Ryman Creek #9", total_mi: 71.3, cutoff_h: 26, crew: true, drop_bag: true, pacers: true },
+      { name: "Corral #9", total_mi: 79.9, cutoff_h: 29.5, crew: true, drop_bag: true, pacers: true },
+      { name: "Finish", total_mi: 100, cutoff_h: 36, crew: true, drop_bag: false, pacers: false },
+    ],
+  });
+  const { race: next } = applyRaceEdit(before, {
+    aid_stations: [{ index: 2, name: "Corral #9 (Coral)", total_mi: 80.2, cutoff_h: 30 }],
+  }, { at: AT });
+
+  // PR #23 review round 1, draft finding 9's exact repro: seg_mi used to
+  // stay at the PRE-edit 8.6 and cutoff_clock at the PRE-edit 11:30, and the
+  // NEXT station's seg_mi (Finish) was untouched too.
+  assert.equal(next.aid_stations[2].seg_mi, 8.9); // 80.2 - 71.3
+  assert.equal(next.aid_stations[3].seg_mi, 19.8); // 100 - 80.2
+  assert.equal(next.aid_stations[1].seg_mi, 71.3); // recomputed on the same pass, value unchanged
+
+  const expectedClock = raceLocalParts(
+    new Date(raceStart(next.date, next.start_time, next.timezone).getTime() + 30 * 3600000),
+    next.timezone,
+  );
+  const hh = String(expectedClock.hour).padStart(2, "0");
+  const mm = String(expectedClock.minute).padStart(2, "0");
+  assert.equal(next.aid_stations[2].cutoff_clock, `${hh}:${mm}`);
+});
+
+test("applyRaceEdit leaves cutoff_clock null when the race has no date/timezone yet (legal for a draft)", () => {
+  const before = race({ date: null, timezone: null });
+  const { race: next } = applyRaceEdit(before, {
+    aid_stations: [{ index: 1, cutoff_h: 20 }],
+  }, { at: AT });
+  assert.equal(next.aid_stations[1].cutoff_clock, null);
+});
+
+test("applyRaceEdit does not touch seg_mi/cutoff_clock when neither total_mi nor cutoff_h is edited", () => {
+  const before = race();
+  const { race: next } = applyRaceEdit(before, { aid_stations: [{ index: 1, crew: false }] }, { at: AT });
+  assert.equal(next.aid_stations[1].seg_mi, undefined);
+  assert.equal(next.aid_stations[1].cutoff_clock, undefined);
+});
+
 test("applyRaceEdit returns block targets narrowed to the three keys block.json holds", () => {
   const { race: next, block_targets, written } = applyRaceEdit(race(), {
     block_targets: [{ wk: 1, target_dist: 40, target_elev: 6000 }],
@@ -222,11 +331,40 @@ test("applyBlockTargetsEdit preserves other provenance keys a future field might
   assert.deepEqual(next.provenance.targets, { by: "user", at: AT });
 });
 
-test("applyRaceEdit records the acknowledgement as a user-provenance field", () => {
-  const { race: next, written } = applyRaceEdit(race(), { unresolved_acknowledged: true }, { at: AT });
-  assert.equal(next.unresolved_acknowledged, true);
+test("applyRaceEdit records an explicit acknowledgement list as a user-provenance field", () => {
+  const before = race({ unresolved: ["links.tracking", "elevation.min_ft"] });
+  const { race: next, written } = applyRaceEdit(before, { unresolved_acknowledged: ["links.tracking"] }, { at: AT });
+  assert.deepEqual(next.unresolved_acknowledged, ["links.tracking"]);
   assert.deepEqual(next.provenance.unresolved_acknowledged, { by: "user", at: AT });
   assert.deepEqual(written, ["unresolved_acknowledged"]);
+});
+
+test("applyRaceEdit expands a legacy boolean sent in the body against the folder's OWN stored unresolved", () => {
+  const before = race({ unresolved: ["links.tracking", "elevation.min_ft"] });
+  const { race: next } = applyRaceEdit(before, { unresolved_acknowledged: true }, { at: AT });
+  assert.deepEqual(next.unresolved_acknowledged, ["links.tracking", "elevation.min_ft"]);
+});
+
+test("applyRaceEdit migrates a legacy boolean already on disk to the array shape even on an unrelated save", () => {
+  // PR #23 review round 1, resilience finding 3: the on-disk shape moves to
+  // string[] on the very next save whether or not that save touches
+  // acknowledgement at all — and this migration is bookkeeping, not
+  // something the athlete chose to change this time, so it is not stamped.
+  const before = race({ unresolved: ["links.tracking"], unresolved_acknowledged: true });
+  const { race: next, written } = applyRaceEdit(before, { date: "2027-08-14" }, { at: AT });
+  assert.deepEqual(next.unresolved_acknowledged, ["links.tracking"]);
+  assert.ok(!written.includes("unresolved_acknowledged"), written.join(", "));
+});
+
+test("acknowledgedPaths never retroactively acknowledges a path the folder's stored unresolved never named", () => {
+  // The exact resilience-round-1 repro: race.json says
+  // unresolved: ["links.tracking"], unresolved_acknowledged: true — a
+  // freshly-surfaced aid_stations[0].gpx_wpt (a matcher re-run, never
+  // persisted to the stored list) must NOT come back acknowledged.
+  const before = race({ unresolved: ["links.tracking"], unresolved_acknowledged: true });
+  const acked = acknowledgedPaths(before);
+  assert.deepEqual(acked, ["links.tracking"]);
+  assert.ok(!acked.includes("aid_stations[0].gpx_wpt"));
 });
 
 /* ------------------------ unresolved recomputation ---------------------- */
@@ -297,11 +435,22 @@ test("unresolved fields block activation until they are acknowledged", () => {
   assert.ok(blocked.errors.includes("elevation.min_ft"));
 
   const acked = validateStatusTransition(
-    race({ unresolved_acknowledged: true }),
+    race({ unresolved: ["elevation.min_ft", "links.tracking"], unresolved_acknowledged: true }),
     { status: "active" },
     { unresolved: ["elevation.min_ft", "links.tracking"] },
   );
   assert.equal(acked.ok, true, acked.errors.join("; "));
+
+  // per-field: acknowledging only ONE of two open paths still blocks (PR #23
+  // review round 1, resilience finding 3 — the whole point of the array
+  // contract over the old blanket boolean).
+  const partial = validateStatusTransition(
+    race({ unresolved: ["elevation.min_ft", "links.tracking"], unresolved_acknowledged: ["elevation.min_ft"] }),
+    { status: "active" },
+    { unresolved: ["elevation.min_ft", "links.tracking"] },
+  );
+  assert.equal(partial.ok, false);
+  assert.ok(partial.errors.includes("links.tracking"));
 });
 
 test("only a draft activates — an active or archived folder is refused", () => {
@@ -328,7 +477,7 @@ test("an acknowledgement does not excuse a race.json that is not valid as an act
   // `date: null` is a legal DRAFT (race-intake excuses a listed hole) and an
   // illegal active race — this is the line the review gate exists to hold.
   const r = validateStatusTransition(
-    race({ date: null, unresolved_acknowledged: true }),
+    race({ date: null, unresolved: ["date"], unresolved_acknowledged: true }),
     { status: "active" },
     { unresolved: ["date"] },
   );
@@ -413,7 +562,10 @@ test("applyRaceEdit will not invent a container a fill path passes through", () 
 /* ------------------- acknowledged holes become absences ------------------ */
 
 test("an acknowledged null is recorded as an ABSENT key, which is how the schema says \"not known\"", () => {
-  const r = race({ elevation: { min_ft: null, max_ft: 12438 }, links: { tracking: null }, unresolved_acknowledged: true });
+  const r = race({
+    elevation: { min_ft: null, max_ft: 12438 }, links: { tracking: null },
+    unresolved: ["elevation.min_ft", "links.tracking"], unresolved_acknowledged: true,
+  });
   const { race: next, pruned } = pruneAcknowledgedNulls(r, ["elevation.min_ft", "links.tracking"]);
   assert.deepEqual(pruned.sort(), ["elevation.min_ft", "links.tracking"]);
   assert.equal("min_ft" in next.elevation, false);
@@ -429,22 +581,25 @@ test("pruneAcknowledgedNulls does nothing until the holes are acknowledged", () 
 });
 
 test("acknowledging an optional null lets the draft activate; a required one still does not", () => {
-  const optional = race({ elevation: { min_ft: null }, unresolved_acknowledged: true });
+  const optional = race({ elevation: { min_ft: null }, unresolved: ["elevation.min_ft"], unresolved_acknowledged: true });
   assert.equal(
     validateStatusTransition(optional, { status: "active" }, { unresolved: ["elevation.min_ft"] }).ok,
     true,
   );
-  const required = race({ date: null, unresolved_acknowledged: true });
+  const required = race({ date: null, unresolved: ["date"], unresolved_acknowledged: true });
   const r = validateStatusTransition(required, { status: "active" }, { unresolved: ["date"] });
   assert.equal(r.ok, false);
   assert.match(r.errors.join(" "), /date must be a YYYY-MM-DD/);
 });
 
 test("applyStatus prunes the acknowledged holes it was validated against", () => {
-  const r = race({ elevation: { min_ft: null, max_ft: 12438 }, unresolved_acknowledged: true });
+  const r = race({ elevation: { min_ft: null, max_ft: 12438 }, unresolved: ["elevation.min_ft"], unresolved_acknowledged: true });
   const next = applyStatus(r, "active", { at: AT, unresolved: ["elevation.min_ft"] });
   assert.equal(next.status, "active");
   assert.equal("min_ft" in next.elevation, false);
+  // the on-disk field is also migrated to the array shape here, the same
+  // rule applyRaceEdit follows on an ordinary save.
+  assert.deepEqual(next.unresolved_acknowledged, ["elevation.min_ft"]);
 });
 
 /* ------------------------------ block staleness --------------------------- */
@@ -606,7 +761,7 @@ test("a day race (features.night: false) with no sun is an ordinary unresolved h
   assert.ok(!/night sections/.test(unacked.errors.join(" ")), unacked.errors.join(" | "));
 
   const acked = validateStatusTransition(
-    { ...dayRace, unresolved_acknowledged: true },
+    { ...dayRace, unresolved: ["sun"], unresolved_acknowledged: true },
     { status: "active" },
     { unresolved: ["sun"] },
   );

@@ -1529,7 +1529,7 @@ function raceEditApi(): Plugin {
   const BODY_MAX_BYTES = 512 * 1024
 
   type RaceEditMod = {
-    validateRaceEdit: (body: unknown, ctx: { stationCount: number; unresolved: string[] }) => { ok: boolean; errors: string[]; code: string | null }
+    validateRaceEdit: (body: unknown, ctx: { stationCount: number; unresolved: string[]; aidStations?: unknown[] }) => { ok: boolean; errors: string[]; code: string | null }
     applyRaceEdit: (race: Record<string, unknown>, body: Record<string, unknown>, opts: { at: string }) =>
       { race: Record<string, unknown>; written: string[]; block_targets: Record<string, number>[] | null }
     applyBlockTargetsEdit: (block: Record<string, unknown>, targets: Record<string, number>[], opts: { at: string }) =>
@@ -1654,7 +1654,11 @@ function raceEditApi(): Plugin {
           const review = await mod.loadReview(projectRoot, slug)
           const before = review.race as Record<string, unknown>
           const stationCount = Array.isArray(before.aid_stations) ? before.aid_stations.length : 0
-          const shape = mod.validateRaceEdit(body, { stationCount, unresolved: review.unresolved as string[] })
+          const shape = mod.validateRaceEdit(body, {
+            stationCount,
+            unresolved: review.unresolved as string[],
+            aidStations: Array.isArray(before.aid_stations) ? before.aid_stations : [],
+          })
           if (!shape.ok) { json(res, 400, { error: shape.errors.join('\n'), errors: shape.errors }); return }
 
           const applied = mod.applyRaceEdit(before, body, { at })
