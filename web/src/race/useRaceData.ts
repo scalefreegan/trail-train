@@ -3,6 +3,7 @@ import { useActiveRace, useRefresh } from "../data";
 import { cacheGet, cachePut, slugKey } from "./offlineCache";
 import type { ClimbsSnapshot, Course, CrewBase, TrackerCheckpoint, TrackerResponse } from "./types";
 import type { PaceGradeCurve } from "./pacing";
+import { PHYSIOLOGY_FIELDS } from "../contracts";
 
 /* Snapshot hooks for the Race views — same provider-less pattern as
    useGoogleCal (data.ts): fetch keyed on the refresh pulse.
@@ -200,18 +201,30 @@ export type Physiology = {
       the term says so, because silently assuming sea level would hand a
       mountain-town athlete hours of penalty they do not owe. Unlike the two
       above there is no default worth substituting — see PHYSIOLOGY_FIELDS'
-      `optional` in scripts/profile.mjs. */
+      `optional` in scripts/contracts.mjs. */
   home_elevation_ft: number | null;
 };
 
-/** KEEP IN SYNC with PHYSIOLOGY_FIELDS in scripts/profile.mjs — the server
-    normalizes to the same numbers, these cover the endpoint being absent. */
-export const DEFAULT_PHYSIOLOGY: Physiology = { body_kg: 75, long_run_ref_mi: 20, home_elevation_ft: null };
+/** What the client plans against when /api/settings is unreachable. The
+    numbers are PHYSIOLOGY_FIELDS' own defaults, which is exactly what the
+    server normalizes a fresh profile to — so a missing endpoint and a
+    just-bootstrapped checkout produce the same plan, not two different ones. */
+export const DEFAULT_PHYSIOLOGY: Physiology = {
+  body_kg: PHYSIOLOGY_FIELDS.body_kg.dflt,
+  long_run_ref_mi: PHYSIOLOGY_FIELDS.long_run_ref_mi.dflt,
+  home_elevation_ft: PHYSIOLOGY_FIELDS.home_elevation_ft.dflt,
+};
 
 const isPhysNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
 /** Elevation is the one physiology number that may legitimately be 0 (or
-    below it — the Dead Sea, Death Valley), so it can't use isPhysNumber. */
-const isElevation = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= -300 && v <= 15000;
+    below it — the Dead Sea, Death Valley), so it can't use isPhysNumber. The
+    band is the server's own, so a value the settings PUT accepted is never
+    thrown away here. */
+const isElevation = (v: unknown): v is number =>
+  typeof v === "number" &&
+  Number.isFinite(v) &&
+  v >= PHYSIOLOGY_FIELDS.home_elevation_ft.lo &&
+  v <= PHYSIOLOGY_FIELDS.home_elevation_ft.hi;
 
 export function usePhysiology() {
   const { key: refreshKey } = useRefresh();
@@ -253,7 +266,10 @@ export function usePhysiology() {
 }
 
 /** races/<slug>/result.json (PRD §10), as GET /api/races/:slug/result serves
-    it. KEEP IN SYNC with scripts/race-result.mjs, which writes it. */
+    it. scripts/race-result.mjs writes the file and is the authority on its
+    shape: it is a whole document rather than a table of values, so there is
+    nothing for scripts/contracts.mjs to share — read that module before
+    adding a field here, and add it there first. */
 export type RaceResult = {
   status: "finished" | "dnf" | "dns";
   strava_activity_id: string | null;

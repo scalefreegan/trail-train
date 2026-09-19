@@ -27,12 +27,16 @@ import { raceStart, isValidTimeZone } from "./clock.mjs";
 // The theme sources are TypeScript and node strips the types on import; the
 // same trick scripts/race-plan.mjs already uses for THEME_PRESET_NAMES.
 import { visualErrors } from "../web/src/themes/visual.ts";
+import { PROVENANCE_BY, RACE_STATUSES } from "./contracts.mjs";
+
+// The status and provenance vocabularies are shared with the client and the
+// dev API — see scripts/contracts.mjs. Re-exported so every existing import
+// site (`from "./race-config.mjs"`) keeps working.
+export { PROVENANCE_BY, RACE_STATUSES };
 
 /** Bump only with a migration; validateRaceJson rejects anything else. */
 export const RACE_SCHEMA_VERSION = 1;
 
-/** At most one folder may be "active" — see validateSingleActive. */
-export const RACE_STATUSES = ["draft", "active", "archived"];
 
 /**
  * A race folder is either the athlete's A-race — the goal a training block is
@@ -54,16 +58,6 @@ export const RACE_KINDS = ["a", "b"];
 /** config/active-race.json's `mode` — see the header. */
 export const ACTIVE_MODES = ["train", "view"];
 
-/**
- * Who last set a field. "computed" and "matcher" are third parties alongside
- * the human and the intake agent: scripts/race-sun.mjs derives `sun` from the
- * course coordinates, and scripts/race-build.mjs's aid-station matcher picks a
- * station's `gpx_wpt` out of the GPX — neither is a hand edit nor an agent
- * claim, and only "user" is protected from a re-intake merge. They are kept
- * apart because a matcher entry also carries its confidence and method, which
- * a re-match is allowed to overwrite; a computed one has no such gradient.
- */
-export const PROVENANCE_BY = ["user", "agent", "computed", "matcher"];
 
 /**
  * race.json's `unresolved_acknowledged` (PR #23 review round 1, resilience
@@ -408,7 +402,7 @@ export async function setActivePointer(root, req) {
 }
 
 /**
- * TODO(tt-yib.5): replaced by goals/generic mode.
+ * A legacy shim, still load-bearing and still worth retiring.
  * The active race, or — when no race is active — the most recent one by date.
  * Scripts written before generic mode existed (build-course.mjs, the dev
  * server's /nutrition.json) assume there IS a race; routing them through

@@ -23,6 +23,7 @@ import path from "node:path";
 import { LOW_CONFIDENCE, matchAidStations, parseGpx } from "./aid-match.mjs";
 import { RACE_STATUSES, applyingPath, listRaces, raceDir, loadRaceFolder, validateRaceJson } from "./race-config.mjs";
 import { collectUnresolved, draftValidationErrors } from "./race-intake.mjs";
+import { EDITABLE_RACE_KEYS, UNFILLABLE_ROOTS } from "./contracts.mjs";
 import { courseMismatches } from "./build-course.mjs";
 import { raceStart, raceLocalParts, isValidTimeZone } from "./clock.mjs";
 
@@ -45,24 +46,15 @@ const COURSE_MISMATCH_KEY = "course.gpx";
     the course build. */
 export const EDITABLE_AID_FIELDS = ["name", "total_mi", "cutoff_h", "crew", "drop_bag", "pacers", "gpx_wpt"];
 
-/** Top-level keys PUT /api/races/:slug accepts. Anything else is refused BY
-    NAME so the client gets told which field it invented rather than having it
-    silently dropped. */
-export const EDITABLE_RACE_KEYS = ["aid_stations", "date", "visual", "tracking", "unresolved_acknowledged", "block_targets", "unresolved_fills"];
+// The list of writable top-level keys is shared with the review screen, which
+// has to know what it may send — see scripts/contracts.mjs. Re-exported so
+// every existing import site (`from "./race-edit.mjs"`) keeps working.
+export { EDITABLE_RACE_KEYS };
 
-/** Roots `unresolved_fills` will never write, whatever the folder declares.
-    The first four are the folder's identity and the server's own bookkeeping;
-    `aid_stations` is excluded because the table editor above already owns it
-    with per-field validation, and a blanket path write would sneak past that.
-    `sun` is excluded because it isn't a value a human types in — it's
-    `{sunset, sunrise}`, computed by scripts/race-sun.mjs, and the generic
-    fill path only ever writes a string/number/boolean/null, which would
-    silently replace the object with garbage. The only fix is re-running the
-    course build (see loadReview's unresolved_hints), or acknowledging it. */
-const UNFILLABLE_ROOTS = new Set([
-  "schema_version", "slug", "status", "provenance", "sources",
-  "unresolved", "unresolved_acknowledged", "aid_stations", "sun",
-]);
+/** UNFILLABLE_ROOTS (scripts/contracts.mjs) as a membership test — the list
+    itself is shared with the client, which greys out the fill box for a path
+    the server would refuse. */
+const UNFILLABLE = new Set(UNFILLABLE_ROOTS);
 
 /** The only `visual` sub-key the review screen exposes — the preset picker.
     Per-token `overrides` are tt-yib.16's surface, not this one. */
@@ -339,7 +331,7 @@ export function validateRaceEdit(body, { stationCount = 0, unresolved = [], aidS
         bad(`unresolved_fills["${p}"]: only a field the folder currently lists as unresolved can be filled this way`);
         continue;
       }
-      if (UNFILLABLE_ROOTS.has(p.split(/[.[]/)[0])) {
+      if (UNFILLABLE.has(p.split(/[.[]/)[0])) {
         bad(`unresolved_fills["${p}"]: ${p.split(/[.[]/)[0]} is never filled through this endpoint`);
         continue;
       }
@@ -676,7 +668,7 @@ export function pruneAcknowledgedNulls(race, unresolved = []) {
   const acked = new Set(acknowledgedPaths(race));
   if (acked.size === 0) return { race: next, pruned };
   for (const p of unresolved) {
-    if (typeof p !== "string" || UNFILLABLE_ROOTS.has(p.split(/[.[]/)[0])) continue;
+    if (typeof p !== "string" || UNFILLABLE.has(p.split(/[.[]/)[0])) continue;
     if (!acked.has(p)) continue;
     if (valueAtPath(next, p) !== null) continue;
     if (deleteAtPath(next, p)) pruned.push(p);

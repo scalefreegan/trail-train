@@ -5,6 +5,7 @@
 /* ------------------------------------------------------------------ */
 
 import type { NutritionConfig } from "./nutrition";
+import type { ProvenanceBy, RaceStatus } from "../contracts";
 
 export type CourseProfilePoint = {
   mi: number;
@@ -152,8 +153,10 @@ export type ClimbsSnapshot = {
 /*  Field names follow docs/PRD-modular-races.md §5.1/§5.2 exactly.    */
 /* ------------------------------------------------------------------ */
 
-/** At most one folder is "active"; a draft is never read by the training views. */
-export type RaceStatus = "draft" | "active" | "archived";
+/** At most one folder is "active"; a draft is never read by the training views.
+    The vocabulary itself is RACE_STATUSES in scripts/contracts.mjs, which is
+    what scripts/race-config.mjs validates a folder against. */
+export type { RaceStatus };
 
 /** Which optional panels/cards a race even has. An ABSENT flag means on:
     a folder written before a flag existed keeps rendering as it did, so
@@ -235,7 +238,7 @@ export type RaceVisual = {
  * waypoint match in scripts/race-build.mjs, which also reports how it decided.
  */
 export type RaceProvenanceEntry = {
-  by: "user" | "agent" | "computed" | "matcher";
+  by: ProvenanceBy;
   at: string;
   source?: string;
   /** matcher only: 0..1 — below aid-match's LOW_CONFIDENCE it is never written. */

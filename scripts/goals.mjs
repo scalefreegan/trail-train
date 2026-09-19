@@ -11,17 +11,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { writeJsonAtomic } from "./lib.mjs";
+import { GOAL_PHASES } from "./contracts.mjs";
 
-/** PRD §5.3. Ordered recovery → race-ready → holding pattern. */
-export const GOAL_PHASES = [
-  "recovery",
-  "return_to_run",
-  "base",
-  "build",
-  "peak",
-  "taper",
-  "maintain",
-];
+// The settings dialog and the settings PUT validate against the same list —
+// see scripts/contracts.mjs. Re-exported so every existing import site
+// (`from "./goals.mjs"`) keeps working.
+export { GOAL_PHASES };
 
 /** The phase a bootstrapped goals.json starts in — see the file header. */
 export const BOOTSTRAP_PHASE = "maintain";

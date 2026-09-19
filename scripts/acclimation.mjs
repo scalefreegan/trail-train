@@ -25,7 +25,10 @@
 // Pure and dependency-free: no clock, no fs, no network. `today` is passed
 // in. Dates are plain YYYY-MM-DD strings compared as calendar days — the
 // race's own zone is not consulted, because a day count does not need one
-// and pretending otherwise would import scripts/clock.mjs for nothing.
+// and pretending otherwise would import scripts/clock.mjs for nothing. The
+// one import is scripts/contracts.mjs, which is tables and nothing else.
+
+import { DEFAULT_ACCLIMATION_DAYS } from "./contracts.mjs";
 
 /** The calendar classification the derivation reads. Set by
     scripts/sync-google-cal.mjs's classify(); a personal keyword rule in
@@ -195,5 +198,9 @@ export function deriveArrival({ race, calendar, today, overrideDays = null } = {
     };
   }
 
-  return { arrival_date: addDays(raceDay, -1), days_at_altitude: 1, source: "default" };
+  return {
+    arrival_date: addDays(raceDay, -DEFAULT_ACCLIMATION_DAYS),
+    days_at_altitude: DEFAULT_ACCLIMATION_DAYS,
+    source: "default",
+  };
 }

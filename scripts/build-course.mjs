@@ -761,7 +761,10 @@ export async function buildCourse(root, slug, opts = {}) {
     gain_ft: Math.round(measuredGain),
     official_distance_mi: officialDist,
     official_gain_ft: officialGain,
-    // TODO(tt-yib.5): recompute via scripts/race-sun.mjs when rebuilding a folder
+    // Copied from race.json rather than recomputed. Still open: a rebuild
+    // that moves the course or the date leaves the old sun times in place —
+    // run scripts/race-sun.mjs afterwards (the race harness's reference
+    // rebuild does, and checks the pair lands within five minutes).
     sun: race.sun,
     profile,
     aid_stations,

@@ -10,6 +10,8 @@ import {
 import type { Acclimation, Course, RaceConfig } from "./types";
 import { migrateLegacyKnobs } from "./knobMigration";
 import type { SunTimes } from "./nightWindow";
+import { DEFAULT_ACCLIMATION_DAYS } from "../contracts";
+import { DEFAULT_ALTITUDE_PCT, DEFAULT_CREW_KNOBS, defaultGoalH } from "../crew/crewData";
 
 /* ------------------------------------------------------------------ */
 /*  Shared race-plan wiring.                                          */
@@ -123,13 +125,6 @@ export function usePersistedStops(key: string | null) {
  * `race.*` keys was set while planning it.
  */
 const LEGACY_KNOB_SLUG = "mogollon-monster-100-2026";
-
-/** What the planner assumes when the server told it nothing — a browsed
-    (view-mode) race, generic mode, or a server too old to send the field.
-    KEEP IN SYNC with scripts/acclimation.mjs's default branch: one day, the
-    fly-in-the-night-before case, and labelled "default" so the readout says
-    it is an assumption rather than a measurement. */
-const DEFAULT_ACCLIMATION_DAYS = 1;
 
 export type RacePlan = {
   course: Course | null;
@@ -277,31 +272,34 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
 
   // 85 % of the cutoff, to the nearest half hour: a goal that is ambitious but
   // inside the cutoff, for THIS race — the old constant 32 was MM100's answer
-  // and would be an impossible target on a race with a 24 h limit.
+  // and would be an impossible target on a race with a 24 h limit. The rule
+  // and the slider defaults below come from crew/crewData, because a CLI crew
+  // export with no --knobs file has to reproduce the planner the athlete was
+  // looking at; a second copy here is how the two drifted.
   const cutoffH = raceConfig.cutoff_h ?? race.cutoff_h;
-  const goalDefaultH = cutoffH != null && cutoffH > 0 ? Math.round(cutoffH * 0.85 * 2) / 2 : 32;
+  const goalDefaultH = defaultGoalH(cutoffH);
 
-  const [fatigue, setFatigue] = usePersistedNumber(knob("fatigue_pct_v2"), 5);
+  const [fatigue, setFatigue] = usePersistedNumber(knob("fatigue_pct_v2"), DEFAULT_CREW_KNOBS.fatiguePctPer10mi);
   // training runs are stronger efforts than race-sustainable pace — slow every
   // projected pace by this much (athlete-requested honesty correction)
-  const [calibration, setCalibration] = usePersistedNumber(knob("calibration_pct"), 6);
+  const [calibration, setCalibration] = usePersistedNumber(knob("calibration_pct"), DEFAULT_CREW_KNOBS.calibrationPct);
   // deliberate hold-back through mile 50 (taper to 60); restrained miles also
   // age the fatigue clock less — bank energy for the second 50
-  const [restraint, setRestraint] = usePersistedNumber(knob("restraint_pct"), 8);
+  const [restraint, setRestraint] = usePersistedNumber(knob("restraint_pct"), DEFAULT_CREW_KNOBS.restraintPct);
   const [goalH, setGoalH] = usePersistedNumber(knob("goal_h"), goalDefaultH);
   // how much of the modeled altitude penalty to apply: 100 = the curve as
   // published (scripts/altitude.mjs), 0 = off. A knob rather than a constant
   // because the curve is a population average and bead 02's back-test will
   // have an opinion about this athlete's own number.
-  const [altitude, setAltitude] = usePersistedNumber(knob("altitude_pct"), 100);
+  const [altitude, setAltitude] = usePersistedNumber(knob("altitude_pct"), DEFAULT_ALTITUDE_PCT);
   // The athlete's own answer to "how long will you have been up there?",
   // overriding whatever the calendar derivation found. Nullable, not a
   // sentinel: 0 (fly in and run) is a legitimate override and has to be
   // distinguishable from "no override set".
   const [acclimationOverride, setAcclimationOverride] =
     usePersistedNullableNumber(knob("acclimation_days"));
-  const [aidStopMin, setAidStopMin] = usePersistedNumber(knob("aid_stop_min"), 5);
-  const [crewStopMin, setCrewStopMin] = usePersistedNumber(knob("crew_stop_min"), 10);
+  const [aidStopMin, setAidStopMin] = usePersistedNumber(knob("aid_stop_min"), DEFAULT_CREW_KNOBS.aidStopMin);
+  const [crewStopMin, setCrewStopMin] = usePersistedNumber(knob("crew_stop_min"), DEFAULT_CREW_KNOBS.crewStopMin);
   const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops(knob("stop_overrides"));
 
   // What the server derived from the calendar (train mode only — a browsed
