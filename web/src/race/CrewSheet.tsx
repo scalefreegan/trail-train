@@ -5,6 +5,7 @@ import { fmtElapsed, type projectRace } from "./pacing";
 import { gmapsDirectionsUrl } from "./links";
 import type { Course, CrewBase } from "./types";
 import { useRacePlan } from "./useRacePlan";
+import { useDialog } from "./dialogChrome";
 
 /* ------------------------------------------------------------------ */
 /*  Crew sheet — a light, printer-friendly handout: station table with */
@@ -120,6 +121,8 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
     return () => document.body.classList.remove("crew-printing");
   }, []);
 
+  const { dialogProps } = useDialog({ onClose, label: `${race.name} — crew sheet` });
+
   // Crew prose comes from race.json's crew_info (the intake distills it from
   // the organizer's crew manual); the fallbacks are true of any trail ultra.
   const drivingNote = course.crew_info?.driving
@@ -144,6 +147,7 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
   // (display:none) without hiding the sheet — no blank trailing pages
   return createPortal(
     <div
+      {...dialogProps}
       className="crew-sheet"
       style={{
         position: "fixed", inset: 0, zIndex: 100, overflow: "auto",
@@ -361,9 +365,11 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
                 </div>
               </div>
             </div>
-            <div style={{ fontSize: 9.5, color: MUTED, marginTop: 6 }}>
-              Distilled from the {course.crew_info.source}.
-            </div>
+            {course.crew_info.source && (
+              <div style={{ fontSize: 9.5, color: MUTED, marginTop: 6 }}>
+                Distilled from the {course.crew_info.source}.
+              </div>
+            )}
           </div>
         )}
 
