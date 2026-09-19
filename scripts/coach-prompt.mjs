@@ -257,6 +257,306 @@ export function coachFocus(facts) {
   };
 }
 
+/* -------- race state: the planner's own numbers, sent by the client -------- */
+
+/*
+ * PRD-v2 §6. The chat endpoint has read access to snapshots and to the facts
+ * digest, but NOT to what the athlete is looking at: the projection, the knob
+ * settings and the fuel plan live in the browser (web/src/race/useRacePlan.ts),
+ * are recomputed on every knob drag, and are never written to disk. So the
+ * client sends them with each turn and the prompt renders them.
+ *
+ * Everything here is PURE: it takes the object the client sent and returns
+ * text. Nothing in this section opens a file — the whole point is that this
+ * state has no on-disk representation to read, and a renderer that fell back
+ * to disk would quietly answer about a different (stale, or merely active)
+ * race than the one on the athlete's screen.
+ */
+
+/** Hard cap on the race_state JSON the chat endpoint accepts, in bytes.
+    8 KB is ~2k tokens of prompt at the chars/4 estimate below — an order of
+    magnitude more than a rendered block needs (see the MM100 measurement in
+    coach-prompt.test.mjs), so it bounds a buggy or hostile client without
+    ever being reachable by an honest one. */
+export const RACE_STATE_MAX_BYTES = 8192;
+
+/** Above this many estimated tokens the RENDERED block is logged as a
+    warning: the budget it competes for is the coach's reading budget, and a
+    block that big means the client started shipping the whole plan. */
+export const RACE_STATE_WARN_TOKENS = 600;
+
+/**
+ * Rough token count — characters / 4, the usual English-prose approximation.
+ * Deliberately not a tokenizer: this guards a prompt-size budget, where being
+ * within ~20% is enough and a dependency (or a per-turn tokenizer call) is not
+ * worth it. Rounded UP so a budget check never under-reports.
+ * @param {string} text
+ * @returns {number}
+ */
+export function estimateTokens(text) {
+  return typeof text === "string" && text.length ? Math.ceil(text.length / 4) : 0;
+}
+
+/** A finite number, or null. */
+const fin = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+/** A non-empty string, trimmed and truncated, or null. */
+const str = (v, max) => {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t ? t.slice(0, max) : null;
+};
+/** A plain object (not null, not an array), or null. */
+const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : null);
+
+/** Aid stations the block will render. A 100-miler has ~15; the cap exists so
+    a client that sent every course point can't crowd out the prompt. */
+const MAX_STATIONS = 40;
+/** Knobs the planner actually exposes is a single-digit number. */
+const MAX_KNOBS = 24;
+
+/** The fuel/caffeine figures the block knows how to phrase, in render order.
+    A key not in this table is dropped rather than printed with no unit —
+    "sodium 700" in a coaching prompt is an invitation to misread mg as g. */
+const FUEL_FIELDS = [
+  ["carb_g_h", (v) => `${v} g carb/h`],
+  ["fluid_ml_h", (v) => `${v} ml fluid/h`],
+  ["sodium_mg_h", (v) => `${v} mg sodium/h`],
+  ["carb_g_total", (v) => `${v} g carb total`],
+  ["fluid_l_total", (v) => `${v} L fluid total`],
+  ["sodium_mg_total", (v) => `${v} mg sodium total`],
+  ["caffeine_mg_total", (v) => `${v} mg caffeine total`],
+  ["kcal_total", (v) => `${v} kcal total`],
+];
+
+/**
+ * Validate and normalize the client's race_state.
+ *
+ * Unknown keys are DROPPED rather than rejected: the client is the dashboard
+ * in the same repo and will grow fields ahead of this renderer, and a 400 for
+ * a field the prompt simply has no sentence for would break chat on every
+ * such deploy. Wrong-TYPED known keys are dropped for the same reason — the
+ * two conditions that do fail the request are a race_state that isn't an
+ * object at all and one over the size cap, because both mean the caller is
+ * not the dashboard.
+ *
+ * @param {unknown} raw the request body's race_state
+ * @returns {{state: object|null, error?: undefined} | {error: string, state?: undefined}}
+ */
+export function parseRaceState(raw) {
+  if (raw === undefined || raw === null) return { state: null };
+  const src = obj(raw);
+  if (!src) return { error: "race_state must be an object" };
+
+  let bytes = 0;
+  try { bytes = Buffer.byteLength(JSON.stringify(raw), "utf8"); }
+  catch { return { error: "race_state is not serializable" }; }
+  if (bytes > RACE_STATE_MAX_BYTES) {
+    return { error: `race_state is ${bytes} bytes, over the ${RACE_STATE_MAX_BYTES}-byte limit` };
+  }
+
+  // Mode is the one REQUIRED field, and the one that encodes the PRD's rule
+  // that generic mode sends no race state at all: there is no "generic" here
+  // to accept, so a client that kept sending after the athlete left the race
+  // is rejected rather than silently describing a race they are not looking at.
+  const mode = str(src.mode, 16);
+  if (mode !== "train" && mode !== "view") {
+    return { error: 'race_state.mode must be "train" or "view"' };
+  }
+
+  const state = { mode };
+  const slug = str(src.slug, 120);
+  const name = str(src.name, 120);
+  if (slug) state.slug = slug;
+  if (name) state.name = name;
+
+  const goalSrc = obj(src.goal);
+  if (goalSrc) {
+    const goal = {};
+    const label = str(goalSrc.label, 80);
+    const targetH = fin(goalSrc.target_h);
+    const projectedH = fin(goalSrc.projected_h);
+    const startClock = str(goalSrc.start_clock, 16);
+    const finishClock = str(goalSrc.finish_clock, 16);
+    if (label) goal.label = label;
+    if (targetH != null) goal.target_h = targetH;
+    if (projectedH != null) goal.projected_h = projectedH;
+    if (startClock) goal.start_clock = startClock;
+    if (finishClock) goal.finish_clock = finishClock;
+    if (Object.keys(goal).length) state.goal = goal;
+  }
+
+  const knobsSrc = obj(src.knobs);
+  if (knobsSrc) {
+    const knobs = {};
+    for (const [k, v] of Object.entries(knobsSrc).slice(0, MAX_KNOBS)) {
+      const key = str(k, 40);
+      if (!key) continue;
+      if (typeof v === "boolean") knobs[key] = v;
+      else if (fin(v) != null) knobs[key] = v;
+      else {
+        const s = str(v, 60);
+        if (s) knobs[key] = s;
+      }
+    }
+    if (Object.keys(knobs).length) state.knobs = knobs;
+  }
+
+  const fuelSrc = obj(src.fuel);
+  if (fuelSrc) {
+    const fuel = {};
+    for (const [key] of FUEL_FIELDS) {
+      const v = fin(fuelSrc[key]);
+      if (v != null) fuel[key] = v;
+    }
+    if (Object.keys(fuel).length) state.fuel = fuel;
+  }
+
+  if (Array.isArray(src.stations)) {
+    const stations = [];
+    for (const entry of src.stations.slice(0, MAX_STATIONS)) {
+      const s = obj(entry);
+      if (!s) continue;
+      const stationName = str(s.name, 60);
+      if (!stationName) continue; // an ETA with no station is noise, not context
+      const st = { name: stationName };
+      const mi = fin(s.mi);
+      const clock = str(s.clock, 16);
+      const elapsedH = fin(s.elapsed_h);
+      const cutoffClock = str(s.cutoff_clock, 16);
+      if (mi != null) st.mi = mi;
+      if (clock) st.clock = clock;
+      if (elapsedH != null) st.elapsed_h = elapsedH;
+      if (cutoffClock) st.cutoff_clock = cutoffClock;
+      stations.push(st);
+    }
+    if (stations.length) state.stations = stations;
+  }
+
+  const statusSrc = obj(src.status);
+  if (statusSrc) {
+    const status = {};
+    if (typeof statusSrc.block_stale === "boolean") status.block_stale = statusSrc.block_stale;
+    if (typeof statusSrc.activated === "boolean") status.activated = statusSrc.activated;
+    const unresolved = fin(statusSrc.unresolved);
+    if (unresolved != null) status.unresolved = unresolved;
+    const activation = str(statusSrc.activation, 40);
+    if (activation) status.activation = activation;
+    if (Object.keys(status).length) state.status = status;
+  }
+
+  const cpSrc = obj(src.checkpoint);
+  if (cpSrc) {
+    const cp = {};
+    const cpName = str(cpSrc.name, 60);
+    const clock = str(cpSrc.clock, 16);
+    const source = str(cpSrc.source, 16);
+    const mi = fin(cpSrc.mi);
+    const deltaMin = fin(cpSrc.delta_min);
+    const elapsedH = fin(cpSrc.elapsed_h);
+    if (cpName) cp.name = cpName;
+    if (clock) cp.clock = clock;
+    if (source === "tracker" || source === "manual") cp.source = source;
+    if (mi != null) cp.mi = mi;
+    if (deltaMin != null) cp.delta_min = deltaMin;
+    if (elapsedH != null) cp.elapsed_h = elapsedH;
+    if (cp.name || cp.clock || cp.mi != null) state.checkpoint = cp;
+  }
+
+  return { state };
+}
+
+/** "33.27" → "33:16" — hours as a clock the athlete reads on a watch. */
+const hoursClock = (h) => {
+  const total = Math.round(h * 60);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+};
+
+/**
+ * Render the normalized race_state as the prompt block.
+ *
+ * Short on purpose (see the token measurement in the tests): it is the only
+ * part of the system prompt that grows with the athlete's plan, and it is
+ * re-sent on EVERY turn of the conversation.
+ *
+ * @param {object|null} state the output of parseRaceState
+ * @returns {string} "" when there is no state (generic mode)
+ */
+export function raceStateBlock(state) {
+  if (!state) return "";
+  const title = state.name || state.slug || "their race";
+  const head = state.mode === "view"
+    ? `RACE STATE (from the athlete's own planner) — ${title}, which they are LOOKING AT in the dashboard right now. It is not their active race, so answer about this one only as far as they ask.`
+    : `RACE STATE (from the athlete's own planner) — ${title}, the race they are training for and have open in the dashboard.`;
+
+  const lines = [];
+
+  const g = state.goal;
+  if (g) {
+    const parts = [];
+    if (g.projected_h != null) parts.push(`the planner projects ${hoursClock(g.projected_h)} (${g.projected_h} h)`);
+    if (g.target_h != null) parts.push(`their target is ${hoursClock(g.target_h)} (${g.target_h} h)`);
+    if (g.label) parts.push(`goal "${g.label}"`);
+    if (g.start_clock) parts.push(`start ${g.start_clock}`);
+    if (g.finish_clock) parts.push(`finishing around ${g.finish_clock}`);
+    if (parts.length) lines.push(`- Finish: ${parts.join("; ")}.`);
+  }
+
+  if (state.knobs) {
+    lines.push(`- Planner knobs as they have them set: ${
+      Object.entries(state.knobs).map(([k, v]) => `${k} ${v}`).join(", ")}.`);
+  }
+
+  if (state.fuel) {
+    const parts = FUEL_FIELDS
+      .filter(([k]) => state.fuel[k] != null)
+      .map(([k, render]) => render(state.fuel[k]));
+    if (parts.length) lines.push(`- Fuel plan: ${parts.join(", ")}.`);
+  }
+
+  if (state.stations) {
+    lines.push(`- Expected arrival at each aid station, on their plan: ${
+      state.stations.map((s) => {
+        const at = s.clock ?? (s.elapsed_h != null ? `${hoursClock(s.elapsed_h)} elapsed` : "—");
+        const cut = s.cutoff_clock ? `, cutoff ${s.cutoff_clock}` : "";
+        return `${s.name}${s.mi != null ? ` (mi ${s.mi})` : ""} ${at}${cut}`;
+      }).join("; ")}.`);
+  }
+
+  const st = state.status;
+  if (st) {
+    const parts = [];
+    if (st.block_stale === true) parts.push("the training block is STALE against this plan (a re-plan is pending)");
+    else if (st.block_stale === false) parts.push("the training block is up to date with this plan");
+    if (st.unresolved != null) {
+      parts.push(st.unresolved === 0
+        ? "no unresolved review items"
+        : `${st.unresolved} unresolved review item${st.unresolved === 1 ? "" : "s"} they have not answered`);
+    }
+    if (st.activated === true) parts.push("the plan is activated");
+    else if (st.activated === false) parts.push("the plan is NOT activated yet");
+    if (st.activation) parts.push(`activation: ${st.activation}`);
+    if (parts.length) lines.push(`- Plan status: ${parts.join("; ")}.`);
+  }
+
+  const cp = state.checkpoint;
+  if (cp) {
+    const where = [cp.name, cp.mi != null ? `mile ${cp.mi}` : null].filter(Boolean).join(", ");
+    const when = cp.clock ? ` at ${cp.clock}` : cp.elapsed_h != null ? ` at ${hoursClock(cp.elapsed_h)} elapsed` : "";
+    const delta = cp.delta_min == null
+      ? ""
+      : cp.delta_min === 0
+        ? ", exactly on plan"
+        : `, ${Math.abs(cp.delta_min)} min ${cp.delta_min < 0 ? "AHEAD of" : "BEHIND"} plan`;
+    lines.push(`- Last checkpoint${cp.source ? ` (${cp.source})` : ""}: ${where || "unnamed"}${when}${delta}.`);
+  }
+
+  if (!lines.length) return `${head}\nThe athlete has this race open but the planner has produced no numbers for it yet — do not invent any.`;
+
+  return `${head}
+These numbers are the athlete's OWN planner output as of this message — their course model, their knob settings, their fuel plan — and they exist nowhere on disk, so there is no file to check them against. Quote them as theirs and do not recompute or silently replace them; if you think one is wrong, name the knob or assumption that would change it.
+${lines.join("\n")}`;
+}
+
 /* -------- what the agent may Read -------- */
 
 /**
@@ -501,7 +801,11 @@ For new_context_items:
  * and the CONTEXT_SAVE sentinel the endpoint strips before display.
  * @param {object} facts   the facts digest (facts.race / facts.goals / facts.block)
  * @param {object} profile config/profile.json
- * @param {{factsPath: string, coachPath: string, units?: "metric"|"imperial", hasPacing?: boolean, root?: string}} opts
+ * `opts.raceState` is the CLIENT's state (PRD-v2 §6) — already normalized by
+ * parseRaceState — and is the one part of this prompt that does not come from
+ * disk. Absent in generic mode, where the block is omitted entirely rather
+ * than rendered empty.
+ * @param {{factsPath: string, coachPath: string, units?: "metric"|"imperial", hasPacing?: boolean, root?: string, raceState?: object|null}} opts
  */
 export function chatSystemPrompt(facts, profile = {}, opts = {}) {
   const units = opts.units === "imperial" ? "imperial" : "metric";
@@ -510,11 +814,15 @@ export function chatSystemPrompt(facts, profile = {}, opts = {}) {
   const athlete = profile.athlete_name || "the athlete";
   const racePaths = raceReadPaths(opts.root, facts?.race);
   const raceFileLines = racePaths.map((p) => `\n  - ${p}${p.endsWith("race.json") ? "   (the race's own config — the source of every race fact above)" : "   (built course profile: aid stations snapped to the track, elevation grid)"}`).join("");
+  // The planner block sits directly under the race paragraph, ABOVE the file
+  // list: it is the only live state here, and the reading budget below tells
+  // the agent to answer from what it already has — which now includes this.
+  const stateBlock = raceStateBlock(opts.raceState ?? null);
 
   return `You are the coach inside Trail Almanac for ${athlete}. ${focus.training_for}
 
 They live in ${profile.location || "their home mountains"}.${profile.home_trails?.length ? ` Local training trails: ${profile.home_trails.join(", ")}.` : ""}${historySentence(facts?.history)}
-
+${stateBlock ? `\n${stateBlock}\n` : ""}
 You have full read access to:
   - ${opts.factsPath}      (deterministic facts: block week, ACR, HRV trend, RHR drift, sleep, heat exposure, recent runs w/ temps, plan_blocks, agent_notes from prior sessions${facts?.race ? ", the race and its aid stations" : ", the standing goals"})
   - ${opts.coachPath}      (most recent structured agent readout)
