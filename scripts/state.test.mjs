@@ -130,6 +130,38 @@ test("v2 → v3 refuses to run when the backup cannot be written", async (t) => 
   await assert.rejects(() => fs.access(path.join(root, "races")), { code: "ENOENT" });
 });
 
+test("v2 → v3: a block with no race is not silently dropped — warns, and the backup keeps it", async (t) => {
+  const root = await tempRoot(t);
+  const before = v2State();
+  delete before.race;
+  // With no race, `planBlocks` would otherwise land in the generic plan —
+  // keep this fixture isolated to the block-only case.
+  delete before.plan_blocks;
+  await fs.writeFile(statePath(root), JSON.stringify(before, null, 2));
+
+  const warnings = [];
+  const orig = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+  let after;
+  try {
+    after = await loadState(root);
+  } finally {
+    console.warn = orig;
+  }
+
+  // dropped from the live state (as before) …
+  assert.equal("block" in after, false);
+  await assert.rejects(() => fs.access(path.join(root, "races")), { code: "ENOENT" },
+    "no race folder exists to have received it");
+  // … but not silently: the backup this migration writes first still has it …
+  assert.deepEqual((await readJson(backupPath(root))).block, before.block);
+  // … and a warning says so, naming the backup path a reader would check.
+  assert.ok(
+    warnings.some((w) => w.includes("state.block") && w.includes(backupPath(root))),
+    `expected a warning naming ${backupPath(root)}, got: ${JSON.stringify(warnings)}`,
+  );
+});
+
 test("a v1 file passes through both migrations", async (t) => {
   const root = await tempRoot(t);
   const v1 = v2State({ version: 1 });
