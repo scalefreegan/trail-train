@@ -91,7 +91,11 @@ function warnDaysUntilRaceOnce(race, message) {
  * @param {number} now epoch ms
  * @returns {number|null}
  */
-function computeDaysUntilRace(race, now) {
+// Exported (PR #23 review round 1, resilience finding 12) so
+// scripts/race-payload.mjs's GET /api/race/active — the OTHER place "how
+// many days until this race" is answered — uses the exact same race-local,
+// zone-aware math instead of a second, drifting implementation.
+export function computeDaysUntilRace(race, now) {
   if (!race?.date) return null;
   if (!race.timezone || !isValidTimeZone(race.timezone)) {
     warnDaysUntilRaceOnce(
