@@ -865,7 +865,12 @@ export function elapsedToDate(raceStart: Date, elapsedH: number): Date {
  * Albuquerque for a race in Arizona has to read in Arizona time, and a
  * browser an hour off would otherwise shift every ETA on the page.
  */
-export function fmtRaceClock(raceStart: Date, elapsedH: number, timeZone: string): string {
+export function fmtRaceClock(
+  raceStart: Date,
+  elapsedH: number,
+  timeZone: string,
+  opts: { flagPreStart?: boolean } = {},
+): string {
   const at = raceLocalParts(elapsedToDate(raceStart, elapsedH), timeZone);
   const start = raceLocalParts(raceStart, timeZone);
   // Whole civil days between the start's race-local date and this one. Done
@@ -878,12 +883,13 @@ export function fmtRaceClock(raceStart: Date, elapsedH: number, timeZone: string
   const mm = String(at.minute).padStart(2, "0");
   const ampm = at.hour >= 12 ? "p" : "a";
   const h12 = at.hour % 12 === 0 ? 12 : at.hour % 12;
-  // A negative elapsed hour is an instant before the gun — arithmetically
-  // reachable (a clamped checkpoint can produce one) but never a real race
-  // moment, so it prints flagged rather than as an ordinary clock time. This
-  // catches same-day pre-start instants too (elapsedH < 0 but days === 0,
-  // where the +N/-N day marker alone says nothing is wrong).
-  const pre = elapsedH < 0 ? "pre-start " : "";
+  // A negative elapsed hour is an ordinary instant on the race-day page
+  // before the gun (the header clock counts down through it), but in a
+  // station ETA table it is a bug — a clamped checkpoint once produced one.
+  // So the marker is opt-in: ETA renderers pass flagPreStart, the wall clock
+  // does not. It catches same-day pre-start instants too (elapsedH < 0 but
+  // days === 0, where the +N/-N day marker alone says nothing is wrong).
+  const pre = opts.flagPreStart && elapsedH < 0 ? "pre-start " : "";
   const dayMarker = days !== 0 ? `${days > 0 ? "+" : ""}${days}` : "";
   return `${pre}${h12}:${mm}${ampm}${dayMarker}`;
 }

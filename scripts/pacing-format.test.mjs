@@ -67,17 +67,23 @@ test("fmtRaceClock: a pre-start instant is flagged, same day", () => {
   // 06:00 start, asked for -0.5h → 5:30a the same calendar day. No day
   // marker triggers (days === 0), so without an explicit flag this looked
   // like an ordinary clock time.
-  const s = fmtRaceClock(START, -0.5, TZ);
+  const s = fmtRaceClock(START, -0.5, TZ, { flagPreStart: true });
   assert.match(s, /pre-start/, `expected a pre-start marker, got ${JSON.stringify(s)}`);
   assert.match(s, /5:30a/, `expected the clock-of-day to still read, got ${JSON.stringify(s)}`);
 });
 
 test("fmtRaceClock: a pre-start instant that also crosses into the previous calendar day is flagged", () => {
-  const s = fmtRaceClock(START, -24.5, TZ);
+  const s = fmtRaceClock(START, -24.5, TZ, { flagPreStart: true });
   assert.match(s, /pre-start/);
 });
 
 test("fmtRaceClock: never flags a non-negative elapsed hour, even at exactly 0", () => {
   assert.doesNotMatch(fmtRaceClock(START, 0, TZ), /pre-start/);
   assert.doesNotMatch(fmtRaceClock(START, 40, TZ), /pre-start/);
+});
+
+test("fmtRaceClock: without the opt-in flag a pre-start instant is an ordinary clock (the race-day header before the gun)", () => {
+  const s = fmtRaceClock(START, -0.5, TZ);
+  assert.doesNotMatch(s, /pre-start/, `expected no marker, got ${JSON.stringify(s)}`);
+  assert.match(s, /^\d{1,2}:\d{2}[ap]/);
 });

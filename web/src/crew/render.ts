@@ -100,7 +100,7 @@ export function stationRows(
   if (!source || source.stations.length !== frozen.length) return frozen;
   const shift = cp ? cp.shift_h : 0;
   const start = raceStart(data.race.date, data.race.start_time, data.race.timezone);
-  const clock = (h: number) => fmtRaceClock(start, h, data.race.timezone);
+  const clock = (h: number) => fmtRaceClock(start, h, data.race.timezone, { flagPreStart: true });
   const goalSource = live && live.stations.length === frozen.length ? live.stations : null;
   // A station at or before the checkpoint is a fact the crew already watched
   // happen, not a prediction — it must never be re-dated by the shift a
@@ -175,7 +175,7 @@ function accessLabel(s: CrewStation): string {
 function headerHtml(data: CrewData, finish: Record<Scenario, number>, goalH: number | null): string {
   const race = data.race;
   const start = raceStart(race.date, race.start_time, race.timezone);
-  const clock = (h: number) => fmtRaceClock(start, h, race.timezone);
+  const clock = (h: number) => fmtRaceClock(start, h, race.timezone, { flagPreStart: true });
   const course = data.course;
   const base = data.crew_base?.base ?? null;
   const dist = course.official_distance_mi || race.distance_mi;
@@ -451,7 +451,7 @@ function pickupsHtml(data: CrewData): string {
   const ctx: PickupContext = {
     flaskMl: data.nutrition?.flask_ml ?? null,
     finishName: data.projection.stations[data.projection.stations.length - 1]?.name ?? "",
-    clock: (h) => fmtRaceClock(start, h, data.race.timezone),
+    clock: (h) => fmtRaceClock(start, h, data.race.timezone, { flagPreStart: true }),
     covering: (p) =>
       segments.find((sg) => p.eta_h > sg.departH && p.eta_h <= sg.arriveH) ??
       segments.find((sg) => sg.via.includes(p.station)) ??
