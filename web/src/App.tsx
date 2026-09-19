@@ -23,6 +23,7 @@ import { ClimbComparison } from "./race/ClimbComparison";
 import { NutritionPlan } from "./race/NutritionPlan";
 import { ModelCheck } from "./race/ModelCheck";
 import { RacePlanProvider } from "./race/RacePlanProvider";
+import { RaceErrorBoundary } from "./race/RaceErrorBoundary";
 import { RaceDayRoute } from "./race/RaceDay";
 import { RACE_DAY_HASH, useHashRoute } from "./race/hashRoute";
 import { useCourse, useRaceResult } from "./race/useRaceData";
@@ -2757,6 +2758,9 @@ function SetupDrawer() {
 function AppBody() {
   const { key } = useRefresh();
   const { race, viewing } = useBlockConfig();
+  // the slug ON SCREEN, for the crash boundary's message and its "back to
+  // generic mode" pointer reset — same source useRacePlanInstance itself reads.
+  const { viewing: viewingSlug } = useActiveRace();
   const hash = useHashRoute();
   const [view, setViewState] = useState<AppView>(() => {
     // validate rather than cast — a stale or hand-edited key would otherwise
@@ -2812,24 +2816,32 @@ function AppBody() {
               </>
             ) : activeView === "race" ? (
               <div key={`race-${key}`}>
-                {/* one shared plan instance — planner sliders and the model
-                    check must never disagree on the same screen. The climb
-                    comparison takes no sliders, but it reads its visual.panels
-                    gate off the same instance rather than fetching the active
-                    race a second time, so it lives inside the provider too. */}
-                <RacePlanProvider>
-                  <ClimbComparison />
-                  <RacePlanner />
-                  <ModelCheck />
-                </RacePlanProvider>
+                {/* the boundary sits OUTSIDE the provider: useRacePlanInstance
+                    computes the whole plan (course, projection, fuel) during
+                    RacePlanScope's render, so a bad folder throws before any
+                    child below the provider ever mounts (tt bug fix-sun-null). */}
+                <RaceErrorBoundary slug={viewingSlug}>
+                  {/* one shared plan instance — planner sliders and the model
+                      check must never disagree on the same screen. The climb
+                      comparison takes no sliders, but it reads its visual.panels
+                      gate off the same instance rather than fetching the active
+                      race a second time, so it lives inside the provider too. */}
+                  <RacePlanProvider>
+                    <ClimbComparison />
+                    <RacePlanner />
+                    <ModelCheck />
+                  </RacePlanProvider>
+                </RaceErrorBoundary>
               </div>
             ) : (
               <div key={`fuel-${key}`}>
-                {/* single consumer, but useRacePlan requires the provider —
-                    a fallback instance was the divergence footgun */}
-                <RacePlanProvider>
-                  <NutritionPlan />
-                </RacePlanProvider>
+                <RaceErrorBoundary slug={viewingSlug}>
+                  {/* single consumer, but useRacePlan requires the provider —
+                      a fallback instance was the divergence footgun */}
+                  <RacePlanProvider>
+                    <NutritionPlan />
+                  </RacePlanProvider>
+                </RaceErrorBoundary>
               </div>
             )}
           </main>
