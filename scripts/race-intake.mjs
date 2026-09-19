@@ -430,10 +430,13 @@ function run(argv) {
  * Render a PDF to per-page PNGs under `outDir`.
  * @param {string} pdfPath
  * @param {string} outDir
- * @param {{renderer: ReturnType<typeof choosePdfRenderer>, tools: object, maxPages?: number}} opts
+ * @param {{renderer: ReturnType<typeof choosePdfRenderer>, tools: object, maxPages?: number, pageCount?: number|null}} opts
+ *   `pageCount` (the PDF's own declared page count) lets this tell "0 images
+ *   because PDFKit could not open the file" apart from "0 images because
+ *   there genuinely are none" — see the quartz-jxa check below.
  * @returns {Promise<{images: string[], renderer: string|null, warning: string|null}>}
  */
-export async function renderPdfPages(pdfPath, outDir, { renderer, tools, maxPages = MAX_PDF_PAGES }) {
+export async function renderPdfPages(pdfPath, outDir, { renderer, tools, maxPages = MAX_PDF_PAGES, pageCount = null }) {
   await fs.mkdir(outDir, { recursive: true });
   const warn = renderer.warning;
   try {
@@ -462,6 +465,19 @@ export async function renderPdfPages(pdfPath, outDir, { renderer, tools, maxPage
     return { images: [], renderer: renderer.id, warning: `${renderer.id} failed to render ${path.basename(pdfPath)}: ${e.message.slice(0, 200)}${warn ? ` · ${warn}` : ""}` };
   }
   const images = (await fs.readdir(outDir)).filter((f) => f.endsWith(".png")).sort().map((f) => path.join(outDir, f));
+  // SPLIT_JXA's PDFDocument.alloc.initWithURL returns a doc whose `.js` is
+  // false for a corrupt/encrypted PDF; the script's own guard (`if (!doc.js)
+  // return '0'`) then exits 0 with zero pages split — no exception for the
+  // catch block above to turn into a warning, and choosePdfRenderer's
+  // warning is null for quartz-jxa (a whole-document renderer). Indistin-
+  // guishable from success unless this checks the PDF's own page count.
+  if (renderer.id === "quartz-jxa" && images.length === 0 && Number.isFinite(pageCount) && pageCount >= 1) {
+    return {
+      images,
+      renderer: renderer.id,
+      warning: `quartz-jxa opened ${path.basename(pdfPath)} but produced 0 of its ${pageCount} page(s) — the PDF may be corrupt or encrypted`,
+    };
+  }
   return { images, renderer: renderer.id, warning: warn };
 }
 
@@ -757,9 +773,25 @@ export function buildRaceJson(draft, { slug, year, manifest = [], warnings = [],
   }
   provenance.edition_year = { by: PROVENANCE_BY, at, source: "intake request" };
   race.provenance = provenance;
+  // A source that this run tried and failed to (re)fetch is kept, marked with
+  // `error`, rather than dropped outright — but ONLY on a PARTIAL failure.
+  // When every fetch failed, the array must come back empty exactly as
+  // before: that is the signal race-merge.mjs's NO_STATEMENT_WHEN_EMPTY
+  // guard keys off of ("a refresh that fetched nothing does not erase the
+  // source list" — a dead site, no network). A partial failure has no such
+  // guard, and race-merge.mjs's leaf() replaces `sources` as one whole-array
+  // value, so a failed entry dropped here is just gone from the merged file
+  // too, with no diff line to say so or why.
+  const anySucceeded = manifest.some((m) => m.file || m.status === 200);
   race.sources = manifest
-    .filter((m) => m.file || m.status === 200)
-    .map((m) => ({ kind: m.kind, ref: m.ref, fetched_at: m.fetched_at, file: m.file ?? null }));
+    .filter((m) => m.file || m.status === 200 || (anySucceeded && m.error))
+    .map((m) => ({
+      kind: m.kind,
+      ref: m.ref,
+      fetched_at: m.fetched_at,
+      file: m.file ?? null,
+      ...(m.file || m.status === 200 ? {} : { error: m.error ?? `fetch failed (status ${m.status ?? "?"})` }),
+    }));
   if (typeof draft.review_notes === "string" && draft.review_notes.trim()) {
     race.review_notes = draft.review_notes.trim();
   }
@@ -770,6 +802,12 @@ export function buildRaceJson(draft, { slug, year, manifest = [], warnings = [],
   // source; this says it happened at all, in one place the review dialog
   // can show without re-reading the manifest).
   if (warnings.length) race.intake_warnings = [...warnings];
+  // PRD §15: race.json carries the holes the agent could not fill. Every
+  // downstream reader (race-edit.mjs's recomputeUnresolved, race-merge.mjs's
+  // mergeRace) starts from `race.unresolved ?? []`, so a value computed here
+  // and never attached to the object is a value that silently vanishes the
+  // moment the file is written — this is the one place that can happen.
+  race.unresolved = collectUnresolved(race, draft.unresolved ?? []);
   return race;
 }
 
@@ -820,7 +858,7 @@ export async function renderManifestPdfs(manifest, { sourcesDir, tools, say = ()
     const renderer = choosePdfRenderer({ pageCount, tools });
     const outDir = path.join(sourcesDir, "pages", kebab(path.basename(entry.file, ".pdf")));
     say(`${path.basename(entry.file)}: ${pageCount} page(s) via ${renderer.id ?? "no renderer"}`);
-    const result = await renderPdfPages(pdfPath, outDir, { renderer, tools });
+    const result = await renderPdfPages(pdfPath, outDir, { renderer, tools, pageCount });
     rendererUsed = rendererUsed ?? result.renderer;
     if (result.warning) {
       warnings.push(result.warning);
@@ -1017,10 +1055,18 @@ export async function runIntake({
       await abort(slug, contract.errors.join("; "), `intake agent output failed the contract:\n  · ${contract.errors.join("\n  · ")}`);
     }
 
-    await assertSlugAvailable(root, slug, { refresh, outDir });
+    try {
+      await assertSlugAvailable(root, slug, { refresh, outDir });
+    } catch (e) {
+      // Unlike the two checks above, this one runs AFTER the agent has
+      // already produced a valid draft — a late collision (the derived slug
+      // happens to match an existing folder) must not cost the owner the
+      // paid turn just spent, so it goes through the same abort() net.
+      await abort(slug, e.message, `slug collision after the agent run: ${e.message}`);
+    }
 
     const race = buildRaceJson(draft, { slug, year: Number(year), manifest, warnings });
-    const unresolved = collectUnresolved(race, draft.unresolved ?? []);
+    const unresolved = race.unresolved;
     const { errors, excused } = draftValidationErrors(race, unresolved);
     if (errors.length) {
       await abort(slug, errors.join("; "), `draft failed schema validation:\n  · ${errors.join("\n  · ")}`);
@@ -1028,9 +1074,20 @@ export async function runIntake({
     for (const e of excused) say("validate", `known gap (listed unresolved): ${e}`);
 
     const dir = outDir ?? raceDir(root, slug);
-    await moveSources(staging, dir);
-    await writeJsonAtomic(path.join(dir, "sources", "manifest.json"), manifest);
-    await writeJsonAtomic(path.join(dir, "race.json"), race);
+    try {
+      await moveSources(staging, dir);
+      await writeJsonAtomic(path.join(dir, "sources", "manifest.json"), manifest);
+      await writeJsonAtomic(path.join(dir, "race.json"), race);
+    } catch (e) {
+      // Validation already passed at this point — an ENOSPC/EACCES here is a
+      // disk problem, not a bad draft, but it is just as capable of losing a
+      // ten-minute agent run if the raw output isn't parked first. `abort`
+      // itself calls saveRawOutput, which writes under `outDir ?? races/<slug>/`
+      // — the same place moveSources was headed — so a failure partway
+      // through moveSources can still collide; that risk already exists for
+      // every abort() call site above and is no worse here.
+      await abort(slug, e.message, `writing races/${slug}/ failed: ${e.message}`);
+    }
     onProgress({ step: "validate", status: "done", slug, unresolved: unresolved.length });
 
     return {

@@ -27,9 +27,22 @@ import {
   renderManifestPdfs,
   renderPdfPages,
   detectPdfTools,
+  runIntake,
   summarizeManifestGpx,
   validateAgentDraft,
 } from "./race-intake.mjs";
+
+/** A site that fails immediately: the discard port on loopback, nothing
+    listening — a runIntake test that has to reach the network fails on a
+    plane (same trick scripts/race-refresh.test.mjs uses). */
+const DEAD_SITE = "http://127.0.0.1:9/cinder-cone-50k";
+
+/** The canned agent reply, in the shape runClaudeJson returns. */
+const cannedAgent = (body) => async () => ({
+  text: JSON.stringify(body),
+  wrapper: { numTurns: 3, costUsd: 0.1, durationMs: 4000 },
+  retried: false,
+});
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, "fixtures", "race-intake-agent-output.json");
@@ -163,6 +176,22 @@ test("buildRaceJson writes a draft with agent provenance on every field it took"
   assert.equal("sun" in race, false);
   assert.deepEqual(race.sources.map((s) => s.kind), ["url", "pdf"]);
   assert.equal(race.review_notes.startsWith("The aid chart is an image"), true);
+});
+
+test("buildRaceJson keeps a source whose refetch failed, marked with an error, instead of dropping it", async () => {
+  const draft = await loadDraft();
+  const manifest = [
+    ...MANIFEST,
+    { kind: "pdf", ref: "https://example.org/aid-chart.pdf", file: null, status: 503, error: "503 Service Unavailable" },
+  ];
+  const race = buildRaceJson(draft, { slug: "cinder-cone-50k-2027", year: 2027, manifest });
+  assert.equal(race.sources.length, 3, "the failed fetch is still a source record, not silently gone");
+  const failed = race.sources.find((s) => s.ref === "https://example.org/aid-chart.pdf");
+  assert.ok(failed, "the manifest entry is preserved");
+  assert.equal(failed.file, null);
+  assert.match(failed.error, /503/);
+  // the two successful entries are unaffected
+  assert.equal(race.sources.filter((s) => !("error" in s)).length, 2);
 });
 
 test("buildRaceJson persists the run's warnings onto race.json — durable, not just SSE progress text", async () => {
@@ -428,4 +457,107 @@ test("summarizeManifestGpx leaves the manifest entry alone when nothing is wrong
 test("summarizeManifestGpx is a no-op when the manifest has no GPX", async () => {
   const result = await summarizeManifestGpx([{ kind: "url", ref: "x", file: "x.html" }], { sourcesDir: "/nonexistent" });
   assert.deepEqual(result, { gpxSummary: null, warning: null });
+});
+
+/* ------------------------------ runIntake -------------------------------- */
+
+test("renderPdfPages: quartz-jxa on a PDF it cannot open synthesizes a warning instead of reading as success", async (t) => {
+  const tools = await detectPdfTools();
+  if (!tools.jxa) return t.skip("osascript/Quartz JXA not available on this machine");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "intake-jxa-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const pdfPath = path.join(dir, "garbage.pdf");
+  // Not a PDF at all — PDFKit's initWithURL gives back a doc whose `.js` is
+  // false, and SPLIT_JXA's own guard (`if (!doc.js) return '0'`) exits 0
+  // with zero pages split. pdfPageCount is heuristic and never returns 0,
+  // so choosing quartz-jxa for it is exactly what a real corrupt/encrypted
+  // upload would trigger.
+  await fs.writeFile(pdfPath, "this is not a pdf at all, just bytes\n".repeat(20));
+
+  const out = await renderPdfPages(pdfPath, path.join(dir, "pages"), {
+    renderer: { id: "quartz-jxa", scope: "all", warning: null },
+    tools,
+    pageCount: 3,
+  });
+  assert.deepEqual(out.images, []);
+  assert.match(out.warning ?? "", /produced 0 of its 3 page/);
+});
+
+test("renderPdfPages: quartz-jxa does not synthesize a warning when pageCount is not given", async (t) => {
+  const tools = await detectPdfTools();
+  if (!tools.jxa) return t.skip("osascript/Quartz JXA not available on this machine");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "intake-jxa-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const pdfPath = path.join(dir, "garbage.pdf");
+  await fs.writeFile(pdfPath, "this is not a pdf at all, just bytes\n".repeat(20));
+
+  // Same unopenable file, but the caller did not pass pageCount — without
+  // something to compare 0 images against, the check must not fire blind.
+  const out = await renderPdfPages(pdfPath, path.join(dir, "pages"), {
+    renderer: { id: "quartz-jxa", scope: "all", warning: null },
+    tools,
+  });
+  assert.deepEqual(out.images, []);
+  assert.equal(out.warning, null);
+});
+
+test("runIntake writes race.unresolved onto the file — the field its own consumers assume is there", async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "intake-run-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const draft = await loadDraft({ cutoff_h: null, unresolved: ["cutoff_h"] });
+
+  const { race, unresolved } = await runIntake({
+    root: tmp,
+    siteUrl: DEAD_SITE,
+    year: 2027,
+    runAgent: cannedAgent(draft),
+  });
+
+  assert.ok(unresolved.includes("cutoff_h"));
+  assert.ok(unresolved.includes("date"), "an unclaimed null is still found");
+  // the actual bug: race.unresolved existing on the object AND surviving the
+  // write to disk, not just the function's separate return value
+  assert.deepEqual(race.unresolved, unresolved);
+  const onDisk = JSON.parse(await fs.readFile(path.join(tmp, "races", race.slug, "race.json"), "utf8"));
+  assert.deepEqual(onDisk.unresolved, unresolved);
+});
+
+test("runIntake: a late slug collision (post-agent) is parked through the abort net, not deleted", async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "intake-run-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  // The fixture's name derives to cinder-cone-50k-2027 (deriveSlug tests
+  // above pin this) — pre-occupy that folder so the check AFTER the agent
+  // call collides, the same way an unrelated earlier intake would.
+  await fs.mkdir(path.join(tmp, "races", "cinder-cone-50k-2027"), { recursive: true });
+  await fs.writeFile(path.join(tmp, "races", "cinder-cone-50k-2027", "race.json"), "{}");
+
+  const draft = await loadDraft();
+  const err = await runIntake({ root: tmp, siteUrl: DEAD_SITE, year: 2027, runAgent: cannedAgent(draft) })
+    .then(() => null, (e) => e);
+  assert.ok(err, "the collision must reject");
+  assert.match(err.message, /already exists/);
+  assert.match(err.message, /raw agent output saved to/);
+
+  // the collision means moveSources into races/<slug>/ is refused (that
+  // folder is somebody else's cache) — the raw output stays in staging,
+  // which the abort net must NOT have deleted.
+  const match = /raw agent output saved to (.+)\)$/.exec(err.message);
+  assert.ok(match, "the error names where the raw output landed");
+  assert.equal(await fs.readFile(match[1], "utf8").then(() => true, () => false), true, `${match[1]} must actually exist`);
+});
+
+test("runIntake: a write failure after validation still parks the raw output instead of deleting staging", async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "intake-run-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  // races/ is a FILE, not a directory: slugExists (fs.access, catches
+  // everything) reads this as "no such race", so assertSlugAvailable passes
+  // and the run reaches moveSources — whose own `fs.mkdir(dir, {recursive})`
+  // then fails on this exact same obstruction, well after validation.
+  await fs.writeFile(path.join(tmp, "races"), "not a directory");
+
+  const draft = await loadDraft();
+  await assert.rejects(
+    runIntake({ root: tmp, siteUrl: DEAD_SITE, year: 2027, runAgent: cannedAgent(draft) }),
+    (e) => /raw agent output saved to/.test(e.message),
+  );
 });
