@@ -21,7 +21,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { LOW_CONFIDENCE, matchAidStations, parseGpx } from "./aid-match.mjs";
-import { RACE_STATUSES, listRaces, raceDir, loadRaceFolder, validateRaceJson } from "./race-config.mjs";
+import { RACE_STATUSES, applyingPath, listRaces, raceDir, loadRaceFolder, validateRaceJson } from "./race-config.mjs";
 import { collectUnresolved, draftValidationErrors } from "./race-intake.mjs";
 import { courseMismatches } from "./build-course.mjs";
 
@@ -601,6 +601,14 @@ export async function loadReview(root, slug) {
   ])].sort();
   const { errors: schemaErrors } = draftValidationErrors(race, unresolved);
   const otherActive = otherActiveSlugs(await listRaces(root), slug);
+  // acceptRefresh writes this marker the moment it starts applying a refresh
+  // and removes it only as part of its own final `.refresh/` cleanup — its
+  // presence means an accept started and crashed partway (a course.gpx/
+  // course.json copy may already be live beside a still-stale race.json, or
+  // vice versa), a different fact from "a refresh is merely waiting for
+  // review" (which never writes it). See scripts/race-refresh.mjs's
+  // APPLYING_MARKER.
+  const refreshInterrupted = await fs.access(applyingPath(root, slug)).then(() => true, () => false);
 
   return {
     slug,
@@ -610,6 +618,10 @@ export async function loadReview(root, slug) {
     // the athlete's existing targets AND a "these weeks were planned for a
     // different date" notice, without this module ever touching block.json.
     block_stale: isBlockStale(folder.block, race),
+    // The switcher/review UI's cue to say "a refresh didn't finish landing —
+    // re-run Accept" instead of silently rendering whatever mix of old/new
+    // files a crashed accept happened to leave on disk.
+    refresh_interrupted: refreshInterrupted,
     nutrition: folder.nutrition,
     plan: folder.plan,
     course,

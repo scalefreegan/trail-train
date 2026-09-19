@@ -66,6 +66,39 @@ export function raceDir(root, slug) {
   return path.join(root, "races", slug);
 }
 
+/** The re-intake shadow folder's name inside a race folder (see
+    scripts/race-refresh.mjs). Gitignored; "." keeps it out of listRaces,
+    which skips dot-folders, but it is nested anyway.
+    Lives here (a leaf module, imported by both race-refresh.mjs and
+    race-edit.mjs) rather than in race-refresh.mjs itself, which imports
+    race-merge.mjs, which imports race-edit.mjs — race-edit.mjs importing
+    race-refresh.mjs directly would be a cycle. */
+export const SHADOW = ".refresh";
+
+/** races/<slug>/.refresh/ */
+export function shadowDir(root, slug) {
+  return path.join(raceDir(root, slug), SHADOW);
+}
+
+/** races/<slug>/.refresh/diff.json */
+export function diffPath(root, slug) {
+  return path.join(shadowDir(root, slug), "diff.json");
+}
+
+/** Filename of the marker scripts/race-refresh.mjs's acceptRefresh writes
+    inside the shadow dir the moment it starts applying, and removes only via
+    the final `.refresh/` cleanup at its own end. Its presence — alongside a
+    still-present `.refresh/` — means an accept started and did not finish,
+    a different fact from "a refresh is waiting for review, untouched" (the
+    ordinary pending state, which never writes this marker). See
+    scripts/race-edit.mjs's loadReview (`refresh_interrupted`). */
+export const APPLYING_MARKER = "applying";
+
+/** races/<slug>/.refresh/applying */
+export function applyingPath(root, slug) {
+  return path.join(shadowDir(root, slug), APPLYING_MARKER);
+}
+
 /** config/active-race.json — gitignored; it is a per-machine choice. */
 export function activeRacePointerPath(root) {
   return path.join(root, "config", "active-race.json");

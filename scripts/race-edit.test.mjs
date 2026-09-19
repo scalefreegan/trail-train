@@ -523,3 +523,29 @@ test("loadReview re-derives the course.gpx mismatch live from build/course.json,
     mismatched.activation.errors.join(" | ")
   );
 });
+
+test("loadReview reports refresh_interrupted only when acceptRefresh's applying marker is on disk, not for an ordinary pending refresh", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "race-edit-review-refresh-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const slug = "test-race-2027";
+  const dir = path.join(root, "races", slug);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(race(), null, 2));
+
+  // No .refresh/ at all — the ordinary "nothing pending" case.
+  assert.equal((await loadReview(root, slug)).refresh_interrupted, false);
+
+  // A refresh waiting for review — .refresh/diff.json exists, but acceptRefresh
+  // was never called, so there is no applying marker. This must read the
+  // same as "nothing pending", not as interrupted.
+  const shadow = path.join(dir, ".refresh");
+  await fs.mkdir(shadow, { recursive: true });
+  await fs.writeFile(path.join(shadow, "diff.json"), JSON.stringify({ slug, at: "2026-09-18T00:00:00Z" }, null, 2));
+  assert.equal((await loadReview(root, slug)).refresh_interrupted, false, "a merely-pending refresh is not an interrupted one");
+
+  // acceptRefresh started applying and (per this test) never got to remove
+  // its own marker — the crashed-mid-accept case the switcher/review UI
+  // should flag with a "re-run Accept" notice.
+  await fs.writeFile(path.join(shadow, "applying"), "2026-09-18T00:05:00.000Z");
+  assert.equal((await loadReview(root, slug)).refresh_interrupted, true);
+});

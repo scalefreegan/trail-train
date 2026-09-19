@@ -26,6 +26,7 @@ import { buildRaceJson } from "./race-intake.mjs";
 import {
   SHADOW,
   acceptRefresh,
+  applyingPath,
   loadShadowRace,
   readRefresh,
   refreshSources,
@@ -381,11 +382,19 @@ test("accept copies course.gpx and build/course.json BEFORE the merged JSON — 
   assert.equal((await readJson(path.join(dir, "race.json"))).distance_mi, race.distance_mi, "the interrupted write never reached race.json");
   // .refresh/ survives the crash, so a re-run has something to repair from.
   assert.ok(await fs.access(shadow).then(() => true, () => false), ".refresh/ must not be removed on a failed accept");
+  // …and the applying marker survives right alongside it — the signal
+  // loadReview's `refresh_interrupted` is built on (race-edit.test.mjs).
+  assert.ok(
+    await fs.access(applyingPath(tmp, SLUG)).then(() => true, () => false),
+    "the applying marker must survive a crashed accept, not just .refresh/ itself",
+  );
 
   // A plain re-run (no injected failure) finishes the job.
   await acceptRefresh({ root: tmp, slug: SLUG });
   assert.equal((await readJson(path.join(dir, "race.json"))).distance_mi, 32.8);
   await assert.rejects(fs.access(shadow), /ENOENT/, "the shadow is gone once the accept actually completes");
+  // The marker goes with it — a completed accept leaves nothing "interrupted".
+  await assert.rejects(fs.access(applyingPath(tmp, SLUG)), /ENOENT/);
 });
 
 test("accept promotes course.gpx via temp+rename — a blocked rename leaves the live file untouched, not truncated", async (t) => {
