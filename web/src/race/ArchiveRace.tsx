@@ -102,6 +102,15 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The server enforces ±1 day (RACE-local time) and refuses anything wider
+  // — the picker's own ±PICKER_SLACK_DAYS window (or the 20-row fallback) is
+  // just what fills the list, so a folder with nothing that close needs to
+  // say so up front rather than let the athlete pick a row and find out only
+  // after ARCHIVE RACE comes back 400. A folder with no parseable race date
+  // can't be checked client-side at all — that case is left to the server.
+  const withinDay = (a: Activity) => raceDate != null && Math.abs(dayOffset(a.date, raceDate)) <= 1;
+  const noneWithinDay = raceDate != null && candidates.length > 0 && !candidates.some(withinDay);
+
   // The selection before anyone has clicked: the already-linked activity, or
   // the longest run on race day (the candidates are sorted that way). Derived
   // rather than seeded into state, so a late-arriving Strava log still lands
@@ -113,6 +122,10 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
   }, [candidates, linkedActivityId, raceDate]);
   const activityId = picked ?? defaultId;
   const { titleId, dialogProps } = useDialog({ onClose, locked: busy });
+  // Can't tell locally (no parseable race date) → don't block; the server
+  // guard is still the one that actually enforces this.
+  const selectedActivity = candidates.find((a) => a.id === activityId) ?? null;
+  const selectedQualifies = raceDate == null || (selectedActivity != null && withinDay(selectedActivity));
 
   const parsedSplits = useMemo(() => parseOfficialSplits(splitsText), [splitsText]);
   const finishH = parseElapsedH(finishText);
@@ -195,17 +208,26 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
                 No runs in the Strava log — run a resync first.
               </div>
             ) : (
-              <div style={{ border: "1px solid var(--edge-bright)", maxHeight: 190, overflowY: "auto" }}>
-                {candidates.map((a) => (
-                  <ActivityRow
-                    key={a.id}
-                    activity={a}
-                    offset={raceDate ? dayOffset(a.date, raceDate) : null}
-                    selected={a.id === activityId}
-                    onSelect={() => setPicked(a.id)}
-                  />
-                ))}
-              </div>
+              <>
+                {noneWithinDay && (
+                  <div style={{ fontSize: 12, color: "var(--lamp)", lineHeight: 1.5, marginBottom: 6 }}>
+                    No activity within ±1 day of race day — the server will refuse any of these as the result.
+                    Pick the closest below to enter it manually, or add the official time and splits under
+                    "official results".
+                  </div>
+                )}
+                <div style={{ border: "1px solid var(--edge-bright)", maxHeight: 190, overflowY: "auto" }}>
+                  {candidates.map((a) => (
+                    <ActivityRow
+                      key={a.id}
+                      activity={a}
+                      offset={raceDate ? dayOffset(a.date, raceDate) : null}
+                      selected={a.id === activityId}
+                      onSelect={() => setPicked(a.id)}
+                    />
+                  ))}
+                </div>
+              </>
             )}
           </div>
 
@@ -291,13 +313,14 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
           <button
             className="chip"
             onClick={submit}
-            disabled={!activityId || busy || finishBad}
+            disabled={!activityId || busy || finishBad || !selectedQualifies}
+            title={!selectedQualifies ? "the picked activity is more than 1 day from race day — the server will refuse it" : undefined}
             style={{
               fontSize: 9,
-              background: activityId && !busy && !finishBad ? "var(--lamp)" : "transparent",
-              borderColor: activityId && !busy && !finishBad ? "var(--lamp)" : "var(--edge-bright)",
-              color: activityId && !busy && !finishBad ? "var(--night)" : "var(--mist-mute)",
-              cursor: activityId && !busy && !finishBad ? "pointer" : "not-allowed",
+              background: activityId && !busy && !finishBad && selectedQualifies ? "var(--lamp)" : "transparent",
+              borderColor: activityId && !busy && !finishBad && selectedQualifies ? "var(--lamp)" : "var(--edge-bright)",
+              color: activityId && !busy && !finishBad && selectedQualifies ? "var(--night)" : "var(--mist-mute)",
+              cursor: activityId && !busy && !finishBad && selectedQualifies ? "pointer" : "not-allowed",
             }}
           >
             {busy ? "archiving…" : linkedActivityId ? "link result" : "archive race"}
