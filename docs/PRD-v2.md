@@ -1,6 +1,7 @@
 # PRD v2 — Basecamp after modular races
 
-Status: draft · 2026-09-19 · author: Aaron Brooks (interview-driven, written by Claude)
+Status: **implemented 2026-09-19 (branch `v2`)** · author: Aaron Brooks (interview-driven, written by Claude)
+Where the build differs from this document, see §10 — Changelog of deviations. §1–§9 are left as they were written on the day of the interview.
 Builds on: docs/PRD-modular-races.md (v1, merged as PR #23 → main `a9eb643`). Next A-race: San Juan Softie 100, Aug 2027 (draft folder local).
 
 ## 1. Scope (from the 2026-09-19 interview)
@@ -64,3 +65,124 @@ Non-goals: Tailscale/live crew page, Strava beacon, phone-GPS positioning, road/
 ## 9. Phases
 
 W1: altitude model core, B-race schema/server, tracker adapters, UI fixtures + harness, cleanup contracts. W2: acclimation + calibration, B-race UI, race-day live + manual checkpoint, crew export pipeline, remaining UI flows, chat context. W3: crew export content, v2 harness/README/PRD status. Then review loop, interactive rounds, PR.
+
+## 10. Changelog of deviations
+
+What actually shipped, where it differs from §1–§9 above. Derived from the
+merge commits on `v2` and from the code they landed; each entry says what the
+PRD asked for, what was built, and why. The PRD is not rewritten in place —
+the interview is a record of what was decided on 2026-09-19, and this is the
+record of what survived contact with the app.
+
+### The model
+
+- **A tune-up is never `active` — and `kind`, not a fourth status, is what
+  says so** (§3). The PRD left "is a B race activatable?" implicit. It is
+  not: "active" means *this is the training target* and only one folder may
+  hold it, so a tune-up is `draft` before its date and `archived` after it.
+  The validator refuses `kind: "b"` with `status: "active"`, refuses a
+  `parent_slug` that names no folder or names the tune-up itself, and refuses
+  one that names another tune-up — B races hang off A races and do not chain.
+  Without that last rule a chain of tune-ups would compute `weeks_out`
+  against a race that has no block.
+- **Acclimation defaults to 1 day, as a named constant** (§2). The PRD said
+  "else the day before the race", which is the same number; it is now
+  `DEFAULT_ACCLIMATION_DAYS` in `scripts/contracts.mjs`, so the planner
+  (`useRacePlan`), the derivation (`acclimation.mjs`) and the crew export
+  cannot each pick their own fallback for the athlete who has no travel event
+  on the calendar.
+- **A race that declares `features.altitude: false` gets no altitude term at
+  all** (§2) — not a term that happens to round to zero. The PRD described
+  the knob (`altitude_pct`, 0 disables) but not the feature gate; a hidden
+  penalty on a race the folder says is not an altitude race is worse than
+  none, and it would have been invisible in the planner's own numbers.
+- **The manual checkpoint wins by OBSERVATION TIME, not by being manual**
+  (§4). The PRD said the race-day page "keeps the manual override", which
+  reads as "manual always wins". It does not: whichever of the two was *seen*
+  later is the hold (ties to the manual entry). A tracker that catches up
+  past a typed time takes over on its own, and a tracker stuck at a station
+  the runner left an hour ago does not. A permanent manual override would
+  have meant one mistyped time silently disabling live tracking for the rest
+  of the race.
+- **A bare mile is a reported position, not a timed checkpoint** (§6). The
+  race-state block distinguishes "I am at mile 62" from "I left Tin Cup at
+  14:20"; the first carries no observation time, and the coach is told so
+  rather than being allowed to treat it as a split.
+- **A bare `HH:MM` is resolved inside the race's own window** (§4, §5).
+  `checkpointHold` resolved a clock time to its latest occurrence before
+  *now*, so a crew sheet opened the week after race day read "01:14" as a
+  163-hour split. The horizon is clamped to the race's window (cutoff plus
+  slack), so a split lands inside the race whenever the file is opened —
+  which matters most for the one artefact that is read long after it was
+  made.
+
+### Trackers
+
+- **MAProgress is a documented stub, and has no fixture** (§4). The PRD put
+  MAProgress and OpenSplitTime "first with committed fixture pages". Checked
+  on 2026-09-19: `app.maprogress.com` renders from a SignalR websocket *after*
+  load, so its first response carries no checkpoint data — there is nothing
+  static to save. The adapter is registered, claims its hostname and fails
+  with a tagged `unsupported`, which is a better answer than a 404 that reads
+  as "no tracker configured". OpenSplitTime is the one real adapter; UltraLive
+  is still next.
+- **`TRAIL_TEST_FIXTURES=1` was added, and is not in the PRD** (§4, §7).
+  Proving the polling works means polling something over HTTP, and the real
+  adapters claim URLs by *hostname*, so a fixture served off 127.0.0.1 matches
+  none of them. Under the flag the dev server serves `scripts/fixtures/` and
+  one extra adapter claims that *path*. It re-uses the real OpenSplitTime
+  parser and reports `source: "fixture"`; unset, it is not in the registry at
+  all.
+
+### Crew export
+
+- **`TRAIL_CREW_SHELL` was added** (§5). The shell is a `vite build`, and the
+  test harness's project root is a temp directory with no `crew.html`, no vite
+  config and no `node_modules`. The variable points the exporter at a prebuilt
+  shell so a test never shells out; unset, the shell is built on demand and
+  cached by mtime.
+- **One knobs→options mapping, shared with the planner** (§5). The export used
+  to assemble its own projection options, which is how it came to be missing
+  the altitude term the planner was showing. There is now a single mapping,
+  and `scripts/check-races.mjs` re-exports a fixture race on every run.
+- **TrailRun activities are in the pacing fit** (§5). The exporter filtered
+  `sport === "Run"` and silently dropped everything Strava labels `TrailRun` —
+  57 of 148 activities in the measured snapshot, 12 of them long enough to
+  clear the ≥8 mi tier the fit prefers. The crew sheet was therefore projected
+  off a *different* fit from the planner it was exported out of, which is the
+  one thing the export exists not to do. It now hands `fitPacing` the whole
+  snapshot, exactly as `providers.tsx` does; keeping non-running sports out of
+  the snapshot is `sync-strava.mjs`'s job, where the sport is known.
+
+### Tests and cleanup
+
+- **The print check's thresholds are measurements, not targets** (§7). The
+  PRD said "print light-pixel check". The numbers are what the fixture race
+  actually renders: **88 %** light for the three cards (the densest, the drop
+  bag card, measures 90.4 %) and **85 %** for the crew sheet, against the
+  ~20 % a card that has fallen back to the dark palette prints at. The section
+  skips loudly without `ghostscript` on `PATH`.
+- **`web/src/contracts.ts` is generated and committed** (§8). §8 offered a
+  choice — a generated file or a direct type-stripped import. Generated won:
+  `web/vite.config.ts` and the client bundle cannot import a `.mjs`, the
+  `predev`/`prebuild`/`pretest` hooks regenerate it, and a node test fails if
+  the committed copy has drifted. The generated file is never edited.
+- **Thirteen browser flows, not eleven** (§7). The PRD's list gained a width
+  sweep (`widths.spec.ts`, five widths × four views) and a chat turn
+  (`chat.spec.ts`), and `/api/chat` learned the `TRAIL_FAKE_AGENT` seam so
+  that last one could exist at all — it spawns `claude` inline rather than
+  going through `runClaudeJson`, so the seam every other agent flow had
+  stopped at its door.
+- **`check:races` has ten sections, not six.** Four were added for v2: the
+  altitude curve (monotone, pinned points, both twins), the tune-up folder
+  rules over `races/_fixtures`, the committed tracker fixtures parsed through
+  the registry with an injected fetch, and the crew export's
+  self-containment.
+- **Stale TODOs were rewritten, not just deleted** (§8). A `TODO` pointing at
+  a merged epic is noise, but the thing it pointed at is often still missing —
+  those now say what is missing, without the marker.
+
+### Not shipped
+
+- **UltraLive** (§4) — still next.
+- Everything listed as a non-goal in §1 stayed a non-goal.

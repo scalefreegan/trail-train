@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import { raceLocalParts, raceStart } from "./clock.mjs";
 import {
   MAX_EXPORT_BYTES,
+  assetRefs,
   buildCrewData,
   crewExport,
   crewPickups,
@@ -190,19 +191,10 @@ after(async () => {
 
 /* ---------------- what the file points at ---------------- */
 
-/** Every URL the document would actually FETCH: attribute targets and CSS
-    url()s, minus data: URIs and in-page fragments. Deliberately not a grep for
-    "http" — the embedded JSON legitimately quotes the race's own web address,
-    and a grep that cannot tell a link in DATA from a reference in MARKUP would
-    either fail on real data or pass on a broken file. */
-function fetchTargets(html) {
-  return [
-    ...html.matchAll(/(?:src|href)\s*=\s*["']([^"']+)["']/g),
-    ...html.matchAll(/url\(\s*["']?([^)"']+?)["']?\s*\)/g),
-  ]
-    .map((m) => m[1].trim())
-    .filter((v) => !v.startsWith("data:") && !v.startsWith("#"));
-}
+/** The self-containment predicate, imported rather than re-implemented:
+    scripts/check-races.mjs applies the very same one as a harness section, and
+    two copies of "what does this file point at" would drift. */
+const fetchTargets = assetRefs;
 
 test("the built shell is one self-contained file", async () => {
   assert.deepEqual(fetchTargets(shellHtml), [], "the shell must not reference anything outside itself");

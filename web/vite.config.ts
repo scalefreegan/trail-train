@@ -851,6 +851,46 @@ function chatApi(): Plugin {
           finish()
         }
 
+        /* TRAIL_FAKE_AGENT — the same test seam scripts/agent-run.mjs has
+           (fakeAgentReply there), mirrored here because chat is the one
+           agent-backed flow that does NOT go through runClaudeJson: this
+           handler spawns `claude` inline so it can stream. Without the
+           mirror, `TRAIL_FAKE_AGENT` covered intake, refresh and the readout
+           but left a live spawn reachable from a browser test, which is both
+           slow and real spend.
+
+           Everything before this point has already run — the race_state
+           validation, the facts digest, the system prompt and its token
+           measurement — so what a test drives is the whole endpoint minus the
+           model. The canned bytes are then handed to the SAME close handler a
+           real reply goes through, wrapped the way the CLI wraps one, so the
+           save-block peeling, the meta fields and the SSE event sequence are
+           the product's rather than a second code path that could drift.
+
+           Read per request and synchronously, like the seam it mirrors: a
+           test that wants a different reply between turns only has to rewrite
+           the file. An unreadable file is an error on the stream, never a
+           quiet fall-through to a real spawn. */
+        const fakeAgentFile = (process.env.TRAIL_FAKE_AGENT || '').trim()
+        if (fakeAgentFile) {
+          let canned: string
+          try { canned = fs.readFileSync(fakeAgentFile, 'utf8').trim() }
+          catch (e) {
+            send('error', { message: `TRAIL_FAKE_AGENT=${fakeAgentFile} could not be read: ${(e as Error).message}` })
+            send('done', { ok: false })
+            cleanup()
+            res.end()
+            return
+          }
+          console.log(`[chat] TRAIL_FAKE_AGENT=${fakeAgentFile} — answering from the file, no spawn`)
+          stdout = JSON.stringify({
+            type: 'result', subtype: 'success', is_error: false,
+            result: canned, num_turns: 0, total_cost_usd: 0, duration_ms: 0,
+          })
+          void onProcClose(0)
+          return
+        }
+
         startAttempt(prompt, CHAT_MAX_TURNS)
       })
     },

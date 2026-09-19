@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// The exit test for the modular-races epic (tt-yib.19; PRD §12, §13).
+// The exit test for the race pipeline — the modular-races epic (tt-yib.19;
+// PRD §12, §13) and everything v2 added on top of it (PRD-v2 §2-§7).
 //
-// Six sections, each PASS / FAIL / SKIP with a reason. Any FAIL exits 1.
+// Ten sections, each PASS / FAIL / SKIP with a reason. Any FAIL exits 1.
 //
 //   1. literals  no race name, short code, trailhead town or aid-station name
 //                survives in CODE. Comment mentions are history, not coupling,
@@ -10,15 +11,29 @@
 //   2. folders   every folder listRaces() returns validates (draft semantics
 //                for drafts), at most one is active, and the block.json /
 //                nutrition.json beside each race.json pass their validators.
-//   3. mm100     determinism: the archived reference folder, copied to a temp
+//   3. altitude  the pacing penalty curve (PRD-v2 §2): monotone in all three
+//                inputs, still on its published pinned points, and identical
+//                in the .mjs and .ts twins the scripts and the bundle use.
+//   4. tuneups   PRD-v2 §3's B-race rules, exercised over races/_fixtures:
+//                a tune-up validates with no block or nutrition, is never
+//                "active", needs a real A-race parent, cannot chain, and
+//                lands under that parent with the right weeks_out.
+//   5. trackers  every committed page under scripts/fixtures/trackers/ still
+//                parses through the registry, with an INJECTED fetch, to the
+//                checkpoint it is saved for. A documented stub (MAProgress)
+//                has to say so; an adapter with neither fails the section.
+//   6. reference determinism: the archived reference folder, copied to a temp
 //                dir with every gpx_wpt and its sun stripped, rebuilds to the
 //                same waypoints, the same sunrise/sunset and a monotone course,
 //                without touching a single user- or agent-owned field.
-//   4. softie    PRD §12's assertions against the San Juan Softie 2027 DRAFT,
+//   7. draft     PRD §12's assertions against the San Juan Softie 2027 DRAFT,
 //                when that (uncommitted) folder is present. --live additionally
 //                re-fetches the sources it cites and reports what has changed.
-//   5. harness   `npm run build` and `npm test` in web/.
-//   6. ui        `npm run test:ui` — the Playwright flows (web/tests/). The one
+//   8. crew      the static crew handout (PRD-v2 §5), rendered from a fixture
+//                race: zero asset references, every http(s) string inside the
+//                embedded data, and under the 2 MB budget.
+//   9. harness   `npm run build` and `npm test` in web/.
+//  10. ui        `npm run test:ui` — the Playwright flows (web/tests/). The one
 //                section that drives a browser, so it is also the one that can
 //                be turned off: `--no-ui` or TRAIL_CHECK_NO_UI=1 skips it with
 //                that as its stated reason rather than silently. Its wall time
@@ -36,13 +51,21 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { listRaces, loadRaceFolder, raceKind, validateRaceJson, validateSingleActive } from "./race-config.mjs";
+import * as altitudeMjs from "./altitude.mjs";
+import * as altitudeTs from "../web/src/race/altitude.ts";
+import * as trackers from "./trackers/index.mjs";
+import {
+  bRacesFor, listRaces, loadRaceFolder, raceKind,
+  validateRaceJson, validateSingleActive,
+} from "./race-config.mjs";
 import { draftValidationErrors } from "./race-intake.mjs";
 import { validateBlockTargets, validateNutrition } from "./race-plan.mjs";
 import { isBlockStale } from "./race-edit.mjs";
 import { normalizeNutrition } from "../web/src/race/nutrition-config.ts";
+import { MAX_EXPORT_BYTES, assetRefs, crewExport } from "./crew-export.mjs";
 import { buildRace } from "./race-build.mjs";
 import { projectRoot } from "./lib.mjs";
+import { buildCrewShell, makeProjectRoot } from "../web/tests/launch.mjs";
 
 const ROOT = projectRoot();
 
@@ -333,7 +356,551 @@ export async function checkFolders(root) {
   };
 }
 
-/* ==================== 3. the reference race rebuilds ==================== */
+/* ================== 3. the altitude curve holds its shape ================ */
+
+/**
+ * The altitude model's pinned points, as a list so the report can name the
+ * one that moved rather than just failing.
+ *
+ * These are the same assertions scripts/altitude.test.mjs makes, and that is
+ * deliberate: the unit test is what a developer runs, and THIS is what the
+ * exit gate runs against whatever is on disk at release time. The numbers
+ * reach the athlete as minutes on a race plan (PRD-v2 §2), so a re-tuning
+ * should have to walk past a failing line in both places.
+ *
+ * Pure, and parameterised over the module, so both twins go through it.
+ *
+ * @param {typeof import("./altitude.mjs")} A either twin
+ * @returns {{name: string, ok: boolean, detail: string}[]}
+ */
+export function altitudeChecks(A) {
+  const out = [];
+  const check = (name, ok, detail) => out.push({ name, ok: Boolean(ok), detail });
+  const near = (x, y, eps = 1e-12) => Math.abs(x - y) <= eps;
+  const at = (elevationFt, acclimationDays = 0, homeElevationFt = null) =>
+    A.altitudeSlowdown({ elevationFt, homeElevationFt, acclimationDays });
+  const pct = (v) => `${(v * 100).toFixed(2)} %`;
+
+  /* --- the threshold, and what an unusable input does at it --- */
+  const charged = [-300, 0, 1000, 4000, 4999, A.ALTITUDE_THRESHOLD_FT].filter((e) => at(e) !== 0);
+  const freeloaders = [A.altitudeSlowdown(), A.altitudeSlowdown({}), at(NaN)].filter((v) => v !== 0);
+  check(
+    `nothing is charged at or below ${A.ALTITUDE_THRESHOLD_FT.toLocaleString("en-US")} ft`,
+    charged.length === 0 && freeloaders.length === 0,
+    charged.length
+      ? `charged at ${charged.join(", ")} ft`
+      : freeloaders.length
+        ? "a missing or NaN elevation is not free"
+        : "0 up to the threshold, and for a missing elevation"
+  );
+
+  /* --- the per-1,000 ft cost --- */
+  check("8,000 ft unacclimated costs 5.4 %", near(at(8000), 0.054), pct(at(8000)));
+  check("12,000 ft unacclimated costs 12.6 %", near(at(12000), 0.126), pct(at(12000)));
+  check(
+    "linear in the excess above the threshold",
+    near(at(12000) - at(11000), A.PACE_PENALTY_PER_1000FT),
+    `${pct(at(12000) - at(11000))} per 1,000 ft`
+  );
+
+  /* --- the two published acclimatization anchors --- */
+  const half = A.acclimationFraction(A.ACCLIMATION_HALF_DAYS);
+  const nearDay = A.acclimationFraction(A.ACCLIMATION_NEAR_DAYS);
+  check(`half the available benefit by day ${A.ACCLIMATION_HALF_DAYS}`, near(half, 0.5, 1e-9), half.toFixed(4));
+  check(
+    `${(A.ACCLIMATION_NEAR_FRACTION * 100).toFixed(0)} % of it by day ${A.ACCLIMATION_NEAR_DAYS}`,
+    near(nearDay, A.ACCLIMATION_NEAR_FRACTION, 1e-9),
+    nearDay.toFixed(4)
+  );
+  check(
+    "arrival day and a negative stay both buy nothing",
+    A.acclimationFraction(0) === 0 && A.acclimationFraction(-5) === 0,
+    `day 0 → ${A.acclimationFraction(0)} · day −5 → ${A.acclimationFraction(-5)}`
+  );
+  check("12,000 ft after 3 days costs 9.45 %", near(at(12000, 3), 0.0945), pct(at(12000, 3)));
+  check("12,000 ft after 14 days costs 6.93 %", near(at(12000, 14), 0.0693), pct(at(12000, 14)));
+
+  /* --- acclimation is partial, however long the stay --- */
+  const raw = at(12000);
+  const floor = raw * (1 - A.ACCLIMATION_MAX_RELIEF);
+  const belowFloor = [30, 365, 10000].filter((d) => at(12000, d) < floor - 1e-12 || at(12000, d) >= raw);
+  check(
+    `acclimation never gives back more than ${(A.ACCLIMATION_MAX_RELIEF * 100).toFixed(0)} %`,
+    belowFloor.length === 0 && near(at(12000, 1e9), floor, 1e-9),
+    `12,000 ft floors at ${pct(floor)} (raw ${pct(raw)})`
+  );
+
+  /* --- the athlete's own elevation raises the threshold, never lowers it --- */
+  check(
+    "a home elevation raises the threshold and never lowers it",
+    near(at(10000, 0, 7000), 3 * A.PACE_PENALTY_PER_1000FT) &&
+      at(5000, 0, 3000) === 0 &&
+      at(8000, 0, 3000) === at(8000) &&
+      at(6000, 0, 9000) === 0,
+    `10,000 ft from 7,000 ft → ${pct(at(10000, 0, 7000))}; living higher than the race is no bonus`
+  );
+
+  /* --- monotone in all three inputs, and in the curve itself --- */
+  const notMonotone = [];
+  let prev = -1;
+  for (let ele = 0; ele <= 15000; ele += 250) {
+    const v = at(ele, 2, 5280);
+    if (v < prev || v < 0) notMonotone.push(`penalty fell or went negative at ${ele} ft`);
+    prev = v;
+  }
+  prev = Infinity;
+  for (let d = 0; d <= 60; d += 0.5) {
+    const v = at(11000, d);
+    if (v > prev) notMonotone.push(`another day at altitude cost MORE (day ${d})`);
+    prev = v;
+  }
+  prev = Infinity;
+  for (let home = 0; home <= 11000; home += 250) {
+    const v = at(11000, 0, home);
+    if (v > prev) notMonotone.push(`a higher home elevation cost more (${home} ft)`);
+    prev = v;
+  }
+  prev = -1;
+  for (let d = 0; d <= 60; d += 0.25) {
+    const v = A.acclimationFraction(d);
+    if (v < prev || v > 1) notMonotone.push(`acclimationFraction is not monotone/bounded at day ${d}`);
+    prev = v;
+  }
+  check(
+    "monotone in elevation, in days at altitude and in home elevation",
+    notMonotone.length === 0,
+    notMonotone.length ? notMonotone.slice(0, 3).join(" · ") : "121 elevations, 121 days, 45 home elevations"
+  );
+
+  return out;
+}
+
+/** The constants the two twins must agree on, name by name. */
+export const ALTITUDE_CONSTANTS = [
+  "ALTITUDE_THRESHOLD_FT", "PACE_PENALTY_PER_1000FT", "ACCLIMATION_MAX_RELIEF",
+  "ACCLIMATION_HALF_DAYS", "ACCLIMATION_NEAR_DAYS", "ACCLIMATION_NEAR_FRACTION",
+];
+
+/**
+ * Where scripts/altitude.mjs and web/src/race/altitude.ts disagree — empty
+ * when they are the same model.
+ *
+ * The scripts and the Vite bundle share no module graph, so the curve exists
+ * twice on purpose (see the header of either file). A change mirrored in only
+ * one of them would give the planner and the crew sheet two different races,
+ * and nothing else in the app would notice.
+ *
+ * @returns {string[]}
+ */
+export function altitudeTwinDiffs(a, b) {
+  const diffs = [];
+  for (const key of ALTITUDE_CONSTANTS) {
+    if (typeof a[key] !== "number") diffs.push(`${key} is missing from scripts/altitude.mjs`);
+    else if (b[key] !== a[key]) diffs.push(`${key}: ${a[key]} in the .mjs twin, ${b[key]} in the .ts twin`);
+  }
+  for (const elevationFt of [-200, 0, 4999, 5000, 6500, 8000, 10300, 12000, 14100]) {
+    for (const homeElevationFt of [null, 0, 3000, 5280, 7000]) {
+      for (const acclimationDays of [0, 1, 3, 7, 14, 30]) {
+        const args = { elevationFt, homeElevationFt, acclimationDays };
+        if (Math.abs(a.altitudeSlowdown(args) - b.altitudeSlowdown(args)) > 1e-9) {
+          diffs.push(`altitudeSlowdown disagrees at ${JSON.stringify(args)}`);
+        }
+      }
+    }
+  }
+  for (const d of [0, 0.5, 3, 14, 100]) {
+    if (Math.abs(a.acclimationFraction(d) - b.acclimationFraction(d)) > 1e-9) {
+      diffs.push(`acclimationFraction disagrees at day ${d}`);
+    }
+  }
+  return diffs.slice(0, 12);
+}
+
+/** Both copies of the model, named the way the report should name them. */
+const ALTITUDE_TWINS = [
+  ["scripts/altitude.mjs", altitudeMjs],
+  ["web/src/race/altitude.ts", altitudeTs],
+];
+
+async function checkAltitude() {
+  const errors = [];
+  const info = [];
+
+  // The .mjs twin's results carry the numbers into the report; the .ts twin
+  // runs the identical set silently and only speaks up when it fails, so the
+  // section stays readable instead of printing everything twice.
+  for (const r of altitudeChecks(altitudeMjs)) {
+    if (r.ok) info.push(`${r.name} — ${r.detail}`);
+    else errors.push(`scripts/altitude.mjs — ${r.name}: got ${r.detail}`);
+  }
+  for (const [name, A] of ALTITUDE_TWINS.slice(1)) {
+    for (const r of altitudeChecks(A)) {
+      if (!r.ok) errors.push(`${name} — ${r.name}: got ${r.detail}`);
+    }
+  }
+
+  const diffs = altitudeTwinDiffs(altitudeMjs, altitudeTs);
+  errors.push(...diffs);
+  if (!diffs.length) {
+    info.push(
+      `the .mjs and .ts twins agree on ${ALTITUDE_CONSTANTS.length} constants and 270 sampled inputs`
+    );
+  }
+
+  return {
+    status: errors.length ? "FAIL" : "PASS",
+    reason: errors.length
+      ? `${errors.length} altitude assertion${errors.length === 1 ? "" : "s"} failed`
+      : "the curve is monotone, hits its pinned points, and both twins agree",
+    detail: errors,
+    info,
+  };
+}
+
+/* =========== 4. tune-up (B) folders, over races/_fixtures ============= */
+
+/** The synthetic race folders the UI suite owns. They are the only A races
+    this checkout is guaranteed to have (the reference race is archived-in-
+    place and the draft is never committed), which is what makes them the
+    right parents to hang a test tune-up off. */
+export const FIXTURE_RACES_REL = path.posix.join("races", "_fixtures");
+
+/** YYYY-MM-DD, `days` earlier. Whole calendar days, so UTC arithmetic gives
+    the same answer any zone would. */
+export function isoDaysBefore(iso, days) {
+  const [y, m, d] = String(iso).split("-").map(Number);
+  const out = new Date(Date.UTC(y, m - 1, d) - days * 86_400_000);
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${out.getUTCFullYear()}-${p2(out.getUTCMonth() + 1)}-${p2(out.getUTCDate())}`;
+}
+
+/**
+ * A tune-up hanging off `parent`, written the way POST /api/races writes one:
+ * race.json alone, no block, no nutrition, no plan (PRD-v2 §3).
+ * @param {{slug: string, date: string, timezone: string}} parent the A race
+ * @param {{weeksBefore?: number, over?: object}} [opts]
+ */
+export function tuneUpFixture(parent, { weeksBefore = 8, over = {} } = {}) {
+  return {
+    schema_version: 1,
+    slug: "harness-tune-up-25k",
+    kind: "b",
+    parent_slug: parent.slug,
+    status: "draft",
+    name: "Harness Tune-up 25K",
+    short: "HTU25K",
+    date: isoDaysBefore(parent.date, weeksBefore * 7),
+    start_time: "07:00",
+    timezone: parent.timezone,
+    distance_mi: 15.5,
+    gain_ft: 2200,
+    cutoff_h: null,
+    unresolved: [],
+    aid_stations: [
+      { name: "Finish", total_mi: 15.5, cutoff_h: null, crew: false, drop_bag: false },
+    ],
+    ...over,
+  };
+}
+
+/**
+ * Every way a tune-up folder may be wrong, and the message that has to catch
+ * it. PRD-v2 §3's rules are enforced in one function (race-config.mjs's
+ * validateKind) and read by four callers; this is the list that says the
+ * rules are still there at all.
+ *
+ * Pure: `parent` is the A race the good case hangs off, and the returned
+ * `race` objects are what the caller validates.
+ *
+ * @param {{slug: string, date: string, timezone: string}} parent
+ * @returns {{name: string, race: object, expect: RegExp|null}[]} `expect`
+ *   null means the folder must validate cleanly.
+ */
+export function tuneUpCases(parent) {
+  const good = tuneUpFixture(parent);
+  const mutate = (over) => tuneUpFixture(parent, { over });
+  return [
+    { name: "a tune-up beside its A race validates with no block or nutrition", race: good, expect: null },
+    {
+      name: 'a tune-up is never "active" — the A race is the training target',
+      race: mutate({ status: "active" }),
+      expect: /never "active"/,
+    },
+    {
+      name: "a tune-up without a parent is refused",
+      race: mutate({ parent_slug: null }),
+      expect: /parent_slug: non-empty slug/,
+    },
+    {
+      name: "a parent that is not a folder on disk is caught",
+      race: mutate({ parent_slug: "no-such-race-2027" }),
+      expect: /no race folder races\/no-such-race-2027\//,
+    },
+    {
+      name: "a tune-up cannot be its own parent",
+      race: mutate({ parent_slug: good.slug }),
+      expect: /its own parent/,
+    },
+    {
+      name: "tune-ups cannot chain — a B race hangs off an A race",
+      race: tuneUpFixture(parent, { over: { slug: "harness-tune-up-10k", parent_slug: good.slug } }),
+      expect: /itself a tune-up/,
+    },
+    {
+      name: "an A race carries no parent_slug",
+      race: mutate({ kind: "a" }),
+      expect: /only a tune-up/,
+    },
+  ];
+}
+
+/** checkFolders' own branch: a draft may carry the holes it declared. */
+function raceErrors(race, races) {
+  return race.status === "draft"
+    ? draftValidationErrors(race, race.unresolved ?? [], { races }).errors
+    : validateRaceJson(race, { races }).errors;
+}
+
+async function checkTuneUps(root) {
+  const src = path.join(root, "races", "_fixtures");
+  let names;
+  try {
+    names = (await fs.readdir(src, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    names = [];
+  }
+  if (!names.length) {
+    return { status: "SKIP", reason: `${FIXTURE_RACES_REL}/ is not in this checkout`, detail: [], info: [] };
+  }
+
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-check-races-b-"));
+  try {
+    // listRaces skips `_`-prefixed folders, which is exactly why the fixtures
+    // are never a race the app can open — so they are copied out to a root
+    // where they ARE the races, and the real loader reads them.
+    await fs.cp(src, path.join(tmp, "races"), { recursive: true });
+    const fixtures = await listRaces(tmp);
+    const errors = [];
+    const info = [];
+
+    for (const r of fixtures) {
+      if (r.error) errors.push(`${FIXTURE_RACES_REL}/${r.slug}: ${r.error}`);
+    }
+    const aRaces = fixtures.filter((r) => r.race && raceKind(r.race) === "a");
+    const parentRow = aRaces.find((r) => r.race.status === "active") ?? aRaces[0];
+    if (!parentRow) {
+      return {
+        status: "FAIL",
+        reason: `no A race among the ${fixtures.length} fixture folders to hang a tune-up off`,
+        detail: errors,
+        info,
+      };
+    }
+    const parent = parentRow.race;
+    info.push(`${fixtures.length} fixture folders read · parent: ${parent.slug} (${parent.date}, ${parent.timezone})`);
+
+    /* Each rule, against the real folders. The `races` list handed to the
+       validator is the fixtures PLUS the candidate itself, which is what
+       checkFolders does — a parent_slug is checked against the folders
+       actually on disk, so a case that names a missing one really is
+       missing. */
+    const good = tuneUpFixture(parent);
+    for (const c of tuneUpCases(parent)) {
+      /* The good tune-up is always in the list, so the chaining case has a B
+         race to point at; the candidate joins it unless it IS that one. */
+      const races = [...fixtures, { slug: good.slug, race: good }];
+      if (c.race.slug !== good.slug) races.push({ slug: c.race.slug, race: c.race });
+      const got = raceErrors(c.race, races);
+      if (c.expect === null) {
+        if (got.length) errors.push(`${c.name}: ${got.join(" · ")}`);
+        else info.push(`${c.name} — clean`);
+      } else if (got.some((e) => c.expect.test(e))) {
+        info.push(`${c.name} — refused`);
+      } else {
+        errors.push(`${c.name}: expected ${c.expect} · got ${got.length ? got.join(" · ") : "no error at all"}`);
+      }
+    }
+
+    /* And the whole folder path, not just the validator: a tune-up written
+       into races/ has to pass the same gate section 2 applies to every
+       folder, and then appear under its A race with the week count the coach
+       plans a taper around. */
+    const dir = path.join(tmp, "races", good.slug);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "race.json"), JSON.stringify(good, null, 2));
+
+    const folders = await checkFolders(tmp);
+    if (folders.status !== "PASS") {
+      errors.push(`a tune-up folder beside the fixtures failed the folder gate: ${folders.detail.join(" · ")}`);
+    }
+    const single = validateSingleActive(await listRaces(tmp));
+    if (single.active.length !== 1 || single.active[0] === good.slug) {
+      errors.push(`a tune-up must not take the active pointer (active: ${JSON.stringify(single.active)})`);
+    }
+
+    const listed = bRacesFor(await listRaces(tmp), parent);
+    const mine = listed.find((b) => b.slug === good.slug);
+    if (!mine) {
+      errors.push(`${good.slug} does not appear among ${parent.slug}'s b_races`);
+    } else if (mine.weeks_out !== 8) {
+      errors.push(`weeks_out is ${mine.weeks_out}, expected 8 (${good.date} → ${parent.date}, ${parent.timezone})`);
+    } else {
+      info.push(`b_races: ${good.slug} sits ${mine.weeks_out} weeks out from ${parent.slug}, and the A race keeps the active pointer`);
+    }
+
+    return {
+      status: errors.length ? "FAIL" : "PASS",
+      reason: errors.length
+        ? `${errors.length} tune-up rule${errors.length === 1 ? "" : "s"} broken`
+        : `${tuneUpCases(parent).length} tune-up rules hold over ${fixtures.length} fixture folders`,
+      detail: errors,
+      info,
+    };
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+}
+
+/* ============ 5. the committed tracker fixtures still parse ============= */
+
+/**
+ * The saved tracker pages, what each one is a page OF, and the checkpoint the
+ * adapter has to find in it.
+ *
+ * The point of the fixtures is that no test in this repo may fetch a tracker
+ * (scripts/fixtures/trackers/README.md), so the fetch is injected here too —
+ * the assertion below includes "the adapter called our fetch, once, with the
+ * configured URL", which is what would catch an adapter that grew a real
+ * network call of its own.
+ */
+export const TRACKER_FIXTURES = [
+  {
+    file: "opensplittime-spread.html",
+    adapter: "opensplittime",
+    url: "https://www.opensplittime.org/events/2026-san-juan-softie-100/spread",
+    bib: "999",
+    expect: { checkpoint: "Burnett #7", clock: "21:22" },
+    why: "the scrubbed spread table — TEST RUNNER, bib 999, mid-race",
+  },
+];
+
+/**
+ * Registered adapters that deliberately have no fixture, and why. A stub is a
+ * documented answer ("this platform cannot be read"), not a gap, so it is
+ * listed rather than excused — and it still has to CLAIM its host, or the
+ * endpoint would 404 with the wrong message.
+ */
+export const TRACKER_STUBS = [
+  {
+    id: "maprogress",
+    url: "https://app.maprogress.com/emap/1234",
+    why: "its event pages render from a SignalR websocket after load, so the first response carries no checkpoint — there is nothing static to save",
+  },
+];
+
+/** A fetch that answers with `body` and remembers what it was asked for. */
+function fixtureFetch(body, { ok = true, status = 200 } = {}) {
+  const calls = [];
+  const impl = async (url) => {
+    calls.push(String(url));
+    return { ok, status, text: async () => body };
+  };
+  impl.calls = calls;
+  return impl;
+}
+
+async function checkTrackers(root) {
+  const errors = [];
+  const info = [];
+
+  for (const fx of TRACKER_FIXTURES) {
+    const file = path.join(root, "scripts", "fixtures", "trackers", fx.file);
+    let html;
+    try {
+      html = await fs.readFile(file, "utf8");
+    } catch (e) {
+      errors.push(`${fx.file}: ${e.code === "ENOENT" ? "not in this checkout" : e.message}`);
+      continue;
+    }
+    const adapter = trackers.detect(fx.url);
+    if (adapter?.id !== fx.adapter) {
+      errors.push(`${fx.url} is claimed by ${JSON.stringify(adapter?.id ?? null)}, expected ${fx.adapter}`);
+      continue;
+    }
+    const impl = fixtureFetch(html);
+    let hit;
+    try {
+      hit = await trackers.fetchLastCheckpoint(
+        { url: fx.url, bib: fx.bib, stations: [], at: "2026-08-15T03:00:00.000Z" },
+        impl,
+      );
+    } catch (e) {
+      errors.push(`${fx.file}: the ${fx.adapter} adapter threw — ${e.message}`);
+      continue;
+    }
+    if (!hit) {
+      errors.push(`${fx.file}: bib ${fx.bib} is no longer found on the page`);
+      continue;
+    }
+    for (const [k, want] of Object.entries(fx.expect)) {
+      if (hit[k] !== want) errors.push(`${fx.file}: ${k} is ${JSON.stringify(hit[k])}, expected ${JSON.stringify(want)}`);
+    }
+    if (hit.source !== fx.adapter) {
+      errors.push(`${fx.file}: source is ${JSON.stringify(hit.source)}, expected ${JSON.stringify(fx.adapter)}`);
+    }
+    if (impl.calls.length !== 1 || impl.calls[0] !== fx.url) {
+      errors.push(`${fx.file}: the adapter made ${impl.calls.length} call(s) — ${JSON.stringify(impl.calls)} — instead of one, to the injected fetch`);
+    }
+    info.push(`${fx.file} → ${fx.adapter}: ${hit.checkpoint} at ${hit.clock} (${fx.why})`);
+  }
+
+  for (const stub of TRACKER_STUBS) {
+    const adapter = trackers.detect(stub.url);
+    if (adapter?.id !== stub.id) {
+      errors.push(`${stub.url} is claimed by ${JSON.stringify(adapter?.id ?? null)}, expected the ${stub.id} stub`);
+      continue;
+    }
+    if (adapter.supported !== false) {
+      errors.push(`${stub.id} no longer marks itself \`supported: false\` — give it a fixture and move it to TRACKER_FIXTURES`);
+      continue;
+    }
+    const impl = fixtureFetch("");
+    let code = null;
+    try {
+      await trackers.fetchLastCheckpoint({ url: stub.url }, impl);
+    } catch (e) {
+      code = e.code ?? null;
+    }
+    if (code !== "unsupported") {
+      errors.push(`${stub.id} answered with ${JSON.stringify(code)} rather than a tagged \`unsupported\``);
+    }
+    if (impl.calls.length) errors.push(`${stub.id} fetched ${impl.calls.join(", ")} before saying it is a stub`);
+    info.push(`${stub.id}: stub, no fixture — ${stub.why}`);
+  }
+
+  /* Coverage: a new adapter with neither a fixture nor a stated reason is the
+     failure this catches. The test-only fixture adapter is excluded by name —
+     it is registered only under TRAIL_TEST_FIXTURES=1 and its whole job is to
+     re-use another adapter's parser. */
+  const covered = new Set([...TRACKER_FIXTURES.map((f) => f.adapter), ...TRACKER_STUBS.map((s) => s.id), "fixture"]);
+  for (const a of trackers.ADAPTERS) {
+    if (!covered.has(a.id)) {
+      errors.push(`tracker adapter "${a.id}" has neither a committed fixture nor a listed reason for having none`);
+    }
+  }
+
+  return {
+    status: errors.length ? "FAIL" : "PASS",
+    reason: errors.length
+      ? `${errors.length} tracker problem${errors.length === 1 ? "" : "s"}`
+      : `${TRACKER_FIXTURES.length} fixture page${TRACKER_FIXTURES.length === 1 ? " parses" : "s parse"} and ` +
+        `${TRACKER_STUBS.length} stub${TRACKER_STUBS.length === 1 ? " says" : "s say"} so, with no network`,
+    detail: errors,
+    info,
+  };
+}
+
+/* ==================== 6. the reference race rebuilds ==================== */
 
 /** "HH:MM" → minutes since midnight; null when it is not a clock time. */
 export function clockMinutes(hhmm) {
@@ -462,7 +1029,7 @@ async function checkReferenceRebuild(root) {
   }
 }
 
-/* ======================= 4. the PRD §12 draft check ===================== */
+/* ======================= 7. the PRD §12 draft check ===================== */
 
 /**
  * Every expectation PRD §12 puts on the San Juan Softie 2027 DRAFT, as a list
@@ -591,7 +1158,88 @@ async function checkDraft(root, { live = false } = {}) {
   };
 }
 
-/* ========================= 5. build and unit tests ====================== */
+/* ========== 8. the crew export is one self-contained file ============== */
+
+/** The fixture race the export is rendered from: a full aid chart, crew
+    stops, a built course and night — the widest sheet the exporter makes. */
+export const CREW_EXPORT_SLUG = "mm-like-100";
+
+/**
+ * Render the crew handout and check the one property nobody else will notice
+ * breaking: it points at nothing.
+ *
+ * The file is opened once, on a phone, in a canyon, by someone who cannot
+ * debug it (PRD-v2 §5). A stylesheet left on a CDN or a font left on Google
+ * is invisible on the laptop that made the export and fatal where it is read,
+ * so this asserts on what the document REFERENCES rather than on how it
+ * looks — `assetRefs` is the exporter's own predicate, shared with
+ * scripts/crew-export.test.mjs.
+ *
+ * It runs against the UI suite's throwaway project root, which is the only
+ * thing in the repo that can produce a real export without touching the
+ * developer's data: fixture race folders with their courses built, and
+ * synthetic Strava behind the pacing fit.
+ */
+async function checkCrewExport() {
+  const previousShell = process.env.TRAIL_CREW_SHELL;
+  let root = null;
+  try {
+    root = await makeProjectRoot();
+    /* crewExport resolves the single-file shell under ITS root, and a temp
+       root has no web/, no crew.html and no node_modules to build one in. The
+       shell is code, not data, so it is built once from this checkout and
+       handed over through the variable that exists for exactly that. */
+    process.env.TRAIL_CREW_SHELL = await buildCrewShell();
+
+    const { html, bytes, data } = await crewExport(root, CREW_EXPORT_SLUG, { write: false });
+    const errors = [];
+    const info = [];
+
+    const refs = assetRefs(html);
+    if (refs.length) {
+      errors.push(
+        `the export references ${refs.length} thing${refs.length === 1 ? "" : "s"} outside itself: ` +
+          [...new Set(refs)].slice(0, 5).join(", ")
+      );
+    }
+    if (bytes >= MAX_EXPORT_BYTES) {
+      errors.push(`the export is ${(bytes / 1024 / 1024).toFixed(2)} MB, over the ${MAX_EXPORT_BYTES / 1024 / 1024} MB budget`);
+    }
+
+    /* The race's own web address, the organizer's manual and the results host
+       ARE in the file — as text, inside the embedded JSON. Outside it, an
+       http(s) string is markup pointing at the internet. */
+    const block = /<script\b[^>]*id="crew-data"[^>]*>([\s\S]*?)<\/script>/.exec(html);
+    if (!block) {
+      errors.push('the <script id="crew-data"> block did not survive the render');
+    } else {
+      const outsideData = html.slice(0, block.index) + html.slice(block.index + block[0].length);
+      const stray = [...new Set(outsideData.match(/https?:\/\/[^\s"'<>]+/g) ?? [])];
+      if (stray.length) errors.push(`${stray.length} http(s) URL(s) in the markup rather than the data: ${stray.slice(0, 3).join(", ")}`);
+    }
+
+    info.push(
+      `${CREW_EXPORT_SLUG}: ${(bytes / 1024).toFixed(0)} KB of ${MAX_EXPORT_BYTES / 1024} KB · ` +
+        `${data.projection.stations.length} stations · ${data.crew_pickups.length} crew stops`
+    );
+    info.push(`asset references: ${refs.length} · the shell and its data are one file`);
+
+    return {
+      status: errors.length ? "FAIL" : "PASS",
+      reason: errors.length
+        ? `${errors.length} problem${errors.length === 1 ? "" : "s"} with the exported handout`
+        : `one file, ${(bytes / 1024).toFixed(0)} KB, pointing at nothing`,
+      detail: errors,
+      info,
+    };
+  } finally {
+    if (previousShell === undefined) delete process.env.TRAIL_CREW_SHELL;
+    else process.env.TRAIL_CREW_SHELL = previousShell;
+    if (root) await fs.rm(root, { recursive: true, force: true });
+  }
+}
+
+/* ========================= 9. build and unit tests ====================== */
 
 /** Run one npm script in web/, capturing its combined output. */
 function runNpm(root, script) {
@@ -636,7 +1284,7 @@ async function checkHarness(root) {
   };
 }
 
-/* ========================= 6. the browser flows ========================= */
+/* ======================== 10. the browser flows ========================= */
 
 /**
  * Why the UI section is being skipped, or null to run it.
@@ -707,8 +1355,12 @@ async function checkUi(root, { ui = true, skipReason = null } = {}) {
 export const SECTIONS = [
   { id: "literals", title: "race literals out of the code", run: checkLiterals },
   { id: "folders", title: "every race folder validates", run: checkFolders },
+  { id: "altitude", title: "the altitude curve holds its shape", run: checkAltitude },
+  { id: "tuneups", title: "tune-up folders obey PRD-v2 §3", run: checkTuneUps },
+  { id: "trackers", title: "the committed tracker fixtures parse", run: checkTrackers },
   { id: "reference", title: `${REFERENCE_SLUG} rebuilds deterministically`, run: checkReferenceRebuild },
   { id: "draft", title: `${DRAFT_SLUG} against PRD §12`, run: checkDraft },
+  { id: "crew", title: "the crew export is one self-contained file", run: checkCrewExport },
   { id: "harness", title: "npm run build · npm test", run: checkHarness },
   { id: "ui", title: "npm run test:ui — the browser flows", run: checkUi },
 ];

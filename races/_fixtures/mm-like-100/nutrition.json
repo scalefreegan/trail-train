@@ -21,7 +21,7 @@
   "heat_window": { "start": "10:00", "end": "17:00" },
   "long_carry_h": 2.5,
   "drop_bag_gear": {
-    "Start · Lantern Draw": ["sunscreen + hat", "arm sleeves"],
+    "Start": ["sunscreen + hat", "arm sleeves"],
     "Quartz Bench": ["small headlamp", "anti-chafe"],
     "Slabtown": ["main headlamp + spare battery", "beanie + gloves", "warm midlayer"],
     "Stonecrop Saddle": ["fresh socks + blister kit"],

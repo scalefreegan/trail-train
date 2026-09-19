@@ -15,6 +15,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import * as altitudeMjs from "./altitude.mjs";
+import * as altitudeTs from "../web/src/race/altitude.ts";
 import {
   ALLOWED_EXCEPTIONS,
   DRAFT_SLUG,
@@ -27,9 +29,16 @@ import {
   isExcludedFromScan,
   ownedProvenance,
   scanText,
+  TRACKER_FIXTURES,
+  TRACKER_STUBS,
+  altitudeChecks,
+  altitudeTwinDiffs,
+  isoDaysBefore,
   softieChecks,
   sunWithin,
   tail,
+  tuneUpCases,
+  tuneUpFixture,
   SECTIONS,
   formatDuration,
   uiSkipReason,
@@ -420,6 +429,102 @@ test("the browser flows are their own section of the gate, after the harness", (
   // a browser and the one part that can be skipped, and a section that can be
   // skipped has to be separately reportable.
   const ids = SECTIONS.map((s) => s.id);
-  assert.deepEqual(ids, ["literals", "folders", "reference", "draft", "harness", "ui"]);
+  assert.deepEqual(ids, [
+    "literals", "folders", "altitude", "tuneups", "trackers",
+    "reference", "draft", "crew", "harness", "ui",
+  ]);
   assert.equal(ids.indexOf("ui"), ids.length - 1);
+  // The cheap, pure sections come first: a run that is going to fail on the
+  // altitude curve should say so in milliseconds, not after a vite build.
+  assert.ok(ids.indexOf("altitude") < ids.indexOf("harness"));
+  assert.ok(ids.indexOf("trackers") < ids.indexOf("harness"));
+});
+
+
+/* -------------------------- the altitude section ------------------------ */
+
+test("every altitude assertion holds against both twins", () => {
+  for (const [name, A] of [["scripts/altitude.mjs", altitudeMjs], ["web/src/race/altitude.ts", altitudeTs]]) {
+    const failed = altitudeChecks(A).filter((c) => !c.ok);
+    assert.deepEqual(failed, [], `${name}: ${failed.map((c) => `${c.name} — ${c.detail}`).join(" · ")}`);
+  }
+  assert.deepEqual(altitudeTwinDiffs(altitudeMjs, altitudeTs), []);
+});
+
+test("each altitude assertion fails on its own when the curve is re-tuned", () => {
+  const byName = (mod) => Object.fromEntries(altitudeChecks(mod).map((c) => [c.name, c.ok]));
+  // A model that charges 2.5 % per 1,000 ft instead of 1.8 % keeps its shape
+  // (monotone, still 0 below the threshold) but misses every pinned point.
+  const steeper = { ...altitudeMjs, PACE_PENALTY_PER_1000FT: 0.025,
+    altitudeSlowdown: (o) => altitudeMjs.altitudeSlowdown(o) * (0.025 / 0.018) };
+  const got = byName(steeper);
+  assert.equal(got["8,000 ft unacclimated costs 5.4 %"], false);
+  assert.equal(got["12,000 ft unacclimated costs 12.6 %"], false);
+  assert.equal(got["nothing is charged at or below 5,000 ft"], true, "the threshold is untouched by a steeper cost");
+});
+
+test("the twin diff names the constant and the input that moved", () => {
+  const drifted = { ...altitudeTs, ALTITUDE_THRESHOLD_FT: 4000 };
+  const diffs = altitudeTwinDiffs(altitudeMjs, drifted);
+  assert.ok(diffs.some((d) => /ALTITUDE_THRESHOLD_FT: 5000 in the .mjs twin, 4000 in the .ts twin/.test(d)), JSON.stringify(diffs));
+
+  const bent = { ...altitudeTs, altitudeSlowdown: (o) => altitudeTs.altitudeSlowdown(o) + 0.01 };
+  assert.ok(altitudeTwinDiffs(altitudeMjs, bent).some((d) => /altitudeSlowdown disagrees/.test(d)));
+  // and the list is capped, so one broken twin cannot bury the report
+  assert.ok(altitudeTwinDiffs(altitudeMjs, bent).length <= 12);
+});
+
+/* --------------------------- the tune-up section ------------------------ */
+
+test("whole calendar days are counted the same in any zone", () => {
+  assert.equal(isoDaysBefore("2027-09-11", 56), "2027-07-17");
+  assert.equal(isoDaysBefore("2027-01-01", 1), "2026-12-31");
+  // across a US DST boundary (2027-03-14), still a whole number of days
+  assert.equal(isoDaysBefore("2027-03-20", 14), "2027-03-06");
+});
+
+test("the tune-up fixture is the shape the quick form writes", () => {
+  const parent = { slug: "a-race-2027", date: "2027-09-11", timezone: "America/Denver" };
+  const b = tuneUpFixture(parent);
+  assert.equal(b.kind, "b");
+  assert.equal(b.parent_slug, parent.slug);
+  assert.equal(b.status, "draft", 'a tune-up is never "active"');
+  assert.equal(b.date, "2027-07-17");
+  // race.json alone: no block, no nutrition, no plan (PRD-v2 §3)
+  for (const k of ["block", "nutrition", "plan"]) assert.equal(k in b, false);
+});
+
+test("every tune-up rule has exactly one case, and one of them is the happy path", () => {
+  const cases = tuneUpCases({ slug: "a-race-2027", date: "2027-09-11", timezone: "America/Denver" });
+  const clean = cases.filter((c) => c.expect === null);
+  assert.equal(clean.length, 1, "exactly one case must be the folder that validates");
+  for (const c of cases) {
+    assert.ok(c.name && typeof c.name === "string");
+    assert.equal(typeof c.race, "object");
+    assert.ok(c.expect === null || c.expect instanceof RegExp, `${c.name}: expect must be null or a RegExp`);
+  }
+  // the mutations are distinct races, not the same object handed back
+  assert.equal(new Set(cases.map((c) => JSON.stringify(c.race))).size, cases.length);
+});
+
+/* --------------------------- the tracker section ------------------------ */
+
+test("every tracker fixture names a file, an adapter and what it must find", () => {
+  assert.ok(TRACKER_FIXTURES.length >= 1);
+  for (const f of TRACKER_FIXTURES) {
+    assert.match(f.file, /\.html$/);
+    assert.match(f.url, /^https:\/\//);
+    assert.ok(f.adapter && f.why);
+    assert.ok(Object.keys(f.expect).length > 0, `${f.file}: an expectation with nothing in it proves nothing`);
+  }
+});
+
+test("a stub is listed with its reason, never merely absent", () => {
+  for (const s of TRACKER_STUBS) {
+    assert.ok(s.id && s.url);
+    assert.ok(s.why.length > 20, `${s.id}: "no fixture" needs a reason a reader can act on`);
+  }
+  // a platform cannot be both a fixture and a stub
+  const fixtureIds = new Set(TRACKER_FIXTURES.map((f) => f.adapter));
+  for (const s of TRACKER_STUBS) assert.equal(fixtureIds.has(s.id), false, s.id);
 });
