@@ -1,4 +1,4 @@
-import { FAKE_AGENT_FILE, freePort, makeProjectRoot, startServer } from '../launch.mjs'
+import { FAKE_AGENT_FILE, buildCrewShell, freePort, makeProjectRoot, startServer } from '../launch.mjs'
 
 /**
  * Build the throwaway project root and start one vite against it for the whole
@@ -28,7 +28,8 @@ export default async function globalSetup() {
   // while the race.json is being written.
   const port = await freePort()
   const root = await makeProjectRoot({ siteBase: `http://127.0.0.1:${port}` })
-  const server = await startServer({ root, port, fakeAgentFile: FAKE_AGENT_FILE })
+  const crewShell = await buildCrewShell()
+  const server = await startServer({ root, port, fakeAgentFile: FAKE_AGENT_FILE, crewShell })
   process.env.TRAIL_TEST_BASE_URL = server.baseURL
   process.env.TRAIL_TEST_PROJECT_ROOT = root
 

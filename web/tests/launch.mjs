@@ -273,10 +273,28 @@ export function freePort() {
  * strictPort'd, and a test run must not be able to take it or be confused by
  * it. The suite's own port is picked per run.
  *
- * @param {{root: string, fakeAgentFile?: string, port?: number}} opts
+ * @param {{root: string, fakeAgentFile?: string, crewShell?: string, port?: number}} opts
  * @returns {Promise<{baseURL: string, port: number, stop: () => Promise<void>, log: () => string}>}
  */
-export async function startServer({ root, fakeAgentFile, port: given }) {
+/**
+ * Build the single-file crew shell from THIS checkout and return its path, for
+ * TRAIL_CREW_SHELL.
+ *
+ * The shell is code — `vite build --config vite.crew.config.ts` over
+ * web/crew.html — and the temp project root has none of what that needs: no
+ * crew.html, no vite config, no node_modules. `TRAIL_CREW_SHELL` exists for
+ * exactly this ("the dev server can be pointed at one, and it keeps a test
+ * from shelling out" — scripts/crew-export.mjs), so the suite builds it once,
+ * here, against the real web/, and the export endpoint reads it rather than
+ * spawning a build per request. It costs ~25 ms and is cached by mtime after
+ * that.
+ */
+export async function buildCrewShell() {
+  const { ensureShell } = await import(path.join(REPO_ROOT, 'scripts/crew-export.mjs'))
+  return ensureShell(REPO_ROOT)
+}
+
+export async function startServer({ root, fakeAgentFile, crewShell, port: given }) {
   const port = given ?? (await freePort())
   const baseURL = `http://127.0.0.1:${port}`
   const proc = spawn(
@@ -288,6 +306,7 @@ export async function startServer({ root, fakeAgentFile, port: given }) {
         ...process.env,
         TRAIL_PROJECT_ROOT: root,
         ...(fakeAgentFile ? { TRAIL_FAKE_AGENT: fakeAgentFile } : {}),
+        ...(crewShell ? { TRAIL_CREW_SHELL: crewShell } : {}),
         // The dev API's own console.warn about a stale sign-in etc. is noise
         // here, and a real `claude` spawn must never happen from a test.
         TRAIL_COACH_MODEL: 'fixture-model',
