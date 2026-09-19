@@ -214,11 +214,15 @@ test("buildRaceJson persists the run's warnings onto race.json — durable, not 
   assert.equal(validateRaceJson(withWarnings).ok, false, "date is still null in the fixture, unrelated to this field");
   assert.deepEqual(validateRaceJson(withWarnings).errors.filter((e) => /intake_warnings/.test(e)), []);
 
-  // no warnings at all: the key does not appear rather than an empty array —
-  // consistent with review_notes and every other "only when there is
-  // something to say" optional field in this file.
+  // No warnings at all: the key is still written, as an EMPTY array — unlike
+  // review_notes and the other "only when there is something to say"
+  // optional fields. An absent key here would be indistinguishable, to
+  // race-merge.mjs's "absence is not removal" rule, from "this run didn't
+  // check" — and a stale warning from an earlier bad run would then survive
+  // a clean re-intake forever. An explicit [] IS this run's statement that
+  // nothing is wrong, which mergeFile treats as an ordinary value to apply.
   const clean = buildRaceJson(draft, { slug: "cinder-cone-50k-2027", year: 2027, manifest: MANIFEST });
-  assert.equal("intake_warnings" in clean, false);
+  assert.deepEqual(clean.intake_warnings, []);
 });
 
 test("a draft with a known unknown validates; the same hole unlisted does not", async () => {

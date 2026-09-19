@@ -188,6 +188,38 @@ test("a field the refresh adds is added and stamped from the incoming provenance
   assert.deepEqual(merged.provenance.location, agent("the organizer's site"));
 });
 
+test("a clean re-intake clears a previous intake_warnings entry, unlike sources — the field is a statement of THIS run, not add-only", () => {
+  const race = baseRace({
+    intake_warnings: ["manual-2026.pdf: no PDF renderer on this machine — the PDF is passed as text only"],
+  });
+  // scripts/race-intake.mjs's buildRaceJson always writes this key now, even
+  // empty — a run that hit no problems says so explicitly with [], the same
+  // way it would say so with real warnings.
+  const incoming = structuredClone(race);
+  incoming.intake_warnings = [];
+
+  const { merged, diff } = mergeRace(race, incoming);
+  assert.deepEqual(merged.intake_warnings, [], "the resolved problem must not survive the refresh");
+  assert.deepEqual(at(diff, "intake_warnings"), {
+    file: "race.json",
+    path: "intake_warnings",
+    kind: "changed",
+    from: ["manual-2026.pdf: no PDF renderer on this machine — the PDF is passed as text only"],
+    to: [],
+    by: null,
+  });
+});
+
+test("intake_warnings survives an incoming run that hit the same problem again", () => {
+  const race = baseRace({ intake_warnings: ["gpx: could not be parsed: unexpected EOF"] });
+  const incoming = structuredClone(race);
+  incoming.intake_warnings = ["gpx: could not be parsed: unexpected EOF"];
+
+  const { merged, diff } = mergeRace(race, incoming);
+  assert.deepEqual(merged.intake_warnings, ["gpx: could not be parsed: unexpected EOF"]);
+  assert.equal(at(diff, "intake_warnings"), undefined, "an unchanged warning is not a diff");
+});
+
 /* ---------------------------- aid stations ------------------------------- */
 
 test("a station added to the chart lands in the merged array", () => {

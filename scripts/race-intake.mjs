@@ -861,7 +861,22 @@ export function buildRaceJson(draft, { slug, year, manifest = [], warnings = [],
   // later (and for manifest.json's per-entry `warning`, which says WHICH
   // source; this says it happened at all, in one place the review dialog
   // can show without re-reading the manifest).
-  if (warnings.length) race.intake_warnings = [...warnings];
+  //
+  // Always written, even empty — this is a statement about THIS run, not a
+  // note appended once and never revisited. race-merge.mjs's mergeFile has
+  // an "absence is not removal" rule for a field the incoming file simply
+  // doesn't carry, which is right for most fields but wrong here: if this
+  // key were only present when non-empty, a clean re-intake (the owner
+  // installed a PDF renderer, the site now serves a parseable GPX) would
+  // leave a stale warning about an already-fixed problem on the file
+  // forever, since "the incoming file doesn't mention it" and "the problem
+  // is resolved" would be indistinguishable. An explicit empty array IS the
+  // resolved statement, and mergeFile already treats a key that IS present
+  // in `incoming` as one to overwrite (including with an empty array) — so
+  // writing it unconditionally is the whole fix; no NO_STATEMENT_WHEN_EMPTY
+  // entry belongs here the way `sources` has one (a dead-site refresh with
+  // NO fetches still says something true about the sources it tried).
+  race.intake_warnings = [...warnings];
   // PRD §15: race.json carries the holes the agent could not fill. Every
   // downstream reader (race-edit.mjs's recomputeUnresolved, race-merge.mjs's
   // mergeRace) starts from `race.unresolved ?? []`, so a value computed here

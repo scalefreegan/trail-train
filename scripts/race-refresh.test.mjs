@@ -538,7 +538,21 @@ test("re-intaking the archived MM100 against its own race.json yields an empty d
     skipPlan: true,
     runAgent: cannedIntake(echo),
   });
-  assert.deepEqual(diff.diff, [], diff.diff.map((d) => `${d.path}:${d.kind}`).join(" | "));
+  // races/mogollon-monster-100-2026/race.json predates intake_warnings being
+  // written unconditionally (this round's fix) and so has no key at all yet —
+  // the shadow's `[]` is a real, one-time "added" entry on this first refresh
+  // (mirrors what any committed race not yet touched by this fix will show),
+  // not a determinism failure. Filtered out here so this test still isolates
+  // what it is actually checking: that a re-intake over unchanged sources
+  // otherwise produces no noise.
+  const diffWithoutWarningsMigration = diff.diff.filter((d) => d.path !== "intake_warnings");
+  assert.deepEqual(
+    diffWithoutWarningsMigration, [],
+    diffWithoutWarningsMigration.map((d) => `${d.path}:${d.kind}`).join(" | "),
+  );
+  assert.deepEqual(diff.diff.find((d) => d.path === "intake_warnings"), {
+    file: "race.json", path: "intake_warnings", kind: "added", from: undefined, to: [], by: null,
+  });
   assert.deepEqual(diff.conflicts, []);
 
   // …and the provenance timestamps DID move, which is exactly what must not count
