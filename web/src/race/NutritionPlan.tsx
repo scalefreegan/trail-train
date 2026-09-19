@@ -317,15 +317,15 @@ function LegRow({ seg, caf, clock, last, show }: {
 
 export function NutritionPlan() {
   const { race } = useRacePlan();
-  const { course, missing, error, proj, nutrition, fuelPlan, raceStart, timeZone, clock,
+  const { course, missing, error, proj, nutrition, fuelPlan, raceStart, timeZone, clock, sun,
     nutritionError, physiology, physiologyError, features, panels, raceConfig } = useRacePlan();
   const cfg = nutrition.caffeine;
   // body mass comes from the athlete profile, not the race folder (tt-yib.9)
   const bodyKg = physiology.body_kg;
 
   const caf = useMemo(
-    () => (course && proj && fuelPlan ? planCaffeine(proj, course, fuelPlan, raceStart, cfg, bodyKg, timeZone) : null),
-    [course, proj, fuelPlan, raceStart, cfg, bodyKg, timeZone],
+    () => (course && proj && fuelPlan ? planCaffeine(proj, sun, fuelPlan, raceStart, cfg, bodyKg, timeZone) : null),
+    [course, proj, sun, fuelPlan, raceStart, cfg, bodyKg, timeZone],
   );
 
   const finishH = proj?.finish_h.avg ?? 0;
@@ -348,8 +348,8 @@ export function NutritionPlan() {
   // both band sets feed the caffeine chart only, and each is behind the flag
   // that gives it meaning — no bands for a window this race never enters
   const night = useMemo(
-    () => (course && features.night ? sunBounds(course, raceStart, finishH, timeZone) : []),
-    [course, features.night, raceStart, finishH, timeZone],
+    () => (course && features.night ? sunBounds(sun, raceStart, finishH, timeZone) : []),
+    [course, features.night, sun, raceStart, finishH, timeZone],
   );
 
   if (missing || !course) {
