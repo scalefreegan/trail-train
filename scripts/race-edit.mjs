@@ -265,9 +265,22 @@ export function validateRaceEdit(body, { stationCount = 0, unresolved = [], aidS
     // the field) — the specific paths the athlete ticked. A plain `boolean`
     // is still accepted for a caller that only ever meant "acknowledge
     // everything currently open" (or "nothing"); applyRaceEdit expands
-    // `true` against the folder's own `unresolved` before it is stamped, so
+    // `true` against the CURRENT unresolved list before it is stamped, so
     // nothing downstream of a save ever sees the legacy shape again.
-    if (typeof v !== "boolean" && !(Array.isArray(v) && v.every((p) => typeof p === "string"))) {
+    //
+    // RaceIntake.tsx carries a one-time compatibility fallback for a server
+    // that predates this array contract: on a 400 whose message matches
+    // /unresolved_acknowledged: boolean required/ it collapses the array to
+    // a bare boolean and retries. That EXACT phrase must never appear in a
+    // message this server emits for a genuine error, or a real client bug
+    // (e.g. a stray number in the array) would silently get retried as
+    // "acknowledge everything" instead of surfacing as a refused save — so
+    // the two failure shapes below use deliberately different wording.
+    if (Array.isArray(v)) {
+      if (!v.every((p) => typeof p === "string")) {
+        bad("unresolved_acknowledged: array of string field paths required — found a non-string entry");
+      }
+    } else if (typeof v !== "boolean") {
       bad("unresolved_acknowledged: boolean or array of unresolved field paths required");
     }
   }
@@ -324,10 +337,16 @@ export function validateRaceEdit(body, { stationCount = 0, unresolved = [], aidS
  *
  * @param {object} race
  * @param {object} body a body validateRaceEdit accepted
- * @param {{at?: string}} [opts]
+ * @param {{at?: string, currentUnresolved?: string[]}} [opts]
+ *   currentUnresolved: the folder's LIVE unresolved list (loadReview's
+ *   `unresolved`, which includes matcher/sun/course-mismatch entries the
+ *   stored race.unresolved never carries) — what a body-provided
+ *   `unresolved_acknowledged: true` expands against. Falls back to the
+ *   folder's own stored `unresolved` when the caller (a direct `node --test`
+ *   call, say) does not have the live list handy.
  * @returns {{race: object, written: string[], block_targets: object[]|null}}
  */
-export function applyRaceEdit(race, body, { at = new Date().toISOString() } = {}) {
+export function applyRaceEdit(race, body, { at = new Date().toISOString(), currentUnresolved } = {}) {
   const next = structuredClone(race);
   next.provenance = isObj(next.provenance) ? { ...next.provenance } : {};
   const written = [];
@@ -384,9 +403,21 @@ export function applyRaceEdit(race, body, { at = new Date().toISOString() } = {}
 
   if ("unresolved_acknowledged" in body) {
     const raw = body.unresolved_acknowledged;
-    const newVal = typeof raw === "boolean"
-      ? acknowledgedPaths({ unresolved_acknowledged: raw, unresolved: race.unresolved })
-      : [...new Set((Array.isArray(raw) ? raw : []).filter(isStr))].sort();
+    let newVal;
+    if (typeof raw === "boolean") {
+      // A body-provided boolean is a LIVE action this save, not a stale
+      // on-disk artifact (that case is the unconditional migration above,
+      // which deliberately uses only the folder's own STORED unresolved) —
+      // RaceIntake.tsx's compatibility fallback sends `true` to mean
+      // "acknowledge every path the review screen is showing right now",
+      // which includes matcher/sun/course-mismatch entries the stored
+      // race.unresolved never carries. Expand against the caller-supplied
+      // live list; fall back to the stored one when there isn't one.
+      const pool = Array.isArray(currentUnresolved) ? currentUnresolved : (race.unresolved ?? []);
+      newVal = raw ? [...new Set(pool.filter(isStr))].sort() : [];
+    } else {
+      newVal = [...new Set((Array.isArray(raw) ? raw : []).filter(isStr))].sort();
+    }
     if (JSON.stringify(newVal) !== JSON.stringify(next.unresolved_acknowledged)) {
       next.unresolved_acknowledged = newVal;
       stamp("unresolved_acknowledged");
