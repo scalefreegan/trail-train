@@ -28,6 +28,7 @@ import { RaceDayRoute } from "./race/RaceDay";
 import { RACE_DAY_HASH, useHashRoute } from "./race/hashRoute";
 import { useCourse, useRaceResult } from "./race/useRaceData";
 import { ArchiveRace } from "./race/ArchiveRace";
+import { runStage } from "./race/dialogChrome";
 import type { RaceView } from "./data";
 import { raceClockHM } from "./race/pacing";
 import { ThemePreview } from "./themes/ThemePreview";
@@ -189,10 +190,22 @@ const isReviewable = (r: RaceListEntry) => r.status === "draft" && !r.error;
     the intake. A folder we cannot parse has no links to refresh from. */
 const isRefreshable = (r: RaceListEntry) => !r.error;
 
-/** How many menu rows a race contributes: itself, plus its "Review…" and
-    "Refresh from sources…" rows. cursorForSlug and itemCount both count with
-    this, and the render order below has to match it. */
-const rowsFor = (r: RaceListEntry) => 1 + (isReviewable(r) ? 1 : 0) + (isRefreshable(r) ? 1 : 0);
+/** An archived race with no `build/course.json` (D8/R4) — a raced 100-miler
+    whose course was never rebuilt, or one built before this feature existed
+    — is otherwise a dead end: no "Review…" (that's drafts only), and
+    "Refresh from sources…" is the paid re-intake, not the free deterministic
+    build stage 2 already is. Offered for every archived folder rather than
+    only ones already known to be missing course data — rebuilding is free
+    and idempotent, and the row is the same one the race view's own "no
+    course data" empty state now offers (RaceDay.tsx, NutritionPlan.tsx). */
+const isRerunnable = (r: RaceListEntry) => r.status === "archived" && !r.error;
+
+/** How many menu rows a race contributes: itself, plus its "Review…",
+    "Refresh from sources…" and "Run course again…" rows. cursorForSlug and
+    itemCount both count with this, and the render order below has to match
+    it. */
+const rowsFor = (r: RaceListEntry) =>
+  1 + (isReviewable(r) ? 1 : 0) + (isRefreshable(r) ? 1 : 0) + (isRerunnable(r) ? 1 : 0);
 
 /** Where the cursor lands on a given slug, counting the "No race" row above
     the list and the extra "Review…" row each draft contributes. Has to agree
@@ -209,9 +222,10 @@ function cursorForSlug(list: RaceListEntry[], slug: string | null): number {
 
 /** The kinds of row in the menu, in order: "No race (generic)", one per race
     folder (a draft followed by its "Review…" row, then every race's "Refresh
-    from sources…" row), then — when there is a race to retire — "Archive with
-    result…", then "New race…". */
-type SwitcherItemKind = "generic" | "race" | "review" | "refresh" | "archive" | "new";
+    from sources…" row, then an archived race's "Run course again…" row),
+    then — when there is a race to retire — "Archive with result…", then
+    "New race…". */
+type SwitcherItemKind = "generic" | "race" | "review" | "refresh" | "rerun" | "archive" | "new";
 
 /**
  * The short code in the command bar, as a menu over every race folder.
@@ -344,6 +358,26 @@ function RaceSwitcher() {
     }
   }, [close, reload]);
 
+  /** Stage 2 only — the free, deterministic build (validate → match GPX →
+      compute sun → write build/course.json), the same endpoint the review
+      dialog's "COURSE" run-again button calls (RaceIntake.tsx), reusing its
+      SSE reader (dialogChrome.ts). Never the paid agent stage. Keeps the
+      menu open with a busy row, the same pattern `choose` uses below, so a
+      slow build doesn't look like the click did nothing. */
+  const runCourseAgain = useCallback(async (slug: string) => {
+    setBusy(slug);
+    setError(null);
+    try {
+      await runStage("/api/race-intake/build", { slug }, () => {}, new AbortController().signal);
+      close();
+      reload();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }, [close, reload]);
+
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") { e.preventDefault(); close(); return; }
     if (e.key === "Tab") { close(false); return; }
@@ -368,7 +402,7 @@ function RaceSwitcher() {
       tabIndex: cursor === i ? 0 : -1,
       onMouseEnter: () => setCursor(i),
     };
-    return kind === "new" || kind === "archive" || kind === "review" || kind === "refresh"
+    return kind === "new" || kind === "archive" || kind === "review" || kind === "refresh" || kind === "rerun"
       ? { ...common, role: "menuitem" as const }
       : { ...common, role: "menuitemradio" as const, "aria-checked": kind === "generic" ? currentSlug == null : slug === currentSlug };
   };
@@ -459,6 +493,16 @@ function RaceSwitcher() {
                         hint="re-read the site and manual · diff before anything is written"
                         disabled={busy != null}
                         onSelect={() => { setOpen(false); setRefreshing(entry); }}
+                      />
+                    )}
+                    {isRerunnable(entry) && (
+                      <SwitcherRow
+                        {...itemProps("rerun", entry.slug)}
+                        label="↳ Run course again…"
+                        hint={busy === entry.slug ? "building…" : "rebuild course.json from the stored gpx — free, no agent turn"}
+                        disabled={busy != null}
+                        busy={busy === entry.slug}
+                        onSelect={() => runCourseAgain(entry.slug)}
                       />
                     )}
                   </Fragment>
@@ -1122,12 +1166,18 @@ function VitalsBand() {
     {
       key: "block",
       label: "block vs plan",
-      value: `${facts.block_dist_delta_pct >= 0 ? "+" : ""}${facts.block_dist_delta_pct.toFixed(0)}`,
-      unit: "%",
-      delta: { value: facts.block_elev_delta_pct, suffix: "% vert", good: facts.block_elev_delta_pct >= 0 },
+      // No block.json yet (a freshly activated race) is "no data", not a
+      // percentage computed against a faked denominator — was showing
+      // "+53655%" / "9816273% vert" the instant a race with no block went live.
+      value: facts.block_dist_delta_pct != null
+        ? `${facts.block_dist_delta_pct >= 0 ? "+" : ""}${facts.block_dist_delta_pct.toFixed(0)}` : "—",
+      unit: facts.block_dist_delta_pct != null ? "%" : undefined,
+      delta: facts.block_elev_delta_pct != null
+        ? { value: facts.block_elev_delta_pct, suffix: "% vert", good: facts.block_elev_delta_pct >= 0 }
+        : undefined,
       series: daily.blockDelta,
-      color: facts.block_dist_delta_pct >= 0 ? "var(--pine)" : "var(--ember)",
-      note: "cumulative dist",
+      color: facts.block_dist_delta_pct != null && facts.block_dist_delta_pct >= 0 ? "var(--pine)" : "var(--mist-mute)",
+      note: facts.block_dist_delta_pct != null ? "cumulative dist" : "no block yet",
     },
     {
       key: "readiness",
