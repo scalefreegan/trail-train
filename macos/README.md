@@ -3,9 +3,9 @@
 Two bundles, built and installed to `/Applications` by `./build-app.sh`:
 
 - **Basecamp.app** — the Dock face. Launch it: the server starts and the
-  dashboard opens at **http://localhost:38100** (fixed port — 38 h cutoff ·
-  100 miles — `strictPort`, so no collisions with other Vite projects and no
-  silent port-hopping). The icon stays in the Dock while the server runs;
+  dashboard opens at **http://localhost:38100** (a fixed, deliberately
+  unusual port with `strictPort`, so no collisions with other Vite projects
+  and no silent port-hopping). The icon stays in the Dock while the server runs;
   double-click focuses the dashboard; **right-click → Quit stops the
   server**. If the server dies externally, the icon quits itself so the Dock
   never lies about what is running.

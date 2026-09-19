@@ -6,6 +6,16 @@ import fs from 'node:fs'
 import os from 'node:os'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
+// Every request-time `import(path.join(projectRoot, 'scripts/*.mjs'))` below
+// goes through Node's ESM loader cache, which is per-process: the first
+// request after the dev server starts loads and caches the module, and every
+// later request — even one made after you've saved a change to that
+// scripts/*.mjs file — keeps running the cached copy for the rest of that
+// `vite` process's life. There is no cache-busting query string on any of
+// these imports (PR #23 review round 1, finding 5). Restart the dev server
+// after editing anything under scripts/ or the "fix" you're testing may just
+// be the old code running again.
+
 // Cross-site request guard for the state-changing dev endpoints. These
 // middlewares spawn subprocesses (the `claude` CLI, the sync scripts) and
 // write files, with no auth — fine for a localhost tool, EXCEPT that a
@@ -18,11 +28,53 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 // call), which is not the CSRF threat model (a local process needs no CSRF).
 // The Host is also pinned to loopback as cheap defense against DNS-rebinding.
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
+
+// Race-day mode (`#/race-day`) is read on a phone, which means the dev
+// server has to be reachable off loopback — `npx vite --host`. That alone
+// would not be enough: the guard above pins BOTH the Origin and the Host to
+// loopback, so every state-changing endpoint would 403 from the LAN.
+//
+// TRAIL_ALLOWED_ORIGINS widens it, and only it: a comma-separated list of
+// EXACT origins ("http://192.168.1.42:38100"), read from the environment of
+// the process that launched the server. Deliberately an env var rather than
+// a file — the allowance then lives exactly as long as the command that also
+// passed --host, instead of sitting in a config file weeks after the race.
+// There is no wildcard: `*` is not a parseable origin, so it is dropped like
+// any other malformed entry and the guard stays closed.
+function parseAllowedOrigins(raw: string | undefined): string[] {
+  const out: string[] = []
+  for (const part of (raw ?? '').split(',')) {
+    const spec = part.trim()
+    if (!spec) continue
+    try {
+      const u = new URL(spec)
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('scheme')
+      // normalized to the origin: a trailing slash or a path in the config
+      // must not make two spellings of the same host fail to match the
+      // Origin header, which is always bare scheme://host:port
+      out.push(u.origin)
+    } catch {
+      console.warn(`[dev-api] TRAIL_ALLOWED_ORIGINS: ignoring "${spec}" — not an http(s) origin (expected e.g. http://192.168.1.42:38100)`)
+    }
+  }
+  return out
+}
+const ALLOWED_ORIGINS = new Set(parseAllowedOrigins(process.env.TRAIL_ALLOWED_ORIGINS))
+// The Host header carries no scheme and the guard already strips the port,
+// so the host check needs the hostnames on their own.
+const ALLOWED_HOSTS = new Set([...ALLOWED_ORIGINS].map((o) => new URL(o).hostname))
+if (ALLOWED_ORIGINS.size > 0) {
+  console.log(`[dev-api] extra allowed origins: ${[...ALLOWED_ORIGINS].join(', ')}`)
+}
+
 function crossSiteBlocked(req: IncomingMessage, res: ServerResponse): boolean {
   const origin = req.headers.origin
   if (origin) {
     let ok: boolean
-    try { ok = LOOPBACK_HOSTS.has(new URL(origin).hostname) } catch { ok = false }
+    try {
+      const u = new URL(origin)
+      ok = LOOPBACK_HOSTS.has(u.hostname) || ALLOWED_ORIGINS.has(u.origin)
+    } catch { ok = false }
     if (!ok) {
       res.statusCode = 403
       res.end('cross-origin request refused')
@@ -30,12 +82,147 @@ function crossSiteBlocked(req: IncomingMessage, res: ServerResponse): boolean {
     }
   }
   const host = (req.headers.host ?? '').replace(/:\d+$/, '')
-  if (host && !LOOPBACK_HOSTS.has(host)) {
+  if (host && !LOOPBACK_HOSTS.has(host) && !ALLOWED_HOSTS.has(host)) {
     res.statusCode = 403
     res.end('non-loopback host refused')
     return true
   }
   return false
+}
+
+// Every race slug becomes a filesystem path segment under races/<slug>/, so
+// the kebab shape IS the traversal guard: no dots, no separators, nothing to
+// escape the folder. This is the one check that has to run on every slug a
+// client supplies, wherever it arrives from — a URL segment (raceResultApi)
+// or a JSON body field (raceBuildApi, racePlanApi, raceIntakeApi, the
+// /api/race-intake/refresh leg of raceRefreshApi) — before that string
+// touches raceDir/loadResult/archiveRace/buildRace/planRace/runIntake or a
+// path.join. PR #23 review round 1, finding 1: raceResultApi shipped without
+// this because it rolled its own ad hoc slug capture instead of sharing one
+// helper with its siblings. Decodes first, so a slug arriving pre-encoded
+// (`..%2f..`) is judged on what it decodes to, not on the encoded literal;
+// malformed percent-encoding fails closed. Returns the decoded, validated
+// slug, or null — callers still choose the response: 400 for a request that
+// was clearly meant to name a slug (raceResultApi, the body-slug endpoints),
+// or next() for a route that plainly belongs to a different plugin (raceEditApi
+// and the /api/races/:slug/refresh review mount in raceRefreshApi instead
+// fold this same shape check directly into their own route-matching regex,
+// so a non-kebab segment never matches their route at all).
+const KEBAB_SLUG_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/
+function parseSlugParam(raw: string): string | null {
+  let slug: string
+  try {
+    slug = decodeURIComponent(raw)
+  } catch {
+    return null
+  }
+  return KEBAB_SLUG_RE.test(slug) ? slug : null
+}
+
+// PR #23 review round 1 finding 4, round 2 findings 2 and 3 (scripts report)
+// / high finding (web report): raceBuildApi, racePlanApi, raceIntakeApi and
+// raceRefreshApi each spawn a paid `claude -p` turn (plan/intake/refresh) or
+// run a long CPU pass (build); raceEditApi (PUT and POST .../status) and the
+// archive route in raceResultApi are quick, no-agent writes but touch the
+// exact same file. ALL of them write races/<slug>/race.json (some also
+// block.json) at the end, and every one of them is a candidate for "two
+// concurrent tabs/requests silently clobber each other's write" — the
+// archive-during-build case is the sharpest version: buildRace snapshots
+// race.json once at the start and writes that whole (by-then-stale) copy
+// back at the end, so a build finishing after a concurrent archive completes
+// SILENTLY REVERTS the archive's status flip with no error to either caller.
+//
+// One Set for the dev server's lifetime, holding two KINDS of key:
+//
+//   "slug:<slug>"   — build, plan, refresh, archive, edit (PUT and
+//                     POST .../status), and (once its slug is known) intake
+//                     ALL write races/<slug>/race.json independently, so
+//                     they must be mutually exclusive with EACH OTHER, not
+//                     just with a second call to the same endpoint. Round 1
+//                     keyed each endpoint separately ("build:<slug>" vs
+//                     "plan:<slug>"), which let a build and a plan for the
+//                     same slug run at once and silently clobber each
+//                     other's write — this single shared key is the fix.
+//   "intake:<url>"  — a brand-new intake has no slug yet, so it locks on the
+//                     site_url instead, NORMALIZED (see normalizeUrlForLock)
+//                     so a trivial variant of the same URL — scheme,
+//                     "www.", a trailing slash, a query string or fragment —
+//                     still collides on the same key rather than silently
+//                     bypassing the lock.
+//
+// A request for a key already in the Set gets 409 instead of starting a
+// second run, and every acquirer releases its key in `finally`, including on
+// a thrown error or a client disconnect. The lock alone is not sufficient for
+// build/plan, though: see buildRace's own re-read-before-write guard
+// (scripts/race-build.mjs) for the other half of the archive-during-build fix
+// — a slow build started BEFORE a fast archive/edit is still in flight when
+// the archive completes, still holds no lock on it (it acquired first), and
+// must not blindly overwrite whatever the archive/edit wrote meanwhile.
+const inFlightSlugs = new Set<string>()
+// Which operation currently holds each "slug:<slug>" key — the key alone no
+// longer says whether a build, a plan or a refresh is running, and the 409
+// should name it.
+const slugLockOwner = new Map<string, string>()
+const SLUG_OP_LABEL: Record<string, string> = {
+  build: 'a build',
+  plan: 'a plan run',
+  refresh: 'a refresh',
+  intake: 'an intake',
+  archive: 'an archive',
+  edit: 'a save',
+  'refresh-review': 'a refresh accept/reject',
+  activate: 'an activation',
+}
+
+// The sentinel "slug" POST /api/race/activate locks under (PR #23 review
+// round 1, resilience findings 1 & 2). It is deliberately NOT a real slug:
+// config/active-race.json is a single file shared across every race, not
+// one per folder, so two activations for DIFFERENT slugs still write the
+// same file and must still serialize — a per-slug lock (acquireSlugLock's
+// usual key) would let them race each other exactly like before.
+const ACTIVATE_LOCK_KEY = '__active-race-pointer__'
+
+function slugLockKey(slug: string): string {
+  return `slug:${slug}`
+}
+
+/** Acquire the shared per-slug lock for `op` ('build' | 'plan' | 'refresh' |
+    'intake' | 'archive' | 'edit'). Returns false — without touching
+    anything — when another operation already holds it. */
+function acquireSlugLock(slug: string, op: string): boolean {
+  const key = slugLockKey(slug)
+  if (inFlightSlugs.has(key)) return false
+  inFlightSlugs.add(key)
+  slugLockOwner.set(key, op)
+  return true
+}
+
+function releaseSlugLock(slug: string): void {
+  const key = slugLockKey(slug)
+  inFlightSlugs.delete(key)
+  slugLockOwner.delete(key)
+}
+
+/** What to call whatever currently holds (or, right after a failed acquire,
+    held) the slug lock, for a 409 message. */
+function slugLockLabel(slug: string, fallbackOp: string): string {
+  return SLUG_OP_LABEL[slugLockOwner.get(slugLockKey(slug)) ?? fallbackOp] ?? 'an operation'
+}
+
+// Normalize a site_url for the intake lock key: lowercase, strip the scheme,
+// a leading "www.", a trailing slash, and any query/fragment — so
+// "https://Race.example.com/2027/" and "http://race.example.com/2027?utm=x"
+// collide on the same key instead of two intakes for the same event racing
+// each other under a raw-string lock neither ever trips.
+function normalizeUrlForLock(url: string): string {
+  try {
+    const u = new URL(url)
+    const host = u.hostname.toLowerCase().replace(/^www\./, '')
+    const pathname = u.pathname.replace(/\/+$/, '')
+    return `${host}${pathname}`.toLowerCase()
+  } catch {
+    return url.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '').split(/[?#]/)[0]
+  }
 }
 
 // Dev-only middleware: POST /api/refresh runs the three sync scripts in
@@ -139,29 +326,50 @@ function refreshApi(): Plugin {
   }
 }
 
-// Recognize known headless-CLI failures so the UI can say what to actually do
-// ("sign in again", "wait for the limit to reset") instead of surfacing a
-// cryptic exit code. Matches the CLI's known phrasings (API-key auth and
-// OAuth/subscription auth, usage limits, API overload).
-const AUTH_ERROR_RE = /invalid api key|please run \/login|not logged in|log ?in again|login expired|oauth token.{0,40}(expired|revoked|invalid)|authentication[_ ]?error|credentials?.{0,20}(expired|invalid|missing)|unauthorized|re-?authenticate/i
-// No bare status codes (429/529) here: on failure paths the classified text
-// includes the full stdout JSON wrapper, whose numeric fields (durations,
-// token counts) can contain them as substrings.
-const LIMIT_ERROR_RE = /usage limit reached|session limit|hit your .{0,20}limit|limit will reset|limit .{0,15}resets|out of (extra )?usage|rate.?limit(ed|_error)?|too many requests/i
-// Bare "overloaded" is normal coaching vocabulary ("legs are overloaded") —
-// require the error-token or api-context form.
-const OVERLOAD_ERROR_RE = /overloaded_error|api.{0,20}(overloaded|unavailable|internal server error)/i
+/* Known headless-CLI failures ("sign in again", "wait for the limit to
+   reset") are classified in scripts/agent-run.mjs, shared with the resync
+   coach and the race intake so all three say the same thing about the same
+   failure. vite.config.ts cannot statically import from scripts/ (ESM JS
+   outside the TS project), so it is loaded per request like the other script
+   imports here. */
+type FailureHint = (text: string) => string | null
 const AUTH_FIX = 'open a terminal, run `claude`, type `/login` and finish the browser sign-in, then retry here.'
-const failureHint = (text: string): string | null => {
-  if (AUTH_ERROR_RE.test(text)) return `Claude Code sign-in has expired — ${AUTH_FIX}`
-  if (LIMIT_ERROR_RE.test(text)) {
-    // the CLI phrases it "Claude AI usage limit reached|<epoch-seconds>"
-    const m = text.match(/limit reached\|(\d{9,13})/i)
-    const reset = m ? new Date(Number(m[1]) * (m[1].length <= 10 ? 1000 : 1)).toLocaleString() : null
-    return `Claude usage limit reached — not an auth problem. Wait for the limit to reset${reset ? ` (~${reset})` : ''} and retry.`
+async function loadFailureHint(projectRoot: string): Promise<FailureHint> {
+  try {
+    const m = await import(path.join(projectRoot, 'scripts/agent-run.mjs')) as { failureHint: FailureHint }
+    return m.failureHint
+  } catch (e) {
+    // Losing the classifier degrades the MESSAGE, not the answer — but it
+    // would silently turn "your sign-in expired" back into "exited 1", so say
+    // so in the server log rather than swallowing it.
+    console.error(`[chat] scripts/agent-run.mjs failed to load — CLI failures will be reported unclassified: ${(e as Error).message}`)
+    return () => null
   }
-  if (OVERLOAD_ERROR_RE.test(text)) return 'Claude API is overloaded right now — transient; retry in a minute.'
-  return null
+}
+
+/* The coach's system prompt and the model it runs on live in
+   scripts/coach-prompt.mjs, shared with the resync readout (scripts/coach.mjs)
+   so the two cannot describe the athlete's race differently or spawn different
+   models — they used to be two hand-synced copies. Same request-time import as
+   facts.mjs above: vite.config.ts is in the TS project, scripts/ is plain ESM
+   JS outside it. No fallback on purpose — a chat turn with no system prompt is
+   not a degraded answer, it is a different agent, so the request fails loudly. */
+type CoachPrompt = {
+  COACH_MODEL: string
+  chatSystemPrompt: (
+    facts: unknown,
+    profile: Record<string, unknown>,
+    opts: {
+      factsPath: string
+      coachPath: string
+      units?: 'imperial' | 'metric'
+      hasPacing?: boolean
+      root?: string
+    },
+  ) => string
+}
+function loadCoachPrompt(projectRoot: string): Promise<CoachPrompt> {
+  return import(path.join(projectRoot, 'scripts/coach-prompt.mjs')) as Promise<CoachPrompt>
 }
 
 /* Turn budget for the headless coach.
@@ -176,12 +384,6 @@ const failureHint = (text: string): string | null => {
    complexity varies and the retry below is a fallback, not a plan. */
 const CHAT_MAX_TURNS = 16
 const CHAT_TIMEOUT_MS = 300_000
-/* Model for the headless CLI. Pinned rather than inherited: without --model the
-   CLI silently uses whatever ~/.claude/settings.json happens to say, so the
-   coach's model would depend on an unrelated global setting.
-   KEEP IN SYNC with MODEL in scripts/coach.mjs (the resync readout) — this file
-   can't import from scripts/ (tsconfig.node.json has no allowJs). */
-const COACH_MODEL = (process.env.TRAIL_COACH_MODEL || '').trim() || 'claude-opus-5'
 /* One retry when the budget is what failed. The agent is told to answer from
    what it already read, so a blown budget degrades to a partial answer instead
    of an error the athlete can do nothing with. Only ever once. */
@@ -192,106 +394,6 @@ const MAX_TURNS_SUBTYPE = 'error_max_turns'
    failure honestly instead of promising an answer we cannot deliver. */
 const RETRY_MIN_RUNWAY_MS = 60_000
 const RETRY_NUDGE = '\n\nIMPORTANT: a previous attempt at this exact question ran out of tool calls before answering. Do NOT open any files this time. Answer now, directly, from what you already know, and say plainly which data you could not consult.'
-
-const CHAT_SYSTEM = (
-  factsPath: string,
-  coachPath: string,
-  profile: { athlete_name?: string; location?: string; home_trails?: string[] },
-  units: 'imperial' | 'metric' = 'metric',
-  hasPacing = true,
-) => `You are the coach inside Trail Almanac for ${profile.athlete_name || "the athlete"} — an ultrarunner training for the Mogollon Monster 100 (102.3 mi, 15,900 ft, Sept 12, 2026, Pine, AZ). They live in ${profile.location || "their home mountains"}.${profile.home_trails?.length ? ` Local training trails: ${profile.home_trails.join(", ")}.` : ""}
-
-You have full read access to:
-  - ${factsPath}      (deterministic facts: block week, ACR, HRV trend, RHR drift, sleep, heat exposure, recent runs w/ temps, plan_blocks, agent_notes from prior sessions)
-  - ${coachPath}      (most recent structured agent readout)
-  - web/public/state.json   (persistent state — race meta, block targets, plan_blocks, agent_notes, preferences)
-  - web/public/strava.json  (raw Strava snapshot, runs only — distance/elev/HR/dates/titles/start_latlng/weather, with strava_url)
-  - web/public/cross-train.json  (non-run Strava activities — rides, hikes, strength, … EXCLUDED from all load metrics, which count runs only; use qualitatively for fatigue/time-on-feet)
-  - web/public/oura.json    (Oura snapshot — sleep, readiness, HRV, RHR, tags)
-  - web/public/google-cal.json  (Google Calendar — past 7 + next 30 days of events, classified by training relevance)
-
-READING BUDGET — you are running headless with a hard turn limit, and if you spend it
-reading you will be cut off before you answer, which is worse for the athlete than a
-slightly less thorough reply. The facts file is a digest built for exactly this, and it
-ALREADY CONTAINS, in full, everything most questions need:
-  - recovery.nights — the last 21 nights individually (sleep hours, sleep score,
-    readiness, HRV, RHR), plus the d7/d28 aggregates and the tags. Nights with no Oura
-    record are OMITTED rather than zeroed, and recovery.nights_recorded_d7 says how many
-    of the last 7 actually have sleep data — read a weekly sleep total against that
-    count, not against 7.
-  - recent_runs — the last 14 runs with distance, vert, HR, pace and weather
-  - calendar — the fetched summary plus the next 14 days and anything notable
-  - block, load, pacing, plan_blocks, agent_notes, preferences, cross_training
-Answer from the digest alone whenever it is sufficient, which is most of the time.
-Open a raw snapshot ONLY for detail the digest genuinely lacks — a run older than the
-last 14, a night older than 21 days, a calendar event beyond the next fortnight.
-oura.json, strava.json and google-cal.json are each thousands of lines and take SEVERAL
-reads to page through; when you truly need one, read the slice you need with
-offset/limit rather than paging the whole file, and stop as soon as you can answer.
-state.json is already reflected in the digest fields above — do not open it. Never open
-a file "to check" something you already have. If you find yourself several reads in,
-write the answer with what you have and say which data you did not open.
-
-Use the calendar for schedule realism — if the athlete asks about a specific day's session,
-check that day's events first. Flag conflicts (travel, races, work blocks).
-
-ATHLETE CONTEXT — facts.preferences.context is athlete-authored and authoritative.
-context.sections (about_me, training_preferences, calendar_conventions) are verbatim
-background; calendar_conventions DEFINES the semantics of calendar markers and
-classifications (childcare markers, recurring commitments, severity by day of week) —
-apply it when reading the calendar. context.temporary lists dated items currently in
-force; each is a HARD constraint until its expires date (expired items are already
-filtered out). When asked about a session on a specific day, cross-check the day's events
-against the sections and every temporary item before suggesting timing — work around a
-constraint explicitly (e.g. early start before the conflicting event) or move the session.
-
-SAVING CONTEXT — you can persist things the athlete tells you. Append at the VERY END of
-your reply, after all prose:
-<<<CONTEXT_SAVE
-{"items":[{"text":"<dated constraint, athlete voice>","expires":"YYYY-MM-DD"}],
- "section_appends":[{"section":"about_me","text":"<durable fact, athlete voice>"}]}
-CONTEXT_SAVE>>>
-Routing: DATED, self-expiring facts (a trip, an injury window, a one-off schedule change)
-→ items, with a realistic expires (roughly 30 days out if none is implied). DURABLE facts
-(background, lasting training preferences, what a calendar pattern means) →
-section_appends into exactly one of: about_me, training_preferences,
-calendar_conventions. Appends ADD a new paragraph to the section — they can never edit or
-remove existing text — so keep each append tight, self-contained, and in the athlete's
-voice, UNDER 1000 characters (longer appends are rejected outright; split into multiple
-appends instead). Omit either key when it has nothing; include the block ONLY when there is
-genuinely something new — never emit an empty one, and never re-save what is already in
-context. It is stripped before display and stored in the athlete's editable coach
-context. Confirm in your prose exactly what you saved and where (or until when).
-If the athlete asks you to interview them to build out their context/profile, ask short
-focused questions a few at a time, and at the natural end of the exchange save what you
-learned — durable answers via section_appends, dated ones via items.
-
-Load philosophy: recovery signals gate the plan in BOTH directions. Only recommend extra
-rest or reduced mileage when a concrete signal in the data justifies it (HRV ratio below
-baseline, RHR drift ≥ +3 bpm, readiness falling, sleep debt, ACR > ~1.3) — and quote the
-number. When signals are clean, hold or build the planned volume; do not counsel caution
-by default. The limiter in a 100 is leg durability (quads on descents, feet, time on
-feet), not aerobic fitness — so when load needs managing, prefer long very-low-intensity
-time-on-feet days and race-effort simulation (hiked climbs, relaxed low-cadence shuffle,
-fueling practice at race rhythm) over simply cutting volume. Taper weeks are the
-exception and stay protective.
-
-${hasPacing
-  ? `When estimating how long a run will take, use facts.pacing — a model fit from ${profile.athlete_name || "the athlete"}'s own Strava runs. Pace slows steeply with vert and distance, so never assume flat-road pace on hilly terrain. Read off facts.pacing.reference (distance_mi + vert_ft → pace_min_per_mi, moving_h), interpolate for the proposed session, round up for stops, and carry ±facts.pacing.fit_error_min_per_mi as uncertainty. A hilly long run here is ~11-14 min/mi, not 9.`
-  : `facts.pacing is null — no personal pacing model yet (needs at least 8 runs with distance + time data). Estimate durations conservatively from recent runs in the data, flag estimates as rough, and never assume flat-road pace on hilly terrain.`}
-
-Use the Read tool to look up specifics. Ground every claim in the data — quote real numbers (HRV ms, RHR delta, ACR ratio, distance, vert, dates, run temps).
-
-Response rules:
-  - Be concise. 1-3 short paragraphs unless the user explicitly asks for more depth.
-  - Plain text. No markdown headers, no bullet bloat. Inline bullets ok where natural.
-  - ${units === 'metric'
-      ? 'Metric units (kilometers, meters); Celsius for temperatures'
-      : 'Imperial units (miles, feet); Fahrenheit for temperatures'} — this is the unit system the athlete has selected in the dashboard. Source snapshots may store other units; convert when quoting numbers. 24h time.
-  - No emojis. No filler. Direct, specific, useful.
-  - When unsure or data missing, say so. Don't fabricate.
-  - Address the athlete in second person.
-  - Defer to the established plan_blocks and agent_notes from prior sessions — don't propose a re-plan unless the user explicitly asks.`;
 
 function chatApi(): Plugin {
   const projectRoot = path.resolve(__dirname, '..')
@@ -313,13 +415,16 @@ function chatApi(): Plugin {
         const chatUnits: 'imperial' | 'metric' = body.units === 'imperial' ? 'imperial' : 'metric'
         if (!messages.length) { res.statusCode = 400; res.end('no messages'); return }
 
-        // Compute facts → write to temp file the agent can Read
+        // Compute facts → write to temp file the agent can Read. The digest is
+        // kept in memory too: the system prompt is built from the same object
+        // (race paragraph, goals, history), not re-derived from the file.
         let factsPath = ''
-        let hasPacing: boolean
+        let facts: { pacing?: unknown }
+        let coachPrompt: CoachPrompt
         try {
-          const facts = await import(path.join(projectRoot, 'scripts/facts.mjs'))
+          facts = await import(path.join(projectRoot, 'scripts/facts.mjs'))
             .then((m: { loadFactsFromRoot: (root: string) => Promise<{ pacing: unknown }> }) => m.loadFactsFromRoot(projectRoot))
-          hasPacing = Boolean(facts.pacing)
+          coachPrompt = await loadCoachPrompt(projectRoot)
           factsPath = path.join(os.tmpdir(), `trail-chat-${Date.now()}.json`)
           fs.writeFileSync(factsPath, JSON.stringify(facts, null, 2))
         } catch (e) {
@@ -328,6 +433,9 @@ function chatApi(): Plugin {
           return
         }
         const coachPath = path.join(projectRoot, 'web', 'public', 'coach.json')
+        // loaded before the spawn so the close handlers below can classify
+        // synchronously
+        const failureHint = await loadFailureHint(projectRoot)
 
         // SSE start
         res.writeHead(200, {
@@ -359,7 +467,13 @@ function chatApi(): Plugin {
             console.warn(`[chat] profile load failed, using empty profile: ${(e as Error).message}`)
             return {}
           })
-        const sysPrompt = CHAT_SYSTEM(factsPath, coachPath, profile, chatUnits, hasPacing)
+        const sysPrompt = coachPrompt.chatSystemPrompt(facts, profile, {
+          factsPath,
+          coachPath,
+          units: chatUnits,
+          hasPacing: Boolean(facts.pacing),
+          root: projectRoot,
+        })
         send('start', { facts_path: factsPath })
 
         let stdout = ''
@@ -379,7 +493,7 @@ function chatApi(): Plugin {
           proc = spawn('claude', [
             '-p', promptText,
             '--output-format', 'json',
-            '--model', COACH_MODEL,
+            '--model', coachPrompt.COACH_MODEL,
             '--max-turns', String(maxTurns),
             '--allowedTools', 'Read',
             '--append-system-prompt', sysPrompt,
@@ -562,7 +676,8 @@ function chatApi(): Plugin {
               return
             }
             // The agent may end its reply with one or more <<<CONTEXT_SAVE
-            // ...>>> blocks (see CHAT_SYSTEM) — the only persistence path
+            // ...>>> blocks (see chatSystemPrompt in scripts/coach-prompt.mjs)
+            // — the only persistence path
             // chat has, since the CLI runs with Read-only tools. Only
             // TRAILING blocks count: they're peeled off the end one at a
             // time, so a sentinel the agent merely QUOTED mid-reply (e.g.
@@ -683,8 +798,10 @@ function chatApi(): Plugin {
 //                   a coach saveState landing inside it is lost — accepted
 //                   for a single-user local app; scripts/coach.mjs
 //                   symmetrically re-loads before its merge)
-//     profile.json: childcare_markers + calendar_keywords only (race_base,
-//                   calendar_ids etc. are never rewritten)
+//     profile.json: childcare_markers + calendar_keywords + physiology only
+//                   (calendar_ids etc. are never rewritten)
+//     goals.json:   the whole generic-mode goals object (PRD §5.3) — it is
+//                   small, wholly settings-owned, and nothing else writes it
 function settingsApi(): Plugin {
   const projectRoot = path.resolve(__dirname, '..')
   const profilePath = path.join(projectRoot, 'config', 'profile.json')
@@ -712,6 +829,20 @@ function settingsApi(): Plugin {
   }
 
   const SECTION_KEYS = ['about_me', 'calendar_conventions', 'training_preferences']
+  // KEEP IN SYNC with PHYSIOLOGY_FIELDS in scripts/profile.mjs — same reason
+  // as GOAL_PHASES below: vite.config.ts can't statically import from
+  // scripts/. The loader normalizes reads; this validates writes, and the
+  // bounds have to agree or the dialog can save a value the loader rejects.
+  const PHYSIOLOGY_BOUNDS: Record<string, [number, number]> = {
+    body_kg: [30, 200],
+    long_run_ref_mi: [5, 50],
+  }
+  // KEEP IN SYNC with GOAL_PHASES in scripts/goals.mjs — vite.config.ts
+  // can't statically import from scripts/ (its tsconfig has no allowJs), and
+  // an unvalidated phase would reach the coach prompt verbatim.
+  const GOAL_PHASES = ['recovery', 'return_to_run', 'base', 'build', 'peak', 'taper', 'maintain']
+  // [lo, hi] ceilings, generous enough for a 100-mile build
+  const BAND_BOUNDS: Record<string, number> = { dist_mi: 500, vert_ft: 200000 }
   const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
   // round-trip check rejects rollover dates ("2026-02-30") that Date.parse accepts
   const isValidIsoDate = (s: unknown): s is string => {
@@ -734,6 +865,8 @@ function settingsApi(): Plugin {
       knownIds: string[] | null
     }
     calendar?: { childcare_markers: string[]; calendar_keywords: Record<string, string[]> }
+    physiology?: Record<string, number>
+    goals?: Record<string, unknown>
   } => {
     const prefs: Record<string, unknown> = {}
     if (body.preferences !== undefined && !isPlainObject(body.preferences)) return { error: 'preferences: object required' }
@@ -821,7 +954,59 @@ function settingsApi(): Plugin {
       }
       calendar = { childcare_markers: normMarkers, calendar_keywords: keywords }
     }
-    return { prefs, context, calendar }
+    // physiology: the athlete's own numbers (tt-yib.9). A partial block is
+    // fine — only the keys sent are written, so a dialog that learns a third
+    // field later can't blank the two it already knew.
+    let physiology
+    if (body.physiology !== undefined) {
+      if (!isPlainObject(body.physiology)) return { error: 'physiology: object required' }
+      const ph = body.physiology as Record<string, unknown>
+      const next: Record<string, number> = {}
+      for (const [key, v] of Object.entries(ph)) {
+        const bounds = PHYSIOLOGY_BOUNDS[key]
+        if (!bounds) return { error: `physiology.${key}: unknown field` }
+        const [lo, hi] = bounds
+        if (typeof v !== 'number' || !Number.isFinite(v) || v < lo || v > hi) {
+          return { error: `physiology.${key}: number in [${lo}, ${hi}] required` }
+        }
+        next[key] = v
+      }
+      physiology = next
+    }
+    let goals
+    if (body.goals !== undefined) {
+      if (!isPlainObject(body.goals)) return { error: 'goals: object required' }
+      const g = body.goals as Record<string, unknown>
+      const strings: Record<string, number> = { event_class: 200, horizon: 200, notes: 2000 }
+      const next: Record<string, unknown> = {}
+      for (const [key, max] of Object.entries(strings)) {
+        const v = g[key] ?? ''
+        if (typeof v !== 'string' || v.length > max) return { error: `goals.${key}: string ≤ ${max} chars required` }
+        next[key] = v.trim()
+      }
+      if (!next.event_class) return { error: 'goals.event_class: non-empty string required' }
+      if (!GOAL_PHASES.includes(g.phase as string)) {
+        return { error: `goals.phase must be one of ${GOAL_PHASES.join(' | ')}` }
+      }
+      next.phase = g.phase
+      if (!isPlainObject(g.weekly_volume_band)) return { error: 'goals.weekly_volume_band: object required' }
+      const band: Record<string, number[]> = {}
+      for (const [key, max] of Object.entries(BAND_BOUNDS)) {
+        const pair = (g.weekly_volume_band as Record<string, unknown>)[key]
+        if (!Array.isArray(pair) || pair.length !== 2
+          || pair.some((n) => typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > max)) {
+          return { error: `goals.weekly_volume_band.${key}: [lo, hi] numbers in [0, ${max}] required` }
+        }
+        // a reversed band would silently invert the rolling window's target
+        if ((pair[0] as number) > (pair[1] as number)) {
+          return { error: `goals.weekly_volume_band.${key}: lo ${pair[0]} is above hi ${pair[1]}` }
+        }
+        band[key] = pair as number[]
+      }
+      next.weekly_volume_band = band
+      goals = next
+    }
+    return { prefs, context, calendar, physiology, goals }
   }
 
   return {
@@ -839,11 +1024,37 @@ function settingsApi(): Plugin {
             loadState: (root: string) => Promise<{ preferences?: Record<string, unknown> }>
             saveState: (root: string, s: unknown) => Promise<{ preferences?: Record<string, unknown> }>
           }
+          const goalsMod = await import(path.join(projectRoot, 'scripts/goals.mjs')) as {
+            loadGoals: (root: string) => Promise<{ goals: Record<string, unknown>; errors: string[] }>
+            saveGoals: (root: string, g: unknown) => Promise<string>
+          }
+          const profileMod = await import(path.join(projectRoot, 'scripts/profile.mjs')) as {
+            normalizePhysiology: (raw: unknown) => { physiology: Record<string, number>; warnings: string[] }
+          }
           if (req.method === 'GET') {
+            // PR #23 review round 1, finding 2: only the PUT branch used to
+            // call this. This GET now returns physiology and goals too, so a
+            // cross-site page's plain GET (no preflight needed) must not be
+            // able to trigger it — including the loadGoals side effect below,
+            // which bootstraps config/goals.json from the example on first
+            // call.
+            if (crossSiteBlocked(req, res)) return
             const state = await stateMod.loadState(projectRoot)
             const { profile, corrupt } = readProfile()
+            // bootstraps config/goals.json from the example on first open —
+            // the dialog is the surface the athlete edits it through
+            const { goals, errors: goalsErrors } = await goalsMod.loadGoals(projectRoot)
+            // Physiology is always complete on the way out: the loader's
+            // documented defaults fill the gaps, and `physiology_warnings`
+            // says which numbers are stand-ins — the race plan reads these
+            // through this same endpoint (web/src/race/useRaceData.ts).
+            const { physiology, warnings: physiologyWarnings } = profileMod.normalizePhysiology(profile.physiology)
             json(200, {
               preferences: state.preferences ?? {},
+              goals,
+              goals_error: goalsErrors.length
+                ? `config/goals.json: ${goalsErrors.join('; ')} — fix it here or by hand`
+                : null,
               calendar: {
                 childcare_markers: profile.childcare_markers ?? [],
                 calendar_keywords: profile.calendar_keywords ?? {},
@@ -851,6 +1062,8 @@ function settingsApi(): Plugin {
               calendar_error: corrupt
                 ? 'config/profile.json exists but failed to parse — calendar edits are disabled until it is fixed by hand'
                 : null,
+              physiology,
+              physiology_warnings: physiologyWarnings,
               today: localToday(),
             })
             return
@@ -863,12 +1076,12 @@ function settingsApi(): Plugin {
           try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
           catch { json(400, { error: 'bad json' }); return }
 
-          const { error, prefs, context, calendar } = validate(body)
+          const { error, prefs, context, calendar, physiology, goals } = validate(body)
           if (error) { json(400, { error }); return }
 
-          // refuse the whole write BEFORE touching anything if the calendar
-          // edit would be based on a corrupt profile.json
-          if (calendar && readProfile().corrupt) {
+          // refuse the whole write BEFORE touching anything if a profile.json
+          // edit (calendar or physiology) would be based on a corrupt file
+          if ((calendar || physiology) && readProfile().corrupt) {
             json(409, { error: 'config/profile.json exists but could not be parsed — fix it by hand first; refusing to overwrite it' })
             return
           }
@@ -909,28 +1122,60 @@ function settingsApi(): Plugin {
           fresh.preferences = { ...freshPrefs, ...prefs, ...(nextContext !== undefined ? { context: nextContext } : {}) }
           const saved = await stateMod.saveState(projectRoot, fresh)
 
+          // both profile-owned sections go out in ONE write: two sequential
+          // writeJsonAtomic calls would each be built from a stale read, and
+          // the second would silently drop the first's edit
           let savedCalendar = null
-          if (calendar) {
+          let savedPhysiology = null
+          if (calendar || physiology) {
             try {
               const { writeJsonAtomic } = await import(path.join(projectRoot, 'scripts/lib.mjs')) as {
                 writeJsonAtomic: (p: string, v: unknown) => Promise<void>
               }
               // gitignored — creating it from the example content is safe
-              const nextProfile = { ...readProfile().profile, ...calendar }
+              const current = readProfile().profile
+              const nextProfile: Record<string, unknown> = { ...current, ...(calendar ?? {}) }
+              let mergedPhysiology: Record<string, number> | null = null
+              if (physiology) {
+                // merge, don't replace: a PUT that only carries body_kg must
+                // not blank long_run_ref_mi
+                const prev = (current.physiology ?? {}) as Record<string, number>
+                mergedPhysiology = { ...prev, ...physiology }
+                nextProfile.physiology = mergedPhysiology
+              }
               await writeJsonAtomic(profilePath, nextProfile)
-              savedCalendar = calendar
+              savedCalendar = calendar ?? null
+              savedPhysiology = mergedPhysiology
             } catch (e) {
               // state.json already committed — report the partial write
               // honestly instead of a blanket failure
               console.warn(`[settings] profile.json write failed: ${(e as Error).message}`)
               json(500, {
-                error: `preferences were saved, but writing calendar config to config/profile.json failed: ${(e as Error).message}`,
+                error: `preferences were saved, but writing config/profile.json failed: ${(e as Error).message}`,
                 preferences: saved.preferences,
               })
               return
             }
           }
-          json(200, { preferences: saved.preferences, calendar: savedCalendar })
+          // goals last: it is a standalone file, so a failure here leaves
+          // state.json and profile.json correctly saved and says so
+          let savedGoals = null
+          if (goals) {
+            try {
+              await goalsMod.saveGoals(projectRoot, goals)
+              savedGoals = goals
+            } catch (e) {
+              console.warn(`[settings] goals.json write failed: ${(e as Error).message}`)
+              json(500, {
+                error: `preferences were saved, but writing config/goals.json failed: ${(e as Error).message}`,
+                preferences: saved.preferences,
+                calendar: savedCalendar,
+                physiology: savedPhysiology,
+              })
+              return
+            }
+          }
+          json(200, { preferences: saved.preferences, calendar: savedCalendar, physiology: savedPhysiology, goals: savedGoals })
         } catch (e) {
           json(500, { error: (e as Error).message })
         }
@@ -939,14 +1184,1445 @@ function settingsApi(): Plugin {
   }
 }
 
+// Dev-only middleware: GET /api/races/:slug/asset/:name — one file out of a
+// race folder, for the hero image behind the elevation ribbon (PRD §7).
+//
+// This is a path-traversal endpoint by construction, so it owns none of the
+// decisions: scripts/race-asset.mjs says whether a request may be served and
+// from which absolute path (four gates, node --test covers them), and this
+// middleware only opens what it was handed. The race's own visual.hero is the
+// allow-list — the folder is not a static mount, and race.json, course.gpx and
+// the plan are not reachable through here.
+//
+// It shares the /api/races mount with the race LIST, so it must be registered
+// BEFORE raceSwitchApi and hand anything that is not an asset path to next().
+function raceAssetApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  type AssetMod = {
+    parseAssetUrl: (rest: string) => { slug: string; name: string } | null
+    checkAssetRequest: (root: string, slug: string, name: string) =>
+      | { ok: true; slug: string; name: string; file: string; contentType: string }
+      | { ok: false; status: number; error: string }
+    resolveRaceAsset: (root: string, slug: string, name: string, hero: unknown) =>
+      | { ok: true; slug: string; name: string; file: string; contentType: string }
+      | { ok: false; status: number; error: string }
+    ASSET_MAX_BYTES: number
+  }
+  return {
+    name: 'trail-train-race-asset-api',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/api/races', async (req, res, next) => {
+        const json = (code: number, body: unknown) => {
+          res.statusCode = code
+          res.setHeader('Content-Type', 'application/json')
+          res.setHeader('Cache-Control', 'no-store')
+          res.end(JSON.stringify(body))
+        }
+        try {
+          // vite.config.ts can't statically import from scripts/ (it is ESM
+          // JS outside the TS project), so the loader is imported per
+          // request — inside the try: an import() rejection here (a
+          // transient fs error, a bad checkout mid-pull, a syntax error
+          // introduced while iterating on race-asset.mjs) must become this
+          // plugin's own 500, not an unhandled promise rejection that
+          // crashes the whole Vite dev server (PR #23 review round 1,
+          // finding 3 — every other request-time import() in this file is
+          // already inside its try/catch).
+          const asset = await import(path.join(projectRoot, 'scripts/race-asset.mjs')) as AssetMod
+          const parsed = asset.parseAssetUrl(req.url ?? '')
+          // not an asset path — that is the race list's request, not ours
+          if (!parsed) { next(); return }
+
+          if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+          if (crossSiteBlocked(req, res)) return
+
+          // Gates 1/2/4 FIRST: the slug has to be proven a slug before it can
+          // be joined onto a path to read the folder's race.json.
+          const checked = asset.checkAssetRequest(projectRoot, parsed.slug, parsed.name)
+          if (!checked.ok) { json(checked.status, { error: checked.error }); return }
+
+          const { loadRaceFolder } = await import(path.join(projectRoot, 'scripts/race-config.mjs')) as {
+            loadRaceFolder: (root: string, slug: string) => Promise<{ race: { visual?: { hero?: string } } | null }>
+          }
+          let hero: string | undefined
+          try {
+            hero = (await loadRaceFolder(projectRoot, checked.slug)).race?.visual?.hero
+          } catch {
+            json(404, { error: `races/${checked.slug} has no readable race.json` })
+            return
+          }
+
+          // Gate 3: the name must be the race's OWN declared hero.
+          const allowed = asset.resolveRaceAsset(projectRoot, parsed.slug, parsed.name, hero)
+          if (!allowed.ok) { json(allowed.status, { error: allowed.error }); return }
+
+          let stat: fs.Stats
+          try {
+            stat = await fs.promises.stat(allowed.file)
+          } catch {
+            json(404, { error: `races/${allowed.slug}/${allowed.name} is declared as the hero but is not in the folder` })
+            return
+          }
+          if (!stat.isFile()) { json(404, { error: 'not a file' }); return }
+          if (stat.size > asset.ASSET_MAX_BYTES) {
+            json(413, { error: `hero image is ${(stat.size / 1048576).toFixed(1)} MB — the cap is ${asset.ASSET_MAX_BYTES / 1048576} MB` })
+            return
+          }
+
+          res.statusCode = 200
+          res.setHeader('Content-Type', allowed.contentType)
+          res.setHeader('Content-Length', String(stat.size))
+          // the file can be replaced in place while the server is up, and a
+          // hero is fetched once per page load — revalidating is cheap
+          res.setHeader('Cache-Control', 'no-cache')
+          fs.createReadStream(allowed.file).on('error', () => res.destroy()).pipe(res)
+        } catch (e) {
+          json(500, { error: (e as Error).message })
+        }
+      })
+    },
+  }
+}
+
+// Dev-only middleware: the race switcher's two endpoints (PRD §7).
+//   GET  /api/races          — every folder under races/, as the menu shows
+//                              them: slug, name, short, status, date.
+//   POST /api/race/activate  — { slug: string|null, mode?: "train"|"view" }
+//                              moves config/active-race.json. The rules live
+//                              in scripts/race-config.mjs's validateActivation
+//                              (node --test covers them), so "one race in
+//                              train mode, and only an active folder" is
+//                              enforced HERE and not merely in the menu.
+// Both refuse cross-site callers: the list carries local config, and the POST
+// changes what the coach trains for.
+function raceSwitchApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* A slug and a mode; a body bigger than this is not one. */
+  const BODY_MAX_BYTES = 16 * 1024
+  type RaceConfigMod = {
+    listRaces: (root: string) => Promise<{ slug: string; race: Record<string, unknown> | null; error: string | null }[]>
+    setActivePointer: (root: string, req: unknown) => Promise<{ slug: string | null; mode: string }>
+    readActivePointer: (root: string) => Promise<{ slug: string | null; mode: string }>
+  }
+  return {
+    name: 'trail-train-race-switch-api',
+    apply: 'serve',
+    configureServer(server) {
+      const raceConfig = () =>
+        // vite.config.ts can't statically import from scripts/ (it is ESM JS
+        // outside the TS project), so the loader is imported per request.
+        import(path.join(projectRoot, 'scripts/race-config.mjs')) as Promise<RaceConfigMod>
+      const json = (res: ServerResponse, code: number, body: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(JSON.stringify(body))
+      }
+
+      server.middlewares.use('/api/races', async (req, res) => {
+        if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+        if (crossSiteBlocked(req, res)) return
+        try {
+          const { listRaces, readActivePointer } = await raceConfig()
+          const [races, pointer] = await Promise.all([listRaces(projectRoot), readActivePointer(projectRoot)])
+          json(res, 200, {
+            races: races.map((r) => ({
+              slug: r.slug,
+              // A folder whose race.json is broken still appears, named after
+              // itself and carrying its error: hiding it would look like the
+              // race was deleted.
+              name: (r.race?.name as string) ?? r.slug,
+              short: (r.race?.short as string) ?? r.slug,
+              status: (r.race?.status as string) ?? null,
+              date: (r.race?.date as string) ?? null,
+              // the folder's whole `visual` block — the menu draws a swatch
+              // of each race's palette, which needs the preset and accent
+              // BEFORE the race is switched to (tt-yib.16)
+              visual: (r.race?.visual as Record<string, unknown>) ?? null,
+              error: r.error,
+            })),
+            pointer,
+          })
+        } catch (e) {
+          json(res, 500, { error: (e as Error).message })
+        }
+      })
+
+      server.middlewares.use('/api/race/activate', async (req, res) => {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        if (crossSiteBlocked(req, res)) return
+        // Global, not per-slug (PR #23 review round 1, resilience findings 1
+        // & 2): config/active-race.json is ONE file regardless of which slug
+        // each request names, so two activations racing each other — even
+        // for two different races — must serialize on it. Refuses with 409
+        // rather than queuing: the loser's click is stale the instant it is
+        // rejected (the switcher/review dialog both re-read on the next
+        // render), so making it wait to overwrite whatever won would just
+        // reproduce the "last click silently wins, UI disagrees" bug this
+        // fixes.
+        if (!acquireSlugLock(ACTIVATE_LOCK_KEY, 'activate')) {
+          json(res, 409, { error: 'another race activation is already in progress — try again' })
+          return
+        }
+        try {
+          const chunks: Buffer[] = []
+          let size = 0
+          for await (const c of req) {
+            size += (c as Buffer).length
+            if (size > BODY_MAX_BYTES) { json(res, 413, { error: 'body too large' }); return }
+            chunks.push(c as Buffer)
+          }
+          let body: unknown
+          try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
+          catch { json(res, 400, { error: 'bad json' }); return }
+
+          const { setActivePointer } = await raceConfig()
+          const pointer = await setActivePointer(projectRoot, body)
+          json(res, 200, { pointer })
+        } catch (e) {
+          // validateActivation tags its refusals; anything untagged is ours.
+          const code = (e as { code?: string }).code
+          if (code === 'not_found') { json(res, 404, { error: (e as Error).message }); return }
+          if (code === 'bad_request') { json(res, 400, { error: (e as Error).message }); return }
+          json(res, 500, { error: (e as Error).message })
+        } finally {
+          releaseSlugLock(ACTIVATE_LOCK_KEY)
+        }
+      })
+    },
+  }
+}
+
+// Dev-only middleware: results capture (PRD §10).
+//   POST /api/races/:slug/archive — { activity_id, official?, notes?, status? }
+//                                   links a Strava activity to a finished
+//                                   race: derives the per-station splits from
+//                                   its GPS track, writes result.json, flips
+//                                   race.json to "archived" and releases the
+//                                   pointer. The rules (race-day guard,
+//                                   official overrides, what a re-archive
+//                                   keeps) live in scripts/race-result.mjs
+//                                   under `node --test`.
+//   GET  /api/races/:slug/result   — that race's result.json, or null.
+// MUST be registered before raceSwitchApi: connect matches by path prefix, and
+// its GET /api/races would otherwise answer /api/races/<slug>/result with the
+// race LIST. Anything under /api/races that is not one of these two routes is
+// passed straight through to it.
+function raceResultApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* An activity id, a handful of official splits and a note. */
+  const BODY_MAX_BYTES = 64 * 1024
+  type RaceResultMod = {
+    archiveRace: (o: Record<string, unknown>) => Promise<{ slug: string; result: unknown; pointer: unknown; warning?: string }>
+    loadResult: (root: string, slug: string) => Promise<unknown>
+  }
+  return {
+    name: 'trail-train-race-result-api',
+    apply: 'serve',
+    configureServer(server) {
+      const json = (res: ServerResponse, code: number, body: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(JSON.stringify(body))
+      }
+      // scripts/ is ESM JS outside the TS project, so it is imported per
+      // request rather than statically — same as the other race endpoints.
+      const raceResult = () =>
+        import(path.join(projectRoot, 'scripts/race-result.mjs')) as Promise<RaceResultMod>
+      // archiveRace tags its refusals; anything untagged is ours.
+      const fail = (res: ServerResponse, e: unknown) => {
+        const code = (e as { code?: string }).code
+        const status = code === 'not_found' ? 404 : code === 'bad_request' ? 400 : 500
+        json(res, status, { error: (e as Error).message })
+      }
+
+      server.middlewares.use('/api/races', async (req, res, next) => {
+        // req.url is the remainder after the mount point: "/<slug>/archive".
+        const m = /^\/([^/?]+)\/(archive|result)(?:\?.*)?$/.exec(req.url ?? '')
+        if (!m) { next(); return }
+        const [, rawSlug, route] = m
+        if (crossSiteBlocked(req, res)) return
+        // PR #23 review round 1, finding 1: the capture above allows any
+        // non-"/",non-"?" character, so a traversal or non-kebab slug must be
+        // rejected HERE, before it reaches raceDir/loadResult/archiveRace —
+        // the same guard every sibling /api/races/:slug/* endpoint applies.
+        const slug = parseSlugParam(rawSlug)
+        if (!slug) { json(res, 400, { error: 'slug: lowercase kebab-case required' }); return }
+
+        if (route === 'result') {
+          if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+          try {
+            const { loadResult } = await raceResult()
+            json(res, 200, { slug, result: await loadResult(projectRoot, slug) })
+          } catch (e) {
+            fail(res, e)
+          }
+          return
+        }
+
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        // See inFlightSlugs above (PR #23 review round 2, scripts finding
+        // "archive endpoint holds no lock"): archiveRace flips race.json's
+        // status and writes result.json — a build/plan/refresh/edit for the
+        // same slug finishing after (or starting during) an archive must not
+        // silently interleave with it.
+        if (!acquireSlugLock(slug, 'archive')) {
+          json(res, 409, { error: `${slugLockLabel(slug, 'archive')} for "${slug}" is already running` })
+          return
+        }
+        try {
+          const chunks: Buffer[] = []
+          let size = 0
+          for await (const c of req) {
+            size += (c as Buffer).length
+            if (size > BODY_MAX_BYTES) { json(res, 413, { error: 'body too large' }); return }
+            chunks.push(c as Buffer)
+          }
+          let body: { activity_id?: unknown; official?: unknown; notes?: unknown; status?: unknown }
+          try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
+          catch { json(res, 400, { error: 'bad json' }); return }
+
+          const { archiveRace } = await raceResult()
+          const { result, pointer, warning } = await archiveRace({
+            root: projectRoot,
+            slug,
+            activityId: body.activity_id,
+            official: body.official ?? null,
+            notes: body.notes,
+            status: body.status,
+          })
+          json(res, 200, { slug, result, pointer, ...(warning ? { warning } : {}) })
+        } catch (e) {
+          fail(res, e)
+        } finally {
+          releaseSlugLock(slug)
+        }
+      })
+    },
+  }
+}
+
+/* Dev-only middleware backing the review screen of the "New race…" dialog
+   (PRD §8, "Review dialog"), one path segment deeper than the switcher's list:
+     GET  /api/races/:slug         — everything the review screen renders, in
+       one read: race.json, block.json, nutrition.json, the built course
+       profile, the GPX waypoint list, the matcher's ranked candidates per
+       station, the merged unresolved[] and whether Activate may light up.
+     PUT  /api/races/:slug         — the validated edit. A whitelist: the aid
+       fields the table renders, the date, the theme preset, the block targets
+       and the unresolved acknowledgement. Everything else is refused BY NAME.
+     POST /api/races/:slug/status  — draft → active, and nothing else.
+
+   Registered BEFORE raceSwitchApi() in the plugins array: connect matches
+   middleware by path prefix in registration order, so /api/races would
+   otherwise answer "GET required" to every call here. The exact path
+   /api/races is handed straight back with next() — that one is the switcher's.
+
+   Neither write touches config/active-race.json. Editing a folder says
+   nothing about which race the athlete trains for, and the review dialog moves
+   the pointer through POST /api/race/activate like everything else does. */
+function raceEditApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* A folder's editable subset: an aid table, a block and a few scalars. */
+  const BODY_MAX_BYTES = 512 * 1024
+
+  type RaceEditMod = {
+    validateRaceEdit: (body: unknown, ctx: { stationCount: number; unresolved: string[]; aidStations?: unknown[] }) => { ok: boolean; errors: string[]; code: string | null }
+    applyRaceEdit: (race: Record<string, unknown>, body: Record<string, unknown>, opts: { at: string; currentUnresolved?: string[] }) =>
+      { race: Record<string, unknown>; written: string[]; block_targets: Record<string, number>[] | null }
+    applyBlockTargetsEdit: (block: Record<string, unknown>, targets: Record<string, number>[], opts: { at: string }) =>
+      Record<string, unknown>
+    recomputeUnresolved: (race: Record<string, unknown>, prior: string[]) => string[]
+    unresolvedFromMatches: (stations: unknown[], matches: unknown[], waypoints: string[]) => string[]
+    validateStatusTransition: (race: unknown, req: unknown, ctx: { unresolved?: string[]; otherActive?: string[] }) =>
+      { ok: boolean; errors: string[]; code: string | null; status: string | null }
+    applyStatus: (race: Record<string, unknown>, status: string, opts: { at: string; unresolved: string[] }) => Record<string, unknown>
+    otherActiveSlugs: (races: unknown[], slug: string) => string[]
+    loadReview: (root: string, slug: string) => Promise<Record<string, unknown>>
+  }
+
+  return {
+    name: 'trail-train-race-edit-api',
+    apply: 'serve',
+    configureServer(server) {
+      const raceEdit = () =>
+        // vite.config.ts can't statically import from scripts/ (it is ESM JS
+        // outside the TS project), so the module is imported per request.
+        import(path.join(projectRoot, 'scripts/race-edit.mjs')) as Promise<RaceEditMod>
+      const json = (res: ServerResponse, code: number, payload: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(JSON.stringify(payload))
+      }
+      const readBody = async (req: IncomingMessage): Promise<Record<string, unknown> | null | undefined> => {
+        const chunks: Buffer[] = []
+        let total = 0
+        for await (const c of req) {
+          total += (c as Buffer).byteLength
+          if (total > BODY_MAX_BYTES) return undefined
+          chunks.push(c as Buffer)
+        }
+        try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as Record<string, unknown> }
+        catch { return null }
+      }
+
+      server.middlewares.use('/api/races', async (req, res, next) => {
+        // connect strips the mount path: "" or "/" IS /api/races, which is the
+        // switcher's list endpoint and none of our business.
+        const rest = (req.url ?? '/').split('?')[0]
+        if (rest === '' || rest === '/') { next(); return }
+        /* The slug becomes a path segment, so the kebab shape is the guard as
+           much as the schema: no dots, no separators, nothing to traverse. */
+        const m = /^\/([a-z0-9]+(?:-[a-z0-9]+)*)(\/status)?\/?$/.exec(rest)
+        // Not one of ours: /api/races/<slug>/result, /archive and
+        // /asset/<name> belong to the other plugins on this prefix, so an
+        // unrecognized sub-path is handed on rather than 404'd.
+        if (!m) { next(); return }
+        const [, slug, statusPath] = m
+        if (crossSiteBlocked(req, res)) return
+        if (!fs.existsSync(path.join(projectRoot, 'races', slug, 'race.json'))) {
+          json(res, 404, { error: `no race folder "${slug}" — races/${slug}/race.json is not there` })
+          return
+        }
+
+        // GET is read-only (loadReview never writes) — answered without
+        // touching the lock, so an athlete can still open the review screen
+        // while a build/plan/refresh/archive is running for that slug.
+        if (!statusPath && req.method === 'GET') {
+          try {
+            const mod = await raceEdit()
+            json(res, 200, await mod.loadReview(projectRoot, slug))
+          } catch (e) {
+            const message = (e as Error).message || String(e)
+            console.error(`[race-edit] ${message}`)
+            json(res, 500, { error: message })
+          }
+          return
+        }
+
+        // Everything else here writes race.json (status promotion, or the
+        // PUT edit, plus block.json for a block-target edit) — see
+        // inFlightSlugs above (PR #23 review round 2, scripts finding
+        // "raceEditApi PUT/status unlocked"): must serialize against a
+        // concurrent build/plan/refresh/archive/intake on the same slug, not
+        // just win a race with `writeJsonAtomic` and lose silently.
+        if (!acquireSlugLock(slug, 'edit')) {
+          json(res, 409, { error: `${slugLockLabel(slug, 'edit')} for "${slug}" is already running` })
+          return
+        }
+        try {
+          const mod = await raceEdit()
+          const { writeJsonAtomic } = await import(path.join(projectRoot, 'scripts/lib.mjs')) as {
+            writeJsonAtomic: (p: string, data: unknown) => Promise<void>
+          }
+          const dir = path.join(projectRoot, 'races', slug)
+          const at = new Date().toISOString()
+
+          if (statusPath) {
+            if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+            const body = await readBody(req)
+            if (body === undefined) { json(res, 413, { error: 'request body too large' }); return }
+            if (body === null) { json(res, 400, { error: 'bad json' }); return }
+
+            const review = await mod.loadReview(projectRoot, slug)
+            const race = review.race as Record<string, unknown>
+            const { listRaces } = await import(path.join(projectRoot, 'scripts/race-config.mjs')) as {
+              listRaces: (root: string) => Promise<unknown[]>
+            }
+            const otherActive = mod.otherActiveSlugs(await listRaces(projectRoot), slug)
+            const check = mod.validateStatusTransition(race, body, { unresolved: review.unresolved as string[], otherActive })
+            if (!check.ok) { json(res, 400, { error: check.errors.join('\n'), errors: check.errors }); return }
+
+            const unresolved = review.unresolved as string[]
+            await writeJsonAtomic(path.join(dir, 'race.json'), mod.applyStatus(race, check.status as string, { at, unresolved }))
+            json(res, 200, { slug, status: check.status })
+            return
+          }
+
+          if (req.method !== 'PUT') { res.statusCode = 405; res.end('GET or PUT required'); return }
+
+          const body = await readBody(req)
+          if (body === undefined) { json(res, 413, { error: 'request body too large' }); return }
+          if (body === null) { json(res, 400, { error: 'bad json' }); return }
+
+          /* The whole review payload, not just race.json: `unresolved_fills`
+             may only name a path the folder CURRENTLY declares open, and that
+             list includes the GPX-derived holes only loadReview knows about. */
+          const review = await mod.loadReview(projectRoot, slug)
+          const before = review.race as Record<string, unknown>
+          const stationCount = Array.isArray(before.aid_stations) ? before.aid_stations.length : 0
+          const shape = mod.validateRaceEdit(body, {
+            stationCount,
+            unresolved: review.unresolved as string[],
+            aidStations: Array.isArray(before.aid_stations) ? before.aid_stations : [],
+          })
+          if (!shape.ok) { json(res, 400, { error: shape.errors.join('\n'), errors: shape.errors }); return }
+
+          const applied = mod.applyRaceEdit(before, body, { at, currentUnresolved: review.unresolved as string[] })
+          const next_ = applied.race
+          /* Recomputed, then persisted: the review screen's red list has to be
+             a fact about the folder on disk, not something the client
+             remembers. A field the human just filled stops being a hole here
+             and nowhere else. */
+          next_.unresolved = mod.recomputeUnresolved(next_, (before.unresolved as string[]) ?? [])
+
+          const { draftValidationErrors } = await import(path.join(projectRoot, 'scripts/race-intake.mjs')) as {
+            draftValidationErrors: (race: unknown, unresolved: string[]) => { errors: string[]; excused: string[] }
+          }
+          /* Draft rules, not active-race rules: a hole the folder DECLARES is
+             still legal here — that is what the review screen is for. A mile
+             that runs backwards is not, and never becomes one. */
+          const { errors } = draftValidationErrors(next_, next_.unresolved as string[])
+          if (errors.length) { json(res, 400, { error: errors.join('\n'), errors }); return }
+
+          if (applied.block_targets) {
+            const blockPath = path.join(dir, 'block.json')
+            if (!fs.existsSync(blockPath)) {
+              json(res, 400, { error: `races/${slug}/block.json does not exist yet — run the plan stage before editing block targets` })
+              return
+            }
+            const block = JSON.parse(fs.readFileSync(blockPath, 'utf8')) as Record<string, unknown>
+            await writeJsonAtomic(blockPath, mod.applyBlockTargetsEdit(block, applied.block_targets, { at }))
+          }
+          await writeJsonAtomic(path.join(dir, 'race.json'), next_)
+
+          // Answer with the same payload a GET would give, so the client never
+          // has to guess what its own write did.
+          json(res, 200, { ...(await mod.loadReview(projectRoot, slug)), written: applied.written })
+        } catch (e) {
+          const message = (e as Error).message || String(e)
+          console.error(`[race-edit] ${message}`)
+          json(res, 500, { error: message })
+        } finally {
+          releaseSlugLock(slug)
+        }
+      })
+    },
+  }
+}
+
+// Dev-only middleware: GET /api/race/active answers "which race, and what is
+// in it?" for the client — the pointer (config/active-race.json) plus the
+// folder it names, merged into one payload. `active: null` is generic mode,
+// and it is described just as fully: the goals, the rolling 12-week block and
+// the generic plan, so the client never has to re-derive a window the coach
+// already computed. Read-only, but it still refuses cross-site callers: the
+// reply carries local config a hostile tab has no business reading.
+function raceApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  return {
+    name: 'trail-train-race-api',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/api/race/active', async (req, res) => {
+        if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+        if (crossSiteBlocked(req, res)) return
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        try {
+          // vite.config.ts can't statically import from scripts/ (it is ESM
+          // JS outside the TS project), so the loader is imported per request
+          // — same as scripts/facts.mjs in the chat endpoint.
+          const { activeRacePayload } = await import(path.join(projectRoot, 'scripts/race-payload.mjs')) as {
+            activeRacePayload: (root: string, now?: number) => Promise<Record<string, unknown>>
+          }
+          res.statusCode = 200
+          res.end(JSON.stringify(await activeRacePayload(projectRoot)))
+        } catch (e) {
+          res.statusCode = 500
+          res.end(JSON.stringify({ error: (e as Error).message }))
+        }
+      })
+    },
+  }
+}
+
+// Dev-only middleware: GET /nutrition.json. The fueling config used to be a
+// static file in web/public; tt-yib.2 moved it into the race folder, so it is
+// served from the active race — or, with none active, the most recent one —
+// and the client's fetch keeps working unchanged.
+// TODO(tt-yib.5): the client should read it from /api/race/active instead.
+//
+// `?slug=<slug>` pins the read to that folder regardless of the pointer (PR
+// #23 review round 2, resilience finding 1): without it, a request that is
+// still in flight when a switcher click flips config/active-race.json
+// resolves against the NEW pointer instead of the race the caller actually
+// meant — the classic "answer arrives, but for a different question" race.
+// The client (useNutrition, race/nutrition.ts) always sends it now; the
+// pointer-based fallback stays for any caller that doesn't (a bare curl).
+function nutritionFile(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  return {
+    name: 'trail-train-nutrition-file',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/nutrition.json', async (req, res) => {
+        if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+        if (crossSiteBlocked(req, res)) return
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        try {
+          const { loadRaceOrMostRecent, loadRaceFolder } = await import(path.join(projectRoot, 'scripts/race-config.mjs')) as {
+            loadRaceOrMostRecent: (root: string) => Promise<{ slug: string; nutrition: unknown } | null>
+            loadRaceFolder: (root: string, slug: string) => Promise<{ slug: string; nutrition: unknown }>
+          }
+          const slugParam = new URL(req.url ?? '', 'http://internal').searchParams.get('slug')
+          let folder: { slug: string; nutrition: unknown } | null
+          if (slugParam != null) {
+            const slug = parseSlugParam(slugParam)
+            if (!slug) { res.statusCode = 400; res.end(JSON.stringify({ error: 'slug: malformed' })); return }
+            folder = await loadRaceFolder(projectRoot, slug).catch(() => null)
+          } else {
+            folder = await loadRaceOrMostRecent(projectRoot)
+          }
+          if (!folder?.nutrition) {
+            // The nutrition page falls back to its own DEFAULTS, but it should
+            // say why rather than quietly showing somebody else's numbers.
+            res.statusCode = 404
+            res.end(JSON.stringify({ error: 'no race folder carries a nutrition.json' }))
+            return
+          }
+          res.statusCode = 200
+          res.end(JSON.stringify(folder.nutrition))
+        } catch (e) {
+          res.statusCode = 500
+          res.end(JSON.stringify({ error: (e as Error).message }))
+        }
+      })
+    },
+  }
+}
+
+/* ----------------------------- race intake ------------------------------ */
+
+/* Dev-only middleware backing the "New race…" dialog (PRD §8 steps 1-5):
+     POST /api/race-intake/build — { slug } → stage 2 (raceBuildApi below).
+     POST /api/race-intake/plan — { slug } → stage 3 (racePlanApi below).
+     POST /api/race-intake/upload — raw file bytes plus an `X-Filename` header,
+       saved under os.tmpdir(); answers { name, path } to hand to the intake.
+       Raw body rather than multipart on purpose: multipart needs a parser
+       dependency, and this endpoint carries exactly one file and no fields.
+     POST /api/race-intake — { site_url, extra_urls[], year, uploads[], notes,
+       refresh } → SSE progress like /api/refresh, then a final `done` with the
+       slug and the unresolved-field list the review dialog works from.
+   The intake writes ONLY races/<slug>/: never config/active-race.json, never
+   web/public. The draft is inert until a human activates it. */
+const UPLOAD_MAX_BYTES = 64 * 1024 * 1024
+/* What the intake can actually use. An upload endpoint that accepts anything
+   is a file-drop service; this one takes race sources. */
+const UPLOAD_EXTS = new Set(['.pdf', '.gpx', '.kml', '.txt', '.html', '.htm'])
+
+/* POST /api/race-intake/build — { slug } → SSE progress, then a final `done`
+   carrying scripts/race-build.mjs's result.
+
+   Stage 2 of the intake, and the only half a human can ask for again: it
+   validates the folder, matches its aid stations to the course GPX, computes
+   sun and rebuilds build/course.json. Deterministic — no agent turn, so no
+   cost and no `claude` CLI — but slow enough (a GPX fetch, a 6k-point profile)
+   to want the same streamed progress the agent stage has.
+
+   Registered from its OWN plugin, placed BEFORE raceIntakeApi() in the plugins
+   array: connect matches middleware by path prefix in registration order, so
+   /api/race-intake would otherwise swallow this path the way it would an
+   upload. Nothing here touches config/active-race.json — rebuilding a folder
+   says nothing about which race the athlete is training for. */
+function raceBuildApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* A slug and nothing else; a body bigger than this is not one. */
+  const BODY_MAX_BYTES = 64 * 1024
+
+  return {
+    name: 'trail-train-race-build-api',
+    apply: 'serve',
+    configureServer(server) {
+      const json = (res: ServerResponse, code: number, payload: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify(payload))
+      }
+
+      server.middlewares.use('/api/race-intake/build', async (req, res) => {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        if (crossSiteBlocked(req, res)) return
+
+        const chunks: Buffer[] = []
+        let total = 0
+        for await (const c of req) {
+          total += (c as Buffer).byteLength
+          if (total > BODY_MAX_BYTES) { json(res, 413, { error: 'request body too large' }); return }
+          chunks.push(c as Buffer)
+        }
+        let body: { slug?: unknown }
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
+        catch { json(res, 400, { error: 'bad json' }); return }
+
+        const slug = parseSlugParam(typeof body.slug === 'string' ? body.slug.trim() : '')
+        if (!slug) {
+          json(res, 400, { error: 'slug: lowercase kebab-case required' })
+          return
+        }
+        if (!fs.existsSync(path.join(projectRoot, 'races', slug, 'race.json'))) {
+          json(res, 404, { error: `no race folder "${slug}" — races/${slug}/race.json is not there` })
+          return
+        }
+        // See inFlightSlugs above (PR #23 review round 1 finding 4; round 2
+        // finding 3): a build/plan/refresh for the same slug — whichever
+        // one — while one is already running is refused rather than started,
+        // since any of them can write this same race.json.
+        if (!acquireSlugLock(slug, 'build')) {
+          json(res, 409, { error: `${slugLockLabel(slug, 'build')} for "${slug}" is already running` })
+          return
+        }
+
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        })
+        const send = (event: string, data: unknown) => {
+          if (res.writableEnded) return
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        }
+        /* The course build is one long quiet stretch of CPU; keep the stream
+           warm the way the intake and chat endpoints do. */
+        const hb = setInterval(() => send('heartbeat', { t: Date.now() }), 4000)
+        /* A disconnect is not an abort: race.json and build/ are written
+           atomically and a half-finished build helps nobody. Let it finish. */
+        req.on('close', () => { clearInterval(hb) })
+
+        try {
+          const { buildRace } = await import(path.join(projectRoot, 'scripts/race-build.mjs')) as {
+            buildRace: (opts: Record<string, unknown>) => Promise<{
+              slug: string
+              dir: string
+              unresolved: string[]
+              warnings: string[]
+              matched: unknown[]
+              course: unknown
+              sun: unknown
+            }>
+          }
+          const result = await buildRace({
+            root: projectRoot,
+            slug,
+            onProgress: (e: { step: string; status: string; label?: string; message?: string; stream?: string }) => {
+              if (e.status === 'log') send('log', { id: e.step, line: e.message ?? '', stream: e.stream })
+              else send('step', { id: e.step, status: e.status, label: e.label })
+            },
+          })
+          send('done', {
+            ok: true,
+            slug: result.slug,
+            dir: path.relative(projectRoot, result.dir),
+            unresolved: result.unresolved,
+            warnings: result.warnings,
+            matched: result.matched,
+            course: result.course,
+            sun: result.sun,
+          })
+        } catch (e) {
+          const message = (e as Error).message || String(e)
+          console.error(`[race-build] ${message}`)
+          send('error', { message })
+          send('done', { ok: false, error: message })
+        } finally {
+          releaseSlugLock(slug)
+          clearInterval(hb)
+          if (!res.writableEnded) res.end()
+        }
+      })
+    },
+  }
+}
+
+/* POST /api/race-intake/plan — { slug } → SSE progress, then a final `done`
+   carrying scripts/race-plan.mjs's result.
+
+   Stage 3 of the intake (PRD §8 step 5): one headless agent turn that writes
+   the folder's block.json, nutrition.json and the generated half of its
+   race.json. Unlike stage 2 this one COSTS — a `claude -p` call against the
+   coach model — so it is its own button in the review dialog rather than
+   something stage 2 chains into.
+
+   Its own plugin, registered BEFORE raceIntakeApi() for the same reason
+   raceBuildApi is: connect matches middleware by path prefix in registration
+   order, so /api/race-intake would otherwise swallow this path. Nothing here
+   touches config/active-race.json — planning a folder says nothing about which
+   race the athlete is training for. */
+function racePlanApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* A slug and a flag; a body bigger than this is not one. */
+  const BODY_MAX_BYTES = 64 * 1024
+
+  return {
+    name: 'trail-train-race-plan-api',
+    apply: 'serve',
+    configureServer(server) {
+      const json = (res: ServerResponse, code: number, payload: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify(payload))
+      }
+
+      server.middlewares.use('/api/race-intake/plan', async (req, res) => {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        if (crossSiteBlocked(req, res)) return
+
+        const chunks: Buffer[] = []
+        let total = 0
+        for await (const c of req) {
+          total += (c as Buffer).byteLength
+          if (total > BODY_MAX_BYTES) { json(res, 413, { error: 'request body too large' }); return }
+          chunks.push(c as Buffer)
+        }
+        let body: { slug?: unknown; dry_run?: unknown }
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
+        catch { json(res, 400, { error: 'bad json' }); return }
+
+        const slug = parseSlugParam(typeof body.slug === 'string' ? body.slug.trim() : '')
+        if (!slug) {
+          json(res, 400, { error: 'slug: lowercase kebab-case required' })
+          return
+        }
+        if (!fs.existsSync(path.join(projectRoot, 'races', slug, 'race.json'))) {
+          json(res, 404, { error: `no race folder "${slug}" — races/${slug}/race.json is not there` })
+          return
+        }
+        const dryRun = body.dry_run === true
+        // See inFlightSlugs above (PR #23 review round 1 finding 4; round 2
+        // finding 3): shared with build/refresh — it spawns a paid
+        // `claude -p` turn AND writes race.json, so it must not overlap
+        // with either of them for the same slug, not just with itself.
+        if (!acquireSlugLock(slug, 'plan')) {
+          json(res, 409, { error: `${slugLockLabel(slug, 'plan')} for "${slug}" is already running` })
+          return
+        }
+
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        })
+        const send = (event: string, data: unknown) => {
+          if (res.writableEnded) return
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        }
+        /* The agent turn is minutes of silence; keep the stream warm the way
+           the intake and chat endpoints do. */
+        const hb = setInterval(() => send('heartbeat', { t: Date.now() }), 4000)
+        /* A disconnect is not an abort: the three files are written atomically
+           at the end and a half-planned folder helps nobody. Let it finish —
+           the agent turn has already been paid for. */
+        req.on('close', () => { clearInterval(hb) })
+
+        try {
+          const { planRace } = await import(path.join(projectRoot, 'scripts/race-plan.mjs')) as {
+            planRace: (opts: Record<string, unknown>) => Promise<{
+              slug: string
+              dir: string
+              prompt: string
+              dryRun: boolean
+              wrote: string[]
+              unresolved: string[]
+              warnings: string[]
+              skipped: string[]
+              block: unknown
+              nutrition: unknown
+              race: unknown
+              agent: unknown
+            }>
+          }
+          const result = await planRace({
+            root: projectRoot,
+            slug,
+            dryRun,
+            onProgress: (e: { step: string; status: string; label?: string; message?: string; stream?: string }) => {
+              if (e.status === 'log') send('log', { id: e.step, line: e.message ?? '', stream: e.stream })
+              else send('step', { id: e.step, status: e.status, label: e.label })
+            },
+          })
+          send('done', {
+            ok: true,
+            slug: result.slug,
+            dir: path.relative(projectRoot, result.dir),
+            dry_run: result.dryRun,
+            /* The prompt goes back only on a dry run: on a real run it is a
+               few KB the review dialog has no use for. */
+            prompt: result.dryRun ? result.prompt : undefined,
+            wrote: result.wrote,
+            unresolved: result.unresolved,
+            warnings: result.warnings,
+            kept_user_fields: result.skipped,
+            block: result.block,
+            nutrition: result.nutrition,
+            race: result.race,
+            agent: result.agent,
+          })
+        } catch (e) {
+          const message = (e as Error).message || String(e)
+          console.error(`[race-plan] ${message}`)
+          send('error', { message })
+          send('done', { ok: false, error: message })
+        } finally {
+          releaseSlugLock(slug)
+          clearInterval(hb)
+          if (!res.writableEnded) res.end()
+        }
+      })
+    },
+  }
+}
+
+/* Dev-only middleware: re-intake, the "Refresh from sources" half of PRD §8.
+     POST /api/race-intake/refresh        — { slug, uploads[], notes, site_url,
+       extra_urls } → SSE progress like the other three stage endpoints, then a
+       final `done` carrying the diff. This is the expensive one: it runs stage
+       1 (one agent turn) and stage 3 (another) into races/<slug>/.refresh/.
+     GET  /api/races/:slug/refresh        — the diff waiting for review, or 404
+       when there is none.
+     POST /api/races/:slug/refresh/accept — apply the merge, delete the shadow.
+     POST /api/races/:slug/refresh/reject — delete the shadow. Nothing else.
+
+   The live folder is not written until accept, which is scripts/race-refresh.mjs's
+   guarantee and not this middleware's: everything here does is route, guard the
+   slug and stream. Nothing touches config/active-race.json — a race being
+   refreshed is still the race the athlete is training for.
+
+   TWO mounts, one plugin, and the registration order matters twice over:
+   /api/race-intake/refresh must be registered before raceIntakeApi (connect
+   matches by path prefix in registration order, so /api/race-intake would
+   otherwise swallow it), and /api/races/<slug>/refresh before raceSwitchApi,
+   whose GET /api/races answers the race LIST for anything on that prefix. */
+function raceRefreshApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* A slug, a note and a handful of upload paths; a body bigger than this is
+     not one. */
+  const BODY_MAX_BYTES = 1024 * 1024
+  /* The same pin raceIntakeApi puts on upload paths: a POST must not be able
+     to name any file on the disk for the intake to copy into a race folder. */
+  const safeRoots = [os.tmpdir(), '/tmp', '/private/tmp', projectRoot].map((p) => {
+    try { return fs.realpathSync(p) } catch { return p }
+  })
+  const insideSafeRoot = (p: string): boolean => {
+    let real: string
+    try { real = fs.realpathSync(p) } catch { return false }
+    return safeRoots.some((root) => real === root || real.startsWith(root + path.sep))
+  }
+
+  type RefreshMod = {
+    runRefresh: (opts: Record<string, unknown>) => Promise<{ slug: string; dir: string; shadow: string; diff: Record<string, unknown> }>
+    readRefresh: (root: string, slug: string) => Promise<Record<string, unknown> | null>
+    acceptRefresh: (opts: Record<string, unknown>) => Promise<{ slug: string; wrote: string[]; sources: string | null; conflicts: unknown[] }>
+    rejectRefresh: (opts: Record<string, unknown>) => Promise<{ slug: string; removed: boolean }>
+  }
+
+  return {
+    name: 'trail-train-race-refresh-api',
+    apply: 'serve',
+    configureServer(server) {
+      const json = (res: ServerResponse, code: number, payload: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(JSON.stringify(payload))
+      }
+      const refreshMod = () =>
+        // vite.config.ts can't statically import from scripts/ (ESM JS outside
+        // the TS project), so the module is imported per request.
+        import(path.join(projectRoot, 'scripts/race-refresh.mjs')) as Promise<RefreshMod>
+      const readBody = async (req: IncomingMessage): Promise<Record<string, unknown> | null | undefined> => {
+        const chunks: Buffer[] = []
+        let total = 0
+        for await (const c of req) {
+          total += (c as Buffer).byteLength
+          if (total > BODY_MAX_BYTES) return undefined
+          chunks.push(c as Buffer)
+        }
+        try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as Record<string, unknown> }
+        catch { return null }
+      }
+      // The route match on the review mount below already proves its slug
+      // kebab-shaped; this also covers the body-supplied slug on the run
+      // endpoint, which has not been validated yet when it calls this.
+      const raceExists = (slug: string) =>
+        parseSlugParam(slug) !== null && fs.existsSync(path.join(projectRoot, 'races', slug, 'race.json'))
+
+      /* ---- the run: POST /api/race-intake/refresh ---- */
+      server.middlewares.use('/api/race-intake/refresh', async (req, res) => {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        if (crossSiteBlocked(req, res)) return
+
+        const body = await readBody(req)
+        if (body === undefined) { json(res, 413, { error: 'request body too large' }); return }
+        if (body === null) { json(res, 400, { error: 'bad json' }); return }
+
+        const slug = parseSlugParam(typeof body.slug === 'string' ? body.slug.trim() : '')
+        if (!slug) { json(res, 400, { error: 'slug: lowercase kebab-case required' }); return }
+        if (!raceExists(slug)) {
+          json(res, 404, { error: `no race folder "${slug}" — races/${slug}/race.json is not there` })
+          return
+        }
+        const uploads: { name: string; path: string }[] = []
+        for (const u of Array.isArray(body.uploads) ? body.uploads : []) {
+          const up = (u ?? {}) as { name?: unknown; path?: unknown }
+          if (typeof up.path !== 'string' || !up.path) { json(res, 400, { error: 'uploads[].path: string required' }); return }
+          if (!insideSafeRoot(up.path)) {
+            json(res, 400, { error: `uploads[].path must be a file from /api/race-intake/upload (or inside the project): ${up.path}` })
+            return
+          }
+          uploads.push({ name: typeof up.name === 'string' && up.name ? path.basename(up.name) : path.basename(up.path), path: up.path })
+        }
+        const siteUrl = typeof body.site_url === 'string' && /^https?:\/\/\S+$/i.test(body.site_url.trim())
+          ? body.site_url.trim()
+          : null
+        const extraUrls = Array.isArray(body.extra_urls)
+          ? body.extra_urls.filter((u): u is string => typeof u === 'string' && /^https?:\/\/\S+$/i.test(u))
+          : []
+        const notes = typeof body.notes === 'string' ? body.notes.slice(0, 8000) : ''
+        const skipPlan = body.skip_plan === true
+
+        // See inFlightSlugs above (PR #23 review round 1 finding 4; round 2
+        // finding 3): shared with build/plan — a refresh spawns two paid
+        // `claude -p` turns and its accept step writes race.json, so it must
+        // not overlap with a build or plan on the same slug either.
+        if (!acquireSlugLock(slug, 'refresh')) {
+          json(res, 409, { error: `${slugLockLabel(slug, 'refresh')} for "${slug}" is already running` })
+          return
+        }
+
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        })
+        const send = (event: string, data: unknown) => {
+          if (res.writableEnded) return
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        }
+        /* Two agent turns and a fetch pass: minutes of silence, so keep the
+           stream warm the way the intake and chat endpoints do. */
+        const hb = setInterval(() => send('heartbeat', { t: Date.now() }), 4000)
+        /* A disconnect is not an abort. The agent turns are paid for either
+           way and everything lands in .refresh/, where the dialog finds it
+           again through GET /api/races/:slug/refresh. */
+        req.on('close', () => { clearInterval(hb) })
+
+        try {
+          const { runRefresh } = await refreshMod()
+          const result = await runRefresh({
+            root: projectRoot,
+            slug,
+            siteUrl,
+            extraUrls,
+            uploads,
+            notes,
+            skipPlan,
+            onProgress: (e: { step: string; status: string; label?: string; message?: string; stream?: string }) => {
+              if (e.status === 'log') send('log', { id: e.step, line: e.message ?? '', stream: e.stream })
+              else send('step', { id: e.step, status: e.status, label: e.label })
+            },
+          })
+          send('done', {
+            ok: true,
+            slug: result.slug,
+            shadow: path.relative(projectRoot, result.shadow),
+            diff: result.diff,
+          })
+        } catch (e) {
+          const message = (e as Error).message || String(e)
+          console.error(`[race-refresh] ${message}`)
+          send('error', { message })
+          send('done', { ok: false, error: message })
+        } finally {
+          releaseSlugLock(slug)
+          clearInterval(hb)
+          if (!res.writableEnded) res.end()
+        }
+      })
+
+      /* ---- the review: /api/races/:slug/refresh[/accept|/reject] ---- */
+      server.middlewares.use('/api/races', async (req, res, next) => {
+        const rest = (req.url ?? '/').split('?')[0]
+        const m = /^\/([a-z0-9]+(?:-[a-z0-9]+)*)\/refresh(\/accept|\/reject)?\/?$/.exec(rest)
+        // Anything else on this prefix belongs to another plugin (the list,
+        // the review edit, the result, the hero asset) — hand it straight on.
+        if (!m) { next(); return }
+        const [, slug, action] = m
+        if (crossSiteBlocked(req, res)) return
+        if (!raceExists(slug)) {
+          json(res, 404, { error: `no race folder "${slug}" — races/${slug}/race.json is not there` })
+          return
+        }
+
+        try {
+          const mod = await refreshMod()
+          if (!action) {
+            if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+            const pending = await mod.readRefresh(projectRoot, slug)
+            if (!pending) { json(res, 404, { error: `no refresh waiting for ${slug}` }); return }
+            json(res, 200, pending)
+            return
+          }
+          if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+          // accept rewrites race/block/nutrition + course files and reject
+          // deletes the shadow: both must serialize against a running build,
+          // plan, refresh or edit on this slug — and against each other (a
+          // double-clicked Accept would otherwise interleave two applies).
+          if (!acquireSlugLock(slug, 'refresh-review')) {
+            json(res, 409, { error: `${slugLockLabel(slug, 'refresh-review')} for "${slug}" is already running` })
+            return
+          }
+          try {
+            if (action === '/reject') {
+              json(res, 200, await mod.rejectRefresh({ root: projectRoot, slug }))
+              return
+            }
+            json(res, 200, await mod.acceptRefresh({ root: projectRoot, slug }))
+          } finally {
+            releaseSlugLock(slug)
+          }
+        } catch (e) {
+          const message = (e as Error).message || String(e)
+          console.error(`[race-refresh] ${message}`)
+          // "no refresh waiting" is the client asking about something that is
+          // not there, not a server fault.
+          json(res, /no refresh waiting/.test(message) ? 404 : 500, { error: message })
+        }
+      })
+    },
+  }
+}
+
+function raceIntakeApi(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  /* The intake call takes absolute upload paths from the client, so pin them
+     to the dirs the upload endpoint writes to (plus the repo, for a file the
+     owner already keeps in the project). Without this, a POST could ask the
+     server to copy any file on the disk into a race folder. */
+  const safeRoots = [os.tmpdir(), '/tmp', '/private/tmp', projectRoot].map((p) => {
+    try { return fs.realpathSync(p) } catch { return p }
+  })
+  const insideSafeRoot = (p: string): boolean => {
+    let real: string
+    try { real = fs.realpathSync(p) } catch { return false }
+    return safeRoots.some((root) => real === root || real.startsWith(root + path.sep))
+  }
+
+  const readBody = async (req: IncomingMessage, limit: number): Promise<Buffer | null> => {
+    const chunks: Buffer[] = []
+    let total = 0
+    for await (const c of req) {
+      total += (c as Buffer).byteLength
+      if (total > limit) return null
+      chunks.push(c as Buffer)
+    }
+    return Buffer.concat(chunks)
+  }
+
+  return {
+    name: 'trail-train-race-intake-api',
+    apply: 'serve',
+    configureServer(server) {
+      const json = (res: ServerResponse, code: number, payload: unknown) => {
+        res.statusCode = code
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify(payload))
+      }
+
+      // Registered BEFORE /api/race-intake: connect matches by prefix in
+      // registration order, so the intake handler never sees an upload.
+      server.middlewares.use('/api/race-intake/upload', async (req, res) => {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        if (crossSiteBlocked(req, res)) return
+        const raw = String(req.headers['x-filename'] ?? '')
+        // basename first, then a character whitelist: neither alone stops
+        // "..%2f..%2fetc%2fpasswd" from becoming a path once decoded
+        const name = path.basename(decodeURIComponent(raw)).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120)
+        if (!name || name.startsWith('.')) { json(res, 400, { error: 'X-Filename header with a plain file name required' }); return }
+        const ext = path.extname(name).toLowerCase()
+        if (!UPLOAD_EXTS.has(ext)) {
+          json(res, 415, { error: `${ext || 'that file type'} is not an intake source — expected one of ${[...UPLOAD_EXTS].join(', ')}` })
+          return
+        }
+        const body = await readBody(req, UPLOAD_MAX_BYTES)
+        if (body === null) { json(res, 413, { error: `upload exceeds ${UPLOAD_MAX_BYTES / (1024 * 1024)} MB` }); return }
+        if (body.byteLength === 0) { json(res, 400, { error: 'empty upload' }); return }
+        try {
+          // One dir per upload: two manuals named manual.pdf must not collide,
+          // and the intake copies out of here rather than moving.
+          const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'basecamp-intake-upload-'))
+          const dest = path.join(dir, name)
+          fs.writeFileSync(dest, body)
+          json(res, 200, { name, path: dest, bytes: body.byteLength })
+        } catch (e) {
+          json(res, 500, { error: `could not save the upload: ${(e as Error).message}` })
+        }
+      })
+
+      server.middlewares.use('/api/race-intake', async (req, res) => {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        if (crossSiteBlocked(req, res)) return
+        const raw = await readBody(req, 1024 * 1024)
+        if (raw === null) { json(res, 413, { error: 'request body too large' }); return }
+        let body: {
+          site_url?: string
+          extra_urls?: unknown
+          year?: unknown
+          uploads?: unknown
+          notes?: unknown
+          refresh?: unknown
+          slug?: unknown
+        }
+        try { body = JSON.parse(raw.toString('utf8') || '{}') }
+        catch { json(res, 400, { error: 'bad json' }); return }
+
+        const siteUrl = String(body.site_url ?? '').trim()
+        if (!/^https?:\/\/\S+$/i.test(siteUrl)) { json(res, 400, { error: 'site_url: an http(s) URL is required' }); return }
+        const year = String(body.year ?? '').trim()
+        if (!/^\d{4}$/.test(year)) { json(res, 400, { error: 'year: a 4-digit edition year is required' }); return }
+        const extraUrls = Array.isArray(body.extra_urls)
+          ? body.extra_urls.filter((u): u is string => typeof u === 'string' && /^https?:\/\/\S+$/i.test(u))
+          : []
+        const uploads: { name: string; path: string }[] = []
+        for (const u of Array.isArray(body.uploads) ? body.uploads : []) {
+          const up = (u ?? {}) as { name?: unknown; path?: unknown }
+          if (typeof up.path !== 'string' || !up.path) { json(res, 400, { error: 'uploads[].path: string required' }); return }
+          if (!insideSafeRoot(up.path)) {
+            json(res, 400, { error: `uploads[].path must be a file from /api/race-intake/upload (or inside the project): ${up.path}` })
+            return
+          }
+          uploads.push({ name: typeof up.name === 'string' && up.name ? path.basename(up.name) : path.basename(up.path), path: up.path })
+        }
+        const notes = typeof body.notes === 'string' ? body.notes.slice(0, 8000) : ''
+        const refresh = body.refresh === true
+        // Optional: the folder to write, when the caller already knows it (a
+        // re-intake of an existing race). Checked before the agent runs.
+        const rawSlugHint = typeof body.slug === 'string' && body.slug ? body.slug : null
+        const slugHint = rawSlugHint ? parseSlugParam(rawSlugHint) : null
+        if (rawSlugHint && !slugHint) {
+          json(res, 400, { error: 'slug: lowercase kebab-case required' })
+          return
+        }
+        // See inFlightSlugs above (PR #23 review round 1 finding 4; round 2
+        // findings 2 and 3): a second intake for the same target while one
+        // is already running is refused rather than started (it spawns a
+        // paid `claude -p` turn). A brand-new race has no slug yet, so the
+        // (normalized) site_url stands in for it — a trivially different URL
+        // for the same event is still "the same target". slugHint, when
+        // given, both replaces the URL key (an exact re-intake target beats
+        // a URL guess) AND additionally takes the shared per-slug lock, so
+        // this run is also mutually exclusive with a concurrent build/plan/
+        // refresh on that folder, not just with another intake of it.
+        const intakeTargetKey = `intake:${slugHint ?? normalizeUrlForLock(siteUrl)}`
+        if (inFlightSlugs.has(intakeTargetKey)) {
+          json(res, 409, { error: `an intake for "${slugHint ?? siteUrl}" is already running` })
+          return
+        }
+        if (slugHint && !acquireSlugLock(slugHint, 'intake')) {
+          json(res, 409, { error: `${slugLockLabel(slugHint, 'intake')} for "${slugHint}" is already running` })
+          return
+        }
+        inFlightSlugs.add(intakeTargetKey)
+
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        })
+        const send = (event: string, data: unknown) => {
+          if (res.writableEnded) return
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        }
+        // The intake's own steps are slow and quiet (a fetch pass, a PDF
+        // render, one long agent turn), so keep the stream warm the way the
+        // chat endpoint does or a proxy/browser can time the request out.
+        const hb = setInterval(() => send('heartbeat', { t: Date.now() }), 4000)
+        /* A disconnect is NOT an abort: the agent run is already in flight and
+           a half-written cache helps nobody. The run finishes and the draft
+           lands in races/<slug>/, where the dialog will find it. */
+        req.on('close', () => { clearInterval(hb) })
+
+        try {
+          const { runIntake } = await import(path.join(projectRoot, 'scripts/race-intake.mjs')) as {
+            runIntake: (opts: Record<string, unknown>) => Promise<{
+              slug: string
+              dir: string
+              unresolved: string[]
+              warnings: string[]
+              race: { aid_stations?: unknown[] }
+              agent: Record<string, unknown>
+            }>
+          }
+          const result = await runIntake({
+            root: projectRoot,
+            siteUrl,
+            extraUrls,
+            year,
+            uploads,
+            notes,
+            refresh,
+            slugHint,
+            onProgress: (e: { step: string; status: string; label?: string; message?: string; stream?: string }) => {
+              if (e.status === 'log') send('log', { id: e.step, line: e.message ?? '', stream: e.stream })
+              else send('step', { id: e.step, status: e.status, label: e.label })
+            },
+          })
+          send('done', {
+            ok: true,
+            slug: result.slug,
+            dir: path.relative(projectRoot, result.dir),
+            aid_stations: result.race.aid_stations?.length ?? 0,
+            unresolved: result.unresolved,
+            warnings: result.warnings,
+            agent: result.agent,
+          })
+        } catch (e) {
+          // runIntake rejects with a sentence meant for a human — the shared
+          // classifier in scripts/agent-run.mjs has already turned an expired
+          // sign-in or a spent usage limit into what to do about it.
+          const message = (e as Error).message || String(e)
+          console.error(`[race-intake] ${message}`)
+          send('error', { message })
+          send('done', { ok: false, error: message })
+        } finally {
+          inFlightSlugs.delete(intakeTargetKey)
+          if (slugHint) releaseSlugLock(slugHint)
+          clearInterval(hb)
+          if (!res.writableEnded) res.end()
+        }
+      })
+    },
+  }
+}
+
+// Dev-only middleware: GET /course.json and GET /crew-base.json. Both used to
+// be static files in web/public; tt-yib.5 made them per-race generated output
+// (races/<slug>/build/, written by scripts/build-course.mjs), so they are read
+// from the active race — or, with none active, the most recent one — and the
+// client's fetches keep working unchanged. Same shape as nutritionFile().
+//
+// `?slug=<slug>` pins the read to that folder, same reason and same client
+// convention as nutritionFile() above: `loadRaceOrMostRecent` re-reads the
+// mutable pointer file on every call, so a course.json request left in flight
+// across a race switch used to resolve against whichever folder the pointer
+// named by the time this handler's own await finally got to it — not the one
+// the caller's `viewing` slug was fetched for. That mismatched response then
+// got cached under the ORIGINAL (correct) slug's offline key (useRaceData.ts),
+// silently poisoning it with the other race's course until the next online
+// fetch happened to overwrite it — PR #23 review round 2, resilience finding
+// 1 (a trained race's header paired with a browsed race's aid stations once
+// offline). Pinning the read to an explicit slug closes the race outright:
+// the response can no longer depend on when the pointer happened to change.
+function courseFiles(): Plugin {
+  const projectRoot = path.resolve(__dirname, '..')
+  const serve = (name: 'course.json' | 'crew-base.json') =>
+    async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
+      if (crossSiteBlocked(req, res)) return
+      res.setHeader('Content-Type', 'application/json')
+      res.setHeader('Cache-Control', 'no-store')
+      try {
+        const { loadRaceOrMostRecent, raceDir } = await import(path.join(projectRoot, 'scripts/race-config.mjs')) as {
+          loadRaceOrMostRecent: (root: string) => Promise<{ slug: string; dir: string } | null>
+          raceDir: (root: string, slug: string) => string
+        }
+        const slugParam = new URL(req.url ?? '', 'http://internal').searchParams.get('slug')
+        let folder: { slug: string; dir: string } | null
+        if (slugParam != null) {
+          const slug = parseSlugParam(slugParam)
+          if (!slug) { res.statusCode = 400; res.end(JSON.stringify({ error: 'slug: malformed' })); return }
+          folder = { slug, dir: raceDir(projectRoot, slug) }
+        } else {
+          folder = await loadRaceOrMostRecent(projectRoot)
+        }
+        if (!folder) {
+          // Generic mode with no race folders at all: 404 is what the client's
+          // `missing` path already means ("not generated yet"), not an error.
+          res.statusCode = 404
+          res.end(JSON.stringify({ error: 'no race folder under races/' }))
+          return
+        }
+        let body: string
+        try {
+          body = await fs.promises.readFile(path.join(folder.dir, 'build', name), 'utf8')
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+          // crew-base.json is ONLY written when the folder has a
+          // crew.private.json (PR #23 review round 1, draft finding 13) — a
+          // fresh intake never has one, so its absence is the ordinary "this
+          // race has no crew info" case, not a build the athlete forgot to
+          // run. course.json's absence stays a 404 (that really is "not
+          // built yet" and drives the client's own empty state), but
+          // crew-base.json answers with an empty, valid payload so it does
+          // not read as a server error in the console on every render.
+          if (name === 'crew-base.json') {
+            res.statusCode = 200
+            res.end(JSON.stringify({}))
+            return
+          }
+          res.statusCode = 404
+          res.end(JSON.stringify({
+            error: `races/${folder.slug}/build/${name} has not been generated — run \`npm run course:build -- --race ${folder.slug}\``,
+          }))
+          return
+        }
+        res.statusCode = 200
+        res.end(body)
+      } catch (e) {
+        res.statusCode = 500
+        res.end(JSON.stringify({ error: (e as Error).message }))
+      }
+    }
+  return {
+    name: 'trail-train-course-files',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/course.json', serve('course.json'))
+      server.middlewares.use('/crew-base.json', serve('crew-base.json'))
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), refreshApi(), chatApi(), settingsApi()],
-  // Fixed, memorable, deliberately unusual port (38 h cutoff · 100 miles).
-  // The 5173 default collides with every other Vite project on the machine,
-  // and a colliding neighbor silently claims the port so this app hops to
-  // 5174+ — which breaks the Basecamp.app launcher's health check and any
-  // bookmark. strictPort makes a genuine conflict fail LOUDLY instead of
-  // hopping; if 38100 is ever taken, something is actually wrong.
-  server: { port: 38100, strictPort: true },
+  // raceBuildApi and racePlanApi BEFORE raceIntakeApi: connect matches by path
+  // prefix in registration order, and /api/race-intake would otherwise swallow
+  // /api/race-intake/build and /api/race-intake/plan. raceSwitchApi sits
+  // before raceApi for the same reason (/api/race/activate vs
+  // /api/race/active) — connect's own boundary check makes that safe either
+  // way, but the order says the intent. raceResultApi, raceAssetApi and
+  // Everything before raceSwitchApi is NOT cosmetic: /api/races/<slug>,
+  // /api/races/<slug>/status, /api/races/<slug>/result,
+  // /api/races/<slug>/refresh and /api/races/<slug>/asset/<name> are all under
+  // /api/races, and the list endpoint answers every GET it sees, so each has
+  // to be given the request first. All four call next() for a path that is not
+  // theirs, which is what lets them share one prefix in any order.
+  // raceRefreshApi is also why it sits ahead of raceIntakeApi: its other mount
+  // is /api/race-intake/refresh, which the intake's own prefix would swallow.
+  plugins: [react(), refreshApi(), chatApi(), settingsApi(), raceResultApi(), raceAssetApi(), raceRefreshApi(), raceEditApi(), raceSwitchApi(), raceApi(), nutritionFile(), courseFiles(), raceBuildApi(), racePlanApi(), raceIntakeApi()],
+  // Fixed, memorable, deliberately unusual port. The 5173 default collides
+  // with every other Vite project on the machine, and a colliding neighbor
+  // silently claims the port so this app hops to 5174+ — which breaks the
+  // Basecamp.app launcher's health check and any bookmark. strictPort makes a
+  // genuine conflict fail LOUDLY instead of hopping; if 38100 is ever taken,
+  // something is actually wrong.
+  server: {
+    port: 38100,
+    strictPort: true,
+    // `host` stays unset: loopback-only by default, and `npx vite --host`
+    // is the deliberate opt-in (README → "Race day on your phone").
+    //
+    // Vite's own Host-header check already accepts bare IPs, so a LAN
+    // address needs nothing here; a NAME (basecamp.local) does, and only
+    // the ones TRAIL_ALLOWED_ORIGINS already named get it. Omitted entirely
+    // when the list is empty so the default config is byte-identical.
+    ...(ALLOWED_HOSTS.size > 0 ? { allowedHosts: [...ALLOWED_HOSTS] } : {}),
+  },
   preview: { port: 38100, strictPort: true },
 })

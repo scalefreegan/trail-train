@@ -198,27 +198,83 @@ function fitGradeCurve(runs, nowMs) {
   };
 }
 
-async function readCache(id) {
+// Cache entries are keyed by a NAME, not an id, because one activity can have
+// two of them: the sweep's distance/altitude/time (`<id>`) and the archive
+// flow's latlng/time (`<id>.latlng`). Both are immutable once recorded.
+async function readCache(name) {
   try {
-    return JSON.parse(await fs.readFile(path.join(CACHE_DIR, `${id}.json`), "utf8"));
+    return JSON.parse(await fs.readFile(path.join(CACHE_DIR, `${name}.json`), "utf8"));
   } catch (e) {
     // ENOENT = never cached (silent). Anything else — torn JSON, permission
     // problem — self-heals via refetch but should be visible: it spends
     // rate-cap quota and could recur forever.
     if (e.code !== "ENOENT") {
-      console.warn(`  ! cache ${id}: ${e.code ?? e.message} — will refetch`);
+      console.warn(`  ! cache ${name}: ${e.code ?? e.message} — will refetch`);
     }
     return null;
   }
 }
 
-async function writeCache(id, data) {
+async function writeCache(name, data) {
   await fs.mkdir(CACHE_DIR, { recursive: true });
   // write-then-rename: a kill mid-write must not leave a torn cache file
-  const p = path.join(CACHE_DIR, `${id}.json`);
+  const p = path.join(CACHE_DIR, `${name}.json`);
   const tmp = `${p}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(data));
   await fs.rename(tmp, p);
+}
+
+/**
+ * The HTTP call itself, for any key set. Transport only — no cache, no shape
+ * opinion — so the sweep below and the one-off archive fetch classify the same
+ * outcomes from the same request.
+ * @returns {Promise<{outcome: "ok"|"ratelimited"|"auth"|"missing"|"error", data?: object, status?: number}>}
+ */
+async function streamsRequest(token, id, keys) {
+  const url = `https://www.strava.com/api/v3/activities/${id}/streams?keys=${keys}&key_by_type=true`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (r.status === 429) return { outcome: "ratelimited" };
+  if (r.status === 401 || r.status === 403) return { outcome: "auth" }; // revoked token / missing scope
+  if (r.status === 404) return { outcome: "missing" };
+  if (!r.ok) return { outcome: "error", status: r.status };
+  return { outcome: "ok", data: await r.json() };
+}
+
+/**
+ * ONE activity's latlng+time streams, cached forever under
+ * .cache/strava-streams/<id>.latlng.json. This is the archive flow's fetch
+ * (scripts/race-result.mjs derives aid-station splits from it): a single
+ * deliberate activity on demand, never the sweep — so every non-ok outcome
+ * throws instead of degrading to "proceed with cache".
+ * @param {string|number} id Strava activity id
+ * @returns {Promise<{latlng: [number, number][], time: number[]}>}
+ */
+export async function fetchActivityStreams(id) {
+  const name = `${id}.latlng`;
+  const cached = await readCache(name);
+  if (cached?.latlng && cached?.time) return cached;
+
+  const token = await ensureToken(await loadConfig());
+  const { outcome, data, status } = await streamsRequest(token, id, "latlng,time");
+  if (outcome === "auth") {
+    throw new Error(
+      `Strava auth failed (HTTP 401/403) fetching activity ${id} — token revoked or missing the activity:read scope`,
+    );
+  }
+  if (outcome === "ratelimited") throw new Error(`Strava rate limit (HTTP 429) fetching activity ${id} — retry in 15 min`);
+  if (outcome === "missing") throw new Error(`Strava activity ${id} not found (HTTP 404)`);
+  if (outcome === "error") throw new Error(`Strava activity ${id}: HTTP ${status}`);
+
+  const latlng = data?.latlng?.data;
+  const time = data?.time?.data;
+  if (!Array.isArray(latlng) || !Array.isArray(time) || latlng.length !== time.length || latlng.length < 2) {
+    // No GPS track (treadmill, manual entry, privacy-trimmed to nothing) —
+    // not cached, because the caller's only move is to pick another activity.
+    throw new Error(`Strava activity ${id} has no usable latlng+time stream`);
+  }
+  const streams = { latlng, time };
+  await writeCache(name, streams);
+  return streams;
 }
 
 /**
@@ -226,19 +282,17 @@ async function writeCache(id, data) {
  * @returns {"streams"|"none"|"ratelimited"|"auth"|"error"} outcome; caches on streams/none.
  */
 async function fetchStream(token, id) {
-  const url = `https://www.strava.com/api/v3/activities/${id}/streams?keys=distance,altitude,time&key_by_type=true`;
-  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (r.status === 429) return "ratelimited";
-  if (r.status === 401 || r.status === 403) return "auth"; // revoked token / missing scope — fatal
-  if (r.status === 404) {
+  const { outcome, data: j, status } = await streamsRequest(token, id, "distance,altitude,time");
+  if (outcome === "ratelimited") return "ratelimited";
+  if (outcome === "auth") return "auth"; // revoked token / missing scope — fatal
+  if (outcome === "missing") {
     await writeCache(id, { no_altitude: true });
     return "none";
   }
-  if (!r.ok) {
-    console.warn(`  ! ${id}: HTTP ${r.status} — leaving pending`);
+  if (outcome === "error") {
+    console.warn(`  ! ${id}: HTTP ${status} — leaving pending`);
     return "error";
   }
-  const j = await r.json();
   const distance = j?.distance?.data;
   const altitude = j?.altitude?.data;
   const time = j?.time?.data;
@@ -419,7 +473,11 @@ async function main() {
   );
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+// Only as a command. scripts/race-result.mjs imports fetchActivityStreams from
+// here, and an import must never kick off the whole sweep.
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

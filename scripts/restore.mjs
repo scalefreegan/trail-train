@@ -41,6 +41,25 @@ async function copyIfExists(from, to) {
   }
 }
 
+/**
+ * Race-folder files present in this backup, mapped back to races/<slug>/.
+ * Read from the backup rather than from the working tree: restoring must be
+ * able to recreate a race folder that is not there any more.
+ * @returns {Promise<{from: string, to: string}[]>}
+ */
+async function raceMapping(src) {
+  const out = [];
+  const slugs = await fs.readdir(path.join(src, "races"), { withFileTypes: true }).catch(() => []);
+  for (const ent of slugs) {
+    if (!ent.isDirectory()) continue;
+    const names = await fs.readdir(path.join(src, "races", ent.name)).catch(() => []);
+    for (const name of names) {
+      out.push({ from: `races/${ent.name}/${name}`, to: path.join(ROOT, "races", ent.name, name) });
+    }
+  }
+  return out;
+}
+
 async function main() {
   const backups = await listBackups();
   if (LIST) {
@@ -71,6 +90,12 @@ async function main() {
     { from: "snapshots/state.json",     to: path.join(ROOT, "web/public/state.json") },
     { from: "snapshots/google-cal.json", to: path.join(ROOT, "web/public/google-cal.json") },
     { from: "config/profile.json",      to: path.join(ROOT, "config/profile.json") },
+    { from: "config/active-race.json",  to: path.join(ROOT, "config/active-race.json") },
+    { from: "config/goals.json",        to: path.join(ROOT, "config/goals.json") },
+    { from: "config/generic-plan.json", to: path.join(ROOT, "config/generic-plan.json") },
+    // races/<slug>/{plan,result,*.private}.json — whatever the backup holds,
+    // since the set of races differs between backups.
+    ...(await raceMapping(src)),
   ];
   if (INCLUDE_OAUTH) {
     mapping.push(

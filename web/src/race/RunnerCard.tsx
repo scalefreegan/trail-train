@@ -1,8 +1,10 @@
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
-import { useUnits, useBlockConfig } from "../data";
-import { fmtRaceClock, fmtElapsed, type projectRace, type StationProjection } from "./pacing";
-import type { Course } from "./types";
+import { useUnits } from "../data";
+import { fmtElapsed, type projectRace, type StationProjection } from "./pacing";
+import type { Course, CrewBase } from "./types";
+import { useRacePlan } from "./useRacePlan";
+import { useDialog } from "./dialogChrome";
 
 /* ------------------------------------------------------------------ */
 /*  Runner card — a double-sided 3×5in index card the runner carries.  */
@@ -46,14 +48,16 @@ function stationLabel(name: string, crewOnly: boolean): string {
   return (name.length > avail ? `${name.slice(0, avail - 1)}…` : name) + suffix;
 }
 
-function CardFace({ side, stations, course, proj }: {
+function CardFace({ side, stations, course, proj, emergency }: {
   side: 1 | 2;
   stations: StationProjection[];
   course: Course;
   proj: Proj;
+  /** race-day contacts — personal, so they arrive via crew-base.json */
+  emergency: CrewBase["emergency"];
 }) {
   const u = useUnits();
-  const { race } = useBlockConfig();
+  const { race, sun } = useRacePlan();
 
   const cell: React.CSSProperties = {
     padding: "1.5px 3px", borderBottom: `0.5px solid ${RULE}`, fontSize: "8.5px",
@@ -64,7 +68,7 @@ function CardFace({ side, stations, course, proj }: {
     color: MUTED, borderBottom: `1px solid ${INK}`, fontWeight: 600,
   };
 
-  const emergency = course.crew_info?.emergency?.[0];
+  const contact = emergency?.[0] ?? course.crew_info?.emergency?.[0];
 
   return (
     <div
@@ -82,8 +86,8 @@ function CardFace({ side, stations, course, proj }: {
         </span>
         <span style={{ fontSize: "7px", color: MUTED, fontVariantNumeric: "tabular-nums" }}>
           {side === 1
-            ? <>start <b style={{ color: INK }}>{fmtRaceClock(race.date, 0)}</b> · cutoff {race.cutoff_h}h · {u.dist(course.official_distance_mi, 0)}{u.distUnit} {u.elev(course.official_gain_ft)}{u.elevUnit}↑</>
-            : <>finish <b style={{ color: BEST }}>{fmtRaceClock(race.date, proj.finish_h.best)}</b> <b style={{ color: INK }}>{fmtRaceClock(race.date, proj.finish_h.avg)}</b> <b style={{ color: WORST }}>{fmtRaceClock(race.date, proj.finish_h.worst)}</b>{proj.goal_h != null && <> · goal {fmtElapsed(proj.goal_h)}</>}</>}
+            ? <>start <b style={{ color: INK }}>{race.clock(0)}</b> {race.cutoff_h != null ? ` · cutoff ${race.cutoff_h}h` : ""} · {u.dist(course.official_distance_mi, 0)}{u.distUnit} {u.elev(course.official_gain_ft)}{u.elevUnit}↑</>
+            : <>finish <b style={{ color: BEST }}>{race.clock(proj.finish_h.best)}</b> <b style={{ color: INK }}>{race.clock(proj.finish_h.avg)}</b> <b style={{ color: WORST }}>{race.clock(proj.finish_h.worst)}</b>{proj.goal_h != null && <> · goal {fmtElapsed(proj.goal_h)}</>}</>}
         </span>
       </div>
 
@@ -117,11 +121,11 @@ function CardFace({ side, stations, course, proj }: {
                   {stationLabel(s.name, s.crew_only)}
                 </td>
                 <td style={{ ...cell, fontWeight: 600 }}>{u.dist(s.total_mi)}</td>
-                <td style={{ ...cell, color: BEST, fontSize: "7.5px" }}>{fmtRaceClock(race.date, sp.eta_h.best)}</td>
-                <td style={{ ...cell, fontWeight: 700 }}>{fmtRaceClock(race.date, sp.eta_h.avg)}</td>
-                <td style={{ ...cell, color: WORST, fontSize: "7.5px" }}>{fmtRaceClock(race.date, sp.eta_h.worst)}</td>
+                <td style={{ ...cell, color: BEST, fontSize: "7.5px" }}>{race.clock(sp.eta_h.best)}</td>
+                <td style={{ ...cell, fontWeight: 700 }}>{race.clock(sp.eta_h.avg)}</td>
+                <td style={{ ...cell, color: WORST, fontSize: "7.5px" }}>{race.clock(sp.eta_h.worst)}</td>
                 <td style={{ ...cell, color: WORST, fontWeight: s.cutoff_h != null ? 700 : 400 }}>
-                  {s.cutoff_h != null ? fmtRaceClock(race.date, s.cutoff_h) : "—"}
+                  {s.cutoff_h != null ? race.clock(s.cutoff_h) : "—"}
                 </td>
                 <td style={cell}>{sp.seg_mi > 0 ? u.paceFmt(sp.seg_pace_s_per_mi, 1) : "—"}</td>
                 <td style={cell}>{sp.seg_mi > 0 ? u.elev(sp.seg_gain_ft) : "—"}</td>
@@ -137,17 +141,19 @@ function CardFace({ side, stations, course, proj }: {
       {side === 1 ? (
         <div style={{ display: "flex", justifyContent: "space-between", gap: 6, fontSize: "6px", color: MUTED, paddingTop: 1.5, whiteSpace: "nowrap" }}>
           <span>C crew · D drop · P pacer · W water-only · <b>* no aid</b> · {u.paceUnit} + ↑ = segment into that station</span>
-          <span>sunset <b style={{ color: INK }}>{course.sun.sunset}</b></span>
+          {/* the card is 3×5in at 6px type — "sun unknown" is the terse form of
+              the longer prompt CrewSheet/RacePlanner show, not a different message */}
+          <span>{sun ? <>sunset <b style={{ color: INK }}>{sun.sunset}</b></> : <b style={{ color: INK }}>sun unknown</b>}</span>
         </div>
       ) : (
         <div style={{ fontSize: "6px", color: MUTED, paddingTop: 1.5, whiteSpace: "nowrap" }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
             <span>C crew · D drop · P pacer · W water-only · <b>* no aid</b></span>
-            <span>sunrise <b style={{ color: INK }}>{course.sun.sunrise}</b></span>
+            <span>{sun ? <>sunrise <b style={{ color: INK }}>{sun.sunrise}</b></> : <b style={{ color: INK }}>sun unknown</b>}</span>
           </div>
           <div>
             drop only at a station — tell the captain
-            {emergency && <> · {emergency.label} <b style={{ color: INK }}>{emergency.phone}</b></>}
+            {contact && <> · {contact.label} <b style={{ color: INK }}>{contact.phone}</b></>}
           </div>
         </div>
       )}
@@ -155,9 +161,10 @@ function CardFace({ side, stations, course, proj }: {
   );
 }
 
-export function RunnerCard({ course, proj, onClose }: {
+export function RunnerCard({ course, proj, crewBase, onClose }: {
   course: Course;
   proj: Proj;
+  crewBase: CrewBase | null;
   onClose: () => void;
 }) {
   // print isolation: while the card is open, @media print shows only it
@@ -166,6 +173,9 @@ export function RunnerCard({ course, proj, onClose }: {
     return () => document.body.classList.remove("card-printing");
   }, []);
 
+  const { race } = useRacePlan();
+  const { dialogProps } = useDialog({ onClose, label: `${race.name} — runner card` });
+
   const split = Math.ceil(proj.stations.length / 2);
   const halves = [proj.stations.slice(0, split), proj.stations.slice(split)]
     .filter((h) => h.length > 0);
@@ -173,6 +183,7 @@ export function RunnerCard({ course, proj, onClose }: {
   // portal to <body>: outside #root, so print CSS can hide the whole app
   return createPortal(
     <div
+      {...dialogProps}
       className="runner-card"
       style={{
         position: "fixed", inset: 0, zIndex: 100, overflow: "auto",
@@ -211,7 +222,7 @@ export function RunnerCard({ course, proj, onClose }: {
               side {i + 1} — {stations[0].station.name} → {stations[stations.length - 1].station.name}
             </div>
             <div style={{ border: `1px solid ${RULE}`, boxShadow: "0 1px 4px rgba(0,0,0,0.12)", width: "fit-content" }}>
-              <CardFace side={(i + 1) as 1 | 2} stations={stations} course={course} proj={proj} />
+              <CardFace side={(i + 1) as 1 | 2} stations={stations} course={course} proj={proj} emergency={crewBase?.emergency} />
             </div>
           </div>
         ))}

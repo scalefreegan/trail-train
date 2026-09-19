@@ -1,8 +1,8 @@
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
-import { useBlockConfig } from "../data";
-import { fmtRaceClock } from "./pacing";
 import { fmtCarry, type FuelPlan, type FuelSegment, type NutritionConfig } from "./nutrition";
+import { useRacePlan } from "./useRacePlan";
+import { useDialog } from "./dialogChrome";
 
 /* ------------------------------------------------------------------ */
 /*  Fuel card — the nutrition companion to RunnerCard: a double-sided  */
@@ -32,7 +32,7 @@ function FuelFace({ side, pages, segments, plan, cfg }: {
   plan: FuelPlan;
   cfg: NutritionConfig;
 }) {
-  const { race } = useBlockConfig();
+  const { race } = useRacePlan();
 
   const cell: React.CSSProperties = {
     padding: "1.5px 3px", borderBottom: `0.5px solid ${RULE}`, fontSize: "8.5px",
@@ -96,7 +96,7 @@ function FuelFace({ side, pages, segments, plan, cfg }: {
                   )}
                 </td>
                 <td style={{ ...cell, fontSize: "7.5px", color: MUTED }}>
-                  {seg.fromIdx >= 0 ? fmtRaceClock(race.date, seg.departH) : fmtRaceClock(race.date, 0)}
+                  {seg.fromIdx >= 0 ? race.clock(seg.departH) : race.clock(0)}
                 </td>
                 <td style={{ ...cell, fontWeight: longest || seg.long_carry ? 700 : 400, color: longest ? WORST : INK }}>
                   {fmtCarry(seg.carryH)}
@@ -169,12 +169,16 @@ export function FuelCard({ plan, cfg, onClose }: {
     return () => document.body.classList.remove("card-printing");
   }, []);
 
+  const { race } = useRacePlan();
+  const { dialogProps } = useDialog({ onClose, label: `${race.name} — fuel card` });
+
   const split = Math.ceil(plan.segments.length / 2);
   const halves = [plan.segments.slice(0, split), plan.segments.slice(split)]
     .filter((h) => h.length > 0);
 
   return createPortal(
     <div
+      {...dialogProps}
       className="runner-card"
       style={{
         position: "fixed", inset: 0, zIndex: 100, overflow: "auto",

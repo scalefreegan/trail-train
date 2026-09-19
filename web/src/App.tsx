@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   useRefresh, REFRESH_STEPS,
+  useActiveRace,
   useUnits,
   useStrava,
   useOura, type OuraDay,
@@ -9,18 +10,29 @@ import {
   useBlockConfig,
   computeCoachFacts, type CoachFacts, type Flag,
   type Activity, type AgentReadout, type PlanBlock, type GCalEvent,
-  daysUntil, relativeAgo, fmtDuration, isStale,
+  daysUntil, isPast, relativeAgo, fmtDuration, isStale,
   useMeasuredWidth,
 } from "./data";
-import { RefreshProvider, UnitsProvider, StravaProvider, OuraProvider, StateProvider } from "./providers";
+import { RaceTheme, RefreshProvider, UnitsProvider, StravaProvider, OuraProvider, StateProvider } from "./providers";
 import CoachSettings from "./CoachSettings";
+import RaceIntake from "./race/RaceIntake";
+import RaceRefresh from "./race/RaceRefresh";
 import { SectionTag, Contours } from "./atoms";
 import { RacePlanner } from "./race/RacePlanner";
 import { ClimbComparison } from "./race/ClimbComparison";
 import { NutritionPlan } from "./race/NutritionPlan";
 import { ModelCheck } from "./race/ModelCheck";
 import { RacePlanProvider } from "./race/RacePlanProvider";
-import { useCourse } from "./race/useRaceData";
+import { RaceErrorBoundary } from "./race/RaceErrorBoundary";
+import { RaceDayRoute } from "./race/RaceDay";
+import { RACE_DAY_HASH, useHashRoute } from "./race/hashRoute";
+import { useCourse, useRaceResult } from "./race/useRaceData";
+import { ArchiveRace } from "./race/ArchiveRace";
+import { friendlyFetchError, runStage } from "./race/dialogChrome";
+import type { RaceView } from "./data";
+import { raceClockHM } from "./race/pacing";
+import { ThemePreview } from "./themes/ThemePreview";
+import type { VisualInput } from "./themes/visual";
 
 /* ================================================================== */
 /*  BASECAMP — pre-dawn ops surface for ultra training                 */
@@ -111,8 +123,668 @@ function BarStat({ label, value, accent }: { label: string; value: string; accen
 }
 
 type AppView = "training" | "race" | "nutrition";
-const APP_VIEWS: AppView[] = ["training", "race", "nutrition"];
-const isAppView = (v: string | null): v is AppView => v != null && (APP_VIEWS as string[]).includes(v);
+/** Every view the app can render — the set a persisted preference is
+    validated against, NOT the set on offer right now. */
+const ALL_APP_VIEWS: AppView[] = ["training", "race", "nutrition"];
+const isAppView = (v: string | null): v is AppView => v != null && (ALL_APP_VIEWS as string[]).includes(v);
+
+/** The views this athlete actually has. Race and fuel are a race's views:
+    with none active there is no course to project and no start clock to fuel
+    against, so they are hidden rather than shown empty (PRD §6). */
+function appViews(race: RaceView | null): AppView[] {
+  return race ? ALL_APP_VIEWS : ["training"];
+}
+
+const VIEW_LABEL: Record<AppView, string> = { training: "training", race: "race", nutrition: "fuel" };
+
+/* ------------------------------------------------------------------ */
+/*  Race switcher — config/active-race.json as a menu (PRD §7)         */
+/* ------------------------------------------------------------------ */
+
+/** One row of GET /api/races. `status` and `date` are null for a folder
+    whose race.json would not parse — it is still listed, because hiding it
+    would look like the race had been deleted. */
+type RaceListEntry = {
+  slug: string;
+  name: string;
+  short: string;
+  status: "draft" | "active" | "archived" | null;
+  date: string | null;
+  /** the folder's `visual` block — the menu draws each race's accent */
+  visual: VisualInput | null;
+  error: string | null;
+};
+
+/** The groups, in menu order. A folder with an unreadable race.json falls
+    through all three and lands in its own group at the bottom. */
+const RACE_GROUPS: { status: RaceListEntry["status"]; label: string }[] = [
+  { status: "active", label: "active" },
+  { status: "draft", label: "drafts" },
+  { status: "archived", label: "archived" },
+];
+
+/** The last successfully-loaded race list, so a switcher open with the dev
+    server unreachable can still show what races exist (greyed out) instead
+    of collapsing to "New race…" as the only row that looks actionable
+    (round 3, new finding 3). Written on every successful /api/races read;
+    read only when that fetch fails AND the menu never loaded a list this
+    session (`races` is still null) — a list already in state is kept as-is
+    regardless of this cache. */
+const RACES_CACHE_KEY = "bc.cache.races";
+
+/** The only mode a folder may be pointed at in — mirrors validateActivation
+    in scripts/race-config.mjs, which is what actually enforces it. Picking it
+    here rather than offering both keeps the menu one click deep: an active
+    race is trained for, anything else is browsed. */
+const modeFor = (status: RaceListEntry["status"]) => (status === "active" ? "train" : "view");
+
+/** The races in menu order — grouped by status, unreadable folders last.
+    The roving-focus index counts these after the "No race" row, so this
+    order and the render order below are the same list. */
+function orderedRaces(list: RaceListEntry[]): RaceListEntry[] {
+  const known = RACE_GROUPS.flatMap((g) => list.filter((r) => r.status === g.status));
+  return [...known, ...list.filter((r) => !RACE_GROUPS.some((g) => g.status === r.status))];
+}
+
+/** A draft gets a second row under it — "Review…" reopens the intake dialog's
+    review screen on a folder that is already on disk, which is the only way
+    back into it once the dialog has been closed (PRD §8). A folder whose
+    race.json will not parse has nothing to review. */
+const isReviewable = (r: RaceListEntry) => r.status === "draft" && !r.error;
+
+/** Any race whose race.json parses can be re-read from its own sources —
+    draft, active or archived. An archived one is the interesting case: the
+    organizer posts the finished results and the following year's chart to the
+    same page, and a folder that is read-only in the app is not read-only to
+    the intake. A folder we cannot parse has no links to refresh from. */
+const isRefreshable = (r: RaceListEntry) => !r.error;
+
+/** An archived race with no `build/course.json` (D8/R4) — a raced 100-miler
+    whose course was never rebuilt, or one built before this feature existed
+    — is otherwise a dead end: no "Review…" (that's drafts only), and
+    "Refresh from sources…" is the paid re-intake, not the free deterministic
+    build stage 2 already is. Offered for every archived folder rather than
+    only ones already known to be missing course data — rebuilding is free
+    and idempotent, and the row is the same one the race view's own "no
+    course data" empty state now offers (RaceDay.tsx, NutritionPlan.tsx). */
+const isRerunnable = (r: RaceListEntry) => r.status === "archived" && !r.error;
+
+/** How many menu rows a race contributes: itself, plus its "Review…",
+    "Refresh from sources…" and "Run course again…" rows. cursorForSlug and
+    itemCount both count with this, and the render order below has to match
+    it. */
+const rowsFor = (r: RaceListEntry) =>
+  1 + (isReviewable(r) ? 1 : 0) + (isRefreshable(r) ? 1 : 0) + (isRerunnable(r) ? 1 : 0);
+
+/** Where the cursor lands on a given slug, counting the "No race" row above
+    the list and the extra "Review…" row each draft contributes. Has to agree
+    with the render order below — the roving-focus index is an index into the
+    buttons as they are emitted. */
+function cursorForSlug(list: RaceListEntry[], slug: string | null): number {
+  let i = 1;
+  for (const r of orderedRaces(list)) {
+    if (r.slug === slug) return i;
+    i += rowsFor(r);
+  }
+  return 0;
+}
+
+/** The kinds of row in the menu, in order: "No race (generic)", one per race
+    folder (a draft followed by its "Review…" row, then every race's "Refresh
+    from sources…" row, then an archived race's "Run course again…" row),
+    then — when there is a race to retire — "Archive with result…", then
+    "New race…". */
+type SwitcherItemKind = "generic" | "race" | "review" | "refresh" | "rerun" | "archive" | "new";
+
+/**
+ * The short code in the command bar, as a menu over every race folder.
+ *
+ * Selecting one POSTs the pointer and then bumps the refresh pulse — NOT a
+ * full resync: a different race means different race/course/nutrition files
+ * and nothing about Strava, Oura or the calendar, and a menu click must not
+ * spawn five subprocesses and a coach turn.
+ */
+function RaceSwitcher() {
+  const { race, viewing } = useBlockConfig();
+  const { slug: trainingSlug } = useActiveRace();
+  const { reload } = useRefresh();
+
+  const [open, setOpen] = useState(false);
+  const [races, setRaces] = useState<RaceListEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // `kind` distinguishes a real pointer switch from the free course-rebuild
+  // stage sharing the same "which row is busy" slot (round 2, generic finding
+  // 6: both used to report as "switching…", which is simply wrong for a
+  // rebuild — see busyLabel below).
+  const [busy, setBusy] = useState<{ slug: string; kind: "switch" | "build" } | null>(null);
+  // Set once a "Run course again…" build finishes, so the row can say so
+  // instead of the menu just closing with no confirmation at all (round 2,
+  // generic finding 6). Self-clears; overwritten by the next thing that
+  // matters (a fresh `error`, or busy again) via the effect below.
+  const [builtNotice, setBuiltNotice] = useState<string | null>(null);
+  // Synchronous re-entrancy guard: state-driven `disabled` on the rows can
+  // only take effect once React re-renders, which does not happen mid-script
+  // for a burst of clicks fired in the same tick (round 2, generic finding 2
+  // — `row.disabled === false` on all three of three synchronous clicks).
+  // This ref is checked and set before anything async happens, so the 2nd
+  // and 3rd clicks in such a burst never even issue a request.
+  const busyRef = useRef(false);
+  /* The intake dialog, and which folder it opens on: null is the form ("New
+     race…"), a slug is the review screen of a draft already on disk. */
+  const [intake, setIntake] = useState<{ slug: string | null } | null>(null);
+  const [archiveOpen, setArchiveOpen] = useState<RaceListEntry | null>(null);
+  /* The re-intake dialog. It opens on a folder that already exists, and may
+     find a diff from an earlier run still waiting in it. */
+  const [refreshing, setRefreshing] = useState<RaceListEntry | null>(null);
+  const [cursor, setCursor] = useState(0);
+
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const currentSlug = viewing?.slug ?? trainingSlug;
+
+  // Flat, in render order — the roving-focus index is an index into THIS.
+  const groups = useMemo(() => {
+    const list = races ?? [];
+    const known = RACE_GROUPS.map((g) => ({ label: g.label, entries: list.filter((r) => r.status === g.status) }));
+    // a folder whose race.json would not parse belongs to no status
+    const broken = list.filter((r) => !RACE_GROUPS.some((g) => g.status === r.status));
+    return [...known, { label: "unreadable", entries: broken }].filter((g) => g.entries.length > 0);
+  }, [races]);
+
+  // An archived race with no activity linked still has a result to capture —
+  // MM100 was archived by the migration long before its Strava run was.
+  const { result: viewedResult } = useRaceResult(viewing?.status === "archived" ? viewing.slug : null);
+
+  /**
+   * The race an "Archive with result…" would act on: the one being trained
+   * for (archiving it is how a race ends), or — with nothing in training —
+   * the archived race on screen that never got its activity linked.
+   * Null while the menu has not loaded the list yet: the row needs the
+   * folder's name and date, not just its slug.
+   */
+  const archiveTarget = useMemo(() => {
+    const list = races ?? [];
+    if (trainingSlug) return list.find((r) => r.slug === trainingSlug) ?? null;
+    if (viewing?.status === "archived" && viewedResult?.strava_activity_id == null) {
+      return list.find((r) => r.slug === viewing.slug) ?? null;
+    }
+    return null;
+  }, [races, trainingSlug, viewing, viewedResult]);
+
+  /** menu length: "No race", every race with its own extra rows, maybe
+      "Archive with result…", then "New race…" */
+  const itemCount = (races ?? []).reduce((n, r) => n + rowsFor(r), 0)
+    + 2 + (archiveTarget ? 1 : 0);
+
+  const close = useCallback((restoreFocus = true) => {
+    setOpen(false);
+    setError(null);
+    if (restoreFocus) triggerRef.current?.focus();
+  }, []);
+
+  // Load on every open: a draft the intake just wrote has to show up without
+  // a page reload. The cursor lands ON the current race as the list arrives,
+  // so the first Enter is a no-op rather than a surprise.
+  useEffect(() => {
+    if (!open) return;
+    let stale = false;
+    fetch(`/api/races?t=${Date.now()}`)
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`races failed to load (HTTP ${r.status})`);
+        return (await r.json()) as { races: RaceListEntry[] };
+      })
+      .then((d) => {
+        if (stale) return;
+        setRaces(d.races);
+        setCursor(cursorForSlug(d.races, currentSlug));
+        // A successful read of the current server state is as good a signal
+        // as any that whatever this menu was complaining about no longer
+        // applies — clears a stale "another activation is already in
+        // progress" left over from a resolved duplicate-click race, on the
+        // next reopen even without an intervening switch of its own (round
+        // 2, generic finding 5).
+        setError(null);
+        // So a LATER open with the server down (below) has something to show
+        // instead of nothing — the whole point of this cache.
+        try { localStorage.setItem(RACES_CACHE_KEY, JSON.stringify(d.races)); } catch { /* ignore */ }
+      })
+      .catch((e: unknown) => {
+        if (stale) return;
+        // Keep whatever was loaded last, rather than blanking the list to
+        // "New race…" as the one thing left that looks clickable — a paid
+        // agent run is not a reasonable stand-in for "the server is down"
+        // (round 2, resilience finding 6; round 3, new finding 3: a menu
+        // that had never successfully loaded this session — first open,
+        // server already unreachable — still fell back to empty, since
+        // there was nothing in `prev` to keep). Fall back to the last
+        // successfully-loaded list from localStorage in that case; the rows
+        // render disabled/greyed (see `error` below) so nothing here claims
+        // to be current.
+        setRaces((prev) => {
+          if (prev) return prev;
+          try {
+            const cached = localStorage.getItem(RACES_CACHE_KEY);
+            if (cached) return JSON.parse(cached) as RaceListEntry[];
+          } catch { /* ignore — falls through to empty */ }
+          return [];
+        });
+        setError(friendlyFetchError(e));
+      });
+    return () => { stale = true; };
+  }, [open, currentSlug]);
+
+  useEffect(() => {
+    if (open) itemRefs.current[cursor]?.focus();
+  }, [open, cursor, itemCount]);
+
+  // Click anywhere else closes — without stealing focus back, since the click
+  // has already moved it somewhere the athlete chose.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!menuRef.current?.contains(t) && !triggerRef.current?.contains(t)) close(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open, close]);
+
+  const choose = useCallback(async (slug: string | null, mode: "train" | "view") => {
+    // See busyRef's comment above: a duplicate click fired before React
+    // re-renders the (now-stale) `disabled` prop must still be a no-op.
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy({ slug: slug ?? "__generic__", kind: "switch" });
+    setError(null);
+    setBuiltNotice(null);
+    try {
+      const res = await fetch("/api/race/activate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, mode }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+      }
+      close();
+      // the pulse every panel is keyed on — race, course, fuel all refetch
+      reload();
+    } catch (e) {
+      setError(friendlyFetchError(e));
+    } finally {
+      busyRef.current = false;
+      setBusy(null);
+    }
+  }, [close, reload]);
+
+  /** Stage 2 only — the free, deterministic build (validate → match GPX →
+      compute sun → write build/course.json), the same endpoint the review
+      dialog's "COURSE" run-again button calls (RaceIntake.tsx), reusing its
+      SSE reader (dialogChrome.ts). Never the paid agent stage. Keeps the
+      menu open with a busy row, the same pattern `choose` uses below, so a
+      slow build doesn't look like the click did nothing. */
+  const runCourseAgain = useCallback(async (slug: string) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy({ slug, kind: "build" });
+    setError(null);
+    setBuiltNotice(null);
+    try {
+      await runStage("/api/race-intake/build", { slug }, () => {}, new AbortController().signal);
+      // Confirmation, not a silent close (round 2, generic finding 6): the
+      // menu stays open long enough to say the build actually finished. The
+      // reload pulse still fires now — the race/course views refetch right
+      // away even though the row keeps its notice a little longer.
+      reload();
+      setBuiltNotice(slug);
+      window.setTimeout(() => setBuiltNotice((cur) => (cur === slug ? null : cur)), 4000);
+    } catch (e) {
+      setError(friendlyFetchError(e));
+    } finally {
+      busyRef.current = false;
+      setBusy(null);
+    }
+  }, [reload]);
+
+  // The menu is `position: absolute` off a trigger that can sit anywhere in
+  // the (wrapping) command bar — round 2, resilience finding 3: anchored
+  // `left: 0` under a chip already ~130px in, the panel's fixed width ran
+  // past the right edge of the document at 320/390px, on the one control a
+  // phone needs most. Measured against the trigger's OWN viewport position
+  // (not just capped by a max-width, which alone can't fix an anchor that is
+  // already too far right for any reasonable width to fit) and clamped to a
+  // GUTTER on both edges, so it can shift left of the trigger when it has to
+  // but never past the document's own edges.
+  const MENU_GUTTER = 16;
+  const [menuLayout, setMenuLayout] = useState<{ left: number; width: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const update = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const width = Math.min(360, window.innerWidth - MENU_GUTTER * 2);
+      const rect = trigger.getBoundingClientRect();
+      const desiredLeft = Math.max(MENU_GUTTER, Math.min(rect.left, window.innerWidth - width - MENU_GUTTER));
+      setMenuLayout({ left: desiredLeft - rect.left, width });
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [open]);
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") { e.preventDefault(); close(); return; }
+    if (e.key === "Tab") { close(false); return; }
+    const last = itemCount - 1;
+    if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => (c >= last ? 0 : c + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setCursor((c) => (c <= 0 ? last : c - 1)); }
+    else if (e.key === "Home") { e.preventDefault(); setCursor(0); }
+    else if (e.key === "End") { e.preventDefault(); setCursor(last); }
+  };
+
+  // The label: the race on screen, or "no race" in generic mode.
+  const label = race ? race.short : "no race";
+  const sub = viewing ? viewing.status : race ? "ops" : "generic";
+
+  // Roving focus: exactly one item is tabbable, the arrow keys move it, and
+  // the render order below has to stay in step with `items` above.
+  let index = 0;
+  const itemProps = (kind: SwitcherItemKind, slug?: string) => {
+    const i = index++;
+    const common = {
+      ref: (el: HTMLButtonElement | null) => { itemRefs.current[i] = el; },
+      tabIndex: cursor === i ? 0 : -1,
+      onMouseEnter: () => setCursor(i),
+    };
+    return kind === "new" || kind === "archive" || kind === "review" || kind === "refresh" || kind === "rerun"
+      ? { ...common, role: "menuitem" as const }
+      : { ...common, role: "menuitemradio" as const, "aria-checked": kind === "generic" ? currentSlug == null : slug === currentSlug };
+  };
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        ref={triggerRef}
+        className="chip"
+        onClick={() => (open ? close() : (setCursor(0), setOpen(true)))}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown" && !open) { e.preventDefault(); setCursor(0); setOpen(true); }
+        }}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="switch race — active, drafts, archived, or no race at all"
+        style={{
+          fontSize: 8.5, padding: "3px 7px", display: "inline-flex", alignItems: "center", gap: 5,
+          borderColor: viewing ? "var(--lamp)" : "var(--edge-bright)",
+          color: viewing ? "var(--lamp)" : "var(--mist-mute)",
+        }}
+      >
+        <span style={{ letterSpacing: "0.18em" }}>{label}</span>
+        <span style={{ opacity: 0.6 }}>{sub}</span>
+        <span aria-hidden style={{ fontSize: 7, transform: open ? "rotate(180deg)" : undefined, transition: "transform 160ms" }}>▼</span>
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            ref={menuRef}
+            role="menu"
+            aria-label="race"
+            onKeyDown={onKeyDown}
+            initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.14 }}
+            className="panel"
+            style={{
+              position: "absolute", top: "calc(100% + 8px)", zIndex: 60,
+              left: menuLayout?.left ?? 0,
+              width: menuLayout?.width,
+              minWidth: menuLayout ? undefined : 280,
+              maxWidth: menuLayout ? undefined : `calc(100vw - ${MENU_GUTTER * 2}px)`,
+              maxHeight: "70vh", overflowY: "auto",
+              background: "var(--night-deep)", padding: "8px 0",
+            }}
+          >
+            <SwitcherRow
+              {...itemProps("generic")}
+              label="No race (generic)"
+              hint="train toward your goals"
+              swatch={<ThemePreview visual={null} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round label="basecamp palette" />}
+              disabled={busy != null}
+              busy={busy?.slug === "__generic__"}
+              onSelect={() => choose(null, "train")}
+            />
+            {races === null && (
+              <div className="eyebrow" style={{ padding: "8px 14px", fontSize: 8.5, color: "var(--mist-mute)" }}>loading races…</div>
+            )}
+            {groups.map((g) => (
+              <div key={g.label}>
+                <div className="eyebrow" style={{ padding: "10px 14px 4px", fontSize: 8, color: "var(--mist-dim)" }}>{g.label}</div>
+                {g.entries.map((entry) => (
+                  <Fragment key={entry.slug}>
+                    <SwitcherRow
+                      {...itemProps("race", entry.slug)}
+                      label={entry.name}
+                      hint={entry.error
+                        ? "race.json unreadable"
+                        : `${entry.short}${entry.date ? ` · ${entry.date}` : ""}${entry.status === "active" ? "" : " · read-only"}`}
+                      swatch={entry.error ? null : (
+                        <ThemePreview visual={entry.visual} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round />
+                      )}
+                      disabled={!!entry.error || busy != null || !!error}
+                      // The rebuild stage shares this row's busy SLOT with a
+                      // real pointer switch (both key off the same slug), but
+                      // it must not borrow this row's busy DISPLAY too — a
+                      // build is the "↳ Run course again…" row's own action,
+                      // and confining the "building…" hint to that row (not
+                      // also replacing this row's own subtitle) is round 2,
+                      // generic finding 6's second half, still open as round
+                      // 3's new finding 5.
+                      busy={busy?.slug === entry.slug && busy.kind === "switch"}
+                      busyLabel="switching…"
+                      current={entry.slug === currentSlug}
+                      onSelect={() => choose(entry.slug, modeFor(entry.status))}
+                    />
+                    {isReviewable(entry) && (
+                      <SwitcherRow
+                        {...itemProps("review", entry.slug)}
+                        label="↳ Review…"
+                        hint="aid chart, profile, unresolved · activate"
+                        disabled={busy != null || !!error}
+                        onSelect={() => { setOpen(false); setIntake({ slug: entry.slug }); }}
+                      />
+                    )}
+                    {isRefreshable(entry) && (
+                      <SwitcherRow
+                        {...itemProps("refresh", entry.slug)}
+                        label="↳ Refresh from sources…"
+                        hint="re-read the site and manual · diff before anything is written"
+                        disabled={busy != null || !!error}
+                        onSelect={() => { setOpen(false); setRefreshing(entry); }}
+                      />
+                    )}
+                    {isRerunnable(entry) && (
+                      <SwitcherRow
+                        {...itemProps("rerun", entry.slug)}
+                        label="↳ Run course again…"
+                        hint={builtNotice === entry.slug
+                          ? "course rebuilt ✓"
+                          : "rebuild course.json from the stored gpx — free, no agent turn"}
+                        busyLabel="building…"
+                        disabled={busy != null || !!error}
+                        busy={busy?.slug === entry.slug && busy.kind === "build"}
+                        onSelect={() => runCourseAgain(entry.slug)}
+                      />
+                    )}
+                  </Fragment>
+                ))}
+              </div>
+            ))}
+            <div style={{ borderTop: "1px solid var(--edge)", margin: "8px 0 0", paddingTop: 6 }}>
+              {archiveTarget && (
+                <SwitcherRow
+                  {...itemProps("archive")}
+                  label={trainingSlug ? "Archive with result…" : "Link result…"}
+                  hint={trainingSlug
+                    ? `${archiveTarget.short} · link the Strava run`
+                    : `${archiveTarget.short} · no activity linked`}
+                  disabled={busy != null || !!error}
+                  onSelect={() => { setOpen(false); setArchiveOpen(archiveTarget); }}
+                />
+              )}
+              <SwitcherRow
+                {...itemProps("new")}
+                label="New race…"
+                hint="build a race folder from its website"
+                disabled={busy != null}
+                onSelect={() => { setOpen(false); setIntake({ slug: null }); }}
+              />
+            </div>
+            {error && (
+              <div style={{ padding: "8px 14px 2px", fontSize: 11, color: "var(--ember)", lineHeight: 1.4 }}>{error}</div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {intake && (
+        <RaceIntake
+          slug={intake.slug}
+          onClose={() => { setIntake(null); triggerRef.current?.focus(); }}
+        />
+      )}
+      {refreshing && (
+        <RaceRefresh
+          slug={refreshing.slug}
+          name={refreshing.name}
+          onClose={() => { setRefreshing(null); triggerRef.current?.focus(); }}
+        />
+      )}
+      {archiveOpen && (
+        <ArchiveRace
+          slug={archiveOpen.slug}
+          name={archiveOpen.name}
+          raceDate={archiveOpen.date}
+          linkedActivityId={archiveOpen.slug === viewing?.slug ? viewedResult?.strava_activity_id ?? null : null}
+          onClose={() => { setArchiveOpen(null); triggerRef.current?.focus(); }}
+          onArchived={() => {
+            setArchiveOpen(null);
+            triggerRef.current?.focus();
+            // same pulse as a switch: the pointer, the race and the result all
+            // just changed under every panel
+            reload();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, busyLabel = "switching…", swatch, ...rest }: {
+  label: string; hint: string; onSelect: () => void;
+  current?: boolean; disabled?: boolean; busy?: boolean;
+  /** what the hint line says while `busy` — a real pointer switch and the
+      free course-rebuild stage are both "this row is busy" but are not the
+      same claim (round 2, generic finding 6: a rebuild used to report
+      "switching…", which the athlete never asked for). */
+  busyLabel?: string;
+  /** the race's palette, as one dot — see SWATCH_SLOT */
+  swatch?: React.ReactNode;
+} & React.ButtonHTMLAttributes<HTMLButtonElement> & { ref?: React.Ref<HTMLButtonElement> }) => (
+  <button
+    {...rest}
+    onClick={disabled ? undefined : onSelect}
+    disabled={disabled || busy}
+    style={{
+      width: "100%", textAlign: "left", padding: "7px 14px",
+      display: "flex", flexWrap: "wrap", alignItems: "baseline", rowGap: 2, columnGap: 8,
+      cursor: disabled ? "not-allowed" : "pointer",
+      opacity: disabled ? 0.5 : 1,
+      background: "transparent",
+    }}
+    onFocus={(e) => {
+      e.currentTarget.style.background = "var(--edge)";
+      e.currentTarget.style.outline = "1px solid var(--lamp)";
+      e.currentTarget.style.outlineOffset = "-1px";
+    }}
+    onBlur={(e) => {
+      e.currentTarget.style.background = "transparent";
+      e.currentTarget.style.outline = "none";
+    }}
+  >
+    {/* One mark, not two: the dot IS the race's palette, and the race on
+        screen is the one wearing a ring. (aria-checked on the row is what
+        actually says "current" — this is its visible half.) Fixed width
+        whether or not there is a dot, so the names stay in a column. */}
+    <span
+      aria-hidden
+      style={{ ...SWATCH_SLOT, boxShadow: current ? "inset 0 0 0 1px var(--lamp)" : undefined }}
+    >
+      {swatch}
+    </span>
+    <span style={{ fontSize: 12.5, color: "var(--mist)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+      {label}
+    </span>
+    {/* the label always gets the row to itself (swatch + label only); the
+        hint is forced onto its own line below via flexBasis: 100% (a
+        flex-wrap item with a 100% basis can't fit the remaining space on
+        the label's line, so it wraps) rather than competing with the
+        label for width and squeezing it to 0 (bug: a long hint like
+        "re-read the site and manual…" left "↳ Refresh from sources…"
+        rendering at 0px). It wraps or truncates within the menu instead
+        of overflowing it. */}
+    <span
+      className="eyebrow"
+      style={{
+        fontSize: 8, color: "var(--mist-mute)", flexBasis: "100%",
+        marginLeft: 19, whiteSpace: "normal", overflowWrap: "break-word",
+      }}
+    >
+      {busy ? busyLabel : hint}
+    </span>
+  </button>
+);
+
+/** The switcher menu's left gutter: one accent dot per race, inside a slot
+    that gains a lamp ring when that race is the one on screen. Same width on
+    every row, dot or no dot, so the names stay in a column. */
+const SWATCH_DOT = 6;
+const SWATCH_SLOT: React.CSSProperties = {
+  // 11px so the gutter costs the names almost nothing against the bullet it
+  // replaces, and a 6px dot still has room for the ring
+  width: 11, height: 11, borderRadius: "50%", flex: "0 0 auto", alignSelf: "center",
+  display: "flex", alignItems: "center", justifyContent: "center",
+};
+/** The menu shows the light source and nothing else — the full seven-swatch
+    strip belongs on a screen where a palette is being CHOSEN, not listed. */
+const ACCENT_SWATCH = ["--lamp"] as const;
+
+/** "you are looking at a race you are not training for" — on every view, so
+    it can't be missed by switching tabs (PRD §7). */
+function ViewingBanner() {
+  const { race, viewing } = useBlockConfig();
+  if (!viewing || !race) return null;
+  const when = race.date.toLocaleDateString("en-US", {
+    timeZone: race.timeZone, year: "numeric", month: "short", day: "numeric",
+  }).toLowerCase();
+  return (
+    <div style={{
+      display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap",
+      borderLeft: "2px solid var(--lamp)", background: "rgba(198, 143, 62, 0.07)",
+      padding: "9px 14px", margin: "18px 0 0",
+    }}>
+      <span className="eyebrow" style={{ color: "var(--lamp)", whiteSpace: "nowrap" }}>
+        {viewing.status === "archived" ? `archived · ${when} · read-only` : "draft · not activated"}
+      </span>
+      <span style={{ fontSize: 11.5, color: "var(--mist-mute)", lineHeight: 1.45 }}>
+        viewing {race.name}. Training, the trajectory and the coach still work from your current
+        goals — nothing here is being trained for.
+      </span>
+    </div>
+  );
+}
 
 function CommandBar({ view, setView, railOpen, toggleRail }: {
   view: AppView; setView: (v: AppView) => void;
@@ -120,9 +792,17 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
 }) {
   const { syncing, lastSync, refresh, currentStep, lastLog, status } = useRefresh();
   const { fetchedAt, currentWeek } = useStrava();
-  const { race, totalWeeks } = useBlockConfig();
+  const { race, viewing, totalWeeks } = useBlockConfig();
+  const views = appViews(race);
   const stamp = fetchedAt ? fetchedAt.getTime() : lastSync;
-  const dleft = daysUntil(race.date);
+  // null in generic mode — every countdown below is gated on it, not faked —
+  // and null while browsing, where "race in -371 days" is both useless and a
+  // claim that this race is the one being trained for.
+  const dleft = race && !viewing ? daysUntil(race.date) : null;
+  // daysUntil clamps at 0, so a race trained for past its own date used to
+  // read "RACE IN 0 days" forever instead of saying what actually happened
+  // (PR #23 review round 2, generic finding 4 / resilience finding 9).
+  const racePast = race && !viewing ? isPast(race.date) : false;
   const failedSteps = REFRESH_STEPS.filter((s) => status[s] === "error");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [, force] = useState(0);
@@ -137,7 +817,7 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
       background: "rgba(12, 17, 14, 0.92)", backdropFilter: "blur(10px)",
       borderBottom: "1px solid var(--edge)",
     }}>
-      <div style={{ maxWidth: 1680, margin: "0 auto", padding: "0 28px", height: 52, display: "flex", alignItems: "center", gap: 18 }}>
+      <div className="command-bar" style={{ maxWidth: 1680, margin: "0 auto" }}>
         {/* wordmark */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 4 }}>
           <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden>
@@ -147,25 +827,35 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
           <span className="display" style={{ fontSize: 17, letterSpacing: "-0.02em" }}>
             Basecamp
           </span>
-          <span className="eyebrow" style={{ fontSize: 8, marginTop: 3 }}>{race.short} ops</span>
+          <RaceSwitcher />
         </div>
 
         {/* view switcher */}
         <div style={{ display: "flex", gap: 6 }}>
-          <button className={"chip" + (view === "training" ? " active" : "")} onClick={() => setView("training")}>training</button>
-          <button className={"chip" + (view === "race" ? " active" : "")} onClick={() => setView("race")}>race</button>
-          <button className={"chip" + (view === "nutrition" ? " active" : "")} onClick={() => setView("nutrition")}>fuel</button>
+          {views.map((v) => (
+            <button key={v} className={"chip" + (view === v ? " active" : "")} onClick={() => setView(v)}>
+              {VIEW_LABEL[v]}
+            </button>
+          ))}
         </div>
 
         {/* mid stats */}
         <div className="commandbar-mid" style={{ flex: 1 }}>
           <BarStat label="block week" value={`${String(currentWeek).padStart(2, "0")} / ${totalWeeks}`} />
-          <BarStat label="race in" value={`${dleft} days`} accent />
-          <BarStat label="race day" value={race.date.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase()} />
+          {race && dleft != null && (
+            racePast ? (
+              <BarStat label="race day" value="has passed" />
+            ) : (
+              <>
+                <BarStat label="race in" value={`${dleft} days`} accent />
+                <BarStat label="race day" value={race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, month: "short", day: "numeric" }).toLowerCase()} />
+              </>
+            )
+          )}
         </div>
 
         {/* sync cluster */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
+        <div className="command-bar-sync" style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
           <span
             className="eyebrow"
             title={lastLog}
@@ -262,9 +952,8 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
 const RIBBON_H = 96;
 const RIBBON_PAD = { top: 10, bottom: 6 };
 
-function ElevationRibbon() {
+function ElevationRibbon({ race }: { race: RaceView }) {
   const u = useUnits();
-  const { race } = useBlockConfig();
   const { course } = useCourse();
   const { ref: measureRef, width } = useMeasuredWidth();
 
@@ -365,13 +1054,34 @@ function ElevationRibbon() {
   );
 }
 
-function RaceRibbon() {
+/* Where the hero shows through: nothing behind the title, most of it behind
+   the elevation profile, fading again under the tick row. Expressed as a mask
+   rather than a gradient overlay so it carries no colour of its own — the
+   panel underneath keeps whatever palette the race is wearing. */
+const HERO_MASK =
+  "linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.3) 38%, rgba(0,0,0,0.92) 64%, rgba(0,0,0,0.22) 100%)";
+
+/* Rendered only with a race on screen — AppBody does the gating, so the
+   ribbon takes the race as a prop rather than re-deriving "is there one".
+   `readOnly` is a race being BROWSED (view mode): it has no countdown, and
+   "race in 000 days" on a race run last September would be a lie told in
+   64px type. */
+function RaceRibbon({ race, readOnly }: { race: RaceView; readOnly?: boolean }) {
   const u = useUnits();
-  const { race } = useBlockConfig();
+  // The hero lives in the race FOLDER, so it comes off the payload rather
+  // than RaceView (which is the shape the forty clock/pace call sites need).
+  const { activeRace, viewing: viewingSlug } = useActiveRace();
+  const hero = activeRace?.race?.visual?.hero;
+  const heroSrc = hero && viewingSlug
+    ? `/api/races/${encodeURIComponent(viewingSlug)}/asset/${encodeURIComponent(hero)}`
+    : null;
   const dleft = daysUntil(race.date);
+  const past = isPast(race.date);
   const nameWords = race.name.split(" ");
-  const raceDay = race.date.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase();
-  const raceStart = `${String(race.date.getHours()).padStart(2, "0")}:${String(race.date.getMinutes()).padStart(2, "0")}`;
+  // both read in the RACE's zone: "sep 12 · 06:00" is a fact about Arizona,
+  // and on a laptop an hour ahead the browser's own zone would print 07:00
+  const raceDay = race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, month: "short", day: "numeric" }).toLowerCase();
+  const raceStart = raceClockHM(race.date, race.timeZone);
 
   return (
     <motion.section
@@ -379,10 +1089,31 @@ function RaceRibbon() {
       initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}
       style={{ overflow: "hidden" }}
     >
+      {/* The race's own photograph, behind everything, and only where the
+          profile is: masked out at the top so the name and countdown sit on
+          the flat field they were designed for, and faded at the foot so the
+          distance ticks stay readable. A background-image rather than an
+          <img> so a hero the endpoint refuses is simply absent — no broken
+          glyph, and the ribbon looks exactly as it does for a race with no
+          hero at all. */}
+      {heroSrc && (
+        <div
+          aria-hidden
+          style={{
+            position: "absolute", inset: 0, pointerEvents: "none",
+            backgroundImage: `url("${heroSrc}")`,
+            backgroundSize: "cover",
+            backgroundPosition: "center 45%",
+            opacity: 0.42,
+            maskImage: HERO_MASK,
+            WebkitMaskImage: HERO_MASK,
+          }}
+        />
+      )}
       <Contours seed={4} opacity={0.12} />
       <div style={{ position: "relative", padding: "22px 26px 0", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 24, flexWrap: "wrap" }}>
         <div>
-          <div className="eyebrow" style={{ marginBottom: 8 }}>objective — {race.location.toLowerCase()}</div>
+          <div className="eyebrow" style={{ marginBottom: 8 }}>objective{race.location ? ` — ${race.location.toLowerCase()}` : ""}</div>
           <h1 className="display" style={{ fontSize: "clamp(30px, 4.4vw, 54px)", margin: 0 }}>
             {nameWords.map((w, i) => (
               <span key={i} style={i === 1 ? { color: "var(--lamp)" } : undefined}>
@@ -391,19 +1122,33 @@ function RaceRibbon() {
             ))}
           </h1>
           <div className="eyebrow" style={{ marginTop: 10, color: "var(--mist-dim)" }}>
-            {u.dist(race.distance_mi)} {u.distUnit} · {u.elev(race.elevation_ft)} {u.elevUnit}↑ · max {u.elev(race.max_elev_ft)} {u.elevUnit} · cutoff {race.cutoff_h}h · {raceDay} · {raceStart}
+            {u.dist(race.distance_mi)} {u.distUnit} · {u.elev(race.elevation_ft)} {u.elevUnit}↑
+            {race.max_elev_ft > 0 && <> · max {u.elev(race.max_elev_ft)} {u.elevUnit}</>}
+            {race.cutoff_h != null && <> · cutoff {race.cutoff_h}h</>} · {raceDay} · {raceStart}
           </div>
         </div>
         <div style={{ textAlign: "right" }}>
-          <div className="eyebrow">race in</div>
-          <div className="numerals" style={{ fontSize: 64, fontWeight: 600, lineHeight: 0.95, letterSpacing: "-0.05em", color: "var(--lamp)" }}>
-            {String(dleft).padStart(3, "0")}
-          </div>
-          <div className="eyebrow">days · {Math.floor(dleft / 7)} long runs left</div>
+          {readOnly ? (
+            <>
+              <div className="eyebrow">{past ? "raced" : "scheduled"}</div>
+              <div className="numerals" style={{ fontSize: 34, fontWeight: 600, lineHeight: 1.05, letterSpacing: "-0.03em", color: "var(--lamp)" }}>
+                {race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, year: "numeric", month: "short", day: "numeric" }).toLowerCase()}
+              </div>
+              <div className="eyebrow">read-only · not the training target</div>
+            </>
+          ) : (
+            <>
+              <div className="eyebrow">race in</div>
+              <div className="numerals" style={{ fontSize: 64, fontWeight: 600, lineHeight: 0.95, letterSpacing: "-0.05em", color: "var(--lamp)" }}>
+                {String(dleft).padStart(3, "0")}
+              </div>
+              <div className="eyebrow">days · {Math.floor(dleft / 7)} long runs left</div>
+            </>
+          )}
         </div>
       </div>
       <div style={{ position: "relative", height: 96, marginTop: 6 }}>
-        <ElevationRibbon />
+        <ElevationRibbon race={race} />
       </div>
       <div style={{ position: "relative", display: "flex", justifyContent: "space-between", padding: "6px 26px 12px", borderTop: "1px solid var(--edge)" }}>
         {[0, 0.25, 0.5, 0.75, 1].map((f) => (
@@ -547,12 +1292,18 @@ function VitalsBand() {
     {
       key: "block",
       label: "block vs plan",
-      value: `${facts.block_dist_delta_pct >= 0 ? "+" : ""}${facts.block_dist_delta_pct.toFixed(0)}`,
-      unit: "%",
-      delta: { value: facts.block_elev_delta_pct, suffix: "% vert", good: facts.block_elev_delta_pct >= 0 },
+      // No block.json yet (a freshly activated race) is "no data", not a
+      // percentage computed against a faked denominator — was showing
+      // "+53655%" / "9816273% vert" the instant a race with no block went live.
+      value: facts.block_dist_delta_pct != null
+        ? `${facts.block_dist_delta_pct >= 0 ? "+" : ""}${facts.block_dist_delta_pct.toFixed(0)}` : "—",
+      unit: facts.block_dist_delta_pct != null ? "%" : undefined,
+      delta: facts.block_elev_delta_pct != null
+        ? { value: facts.block_elev_delta_pct, suffix: "% vert", good: facts.block_elev_delta_pct >= 0 }
+        : undefined,
       series: daily.blockDelta,
-      color: facts.block_dist_delta_pct >= 0 ? "var(--pine)" : "var(--ember)",
-      note: "cumulative dist",
+      color: facts.block_dist_delta_pct != null && facts.block_dist_delta_pct >= 0 ? "var(--pine)" : "var(--mist-mute)",
+      note: facts.block_dist_delta_pct != null ? "cumulative dist" : "no block yet",
     },
     {
       key: "readiness",
@@ -677,6 +1428,14 @@ function SleepStagesInline() {
 /*  Trajectory — cumulative actual vs plan, the centerpiece chart      */
 /* ------------------------------------------------------------------ */
 
+/** "jul 7" — the Monday a block week starts on. Generic mode has no week
+    numbers worth reading out ("wk 12" of a window that always ends today),
+    so its weeks are labelled by date instead. */
+function weekStartLabel(wk: number, blockStart: string): string {
+  const start = new Date(new Date(blockStart + "T00:00:00").getTime() + (wk - 1) * 7 * 86400_000);
+  return start.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase();
+}
+
 function weekDates(wk: number, blockStart: string): string {
   const start = new Date(new Date(blockStart + "T00:00:00").getTime() + (wk - 1) * 7 * 86400_000);
   const end = new Date(start.getTime() + 6 * 86400_000);
@@ -687,7 +1446,9 @@ function weekDates(wk: number, blockStart: string): string {
 function Trajectory() {
   const u = useUnits();
   const { weekly, currentWeek } = useStrava();
-  const { targets, totalWeeks, blockStart } = useBlockConfig();
+  // `mode` below is the CHART mode (cumulative/weekly); the block's own mode
+  // is renamed so the two never get confused in this component.
+  const { targets, totalWeeks, blockStart, mode: blockMode, loading } = useBlockConfig();
   const [view, setView] = useState<"dist" | "elev">("dist");
   const [mode, setMode] = useState<"cum" | "wk">("cum");
   const [hoverWk, setHoverWk] = useState<number | null>(null); // 0-indexed
@@ -758,6 +1519,16 @@ function Trajectory() {
     .join(" ").replace(/^L/, "M");
 
   const todayX = wx(currentWeek - 1);
+  // The "WK NN · TODAY" caption sits to the right of the today line by
+  // default, but "today" is very often the last (or near-last) week of the
+  // block — that put the label's box entirely past the svg's own right edge
+  // at every width tested, with `overflow: hidden` on the panel silently
+  // dropping all of it (round 3, new finding 4). ~100px is the label's
+  // rendered width at this fontSize/letterSpacing (measured: ~98px, "WK 12
+  // · TODAY"); once it wouldn't fit to the right of the line, anchor it to
+  // the LEFT of the line instead, still inside the plot.
+  const TODAY_LABEL_W = 100;
+  const todayLabelFitsRight = todayX + 6 + TODAY_LABEL_W <= width - 2;
 
   /* ---- hover: snap to nearest week ---- */
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -787,7 +1558,11 @@ function Trajectory() {
     { label: "expected", value: `${fmt(expectedToday)} ${unit}` },
     { label: "actual", value: `${fmt(actualToday)} ${unit}`, color: lineColor },
     { label: "delta", value: `${ahead ? "+" : ""}${deltaPct.toFixed(1)}%`, color: lineColor },
-    { label: "projected wk20", value: `${fmt(projectedFinal)} ${unit}`, color: lineColor },
+    // Race mode projects forward to the finish line; the rolling window has
+    // no future in it — its last column IS this week, so the same number is
+    // a projection of where this week lands, not of a block finish.
+    { label: blockMode === "race" ? `projected wk${totalWeeks}` : "projected this week",
+      value: `${fmt(projectedFinal)} ${unit}`, color: lineColor },
     { label: "block goal", value: `${fmt(totalTarget)} ${unit}` },
   ] : [
     { label: `this week`, value: `${fmt(thisWk.actual ?? 0)} / ${fmt(thisWk.target)} ${unit}`, color: "var(--lamp)" },
@@ -797,207 +1572,304 @@ function Trajectory() {
     { label: "block goal", value: `${fmt(totalTarget)} ${unit}` },
   ];
 
+  // Week axis labels: start with the 1/5/10/…/totalWeeks stride, then thin
+  // by ACTUAL pixel extent rather than a fixed width breakpoint. Each label
+  // is anchored differently (week 1 "start", the final week "end", every
+  // multiple of 5 in between "middle"), so two labels a fixed CENTER
+  // distance apart can still collide — e.g. week 10 of 12 (anchor middle)
+  // sits right up against week 12 (anchor end, which extends back to the
+  // LEFT from its x), only 2 of the axis's 11 slots apart, while the same
+  // center gap between two middle-anchored labels has room to spare. Walk
+  // left to right computing each candidate's true [left, right] extent from
+  // its anchor and an approximate "WK NN" render width, dropping any
+  // candidate (other than the pinned first/last) that would overlap the
+  // last KEPT label, then re-check the final pair since the last week is
+  // pinned to the true end of the block regardless of the every-5 stride
+  // and can still collide with whatever the walk kept just before it.
+  const WEEK_LABEL_W = 34; // px — "WK NN" at fontSize 9 / letterSpacing 1
+  const WEEK_LABEL_GAP = 3; // px — minimum clear space between labels
+  const weekLabelExtent = (w: number): [number, number] => {
+    const x = wx(w - 1);
+    if (w === 1) return [x, x + WEEK_LABEL_W];
+    if (w === totalWeeks) return [x - WEEK_LABEL_W, x];
+    return [x - WEEK_LABEL_W / 2, x + WEEK_LABEL_W / 2];
+  };
+  const weekLabelWeeks = (() => {
+    const candidates = [1, ...Array.from({ length: Math.floor((totalWeeks - 1) / 5) }, (_, i) => (i + 1) * 5), totalWeeks]
+      .filter((w, i, arr) => arr.indexOf(w) === i);
+    const kept: number[] = [];
+    for (const w of candidates) {
+      const prev = kept[kept.length - 1];
+      if (prev != null && w !== totalWeeks) {
+        const [, prevRight] = weekLabelExtent(prev);
+        const [left] = weekLabelExtent(w);
+        if (left < prevRight + WEEK_LABEL_GAP) continue;
+      }
+      kept.push(w);
+    }
+    if (kept.length >= 2) {
+      const lastIdx = kept.length - 1;
+      const last = kept[lastIdx];
+      const beforeLast = kept[lastIdx - 1];
+      const [, beforeLastRight] = weekLabelExtent(beforeLast);
+      const [lastLeft] = weekLabelExtent(last);
+      if (beforeLast !== 1 && lastLeft < beforeLastRight + WEEK_LABEL_GAP) kept.splice(lastIdx - 1, 1);
+    }
+    return kept;
+  })();
+
+  // No targets is a real state, not a zero one: a race folder with no
+  // block.json yet, or the moment before /api/race/active answers. Dividing
+  // cumulative actual by an expected of 0 would print "Infinity%".
+  const hasTargets = targets.length > 0;
+
   return (
     <section>
       <SectionTag
-        right={
-          <div style={{ display: "flex", gap: 16 }}>
-            <div style={{ display: "flex", gap: 6 }}>
+        right={hasTargets ? (
+          // SectionTag's own row is a non-wrapping flex (atoms.tsx) — at
+          // 320/390 the title plus four un-shrinkable chip buttons in one
+          // line ran the document 417px wide. flexWrap here lets the two
+          // button groups drop to a second line (or scroll if they still
+          // don't fit) instead of forcing the whole row wider than the
+          // viewport; minWidth: 0 lets THIS box shrink inside SectionTag's
+          // row rather than claiming its full unwrapped intrinsic width.
+          <div
+            style={{
+              display: "flex", flexWrap: "wrap", gap: 8, rowGap: 4,
+              justifyContent: "flex-end", minWidth: 0, maxWidth: "100%",
+            }}
+          >
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               <button className={"chip" + (mode === "cum" ? " active" : "")} onClick={() => setMode("cum")}>cumulative</button>
               <button className={"chip" + (mode === "wk" ? " active" : "")} onClick={() => setMode("wk")}>weekly</button>
             </div>
-            <div style={{ display: "flex", gap: 6 }}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               <button className={"chip" + (view === "dist" ? " active" : "")} onClick={() => setView("dist")}>dist</button>
               <button className={"chip" + (view === "elev" ? " active" : "")} onClick={() => setView("elev")}>vert</button>
             </div>
           </div>
-        }
+        ) : undefined}
       >
-        trajectory — wk {currentWeek} of {totalWeeks}
+        {hasTargets
+          ? (blockMode === "race"
+            ? `trajectory — wk ${currentWeek} of ${totalWeeks}`
+            : `trajectory — last ${totalWeeks} weeks`)
+          : "trajectory"}
       </SectionTag>
 
-      <div className="panel notch" style={{ overflow: "hidden" }}>
-        <Contours seed={13} opacity={0.08} />
-        {/* inline stat row — the old right-rail, flattened into the panel */}
-        <div style={{ position: "relative", display: "flex", flexWrap: "wrap", borderBottom: "1px solid var(--edge)" }}>
-          {stats.map((s, i) => (
-            <div key={s.label} style={{ padding: "12px 20px", borderLeft: i > 0 ? "1px solid var(--edge)" : "none", flex: "1 1 auto" }}>
-              <div className="eyebrow" style={{ fontSize: 8.5 }}>{s.label}</div>
-              <div className="numerals" style={{ fontSize: 19, fontWeight: 600, letterSpacing: "-0.03em", marginTop: 3, color: s.color ?? "var(--mist)" }}>
-                {s.value}
-              </div>
+      {/* ref lives on a wrapper mounted on EVERY render, whether or not
+          targets have loaded — useMeasuredWidth's mount effect (data.ts)
+          only ever runs once and bails for good if ref.current is null at
+          that moment. Attaching the ref only inside the chart's own branch
+          (as this used to) meant: on the very common timing where `targets`
+          arrives a tick after first paint (useBlockConfig fetches over the
+          network), the ref was null during that one-and-only effect run,
+          no ResizeObserver was ever created, and the chart stayed
+          permanently blank — width stuck at 0, no axis, no curve, nothing —
+          even once real data showed up a moment later. */}
+      <div ref={measureRef}>
+        {!hasTargets ? (
+          <div className="panel" style={{ padding: "26px 24px" }}>
+            <div style={{ fontSize: 13, color: "var(--mist-dim)", lineHeight: 1.6 }}>
+              {loading
+                ? "Reading the training block…"
+                : "No weekly targets yet — the coach writes them into the plan on the next resync."}
             </div>
-          ))}
-        </div>
-
-        <div ref={measureRef} style={{ position: "relative", padding: "6px 4px 2px" }}>
-          {width > 0 && (
-            <svg
-              width={width} height={H} style={{ display: "block", cursor: "crosshair" }}
-              onMouseMove={onMove} onMouseLeave={() => setHoverWk(null)}
-            >
-              {/* horizontal grid */}
-              {[0.25, 0.5, 0.75, 1].map((f) => (
-                <line key={f} x1={PAD.left} x2={width - PAD.right} y1={yAt(maxY * f / 1.05)} y2={yAt(maxY * f / 1.05)}
-                  stroke="var(--edge)" strokeWidth="1" strokeDasharray="2 5" />
+          </div>
+        ) : (
+          <div className="panel notch" style={{ overflow: "hidden" }}>
+            <Contours seed={13} opacity={0.08} />
+            {/* inline stat row — the old right-rail, flattened into the panel */}
+            <div style={{ position: "relative", display: "flex", flexWrap: "wrap", borderBottom: "1px solid var(--edge)" }}>
+              {stats.map((s, i) => (
+                <div key={s.label} style={{ padding: "12px 20px", borderLeft: i > 0 ? "1px solid var(--edge)" : "none", flex: "1 1 auto" }}>
+                  <div className="eyebrow" style={{ fontSize: 8.5, whiteSpace: "normal", overflowWrap: "break-word" }}>{s.label}</div>
+                  <div className="numerals" style={{ fontSize: 19, fontWeight: 600, letterSpacing: "-0.03em", marginTop: 3, color: s.color ?? "var(--mist)" }}>
+                    {s.value}
+                  </div>
+                </div>
               ))}
-              {/* week ticks */}
-              {Array.from({ length: totalWeeks }).map((_, i) => (
-                <line key={i} x1={xAt(i)} x2={xAt(i)} y1={H - PAD.bottom} y2={H - PAD.bottom + ((i + 1) % 5 === 0 || i === 0 ? 6 : 3)}
-                  stroke="var(--edge-bright)" strokeWidth="1" />
-              ))}
-              {/* week axis labels */}
-              {[1, ...Array.from({ length: Math.floor((totalWeeks - 1) / 5) }, (_, i) => (i + 1) * 5), totalWeeks]
-                .filter((w, i, arr) => arr.indexOf(w) === i)
-                .map((w) => (
-                <text key={w} x={wx(w - 1)} y={H - 6} fontSize="9" fontFamily="Spline Sans Mono" letterSpacing="1"
-                  fill="var(--mist-mute)" textAnchor={w === 1 ? "start" : w === totalWeeks ? "end" : "middle"}>
-                  WK {String(w).padStart(2, "0")}
-                </text>
-              ))}
-
-              {mode === "cum" ? (
-                <>
-                  {/* plan target */}
-                  <motion.path
-                    d={targetPath} fill="none" stroke="var(--mist-mute)" strokeWidth="1.2" strokeDasharray="3 5" opacity="0.85"
-                    initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4, ease: "easeOut" }}
-                  />
-                  {/* actual */}
-                  <motion.path
-                    d={actualPath} fill="none" stroke={lineColor} strokeWidth="2.2" strokeLinecap="round"
-                    initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
-                    transition={{ duration: 1.4, ease: [0.2, 0.7, 0.2, 1], delay: 0.2 }}
-                  />
-                  {/* projection */}
-                  <motion.line
-                    x1={todayX} y1={yAt(actualToday)} x2={xAt(totalWeeks - 1)} y2={yAt(projectedFinal)}
-                    stroke={lineColor} strokeWidth="1" strokeDasharray="2 4"
-                    initial={{ opacity: 0 }} animate={{ opacity: 0.7 }} transition={{ duration: 0.6, delay: 1.3 }}
-                  />
-                  <circle cx={todayX} cy={yAt(expectedToday)} r="2.5" fill="var(--mist-mute)" />
-                  <circle cx={todayX} cy={yAt(actualToday)} r="3.5" fill={lineColor} stroke="var(--night)" strokeWidth="1" />
-                  {/* race marker */}
-                  <circle cx={xAt(totalWeeks - 1)} cy={yAt(totalTarget)} r="3" fill="var(--lamp)" />
-                  <text x={xAt(totalWeeks - 1) - 7} y={yAt(totalTarget) - 7} fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)" textAnchor="end">
-                    RACE
-                  </text>
-                </>
-              ) : (
-                /* weekly bullet bars: outline = target, fill = actual (colored by attainment) */
-                wkVals.map((w, i) => {
-                  const bw = Math.max(4, slotW * 0.56);
-                  const x = slotX(i) - bw / 2;
-                  const isCurrent = i === currentWeek - 1;
-                  const att = w.actual != null && w.target > 0 ? w.actual / w.target : null;
-                  const fill = isCurrent ? "var(--lamp)" : attainColor(att);
-                  return (
-                    <g key={i}>
-                      <rect
-                        x={x} y={yAt(w.target)} width={bw} height={Math.max(0, PAD.top + plotH - yAt(w.target))}
-                        fill="none" stroke="var(--edge-bright)" strokeWidth="1" opacity={i < currentWeek ? 0.9 : 0.5}
-                      />
-                      {w.actual != null && w.actual > 0 && (
-                        <motion.rect
-                          x={x + 1.5} width={bw - 3}
-                          y={yAt(w.actual)} height={Math.max(0, PAD.top + plotH - yAt(w.actual))}
-                          fill={fill} opacity={isCurrent ? 0.75 : 0.88}
-                          initial={{ opacity: 0 }} animate={{ opacity: isCurrent ? 0.75 : 0.88 }}
-                          transition={{ duration: 0.4, delay: i * 0.02 }}
-                        />
-                      )}
-                      {/* target cap so the goal reads even when the bar is full */}
-                      <line x1={x - 1.5} x2={x + bw + 1.5} y1={yAt(w.target)} y2={yAt(w.target)}
-                        stroke={i < currentWeek ? "var(--mist-dim)" : "var(--edge-bright)"} strokeWidth="1.5" />
-                    </g>
-                  );
-                })
-              )}
-
-              {/* today */}
-              <motion.line
-                x1={todayX} x2={todayX} y1={PAD.top - 12} y2={H - PAD.bottom} stroke="var(--lamp)" strokeWidth="1"
-                initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 0.6, delay: 1 }}
-                opacity={mode === "cum" ? 1 : 0.45}
-              />
-              <text x={todayX + 6} y={PAD.top - 8} fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)">
-                WK {currentWeek} · TODAY
-              </text>
-
-              {/* hover crosshair */}
-              {hover && (
-                <g>
-                  <line x1={hover.x} x2={hover.x} y1={PAD.top - 4} y2={H - PAD.bottom} stroke="var(--mist-dim)" strokeWidth="1" opacity="0.5" />
-                  {mode === "cum" && (
+            </div>
+    
+            <div style={{ position: "relative", padding: "6px 4px 2px" }}>
+              {width > 0 && (
+                <svg
+                  width={width} height={H} style={{ display: "block", cursor: "crosshair" }}
+                  onMouseMove={onMove} onMouseLeave={() => setHoverWk(null)}
+                >
+                  {/* horizontal grid */}
+                  {[0.25, 0.5, 0.75, 1].map((f) => (
+                    <line key={f} x1={PAD.left} x2={width - PAD.right} y1={yAt(maxY * f / 1.05)} y2={yAt(maxY * f / 1.05)}
+                      stroke="var(--edge)" strokeWidth="1" strokeDasharray="2 5" />
+                  ))}
+                  {/* week ticks */}
+                  {Array.from({ length: totalWeeks }).map((_, i) => (
+                    <line key={i} x1={xAt(i)} x2={xAt(i)} y1={H - PAD.bottom} y2={H - PAD.bottom + ((i + 1) % 5 === 0 || i === 0 ? 6 : 3)}
+                      stroke="var(--edge-bright)" strokeWidth="1" />
+                  ))}
+                  {/* week axis labels — thinned by available width, see weekLabelWeeks above */}
+                  {weekLabelWeeks.map((w) => (
+                    <text key={w} x={wx(w - 1)} y={H - 6} fontSize="9" fontFamily="Spline Sans Mono" letterSpacing="1"
+                      fill="var(--mist-mute)" textAnchor={w === 1 ? "start" : w === totalWeeks ? "end" : "middle"}>
+                      WK {String(w).padStart(2, "0")}
+                    </text>
+                  ))}
+    
+                  {mode === "cum" ? (
                     <>
-                      <circle cx={hover.x} cy={yAt(hover.plan)} r="3" fill="var(--night)" stroke="var(--mist-dim)" strokeWidth="1.2" />
-                      {hover.actual != null && (
-                        <circle cx={hover.x} cy={yAt(hover.actual)} r="3.5" fill={lineColor} stroke="var(--night)" strokeWidth="1" />
+                      {/* plan target */}
+                      <motion.path
+                        d={targetPath} fill="none" stroke="var(--mist-mute)" strokeWidth="1.2" strokeDasharray="3 5" opacity="0.85"
+                        initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4, ease: "easeOut" }}
+                      />
+                      {/* actual */}
+                      <motion.path
+                        d={actualPath} fill="none" stroke={lineColor} strokeWidth="2.2" strokeLinecap="round"
+                        initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
+                        transition={{ duration: 1.4, ease: [0.2, 0.7, 0.2, 1], delay: 0.2 }}
+                      />
+                      {/* projection */}
+                      <motion.line
+                        x1={todayX} y1={yAt(actualToday)} x2={xAt(totalWeeks - 1)} y2={yAt(projectedFinal)}
+                        stroke={lineColor} strokeWidth="1" strokeDasharray="2 4"
+                        initial={{ opacity: 0 }} animate={{ opacity: 0.7 }} transition={{ duration: 0.6, delay: 1.3 }}
+                      />
+                      <circle cx={todayX} cy={yAt(expectedToday)} r="2.5" fill="var(--mist-mute)" />
+                      <circle cx={todayX} cy={yAt(actualToday)} r="3.5" fill={lineColor} stroke="var(--night)" strokeWidth="1" />
+                      {/* race marker — the rolling window ends on today, not on
+                          a start line, so there is nothing to mark there */}
+                      {blockMode === "race" && (
+                        <>
+                          <circle cx={xAt(totalWeeks - 1)} cy={yAt(totalTarget)} r="3" fill="var(--lamp)" />
+                          <text x={xAt(totalWeeks - 1) - 7} y={yAt(totalTarget) - 7} fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)" textAnchor="end">
+                            RACE
+                          </text>
+                        </>
                       )}
                     </>
+                  ) : (
+                    /* weekly bullet bars: outline = target, fill = actual (colored by attainment) */
+                    wkVals.map((w, i) => {
+                      const bw = Math.max(4, slotW * 0.56);
+                      const x = slotX(i) - bw / 2;
+                      const isCurrent = i === currentWeek - 1;
+                      const att = w.actual != null && w.target > 0 ? w.actual / w.target : null;
+                      const fill = isCurrent ? "var(--lamp)" : attainColor(att);
+                      return (
+                        <g key={i}>
+                          <rect
+                            x={x} y={yAt(w.target)} width={bw} height={Math.max(0, PAD.top + plotH - yAt(w.target))}
+                            fill="none" stroke="var(--edge-bright)" strokeWidth="1" opacity={i < currentWeek ? 0.9 : 0.5}
+                          />
+                          {w.actual != null && w.actual > 0 && (
+                            <motion.rect
+                              x={x + 1.5} width={bw - 3}
+                              y={yAt(w.actual)} height={Math.max(0, PAD.top + plotH - yAt(w.actual))}
+                              fill={fill} opacity={isCurrent ? 0.75 : 0.88}
+                              initial={{ opacity: 0 }} animate={{ opacity: isCurrent ? 0.75 : 0.88 }}
+                              transition={{ duration: 0.4, delay: i * 0.02 }}
+                            />
+                          )}
+                          {/* target cap so the goal reads even when the bar is full */}
+                          <line x1={x - 1.5} x2={x + bw + 1.5} y1={yAt(w.target)} y2={yAt(w.target)}
+                            stroke={i < currentWeek ? "var(--mist-dim)" : "var(--edge-bright)"} strokeWidth="1.5" />
+                        </g>
+                      );
+                    })
                   )}
-                </g>
+    
+                  {/* today */}
+                  <motion.line
+                    x1={todayX} x2={todayX} y1={PAD.top - 12} y2={H - PAD.bottom} stroke="var(--lamp)" strokeWidth="1"
+                    initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 0.6, delay: 1 }}
+                    opacity={mode === "cum" ? 1 : 0.45}
+                  />
+                  <text
+                    x={todayLabelFitsRight ? todayX + 6 : todayX - 6}
+                    y={PAD.top - 8}
+                    textAnchor={todayLabelFitsRight ? "start" : "end"}
+                    fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)"
+                  >
+                    WK {currentWeek} · TODAY
+                  </text>
+    
+                  {/* hover crosshair */}
+                  {hover && (
+                    <g>
+                      <line x1={hover.x} x2={hover.x} y1={PAD.top - 4} y2={H - PAD.bottom} stroke="var(--mist-dim)" strokeWidth="1" opacity="0.5" />
+                      {mode === "cum" && (
+                        <>
+                          <circle cx={hover.x} cy={yAt(hover.plan)} r="3" fill="var(--night)" stroke="var(--mist-dim)" strokeWidth="1.2" />
+                          {hover.actual != null && (
+                            <circle cx={hover.x} cy={yAt(hover.actual)} r="3.5" fill={lineColor} stroke="var(--night)" strokeWidth="1" />
+                          )}
+                        </>
+                      )}
+                    </g>
+                  )}
+                </svg>
               )}
-            </svg>
-          )}
-
-          {/* hover tooltip — HTML so it never distorts */}
-          {hover && width > 0 && (
-            <div style={{
-              position: "absolute",
-              top: 30,
-              left: tipOnLeft ? undefined : Math.min(hover.x + 14, width - 230),
-              right: tipOnLeft ? width - hover.x + 14 : undefined,
-              width: 216,
-              background: "var(--night-deep)",
-              border: "1px solid var(--edge-bright)",
-              borderTop: "2px solid var(--lamp)",
-              padding: "10px 12px",
-              pointerEvents: "none",
-              zIndex: 5,
-              boxShadow: "0 8px 28px rgba(0,0,0,0.55)",
-            }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--lamp)" }}>
-                  week {String(hover.i + 1).padStart(2, "0")}{hover.i + 1 === currentWeek ? " · now" : hover.i + 1 === totalWeeks ? " · race" : ""}
-                </span>
-                <span className="numerals" style={{ fontSize: 9, color: "var(--mist-mute)" }}>{weekDates(hover.i + 1, blockStart)}</span>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px", marginTop: 8 }}>
-                <span className="eyebrow" style={{ fontSize: 8 }}>plan · cum</span>
-                <span className="numerals" style={{ fontSize: 12, textAlign: "right" }}>{fmt(hover.plan)} {unit}</span>
-                <span className="eyebrow" style={{ fontSize: 8 }}>actual · cum</span>
-                <span className="numerals" style={{ fontSize: 12, textAlign: "right", color: hover.actual != null ? lineColor : "var(--mist-mute)" }}>
-                  {hover.actual != null ? `${fmt(hover.actual)} ${unit}` : "—"}
-                </span>
-                {hoverDelta != null && (
-                  <>
-                    <span className="eyebrow" style={{ fontSize: 8 }}>delta</span>
-                    <span className="numerals" style={{ fontSize: 12, textAlign: "right", color: hoverDelta >= 0 ? "var(--pine)" : "var(--ember)" }}>
-                      {hoverDelta >= 0 ? "+" : ""}{hoverDelta.toFixed(1)}%
+    
+              {/* hover tooltip — HTML so it never distorts */}
+              {hover && width > 0 && (
+                <div style={{
+                  position: "absolute",
+                  top: 30,
+                  left: tipOnLeft ? undefined : Math.min(hover.x + 14, width - 230),
+                  right: tipOnLeft ? width - hover.x + 14 : undefined,
+                  width: 216,
+                  background: "var(--night-deep)",
+                  border: "1px solid var(--edge-bright)",
+                  borderTop: "2px solid var(--lamp)",
+                  padding: "10px 12px",
+                  pointerEvents: "none",
+                  zIndex: 5,
+                  boxShadow: "0 8px 28px rgba(0,0,0,0.55)",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--lamp)" }}>
+                      week {String(hover.i + 1).padStart(2, "0")}{hover.i + 1 === currentWeek ? " · now" : blockMode === "race" && hover.i + 1 === totalWeeks ? " · race" : ""}
                     </span>
-                  </>
-                )}
-              </div>
-              <div style={{ borderTop: "1px solid var(--edge)", marginTop: 8, paddingTop: 7, display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px" }}>
-                <span className="eyebrow" style={{ fontSize: 8 }}>wk target</span>
-                <span className="numerals" style={{ fontSize: 11, textAlign: "right", color: "var(--mist-dim)" }}>{fmt(hover.wkTarget)} {unit}</span>
-                <span className="eyebrow" style={{ fontSize: 8 }}>wk actual</span>
-                <span className="numerals" style={{ fontSize: 11, textAlign: "right", color: "var(--mist-dim)" }}>
-                  {hover.wkActual != null ? `${fmt(hover.wkActual)} ${unit}` : "—"}
-                </span>
-                {hoverAttain != null && (
-                  <>
-                    <span className="eyebrow" style={{ fontSize: 8 }}>wk attained</span>
-                    <span className="numerals" style={{ fontSize: 11, textAlign: "right", color: hover.i + 1 === currentWeek ? "var(--lamp)" : attainColor(hoverAttain / 100) }}>
-                      {hoverAttain.toFixed(0)}%{hover.i + 1 === currentWeek ? " so far" : ""}
+                    <span className="numerals" style={{ fontSize: 9, color: "var(--mist-mute)" }}>{weekDates(hover.i + 1, blockStart)}</span>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px", marginTop: 8 }}>
+                    <span className="eyebrow" style={{ fontSize: 8 }}>plan · cum</span>
+                    <span className="numerals" style={{ fontSize: 12, textAlign: "right" }}>{fmt(hover.plan)} {unit}</span>
+                    <span className="eyebrow" style={{ fontSize: 8 }}>actual · cum</span>
+                    <span className="numerals" style={{ fontSize: 12, textAlign: "right", color: hover.actual != null ? lineColor : "var(--mist-mute)" }}>
+                      {hover.actual != null ? `${fmt(hover.actual)} ${unit}` : "—"}
                     </span>
-                  </>
-                )}
-              </div>
+                    {hoverDelta != null && (
+                      <>
+                        <span className="eyebrow" style={{ fontSize: 8 }}>delta</span>
+                        <span className="numerals" style={{ fontSize: 12, textAlign: "right", color: hoverDelta >= 0 ? "var(--pine)" : "var(--ember)" }}>
+                          {hoverDelta >= 0 ? "+" : ""}{hoverDelta.toFixed(1)}%
+                        </span>
+                      </>
+                    )}
+                  </div>
+                  <div style={{ borderTop: "1px solid var(--edge)", marginTop: 8, paddingTop: 7, display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px" }}>
+                    <span className="eyebrow" style={{ fontSize: 8 }}>wk target</span>
+                    <span className="numerals" style={{ fontSize: 11, textAlign: "right", color: "var(--mist-dim)" }}>{fmt(hover.wkTarget)} {unit}</span>
+                    <span className="eyebrow" style={{ fontSize: 8 }}>wk actual</span>
+                    <span className="numerals" style={{ fontSize: 11, textAlign: "right", color: "var(--mist-dim)" }}>
+                      {hover.wkActual != null ? `${fmt(hover.wkActual)} ${unit}` : "—"}
+                    </span>
+                    {hoverAttain != null && (
+                      <>
+                        <span className="eyebrow" style={{ fontSize: 8 }}>wk attained</span>
+                        <span className="numerals" style={{ fontSize: 11, textAlign: "right", color: hover.i + 1 === currentWeek ? "var(--lamp)" : attainColor(hoverAttain / 100) }}>
+                          {hoverAttain.toFixed(0)}%{hover.i + 1 === currentWeek ? " so far" : ""}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -1062,20 +1934,27 @@ function RoadAhead() {
     return out;
   }, [cal]);
 
-  /* ---- plan blocks (persisted agent plan, else block targets) ---- */
-  const { targets, totalWeeks } = useBlockConfig();
+  /* ---- plan blocks (the agent's plan, else block targets) ---- */
+  // The plan lives in races/<slug>/plan.json, or config/generic-plan.json in
+  // generic mode, and reaches us through /api/race/active — state.json has
+  // not carried plan_blocks since v3 (tt-yib.2).
+  const { targets, totalWeeks, blockStart, planBlocks, mode, loading } = useBlockConfig();
   const fallback: PlanBlock[] = useMemo(() => {
     const start = Math.min(totalWeeks, currentWeek);
     const end = Math.min(totalWeeks, currentWeek + 5);
     return targets.slice(start - 1, end).map((b) => ({
       wk: b.wk,
-      label: b.wk === totalWeeks ? "Race week" : "Planned",
+      // With a race, the last week of the block IS race week. The rolling
+      // window has no such landmark, so its weeks are named by their dates.
+      label: mode === "race"
+        ? (b.wk === totalWeeks ? "Race week" : "Planned")
+        : `Week of ${weekStartLabel(b.wk, blockStart)}`,
       dist_mi: b.target_dist,
       elev_ft: b.target_elev,
       focus: "Awaiting agent recommendations — resync to generate.",
     }));
-  }, [currentWeek, targets, totalWeeks]);
-  const stateBlocks = state?.plan_blocks ?? null;
+  }, [currentWeek, targets, totalWeeks, mode, blockStart]);
+  const stateBlocks = planBlocks.length > 0 ? planBlocks : null;
   const blocks: PlanBlock[] = useMemo(() => {
     if (!stateBlocks || stateBlocks.length === 0) return fallback;
     // The strip includes the CURRENT week. Older coach runs planned from
@@ -1097,6 +1976,9 @@ function RoadAhead() {
     return stateBlocks;
   }, [stateBlocks, fallback, currentWeek, targets]);
   const live = !!(stateBlocks && stateBlocks.length > 0);
+  // "Awaiting agent recommendations" is only honest once we KNOW the plan is
+  // empty — before the payload lands we know nothing yet.
+  const awaiting = !live && !loading;
   const maxDist = Math.max(...blocks.map((b) => b.dist_mi), 1);
 
   return (
@@ -1105,7 +1987,7 @@ function RoadAhead() {
         right={
           <span className="eyebrow">
             {calOk
-              ? `${cal!.summary.upcoming_events} events · ${cal!.summary.races_upcoming} races · ${cal!.summary.travel_days_upcoming.length} travel days · ${cal!.summary.childcare_days_upcoming?.length ?? 0} kid days`
+              ? `${cal!.summary.upcoming_events} events · ${cal!.summary.races_upcoming} race${cal!.summary.races_upcoming === 1 ? "" : "s"} · ${cal!.summary.travel_days_upcoming.length} travel days · ${cal!.summary.childcare_days_upcoming?.length ?? 0} kid days`
               : calMissing ? "calendar not connected" : "loading calendar…"}
             {calOk && isStale(cal!.fetched_at, 26) && (
               <span style={{ color: "var(--ember)" }} title="the calendar sync step has been failing — likely an expired Google token; run `node scripts/sync-google-cal.mjs --auth` to reconnect">
@@ -1116,12 +1998,12 @@ function RoadAhead() {
             <span style={{ color: live ? "var(--pine)" : "var(--mist-mute)" }}>
               {live
                 ? `agent · ${state?.last_updated ? new Date(state.last_updated).toLocaleDateString("en-US", { month: "short", day: "2-digit" }).toLowerCase() : ""}`
-                : agentMissing || stateMissing ? "targets only" : "loading…"}
+                : awaiting && (agentMissing || stateMissing || targets.length > 0) ? "targets only" : "loading…"}
             </span>
           </span>
         }
       >
-        the road ahead — 14 days · 6 weeks
+        the road ahead — {days.length} days · {blocks.length} week{blocks.length === 1 ? "" : "s"}
       </SectionTag>
 
       {/* calendar strip */}
@@ -1178,7 +2060,7 @@ function RoadAhead() {
           const offset = w.wk - currentWeek;
           const isNow = offset === 0;
           const isNext = offset === 1;
-          const isRace = w.wk === totalWeeks;
+          const isRace = mode === "race" && w.wk === totalWeeks;
           return (
             <motion.div
               key={w.wk}
@@ -1259,6 +2141,10 @@ const SPORT_ABBREV: Record<string, string> = {
 };
 const sportLabel = (sport?: string) => (sport && SPORT_ABBREV[sport]) ?? (sport ?? "").slice(0, 5).toUpperCase();
 
+/** The one run that IS the race being viewed — identified by result.json's
+    linked activity, not by any classifier. */
+const RACE_META = { label: "RACE", color: "var(--lamp)" };
+
 const durFmt = (s: number) => {
   // round to whole minutes FIRST — rounding the remainder yields "1:60h"
   const mins = Math.round(s / 60);
@@ -1282,6 +2168,10 @@ function LogTable() {
   const [tab, setTab] = useState<"runs" | "other">("runs");
   const { activities, cross, crossError, crossSynced, crossLoading, loading, error } = useStrava();
   const { syncing } = useRefresh();
+  // the archived race on screen labels its own run in the log
+  const { viewing } = useBlockConfig();
+  const { result: raceResult } = useRaceResult(viewing?.status === "archived" ? viewing.slug : null);
+  const raceActivityId = raceResult?.strava_activity_id ?? null;
   const u = useUnits();
   const runsTab = tab === "runs";
   const visible = activities.slice(0, limit);
@@ -1401,9 +2291,14 @@ function LogTable() {
               </span>
             </div>
             <span className="col-type">
-              <span className="eyebrow" style={{ fontSize: 8.5, color: TYPE_META[a.type].color, border: `1px solid ${TYPE_META[a.type].color}`, padding: "2px 5px" }}>
-                {TYPE_META[a.type].label}
-              </span>
+              {(() => {
+                const meta = a.id === raceActivityId ? RACE_META : TYPE_META[a.type];
+                return (
+                  <span className="eyebrow" style={{ fontSize: 8.5, color: meta.color, border: `1px solid ${meta.color}`, padding: "2px 5px" }}>
+                    {meta.label}
+                  </span>
+                );
+              })()}
             </span>
             <span className="numerals col-dist" style={{ fontSize: 14, fontWeight: 600, textAlign: "right" }}>{u.dist(a.distance_mi)}</span>
             <span className="numerals col-elev" style={{ fontSize: 14, fontWeight: 600, textAlign: "right", color: "var(--mist-dim)" }}>{u.elev(a.elevation_ft)}</span>
@@ -1634,6 +2529,7 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
 
         {/* scrollable body: flags + readout + chat thread */}
         <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <ViewingNotice />
           <FlagsRow flags={facts.flags} />
           <ReadoutBlock agent={agent} missing={agentMissing} open={readoutOpen} setOpen={setReadoutOpen} facts={facts} />
 
@@ -1699,6 +2595,26 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
         </div>
       </div>
     </aside>
+  );
+}
+
+/** The coach reads goals, not the browsed race — facts.mjs takes its race
+    from loadActiveRaceFolder, which requires train mode. Say so where the
+    coach speaks, rather than letting an archived course on screen imply the
+    readout is about it. */
+function ViewingNotice() {
+  const { race, viewing } = useBlockConfig();
+  if (!viewing || !race) return null;
+  return (
+    <div style={{ padding: "10px 18px", borderBottom: "1px solid var(--edge)", background: "rgba(198, 143, 62, 0.06)" }}>
+      <div className="eyebrow" style={{ fontSize: 8.5, color: "var(--lamp)", marginBottom: 4 }}>
+        viewing {race.short} · {viewing.status}
+      </div>
+      <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "var(--mist-mute)" }}>
+        This readout, the flags and the plan are your CURRENT training — the coach works from your
+        goals while {race.short} is open read-only, and was not told to train you for it.
+      </div>
+    </div>
   );
 }
 
@@ -2100,7 +3016,7 @@ function SetupDrawer() {
         })}
       </ul>
       <div style={{ display: "flex", justifyContent: "space-between", padding: "14px 0 0" }}>
-        <span className="eyebrow" style={{ fontSize: 8.5 }}>© basecamp · mogollon bound · 2026</span>
+        <span className="eyebrow" style={{ fontSize: 8.5 }}>© basecamp · one race at a time</span>
         <span className="eyebrow" style={{ fontSize: 8.5 }}>strava · oura · google calendar · claude code</span>
       </div>
     </footer>
@@ -2113,6 +3029,11 @@ function SetupDrawer() {
 
 function AppBody() {
   const { key } = useRefresh();
+  const { race, viewing } = useBlockConfig();
+  // the slug ON SCREEN, for the crash boundary's message and its "back to
+  // generic mode" pointer reset — same source useRacePlanInstance itself reads.
+  const { viewing: viewingSlug } = useActiveRace();
+  const hash = useHashRoute();
   const [view, setViewState] = useState<AppView>(() => {
     // validate rather than cast — a stale or hand-edited key would otherwise
     // render an empty main column with no way back except clearing storage
@@ -2132,39 +3053,67 @@ function AppBody() {
       return !open;
     });
   };
+  // A persisted "race"/"nutrition" survives the race being archived (and is
+  // there on every reload before the payload lands). Resolve it to training
+  // WITHOUT rewriting the preference: once a race is active again the
+  // athlete gets the view they last chose back, instead of having had it
+  // quietly overwritten by a loading frame.
+  const views = appViews(race);
+  const activeView = views.includes(view) ? view : "training";
+  // Race-day mode takes the whole screen: the command bar and the agent
+  // rail are desk furniture, and on a phone they cost a third of the page
+  // the runner is squinting at. All hooks above run either way, so this is
+  // a render branch, not a conditional hook. Reached by URL today; the
+  // switcher menu has no entry for it yet (see the bead's follow-ups).
+  if (hash === RACE_DAY_HASH) return <RaceDayRoute />;
   return (
     <>
-      <CommandBar view={view} setView={setView} railOpen={railOpen} toggleRail={toggleRail} />
+      <CommandBar view={activeView} setView={setView} railOpen={railOpen} toggleRail={toggleRail} />
       <div className="shell">
         <div className={"ops-grid" + (railOpen ? "" : " rail-hidden")}>
           {/* main column */}
           <main style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
-            {view === "training" ? (
+            {/* on every view: the race on screen is not the one being trained for */}
+            <ViewingBanner />
+            {activeView === "training" ? (
               <>
-                <RaceRibbon />
+                {/* no race, no ribbon: there is no course, countdown or
+                    elevation profile to put in it (PRD §6) */}
+                {race && <RaceRibbon race={race} readOnly={!!viewing} />}
                 <div key={`vitals-${key}`}><VitalsBand /></div>
                 <div key={`traj-${key}`}><Trajectory /></div>
                 <div key={`road-${key}`}><RoadAhead /></div>
                 <div key={`log-${key}`}><LogTable /></div>
                 <SetupDrawer />
               </>
-            ) : view === "race" ? (
+            ) : activeView === "race" ? (
               <div key={`race-${key}`}>
-                <ClimbComparison />
-                {/* one shared plan instance — planner sliders and the model
-                    check must never disagree on the same screen */}
-                <RacePlanProvider>
-                  <RacePlanner />
-                  <ModelCheck />
-                </RacePlanProvider>
+                {/* the boundary sits OUTSIDE the provider: useRacePlanInstance
+                    computes the whole plan (course, projection, fuel) during
+                    RacePlanScope's render, so a bad folder throws before any
+                    child below the provider ever mounts (tt bug fix-sun-null). */}
+                <RaceErrorBoundary slug={viewingSlug}>
+                  {/* one shared plan instance — planner sliders and the model
+                      check must never disagree on the same screen. The climb
+                      comparison takes no sliders, but it reads its visual.panels
+                      gate off the same instance rather than fetching the active
+                      race a second time, so it lives inside the provider too. */}
+                  <RacePlanProvider>
+                    <ClimbComparison />
+                    <RacePlanner />
+                    <ModelCheck />
+                  </RacePlanProvider>
+                </RaceErrorBoundary>
               </div>
             ) : (
               <div key={`fuel-${key}`}>
-                {/* single consumer, but useRacePlan requires the provider —
-                    a fallback instance was the divergence footgun */}
-                <RacePlanProvider>
-                  <NutritionPlan />
-                </RacePlanProvider>
+                <RaceErrorBoundary slug={viewingSlug}>
+                  {/* single consumer, but useRacePlan requires the provider —
+                      a fallback instance was the divergence footgun */}
+                  <RacePlanProvider>
+                    <NutritionPlan />
+                  </RacePlanProvider>
+                </RaceErrorBoundary>
               </div>
             )}
           </main>
@@ -2181,6 +3130,8 @@ export default function App() {
   return (
     <UnitsProvider>
       <RefreshProvider>
+        {/* renders nothing — repaints :root when the race on screen changes */}
+        <RaceTheme />
         <StateProvider>
           <StravaProvider>
             <OuraProvider>

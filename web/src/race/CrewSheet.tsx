@@ -1,9 +1,11 @@
 import { useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { useUnits, useBlockConfig } from "../data";
-import { fmtRaceClock, fmtElapsed, type projectRace } from "./pacing";
+import { useUnits } from "../data";
+import { fmtElapsed, type projectRace } from "./pacing";
 import { gmapsDirectionsUrl } from "./links";
 import type { Course, CrewBase } from "./types";
+import { useRacePlan } from "./useRacePlan";
+import { useDialog } from "./dialogChrome";
 
 /* ------------------------------------------------------------------ */
 /*  Crew sheet — a light, printer-friendly handout: station table with */
@@ -108,15 +110,30 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
   onClose: () => void;
 }) {
   const u = useUnits();
-  const { race } = useBlockConfig();
+  const { race, sun } = useRacePlan();
   const base = crewBase?.base ?? null;
   const drives = crewBase?.drives ?? {};
+  const emergency = crewBase?.emergency ?? course.crew_info?.emergency ?? [];
 
   // print isolation: while the sheet is open, @media print shows only it
   useEffect(() => {
     document.body.classList.add("crew-printing");
     return () => document.body.classList.remove("crew-printing");
   }, []);
+
+  const { dialogProps } = useDialog({ onClose, label: `${race.name} — crew sheet` });
+
+  // Crew prose comes from race.json's crew_info (the intake distills it from
+  // the organizer's crew manual); the fallbacks are true of any trail ultra.
+  const drivingNote = course.crew_info?.driving
+    ?? "see the official crew guide for driving directions; never block access roads.";
+  // "cutoffs from …" names the document they came from: the first manual-ish
+  // source in race.json, minus its parenthetical scope note.
+  const cutoffSource = useMemo(() => {
+    const manual = (course.sources ?? []).find((s) => /manual|guide|handbook/i.test(s.ref));
+    const ref = (manual ?? (course.sources ?? []).find((s) => s.kind !== "gpx"))?.ref;
+    return ref ? ref.replace(/\s*\([^)]*\)\s*$/, "") : "the official runner manual";
+  }, [course.sources]);
 
   const crewNames = course.aid_stations.filter((s) => s.crew || s.crew_only).map((s) => s.name);
   const dropNames = course.aid_stations.filter((s) => s.drop_bag).map((s) => s.name);
@@ -130,6 +147,7 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
   // (display:none) without hiding the sheet — no blank trailing pages
   return createPortal(
     <div
+      {...dialogProps}
       className="crew-sheet"
       style={{
         position: "fixed", inset: 0, zIndex: 100, overflow: "auto",
@@ -157,9 +175,12 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
         <div style={{ borderBottom: `3px solid ${INK}`, paddingBottom: 10, marginBottom: 14 }}>
           <div style={{ fontSize: 22, fontWeight: 700 }}>{race.name} — Crew Sheet</div>
           <div style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>
-            {race.date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
-            {" · start "}{fmtRaceClock(race.date, 0)} · {u.dist(course.official_distance_mi, 1)} {u.distUnit} · {u.elev(course.official_gain_ft)} {u.elevUnit}↑
-            {" · course closes "}{fmtRaceClock(race.date, race.cutoff_h)} ({race.cutoff_h}h)
+            {race.date.toLocaleDateString("en-US", { timeZone: race.timeZone, weekday: "long", month: "long", day: "numeric", year: "numeric" })}
+            {" · start "}{race.clock(0)} · {u.dist(course.official_distance_mi, 1)} {u.distUnit} · {u.elev(course.official_gain_ft)} {u.elevUnit}↑
+            {/* a race may post no overall cutoff — say so rather than print NaN */}
+            {race.cutoff_h != null
+              ? <>{" · course closes "}{race.clock(race.cutoff_h)} ({race.cutoff_h}h)</>
+              : <>{" · no posted cutoff"}</>}
           </div>
           {base && (
             <div style={{ fontSize: 12, marginTop: 3 }}>
@@ -173,33 +194,42 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
                       target="_blank" rel="noopener noreferrer"
                       style={{ color: INK, textDecorationStyle: "dotted" }}
                     >
-                      the start (Two-Sixty TH)
+                      the start
                     </a>
                   ) : (
-                    "the start (Two-Sixty TH)"
+                    "the start"
                   )}
-                  {" "}<b>{fmtDrive(base.drive_to_start_min)}</b> — shuttles leave Old Pine lot 4:25a/4:40a
+                  {" "}<b>{fmtDrive(base.drive_to_start_min)}</b>
                 </>
               )}
             </div>
           )}
+          {/* Parking, shuttles and drop-off rules are per-race prose the
+              intake distills from the crew manual — never a literal here. */}
+          {course.crew_info?.start_notes && (
+            <div style={{ fontSize: 11, color: MUTED, marginTop: 3 }}>
+              <b>Start:</b> {course.crew_info.start_notes}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 26, marginTop: 10, fontSize: 12 }}>
-            <span><b style={{ color: "#3d7a48" }}>{fmtRaceClock(race.date, proj.finish_h.best)}</b> best</span>
-            <span><b style={{ color: ACCENT }}>{fmtRaceClock(race.date, proj.finish_h.avg)}</b> expected ({fmtElapsed(proj.finish_h.avg)})</span>
-            <span><b style={{ color: "#a33b2a" }}>{fmtRaceClock(race.date, proj.finish_h.worst)}</b> worst</span>
+            <span><b style={{ color: "#3d7a48" }}>{race.clock(proj.finish_h.best)}</b> best</span>
+            <span><b style={{ color: ACCENT }}>{race.clock(proj.finish_h.avg)}</b> expected ({fmtElapsed(proj.finish_h.avg)})</span>
+            <span><b style={{ color: "#a33b2a" }}>{race.clock(proj.finish_h.worst)}</b> worst</span>
             <span><b>{fmtElapsed(proj.stopped_h)}</b> planned in aid stations</span>
-            {proj.goal_h != null && <span><b>{fmtRaceClock(race.date, proj.goal_h)}</b> goal ({fmtElapsed(proj.goal_h)})</span>}
+            {proj.goal_h != null && <span><b>{race.clock(proj.goal_h)}</b> goal ({fmtElapsed(proj.goal_h)})</span>}
           </div>
         </div>
 
-        {/* emergency strip */}
-        {course.crew_info && (
+        {/* emergency strip — from crew-base.json since tt-yib.2 moved the
+            numbers out of the committed course.json; older course.json files
+            still carry them, hence the fallback. */}
+        {emergency.length > 0 && (
           <div style={{
             display: "flex", flexWrap: "wrap", gap: "4px 26px", alignItems: "baseline",
             border: `2px solid ${INK}`, padding: "7px 12px", marginBottom: 14, fontSize: 12,
           }}>
             <b style={{ letterSpacing: "0.06em" }}>EMERGENCY</b>
-            {course.crew_info.emergency.map((e) => (
+            {emergency.map((e) => (
               <span key={e.phone}>{e.label}: <b style={{ whiteSpace: "nowrap" }}>{e.phone}</b></span>
             ))}
           </div>
@@ -246,13 +276,13 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
                   <td style={{ ...cell, textAlign: "right", fontWeight: 600 }}>{u.dist(s.total_mi)}</td>
                   <td style={cell}>
                     <span style={etaGrid}>
-                      <span style={{ textAlign: "right", color: "#3d7a48" }}>{fmtRaceClock(race.date, sp.eta_h.best)}</span>
-                      <b style={{ textAlign: "right" }}>{fmtRaceClock(race.date, sp.eta_h.avg)}</b>
-                      <span style={{ textAlign: "right", color: "#a33b2a" }}>{fmtRaceClock(race.date, sp.eta_h.worst)}</span>
+                      <span style={{ textAlign: "right", color: "#3d7a48" }}>{race.clock(sp.eta_h.best)}</span>
+                      <b style={{ textAlign: "right" }}>{race.clock(sp.eta_h.avg)}</b>
+                      <span style={{ textAlign: "right", color: "#a33b2a" }}>{race.clock(sp.eta_h.worst)}</span>
                     </span>
                   </td>
-                  <td style={{ ...cell, textAlign: "right" }}>{sp.goal_eta_h != null ? fmtRaceClock(race.date, sp.goal_eta_h) : "—"}</td>
-                  <td style={{ ...cell, textAlign: "right" }}>{s.cutoff_h != null ? fmtRaceClock(race.date, s.cutoff_h) : "—"}</td>
+                  <td style={{ ...cell, textAlign: "right" }}>{sp.goal_eta_h != null ? race.clock(sp.goal_eta_h) : "—"}</td>
+                  <td style={{ ...cell, textAlign: "right" }}>{s.cutoff_h != null ? race.clock(s.cutoff_h) : "—"}</td>
                   <td style={{ ...cell, textAlign: "right" }}>{sp.stop_min > 0 ? `${sp.stop_min}m` : "—"}</td>
                   <td style={{ ...cell, fontSize: 9.5, color: crew ? ACCENT : MUTED, fontWeight: crew ? 700 : 400 }}>{access || "aid"}</td>
                   <td style={{ ...cell, fontSize: 10, textAlign: "right", whiteSpace: "nowrap", fontWeight: crew ? 700 : 400 }}>
@@ -284,13 +314,16 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
 
         {/* notes */}
         <div style={{ marginTop: 12, fontSize: 10.5, color: INK, lineHeight: 1.6 }}>
-          <b>Crew access:</b> {crewNames.join(", ")} — see the official Crew Guide for driving directions; never block forest roads.<br />
+          <b>Crew access:</b> {crewNames.join(", ")}{drivingNote ? ` — ${drivingNote}` : ""}<br />
           <b>Drop bags:</b> {dropNames.join(", ")}.
           {" "}<b>Pacers:</b> from {firstPacer?.name} ({u.dist(firstPacer?.total_mi ?? 0, 0)} {u.distUnit}) onward, one at a time.<br />
-          <b>Night:</b> sunset {course.sun.sunset} · sunrise {course.sun.sunrise} — headlamp in the Fish Hatchery drop bag.
+          <b>Night:</b>{" "}
+          {sun
+            ? <>sunset {sun.sunset} · sunrise {sun.sunrise} — night gear rides in the drop bags listed above.</>
+            : "sun unknown — run the course build after setting the date."}
           {" "}<b>If the runner drops:</b> they must report to an aid station captain — never leave the course unreported.<br />
           <span style={{ color: MUTED }}>
-            ETAs from Basecamp's pacing model (best/worst = ± model band); cutoffs from the 2025 runner manual.
+            ETAs from Basecamp's pacing model (best/worst = ± model band); cutoffs from {cutoffSource}.
             {" "}GPS links open Google Maps driving directions from the base — coordinates are the station point, not the parking area.
             {" "}Drive times are OSRM road estimates; forest-road conditions vary, so verify against the official Crew Guide and add buffer.
           </span>
@@ -332,9 +365,11 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
                 </div>
               </div>
             </div>
-            <div style={{ fontSize: 9.5, color: MUTED, marginTop: 6 }}>
-              Distilled from the {course.crew_info.source}.
-            </div>
+            {course.crew_info.source && (
+              <div style={{ fontSize: 9.5, color: MUTED, marginTop: 6 }}>
+                Distilled from the {course.crew_info.source}.
+              </div>
+            )}
           </div>
         )}
 

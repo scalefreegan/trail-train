@@ -209,12 +209,19 @@ a { color: inherit; }
   align-items: center;
 }
 
+/* an ARCHIVED race gains an "actual" column between the eta band and the
+   goal — only then, so a race still to be run keeps its ten */
+.race-grid.has-actual {
+  grid-template-columns: minmax(110px, 1.3fr) 44px 58px 50px 58px minmax(184px, 1.4fr) 70px 62px minmax(124px, 1fr) 96px minmax(90px, 0.9fr);
+}
+
 /* station table: when the viewport can't fit the columns' true widths, the
    panel scrolls horizontally — never squeeze, never spill into the rail */
 .race-table { overflow-x: auto; }
 /* ≥ every row's intrinsic minimum (station rows carry a 2px borderLeft the
    header lacks) so all rows share one width while the panel scrolls */
 .race-table > .race-grid { min-width: 1015px; }
+.race-table > .race-grid.has-actual { min-width: 1096px; }
 
 .climb-grid {
   display: grid;
@@ -227,18 +234,81 @@ a { color: inherit; }
 
 .commandbar-mid { display: flex; align-items: center; gap: 0; }
 
+/* the header row — wordmark+switcher, view chips, mid stats, sync cluster
+   — as one nowrap flex row on desktop (unchanged look ≥1201px), wrapping
+   below that so nothing (units toggle, resync, settings) is pushed off
+   the right edge of the viewport. The nowrap row's real (unsquashed)
+   content width runs to ~1113px with an active race (wordmark+switcher +
+   view chips + "block week NN/NN" + "race in NNN days" + "race day mon d"
+   + the sync cluster's "synced Nh Nm ago" + coach/units/resync/settings) —
+   987px left a 988-1112px band where the row was still nowrap but too
+   narrow for its own content, forcing document-level horizontal scroll.
+   1200px clears that with margin while still being comfortably below the
+   1280px breakpoint where the coach rail itself drops below the content. */
+.command-bar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 28px;
+  height: 52px;
+}
+.command-bar-sync { flex-shrink: 0; }
+
+@media (max-width: 1200px) {
+  .command-bar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 52px;
+    padding: 10px 16px;
+    row-gap: 10px;
+  }
+  /* each group (wordmark, chips, mid stats, sync cluster) may itself need
+     more than one line once it's on its own row */
+  .command-bar > div { flex-wrap: wrap; row-gap: 6px; }
+  .command-bar-sync { margin-left: 0 !important; flex-basis: 100%; }
+  .commandbar-mid { min-width: 0; }
+}
+
 /* ---- crew sheet printing: only the sheet reaches paper ----
    The sheet portals to <body> (outside #root), so the app can be fully
    display:none'd — no blank trailing pages from hidden layout. */
 @media print {
+  /* :root sets color-scheme: dark for the on-screen app; left alone, that
+     also makes the UA paint the page canvas (and the @page margin gutter
+     below) near-black — #121212 — everywhere the author background does
+     not explicitly cover, which on the 3x5 cards and the crew sheet's
+     margins is nearly the whole sheet. Printing only ever happens with
+     body.crew-printing/.card-printing set, so this is scoped to that. */
+  :root { color-scheme: light !important; }
+
+  /* the dark app background would otherwise show through every page after
+     the first — .crew-sheet no longer pins to one page box (below), so
+     without this the spillover paints the app's near-black body color */
+  html:has(body.crew-printing), body.crew-printing,
+  html:has(body.card-printing), body.card-printing,
+  html, body {
+    background: #fff !important;
+    background-image: none !important;
+  }
+
   body.crew-printing #root { display: none !important; }
   body.crew-printing .crew-sheet {
-    position: absolute !important;
-    inset: 0 !important;
+    /* static, not absolute/fixed: an absolutely positioned box with
+       inset:0 is pinned to the height of ONE page box, so content past
+       that height spilled onto the page's own (dark) background instead
+       of flowing onto page 2+. Static lets it sit in normal flow and
+       paginate across as many pages as its content needs. */
+    position: static !important;
     overflow: visible !important;
     background: #fff !important;
+    min-height: 0 !important;
   }
   body.crew-printing .no-print { display: none !important; }
+  /* paginate the table by row, not mid-row, and keep the map + each crew
+     note together rather than splitting across a page break */
+  body.crew-printing table { break-inside: auto; }
+  body.crew-printing tr { break-inside: avoid; }
+  body.crew-printing svg { break-inside: avoid; }
 
   /* runner card: same isolation; each face becomes one 5×3in page */
   body.card-printing #root { display: none !important; }
@@ -290,6 +360,11 @@ a { color: inherit; }
     gap: 10px;
   }
   .race-grid > .col-seg, .race-grid > .col-stop, .race-grid > .col-pace, .race-grid > .col-goal, .race-grid > .col-fuel, .race-grid > .col-flags { display: none; }
+  /* what actually happened outranks the projection's edges on a phone — the
+     archived table keeps "actual" and drops nothing else for it */
+  .race-grid.has-actual {
+    grid-template-columns: minmax(90px, 1.1fr) 36px minmax(140px, 1.2fr) 62px minmax(104px, 0.9fr);
+  }
   /* the desktop min-width floor would force the collapsed 4-column layout
      to scroll on every phone — the narrow template fits natively */
   .race-table > .race-grid { min-width: 0; }

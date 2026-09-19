@@ -35,10 +35,11 @@ on serverUp()
 	-- means a foreign process already on 38100 makes OUR vite fail to start,
 	-- and a bare status check would then treat the impostor as "up" and open
 	-- the browser to it. The whole reason 38100 was chosen was to make a
-	-- collision detectable — so detect it.
+	-- collision detectable — so detect it. The app's <title> is the marker
+	-- (tt-yib.5: it used to be the race name, which changes per race).
 	try
 		set body to do shell script "curl -s --max-time 2 " & dashUrl
-		return body contains "Mogollon Monster"
+		return body contains "Basecamp"
 	on error
 		return false
 	end try
