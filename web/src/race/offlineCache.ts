@@ -80,6 +80,39 @@ export function getLastCachedSlug(): string | null | undefined {
   } catch { return undefined; }
 }
 
+/** Drop every cached /api/race/active payload except the slugs in `keep` —
+    typically [the athlete's actual training target, whatever was just
+    viewed]. Before activeRaceCacheKey was namespaced per-slug there was
+    exactly one "race-active" cache slot, naturally overwritten on every
+    load; namespacing it (so a browsed archive can never clobber the actual
+    training plan's cache) means every race the switcher is ever pointed at
+    in view mode would otherwise leave a permanent bc.cache.race-active.<slug>
+    entry with nothing to ever remove it. Called after every successful load
+    (see data.ts's requestActiveRace) so this stays bounded instead of
+    growing once per race ever browsed over the life of the install. Only
+    race-active.* PAYLOAD entries are touched — the last-train-slug/
+    last-cached-slug bookkeeping keys, and the unrelated per-slug course/
+    crew-base/nutrition caches, are left alone. */
+export function pruneActiveRaceCache(keep: (string | null)[]): void {
+  try {
+    const keepKeys = new Set(keep.map((slug) => PREFIX + activeRaceCacheKey(slug)));
+    const doomed: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (
+        k
+        && k.startsWith(`${PREFIX}race-active.`)
+        && k !== LAST_TRAIN_SLUG_KEY
+        && k !== LAST_CACHED_SLUG_KEY
+        && !keepKeys.has(k)
+      ) {
+        doomed.push(k);
+      }
+    }
+    for (const k of doomed) localStorage.removeItem(k);
+  } catch { /* private mode / quota */ }
+}
+
 export function cachePut(key: string, value: unknown): void {
   try { localStorage.setItem(PREFIX + key, JSON.stringify(value)); } catch { /* private mode / quota */ }
 }

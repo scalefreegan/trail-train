@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { isValidTimeZone, raceStart } from "./race/clock";
 import {
   activeRaceCacheKey, cacheGet, cachePut,
-  getLastCachedSlug, getLastTrainSlug, setLastCachedSlug, setLastTrainSlug,
+  getLastCachedSlug, getLastTrainSlug, pruneActiveRaceCache, setLastCachedSlug, setLastTrainSlug,
 } from "./race/offlineCache";
 import { fmtRaceClock } from "./race/pacing";
 import type { ActiveBlock, ActiveRaceResponse, RaceConfig as RaceJson, RaceStatus } from "./race/types";
@@ -427,7 +427,10 @@ type ActiveRaceResult =
       views say so rather than quietly drawing a plan from last night. */
   | { kind: "ok"; data: ActiveRaceResponse; staleMessage?: string }
   | { kind: "missing" }
-  | { kind: "error"; message: string };
+  /** `viewOnlyCacheMiss` = the ONLY reason there was no offline copy to fall
+      back to is that the last thing cached was a browsed (view-mode) race,
+      not the training target — see the note on offline/error below. */
+  | { kind: "error"; message: string; viewOnlyCacheMiss?: boolean };
 
 /**
  * A failed load falls back to the last payload that DID load, if there is
@@ -458,7 +461,11 @@ function activeRaceFallback(message: string): ActiveRaceResult {
   if (lastSlug !== undefined) {
     const cachedAny = cacheGet<ActiveRaceResponse>(activeRaceCacheKey(lastSlug));
     if (cachedAny?.mode === "view") {
-      return { kind: "error", message: `${message} — only a view-mode copy of "${lastSlug}" is cached offline` };
+      return {
+        kind: "error",
+        message: `${message} — only a view-mode copy of "${lastSlug}" is cached offline`,
+        viewOnlyCacheMiss: true,
+      };
     }
   }
   return { kind: "error", message };
@@ -491,6 +498,10 @@ function requestActiveRace(key: number): Promise<ActiveRaceResult> {
           cachePut(activeRaceCacheKey(ownSlug), data);
           setLastCachedSlug(ownSlug);
           if (data.mode !== "view") setLastTrainSlug(ownSlug);
+          // Bound the cache to what actually matters offline: the athlete's
+          // real training target and whatever was just looked at — not every
+          // race the switcher has ever been pointed at (see pruneActiveRaceCache).
+          pruneActiveRaceCache([getLastTrainSlug() ?? null, ownSlug]);
           return { kind: "ok", data };
         })
         // a rejected json() lands here too: unparseable is corrupt, not absent
@@ -512,6 +523,13 @@ export type ActiveRaceState = {
   error: string | null;
   /** the race on screen came from the offline cache, not from the server */
   offline: boolean;
+  /** the failed reload's ONLY offline fallback was a view-mode (browsed, not
+      trained-for) copy of some OTHER race — `error` still names the HTTP/
+      parse failure for anyone reading it, but whatever plan is already on
+      screen is otherwise fine, so a view (RaceDay) that shows `offline` as a
+      friendly notice should treat this the same way rather than surfacing
+      the internals-flavored message as a plain error. */
+  viewOnlyCacheMiss: boolean;
   /** the request has settled — before that, "no active race" is not yet a fact
       (see the per-slug localStorage keys in race/useRacePlan.ts) */
   resolved: boolean;
@@ -521,8 +539,8 @@ export function useActiveRace(): ActiveRaceState {
   const { key: refreshKey } = useRefresh();
   const [state, setState] = useState<{
     data: ActiveRaceResponse | null; missing: boolean; error: string | null;
-    offline: boolean; resolved: boolean;
-  }>({ data: null, missing: false, error: null, offline: false, resolved: false });
+    offline: boolean; viewOnlyCacheMiss: boolean; resolved: boolean;
+  }>({ data: null, missing: false, error: null, offline: false, viewOnlyCacheMiss: false, resolved: false });
   useEffect(() => {
     let stale = false;
     requestActiveRace(refreshKey).then((res) => {
@@ -531,11 +549,16 @@ export function useActiveRace(): ActiveRaceState {
       // condition, so it lands in `error` as well — the fetch did fail.
       if (res.kind === "ok") setState({
         data: res.data, missing: false,
-        error: res.staleMessage ?? null, offline: res.staleMessage != null, resolved: true,
+        error: res.staleMessage ?? null, offline: res.staleMessage != null,
+        viewOnlyCacheMiss: false, resolved: true,
       });
-      else if (res.kind === "missing") setState({ data: null, missing: true, error: null, offline: false, resolved: true });
+      else if (res.kind === "missing") setState({
+        data: null, missing: true, error: null, offline: false, viewOnlyCacheMiss: false, resolved: true,
+      });
       // a failed reload KEEPS the race already on screen and surfaces the error
-      else setState((prev) => ({ ...prev, missing: false, error: res.message, resolved: true }));
+      else setState((prev) => ({
+        ...prev, missing: false, error: res.message, viewOnlyCacheMiss: res.viewOnlyCacheMiss ?? false, resolved: true,
+      }));
     });
     return () => { stale = true; };
   }, [refreshKey]);
@@ -543,7 +566,8 @@ export function useActiveRace(): ActiveRaceState {
     activeRace: state.data, slug: state.data?.active ?? null,
     viewing: state.data?.viewing ?? state.data?.active ?? null,
     mode: state.data?.mode === "view" ? "view" : "train",
-    missing: state.missing, error: state.error, offline: state.offline, resolved: state.resolved,
+    missing: state.missing, error: state.error, offline: state.offline,
+    viewOnlyCacheMiss: state.viewOnlyCacheMiss, resolved: state.resolved,
   };
 }
 

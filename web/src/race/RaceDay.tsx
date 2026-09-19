@@ -227,7 +227,7 @@ export function RaceDay() {
   const { race, proj, fuelPlan, features, raceStart, error: courseError, missing } = plan;
   // the race ON SCREEN owns the override, same namespace as the plan
   // knobs (useRacePlan) — view mode browses a different folder
-  const { viewing, error: activeError, offline } = useActiveRace();
+  const { viewing, error: activeError, offline, viewOnlyCacheMiss } = useActiveRace();
   const { crewBase } = useCrewBase();
   const now = useNow();
   const [posMi, setPosMi] = usePosition(viewing);
@@ -246,7 +246,12 @@ export function RaceDay() {
   const upcoming = stations.slice(idx + 1, idx + 1 + LOOKAHEAD);
 
   const drives = features.crew ? crewBase?.drives ?? {} : {};
-  const staleNotice = offline
+  // viewOnlyCacheMiss: the failed reload's only offline fallback was a
+  // browsed OTHER race, not this one — the plan already on screen is still
+  // fine, so it reads the same friendly way `offline` does rather than as
+  // the internals-flavored "(HTTP 500) — only a view-mode copy of ... is
+  // cached offline" string activeError would otherwise carry verbatim.
+  const staleNotice = offline || viewOnlyCacheMiss
     ? "Offline — showing the last plan this phone loaded. Reconnect to the laptop to refresh."
     : activeError ?? courseError;
 
