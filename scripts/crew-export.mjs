@@ -93,13 +93,14 @@ async function client() {
   if (clientModules) return clientModules;
   registerClientResolver();
   const src = path.join(ROOT, "web", "src");
-  const [pacing, nutrition, nutritionConfig, crewData] = await Promise.all([
+  const [pacing, nutrition, nutritionConfig, features, crewData] = await Promise.all([
     import(path.join(src, "race", "pacing.ts")),
     import(path.join(src, "race", "nutrition.ts")),
     import(path.join(src, "race", "nutrition-config.ts")),
+    import(path.join(src, "race", "features.ts")),
     import(path.join(src, "crew", "crewData.ts")),
   ]);
-  clientModules = { pacing, nutrition, nutritionConfig, crewData };
+  clientModules = { pacing, nutrition, nutritionConfig, features, crewData };
   return clientModules;
 }
 
@@ -242,7 +243,7 @@ function crewRace(race) {
  * @param {Date}   [opts.now]   export instant — injected so tests are stable
  */
 export async function buildCrewData(root, slug, { knobs = {}, now = new Date() } = {}) {
-  const { pacing, nutrition, nutritionConfig, crewData } = await client();
+  const { pacing, nutrition, nutritionConfig, features, crewData } = await client();
   const folder = await loadRaceFolder(root, slug).catch(() => {
     throw fail("not_found", `races/${slug}/race.json not found`);
   });
@@ -274,9 +275,22 @@ export async function buildCrewData(root, slug, { knobs = {}, now = new Date() }
   // payload, not just the points) so the basis string matches the planner's.
   const gradeCurve = Array.isArray(paceGrade?.curve) && paceGrade.curve.length > 0 ? paceGrade : null;
 
+  // The altitude term (PRD v2 §2) is resolved the way useRacePlan resolves it:
+  // the per-slug knob, the athlete's acclimated elevation, and the feature
+  // gate — a race that declares `features.altitude: false` gets no term at
+  // all rather than a hidden penalty. A caller that already resolved it (the
+  // planner's button) wins, so the sheet matches the table on screen.
+  const altitudeDefault = features.resolveFeatures(race).altitude
+    ? {
+        pct: crewData.DEFAULT_ALTITUDE_PCT,
+        homeElevationFt: profile?.physiology?.home_elevation_ft ?? null,
+        acclimationDays: 0,
+      }
+    : null;
   const resolved = {
     ...crewData.DEFAULT_CREW_KNOBS,
     goalH: crewData.defaultGoalH(race.cutoff_h),
+    altitude: altitudeDefault,
     ...sanitizeKnobs(knobs),
   };
   const proj = pacing.projectRace(course, fit, {
@@ -288,6 +302,7 @@ export async function buildCrewData(root, slug, { knobs = {}, now = new Date() }
     aidStopMin: resolved.aidStopMin,
     crewStopMin: resolved.crewStopMin,
     stopOverridesMin: resolved.stopOverridesMin,
+    altitude: resolved.altitude,
   });
 
   // The start INSTANT comes from scripts/clock.mjs, the Node twin of the
@@ -395,6 +410,17 @@ export function sanitizeKnobs(raw) {
     if (Number.isFinite(raw[k])) out[k] = raw[k];
   }
   if (raw.goalH === null || Number.isFinite(raw.goalH)) out.goalH = raw.goalH;
+  if (raw.altitude === null) out.altitude = null;
+  else if (raw.altitude && typeof raw.altitude === "object" && Number.isFinite(raw.altitude.pct)) {
+    const home = raw.altitude.homeElevationFt;
+    out.altitude = {
+      pct: raw.altitude.pct,
+      homeElevationFt: Number.isFinite(home) ? home : null,
+      acclimationDays: Number.isFinite(raw.altitude.acclimationDays)
+        ? Math.max(0, raw.altitude.acclimationDays)
+        : 0,
+    };
+  }
   if (raw.stopOverridesMin && typeof raw.stopOverridesMin === "object") {
     const stops = {};
     for (const [name, min] of Object.entries(raw.stopOverridesMin)) {

@@ -170,7 +170,10 @@ before(async () => {
   await fs.writeFile(path.join(root, "web", "public", "strava.json"), JSON.stringify(fixtureStrava()));
   await fs.writeFile(
     path.join(root, "config", "profile.json"),
-    JSON.stringify({ athlete_name: "Fixture", physiology: { body_kg: 70, long_run_ref_mi: 20 } }),
+    JSON.stringify({
+      athlete_name: "Fixture",
+      physiology: { body_kg: 70, long_run_ref_mi: 20, home_elevation_ft: 5300 },
+    }),
   );
 
   // The one real artifact: the built single-file shell. Built from the repo,
@@ -260,6 +263,11 @@ test("the payload carries the projection, its inputs, and the crew's own data", 
   assert.ok(Number.isFinite(data.fit.base), "the fitted pace model rides along");
   assert.equal(data.knobs.fatiguePctPer10mi, 5, "planner defaults when no knobs are given");
   assert.equal(data.knobs.goalH, 12, "goal defaults to 85% of the 14 h cutoff, to the nearest half hour");
+  assert.deepEqual(
+    data.knobs.altitude,
+    { pct: 100, homeElevationFt: 5300, acclimationDays: 0 },
+    "the altitude term is resolved from the athlete's own acclimated elevation",
+  );
 
   // the evaluated projection
   assert.equal(data.projection.stations.length, 4);
@@ -315,6 +323,14 @@ test("sanitizeKnobs keeps only finite, recognised knobs", () => {
   assert.deepEqual(sanitizeKnobs({ fatiguePctPer10mi: NaN, calibrationPct: 4 }), { calibrationPct: 4 });
   assert.deepEqual(sanitizeKnobs({ goalH: null }), { goalH: null }, "null goal = no goal, a real setting");
   assert.deepEqual(sanitizeKnobs({ stopOverridesMin: { A: -1, B: 3 } }).stopOverridesMin, { B: 3 });
+  assert.deepEqual(sanitizeKnobs({ altitude: null }), { altitude: null }, "no term is a real setting");
+  assert.deepEqual(
+    sanitizeKnobs({ altitude: { pct: 80, homeElevationFt: "high", acclimationDays: -3 } }).altitude,
+    { pct: 80, homeElevationFt: null, acclimationDays: 0 },
+    "a non-numeric home elevation means 'nobody set one', not a crash",
+  );
+  assert.equal(sanitizeKnobs({ altitude: { homeElevationFt: 5000 } }).altitude, undefined,
+    "an altitude block with no knob in it is not a setting");
 });
 
 test("crewPickups pairs a crew station with the leg departing it", () => {
@@ -342,19 +358,12 @@ test("crewPickups pairs a crew station with the leg departing it", () => {
 test("the page's own renderer turns the payload into station rows", async () => {
   const data = await buildCrewData(root, SLUG, { now: NOW });
   const { projectRace } = await import("../web/src/race/pacing.ts");
+  const { projectOptions } = await import("../web/src/crew/crewData.ts");
   const { renderCrewPage, stationRows } = await import("../web/src/crew/render.ts");
 
-  // exactly what src/crew/main.ts does on load
-  const live = projectRace(data.course, data.fit, {
-    fatiguePctPer10mi: data.knobs.fatiguePctPer10mi,
-    calibrationPct: data.knobs.calibrationPct,
-    restraintPct: data.knobs.restraintPct,
-    gradeCurve: data.grade_curve,
-    goalH: data.knobs.goalH,
-    aidStopMin: data.knobs.aidStopMin,
-    crewStopMin: data.knobs.crewStopMin,
-    stopOverridesMin: data.knobs.stopOverridesMin,
-  });
+  // exactly what src/crew/main.ts does on load — through the SAME mapping, so
+  // a knob that stops being threaded fails here rather than in a canyon
+  const live = projectRace(data.course, data.fit, projectOptions(data));
 
   const rows = stationRows(data, live);
   assert.equal(rows.length, 4);
@@ -384,6 +393,34 @@ test("renderCrewPage escapes prose rather than trusting it", async () => {
   const html = renderCrewPage(data, null);
   assert.equal(html.includes("<img"), false, "a tag in race prose must not become a tag");
   assert.match(html, /&lt;img/);
+});
+
+test("the altitude term rides along, gated by the race's own feature flag", async () => {
+  // A 7,000 ft course above a 5,300 ft home: the term must cost time, and the
+  // exported ETAs must be the ones that include it.
+  const withAltitude = await buildCrewData(root, SLUG, { now: NOW });
+  const without = await buildCrewData(root, SLUG, { now: NOW, knobs: { altitude: null } });
+  assert.ok(
+    withAltitude.projection.finish_h.avg > without.projection.finish_h.avg,
+    "altitude above the athlete's home has to slow the projection down",
+  );
+
+  // A race that declares it has no altitude gets no term, whatever the profile
+  // says — the same gate the planner applies.
+  const flat = path.join(root, "races", "flatland");
+  await fs.mkdir(path.join(flat, "build"), { recursive: true });
+  await fs.writeFile(
+    path.join(flat, "race.json"),
+    JSON.stringify({ ...fixtureRace(), slug: "flatland", features: { altitude: false } }),
+  );
+  await fs.writeFile(path.join(flat, "build", "course.json"), JSON.stringify(fixtureCourse()));
+  const gated = await buildCrewData(root, "flatland", { now: NOW });
+  assert.equal(gated.knobs.altitude, null, "features.altitude: false means no term at all");
+  assert.equal(
+    gated.projection.finish_h.avg,
+    without.projection.finish_h.avg,
+    "…and the same finish the term-less projection gives",
+  );
 });
 
 /* ---------------- refusals ---------------- */

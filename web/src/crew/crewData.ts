@@ -1,5 +1,5 @@
 import type { Course, CrewBase, RaceConfig } from "../race/types";
-import type { PaceGradeCurve, PacingFit, ProjectOptions, Scenario } from "../race/pacing";
+import type { AltitudeOptions, PaceGradeCurve, PacingFit, ProjectOptions, Scenario } from "../race/pacing";
 import type { DropBag, FuelPlan, FuelSegment, NutritionConfig } from "../race/nutrition";
 
 /* ------------------------------------------------------------------ */
@@ -42,13 +42,22 @@ export const CREW_DATA_ELEMENT_ID = "crew-data";
     athlete was looking at when they pressed the button. */
 export type CrewKnobs = Required<Pick<ProjectOptions,
   "fatiguePctPer10mi" | "calibrationPct" | "restraintPct" | "aidStopMin" | "crewStopMin" | "stopOverridesMin"
->> & { goalH: number | null };
+>> & {
+  goalH: number | null;
+  /** the altitude term EXACTLY as projectRace was given it — the knob, the
+      acclimated elevation and the acclimation days resolved together. null
+      means no altitude term at all, which is what a race declaring
+      `features.altitude: false` gets and what a pre-altitude export carries.
+      Resolved rather than re-derived so the page's local re-projection cannot
+      reach a different answer than the exporter did. */
+  altitude: AltitudeOptions | null;
+};
 
 /** The planner's own defaults, for a CLI export with no --knobs file.
     KEEP IN SYNC with useRacePlanInstance's usePersistedNumber initial values.
     `goalH` is the exception: its default is a function of the race's cutoff
     (see defaultGoalH), so it is filled per race rather than fixed here. */
-export const DEFAULT_CREW_KNOBS: Omit<CrewKnobs, "goalH"> = {
+export const DEFAULT_CREW_KNOBS: Omit<CrewKnobs, "goalH" | "altitude"> = {
   fatiguePctPer10mi: 5,
   calibrationPct: 6,
   restraintPct: 8,
@@ -56,6 +65,10 @@ export const DEFAULT_CREW_KNOBS: Omit<CrewKnobs, "goalH"> = {
   crewStopMin: 10,
   stopOverridesMin: {},
 };
+
+/** The altitude knob's default, % of the published curve. KEEP IN SYNC with
+    useRacePlanInstance's `altitude_pct`. */
+export const DEFAULT_ALTITUDE_PCT = 100;
 
 /** 85 % of the cutoff to the nearest half hour — the planner's goal default.
     KEEP IN SYNC with useRacePlanInstance's `goalDefaultH`. */
@@ -149,6 +162,30 @@ export type CrewData = {
   crew_pickups: CrewPickup[];
   nutrition: NutritionConfig;
 };
+
+/**
+ * The knobs as projectRace wants them.
+ *
+ * ONE place turns a CrewData into ProjectOptions — the page uses it on load,
+ * bead 08's checkpoint updater re-projects through it, and the export's own
+ * test asserts against it. A second hand-written copy of this mapping is how
+ * a knob gets added to the planner, embedded in the file, and then silently
+ * dropped by whoever re-projects: the sheet would still render, with numbers
+ * that no longer match the ones it was exported with.
+ */
+export function projectOptions(data: CrewData): ProjectOptions {
+  return {
+    fatiguePctPer10mi: data.knobs.fatiguePctPer10mi,
+    calibrationPct: data.knobs.calibrationPct,
+    restraintPct: data.knobs.restraintPct,
+    gradeCurve: data.grade_curve,
+    goalH: data.knobs.goalH,
+    aidStopMin: data.knobs.aidStopMin,
+    crewStopMin: data.knobs.crewStopMin,
+    stopOverridesMin: data.knobs.stopOverridesMin,
+    altitude: data.knobs.altitude,
+  };
+}
 
 /** Read the embedded block out of the page. Returns null when the shell was
     opened un-injected (the placeholder is an empty object) so the page can

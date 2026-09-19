@@ -1,5 +1,5 @@
 import { projectRace, type RaceProjection } from "../race/pacing";
-import { readCrewData } from "./crewData";
+import { projectOptions, readCrewData } from "./crewData";
 import { renderCrewPage } from "./render";
 import "./crew.css";
 
@@ -37,16 +37,7 @@ function mount(): void {
 
   let live: RaceProjection | null;
   try {
-    live = projectRace(data.course, data.fit, {
-      fatiguePctPer10mi: data.knobs.fatiguePctPer10mi,
-      calibrationPct: data.knobs.calibrationPct,
-      restraintPct: data.knobs.restraintPct,
-      gradeCurve: data.grade_curve,
-      goalH: data.knobs.goalH,
-      aidStopMin: data.knobs.aidStopMin,
-      crewStopMin: data.knobs.crewStopMin,
-      stopOverridesMin: data.knobs.stopOverridesMin,
-    });
+    live = projectRace(data.course, data.fit, projectOptions(data));
   } catch (e) {
     // A local re-projection that throws must not blank the sheet: the ETAs
     // computed at export time are embedded too, and renderCrewPage falls back
