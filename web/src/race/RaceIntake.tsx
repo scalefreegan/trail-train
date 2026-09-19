@@ -655,6 +655,11 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   const [aidEdits, setAidEdits] = useState<Record<number, AidEdit>>({});
   const [blockEdits, setBlockEdits] = useState<Record<number, { target_dist?: number; target_elev?: number }>>({});
   const [themeEdit, setThemeEdit] = useState<string | null>(null);
+  // PRD v2 §4: intake seeds tracking.url off the race site; the bib and the
+  // name the athlete is entered under are things only they know, so they are
+  // filled in here. Absent until touched, so a save that never went near
+  // them sends no `tracking` at all.
+  const [trackingEdit, setTrackingEdit] = useState<{ bib?: string; name?: string } | null>(null);
   const [fills, setFills] = useState<Record<string, string>>({});
   const [acked, setAcked] = useState<Record<string, boolean>>({});
 
@@ -704,7 +709,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
         // REVERT is "every control in the dialog back to the on-disk state"
         // (round 1, bug R3/D6) — that includes the acknowledge checkboxes,
         // not just the edit buffers.
-        setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setFills({}); setAcked({});
+        setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setTrackingEdit(null); setFills({}); setAcked({});
         setSaveError(keepErrorRef.current);
         keepErrorRef.current = null;
         setLoadError(null);
@@ -761,7 +766,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   const ackDirty = openHoles.some((p) => isAcked(p) !== diskAcked(data, p));
 
   const dirty = Object.keys(aidEdits).length > 0 || Object.keys(blockEdits).length > 0 ||
-    themeEdit !== null || Object.values(fills).some((v) => v.trim()) || ackDirty;
+    themeEdit !== null || trackingEdit !== null || Object.values(fills).some((v) => v.trim()) || ackDirty;
 
   const runStageAgain = async (which: "build" | "plan") => {
     setStage(which);
@@ -814,6 +819,10 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       .filter((r) => Object.keys(r).length > 1);
     if (rows.length) body.aid_stations = rows;
     if (themeEdit !== null) body.visual = { theme_preset: themeEdit };
+    // Only the two fields this screen renders. The url rides along
+    // untouched — it is intake's, and the server's whitelist would take it
+    // from here too, but nothing here offers to change it.
+    if (trackingEdit !== null) body.tracking = trackingEdit;
     // Contract with fixer A: unresolved_acknowledged becomes a list of
     // acknowledged paths. The current server still stores/returns a single
     // boolean (`diskAcked` tolerates that on read), but every write from here
@@ -889,7 +898,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       const body = buildBody();
       if (Object.keys(body).length === 0) { setBusy(null); return; }
       setData(await put(body));
-      setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setFills({}); setAcked({});
+      setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setTrackingEdit(null); setFills({}); setAcked({});
       onReload();
     } catch (e) {
       // `put()`'s own refusals carry `.errors` (the server's per-field
@@ -1020,6 +1029,49 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
               {race.review_notes}
             </p>
           )}
+        </Block>
+
+        {/* PRD v2 §4 — who to look for on the race's live tracker. The URL
+            is intake's (it comes off the race site) and is shown, not
+            edited; the bib and the name are the athlete's own and nothing
+            but a human knows them, which is the whole reason they are here
+            and not in a generated file. Both are optional: the
+            OpenSplitTime adapter finds a runner by either. */}
+        <Block>
+          <Eyebrow>live tracker</Eyebrow>
+          <div style={{ fontSize: 11, color: "var(--mist-mute)", marginBottom: 8, overflowWrap: "anywhere" }}>
+            {race.tracking?.url
+              ? race.tracking.url
+              : "no tracker URL on this folder yet — intake fills it in from the race site, and race-day mode falls back to the manual checkpoint without one"}
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <label style={{ fontSize: 11, color: "var(--mist-mute)", display: "flex", flexDirection: "column", gap: 4 }}>
+              bib
+              <input
+                aria-label="tracker bib"
+                maxLength={40}
+                style={{ ...inputStyle, width: 110 }}
+                value={trackingEdit?.bib ?? race.tracking?.bib ?? ""}
+                onChange={(e) => {
+                  setSaveError(null);
+                  setTrackingEdit((p) => ({ ...p, bib: e.target.value }));
+                }}
+              />
+            </label>
+            <label style={{ fontSize: 11, color: "var(--mist-mute)", display: "flex", flexDirection: "column", gap: 4, flex: "1 1 200px", minWidth: 0 }}>
+              name on the tracker
+              <input
+                aria-label="tracker name"
+                maxLength={40}
+                style={{ ...inputStyle, width: "100%" }}
+                value={trackingEdit?.name ?? race.tracking?.name ?? ""}
+                onChange={(e) => {
+                  setSaveError(null);
+                  setTrackingEdit((p) => ({ ...p, name: e.target.value }));
+                }}
+              />
+            </label>
+          </div>
         </Block>
 
         {data.refresh_interrupted && (
