@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
-import { useActiveRace, useBlockConfig, useUnits } from "../data";
+import { useActiveRace, useBlockConfig, useRefresh, useUnits } from "../data";
+import { raceLocalParts } from "./clock";
 import { clearHash } from "./hashRoute";
 import { fmtCarry, type DropBag, type FuelPlan, type FuelSegment } from "./nutrition";
 import { fmtElapsed, type StationProjection } from "./pacing";
+import { resolveHold } from "./raceDayHold";
 import { RacePlanProvider } from "./RacePlanProvider";
 import { RaceErrorBoundary } from "./RaceErrorBoundary";
 import { useCrewBase } from "./useRaceData";
 import { useRacePlan, type RacePlan } from "./useRacePlan";
+import { useRunCourseAgain } from "./runCourseAgain";
 
 /* ------------------------------------------------------------------ */
 /*  Race-day mode (PRD §7) — the glanceable phone companion to the     */
@@ -123,6 +126,17 @@ function fmtSigned(h: number): string {
   return `${h < 0 ? "−" : "+"}${fmtElapsed(Math.abs(h))}`;
 }
 
+/** Countdown to the gun: "Xh Ym" once under a day, "Xd Yh" beyond that.
+    Plain hours with no bound reads as "7869h 53m" for a race a year out —
+    nobody parses that at a glance, and the dashboard's own command bar
+    already gets it right in the same session ("RACE IN 328 days"). */
+function fmtCountdown(h: number): string {
+  if (h < 24) return fmtElapsed(h);
+  const days = Math.floor(h / 24);
+  const hh = Math.floor(h - days * 24);
+  return `${days}d ${hh}h`;
+}
+
 /* Cutoff margin colouring, in the units that matter at 3am: under an hour
    is a decision, under two is a warning, more is fine. */
 function marginColor(h: number | null): string {
@@ -236,12 +250,23 @@ export function RaceDay() {
   // knobs (useRacePlan) — view mode browses a different folder
   const { viewing, error: activeError, offline, viewOnlyCacheMiss } = useActiveRace();
   const { crewBase } = useCrewBase();
+  const { reload } = useRefresh();
   const now = useNow();
   const [posMi, setPosMi] = usePosition(viewing);
   const [miDraft, setMiDraft] = useState("");
+  const [stationDraft, setStationDraft] = useState("");
+  // D8: the same free, deterministic build the switcher's "Run course
+  // again…" row and the fuel view's empty state call.
+  const courseBuild = useRunCourseAgain(missing ? viewing : null, reload);
 
   const elapsedH = (now - raceStart.getTime()) / 3_600_000;
   const started = elapsedH >= 0;
+  // The race's OWN calendar date vs. today, both read on the race's clock —
+  // not "has the gun gone off" (elapsedH >= 0 is true for the entire race,
+  // including one still under way) but "is race day itself behind us."
+  // D5: a race whose date has passed kept projecting a finish as if the
+  // runner were still on pace 9 days after the gun.
+  const racePast = raceLocalParts(raceStart, plan.timeZone).iso < raceLocalParts(now, plan.timeZone).iso;
   const stations = proj?.stations ?? [];
   // Where to measure "to go" from: the stated mile if the runner gave one,
   // otherwise the mile the plan has them at right now. Both are honest —
@@ -274,136 +299,193 @@ export function RaceDay() {
           {race.clock(elapsedH)}
         </div>
         <div className="numerals" style={{ fontSize: 15, color: "var(--mist-dim)", marginTop: 6 }}>
-          {started
+          {racePast
+            ? <span style={{ color: "var(--mist-mute)" }}>race day has passed</span>
+            : started
             ? <>elapsed <b style={{ color: "var(--mist)" }}>{fmtElapsed(elapsedH)}</b>
                 {race.cutoff_h != null && <> · cutoff {fmtElapsed(race.cutoff_h)}</>}</>
-            : <>starts in <b style={{ color: "var(--lamp)" }}>{fmtElapsed(-elapsedH)}</b> · gun {race.clock(0)}</>}
+            : <>starts in <b style={{ color: "var(--lamp)" }}>{fmtCountdown(-elapsedH)}</b> · gun {race.clock(0)}</>}
         </div>
       </header>
 
       {staleNotice && <Notice tone="warn">{staleNotice}</Notice>}
 
-      {/* ---------- the plan, or why there isn't one ---------- */}
-      {!proj ? (
+      {racePast ? (
+        // D5: a race whose calendar date is behind us used to keep
+        // projecting a finish "on pace" no matter how far past the cutoff
+        // the clock had run (218h elapsed against a 38h cutoff, still
+        // showing a finish ETA). Race day is over; say so instead of
+        // guessing a position for a runner who is either long done or long
+        // since stopped.
         <Notice tone="mute">
-          {missing
-            ? "No course.json for this race yet — build the course and reload."
-            : "The projection needs the course profile and a Strava pace fit. Open the dashboard on the laptop once to load them."}
+          {race.short} was {raceLocalParts(raceStart, plan.timeZone).iso} — race day has passed, so this page
+          won't project a live position for it any more. Archive it with a result from the dashboard switcher
+          when you're ready.
         </Notice>
-      ) : !next ? (
-        <FinishedCard finishH={proj.finish_h.avg} clock={race.clock} elapsedH={elapsedH} />
       ) : (
         <>
-          <NextStation
-            sp={next}
-            plan={plan}
-            idx={idx}
-            elapsedH={elapsedH}
-            posMi={posEff}
-            legs={{ out: legOut(fuelPlan, idx), through: legThrough(fuelPlan, idx) }}
-            bag={features.drop_bags && next.station.drop_bag
-              ? fuelPlan?.drop_bags.find((b) => b.station === next.station.name) ?? null
-              : null}
-            drive={drives[next.station.name] ?? null}
-            baseLabel={crewBase?.base?.label ?? "base"}
-          />
-
-          {upcoming.length > 0 && (
+          {/* ---------- the plan, or why there isn't one ---------- */}
+          {!proj ? (
+            <Notice tone="mute">
+              {missing ? (
+                <>
+                  No course.json for this race yet.
+                  <div style={{ marginTop: 10 }}>
+                    <button
+                      className="chip"
+                      onClick={courseBuild.run}
+                      disabled={courseBuild.busy}
+                      style={{ minHeight: 40, padding: "0 14px" }}
+                    >
+                      {courseBuild.busy ? "building…" : "run course build"}
+                    </button>
+                    <div style={{ marginTop: 6 }}>Parses the stored GPX — free, no agent turn.</div>
+                    {courseBuild.error && <div style={{ color: "var(--ember)", marginTop: 6 }}>{courseBuild.error}</div>}
+                  </div>
+                </>
+              ) : (
+                "The projection needs the course profile and a Strava pace fit. Open the dashboard on the laptop once to load them."
+              )}
+            </Notice>
+          ) : !next ? (
+            <FinishedCard finishH={proj.finish_h.avg} clock={race.clock} elapsedH={elapsedH} />
+          ) : (
             <>
-              <Eyebrow style={{ marginTop: 20, marginBottom: 6 }}>then</Eyebrow>
-              {upcoming.map((sp) => (
-                <CompactStation key={sp.station.name} sp={sp} clock={race.clock} />
-              ))}
+              <NextStation
+                sp={next}
+                plan={plan}
+                idx={idx}
+                elapsedH={elapsedH}
+                posMi={posEff}
+                legs={{ out: legOut(fuelPlan, idx), through: legThrough(fuelPlan, idx) }}
+                bag={features.drop_bags && next.station.drop_bag
+                  ? fuelPlan?.drop_bags.find((b) => b.station === next.station.name) ?? null
+                  : null}
+                drive={drives[next.station.name] ?? null}
+                baseLabel={crewBase?.base?.label ?? "base"}
+              />
+
+              {upcoming.length > 0 && (
+                <>
+                  <Eyebrow style={{ marginTop: 20, marginBottom: 6 }}>then</Eyebrow>
+                  {upcoming.map((sp) => (
+                    <CompactStation key={sp.station.name} sp={sp} clock={race.clock} />
+                  ))}
+                </>
+              )}
+
+              {/* finish, always — it is the only number anyone actually wants */}
+              <div
+                className="numerals"
+                style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "baseline",
+                  gap: 10, marginTop: 14, padding: "10px 2px", borderTop: "1px solid var(--edge)",
+                }}
+              >
+                <span className="eyebrow" style={{ fontSize: 9 }}>finish</span>
+                <span style={{ fontSize: 17 }}>
+                  <span style={{ color: "var(--pine)", fontSize: 13 }}>{race.clock(proj.finish_h.best)}</span>
+                  {" · "}<b>{race.clock(proj.finish_h.avg)}</b>{" · "}
+                  <span style={{ color: "var(--ember)", fontSize: 13 }}>{race.clock(proj.finish_h.worst)}</span>
+                </span>
+              </div>
             </>
           )}
 
-          {/* finish, always — it is the only number anyone actually wants */}
-          <div
-            className="numerals"
+          {/* ---------- where am I ---------- */}
+          <Eyebrow style={{ marginTop: 22, marginBottom: 8 }}>where am i</Eyebrow>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "stretch" }}>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const resolved = resolveHold(stationDraft, miDraft, u.system);
+                // Nothing valid to commit (both drafts empty, or an
+                // unparseable/negative mile) is a no-op — SET must never
+                // fall back to mile 0 (D1/D2).
+                if (resolved == null) return;
+                setPosMi(resolved);
+                setStationDraft("");
+                setMiDraft("");
+              }}
+              style={{ display: "flex", gap: 6, flex: "1 1 150px", minWidth: 0 }}
+            >
+              <input
+                value={miDraft}
+                onChange={(e) => { setMiDraft(e.target.value); setStationDraft(""); }}
+                /* decimal, not numeric: mile 42.3 needs the point on iOS */
+                inputMode="decimal"
+                placeholder={`mile (${u.distUnit})`}
+                aria-label={`current mile (${u.distUnit})`}
+                className="numerals"
+                style={{
+                  flex: 1, minWidth: 0, minHeight: 44, padding: "0 10px", fontSize: 15,
+                  background: "var(--night-deep)", border: "1px solid var(--edge-bright)", color: "var(--mist)",
+                }}
+              />
+              <button type="submit" className="chip" style={{ minHeight: 44, padding: "0 14px" }}>set</button>
+            </form>
+            {posMi != null && (
+              <button
+                className="chip"
+                onClick={() => { setPosMi(null); setStationDraft(""); setMiDraft(""); }}
+                style={{ minHeight: 44, padding: "0 14px" }}
+              >
+                auto
+              </button>
+            )}
+          </div>
+          {/* Controlled by stationDraft, not committed until SET: picking a
+              station used to move the hold on *change*, and then SET — read
+              as "confirm what I just picked" — actually submitted the (now
+              empty-looking) mile field instead, silently resetting the hold
+              to mile 0. Now the select just stages a choice, SET commits
+              whichever draft has something in it (see resolveHold), and the
+              picked station stays visible instead of snapping back to the
+              placeholder. */}
+          <select
+            value={stationDraft}
+            onChange={(e) => { setStationDraft(e.target.value); setMiDraft(""); }}
+            aria-label="just left a station"
             style={{
-              display: "flex", justifyContent: "space-between", alignItems: "baseline",
-              gap: 10, marginTop: 14, padding: "10px 2px", borderTop: "1px solid var(--edge)",
+              width: "100%", minHeight: 44, marginTop: 8, padding: "0 10px", fontSize: 15,
+              background: "var(--night-deep)", border: "1px solid var(--edge-bright)",
+              color: "var(--mist)", fontFamily: "var(--font-body)",
             }}
           >
-            <span className="eyebrow" style={{ fontSize: 9 }}>finish</span>
-            <span style={{ fontSize: 17 }}>
-              <span style={{ color: "var(--pine)", fontSize: 13 }}>{race.clock(proj.finish_h.best)}</span>
-              {" · "}<b>{race.clock(proj.finish_h.avg)}</b>{" · "}
-              <span style={{ color: "var(--ember)", fontSize: 13 }}>{race.clock(proj.finish_h.worst)}</span>
-            </span>
-          </div>
+            <option value="">just left…</option>
+            {stations.map((sp) => (
+              <option key={sp.station.name} value={sp.station.total_mi}>
+                {sp.station.name} · {u.dist(sp.station.total_mi)} {u.distUnit}
+              </option>
+            ))}
+          </select>
+          {stationDraft !== "" && (
+            <div className="numerals" style={{ fontSize: 11, color: "var(--lamp)", marginTop: 6 }}>
+              picked — press SET to hold here
+            </div>
+          )}
+          {posMi == null ? (
+            <div className="numerals" style={{ fontSize: 12, color: "var(--mist-mute)", marginTop: 8, lineHeight: 1.6 }}>
+              auto — position and “to go” come from the projection against the clock.
+              Say where you actually are if it has drifted.
+            </div>
+          ) : (
+            <div className="numerals" style={{ fontSize: 12, color: "var(--mist-dim)", marginTop: 8, lineHeight: 1.6 }}>
+              held at <b style={{ color: "var(--mist)" }}>{u.dist(posMi)} {u.distUnit}</b>
+              {proj && started && (() => {
+                const planMi = proj.mileAtElapsed(elapsedH);
+                const d = posMi - planMi;
+                if (Math.abs(d) < 0.15) return <> · on plan</>;
+                return <> · <span style={{ color: d > 0 ? "var(--pine)" : "var(--ember)" }}>
+                  {u.dist(Math.abs(d), 1)} {u.distUnit} {d > 0 ? "ahead of" : "behind"} plan
+                </span></>;
+              })()}
+              <div style={{ color: "var(--mist-mute)" }}>
+                ETAs below are still the planned ones — “auto” hands the next station back to the clock.
+              </div>
+            </div>
+          )}
         </>
-      )}
-
-      {/* ---------- where am I ---------- */}
-      <Eyebrow style={{ marginTop: 22, marginBottom: 8 }}>where am i</Eyebrow>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "stretch" }}>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const n = Number(miDraft);
-            if (Number.isFinite(n) && n >= 0) { setPosMi(u.system === "metric" ? n / 1.609344 : n); setMiDraft(""); }
-          }}
-          style={{ display: "flex", gap: 6, flex: "1 1 150px", minWidth: 0 }}
-        >
-          <input
-            value={miDraft}
-            onChange={(e) => setMiDraft(e.target.value)}
-            /* decimal, not numeric: mile 42.3 needs the point on iOS */
-            inputMode="decimal"
-            placeholder={`mile (${u.distUnit})`}
-            aria-label={`current mile (${u.distUnit})`}
-            className="numerals"
-            style={{
-              flex: 1, minWidth: 0, minHeight: 44, padding: "0 10px", fontSize: 15,
-              background: "var(--night-deep)", border: "1px solid var(--edge-bright)", color: "var(--mist)",
-            }}
-          />
-          <button type="submit" className="chip" style={{ minHeight: 44, padding: "0 14px" }}>set</button>
-        </form>
-        {posMi != null && (
-          <button className="chip" onClick={() => setPosMi(null)} style={{ minHeight: 44, padding: "0 14px" }}>
-            auto
-          </button>
-        )}
-      </div>
-      <select
-        value=""
-        onChange={(e) => { if (e.target.value !== "") setPosMi(Number(e.target.value)); }}
-        aria-label="just left a station"
-        style={{
-          width: "100%", minHeight: 44, marginTop: 8, padding: "0 10px", fontSize: 15,
-          background: "var(--night-deep)", border: "1px solid var(--edge-bright)",
-          color: "var(--mist)", fontFamily: "var(--font-body)",
-        }}
-      >
-        <option value="">just left…</option>
-        {stations.map((sp) => (
-          <option key={sp.station.name} value={sp.station.total_mi}>
-            {sp.station.name} · {u.dist(sp.station.total_mi)} {u.distUnit}
-          </option>
-        ))}
-      </select>
-      {posMi == null ? (
-        <div className="numerals" style={{ fontSize: 12, color: "var(--mist-mute)", marginTop: 8, lineHeight: 1.6 }}>
-          auto — position and “to go” come from the projection against the clock.
-          Say where you actually are if it has drifted.
-        </div>
-      ) : (
-        <div className="numerals" style={{ fontSize: 12, color: "var(--mist-dim)", marginTop: 8, lineHeight: 1.6 }}>
-          held at <b style={{ color: "var(--mist)" }}>{u.dist(posMi)} {u.distUnit}</b>
-          {proj && started && (() => {
-            const planMi = proj.mileAtElapsed(elapsedH);
-            const d = posMi - planMi;
-            if (Math.abs(d) < 0.15) return <> · on plan</>;
-            return <> · <span style={{ color: d > 0 ? "var(--pine)" : "var(--ember)" }}>
-              {u.dist(Math.abs(d), 1)} {u.distUnit} {d > 0 ? "ahead of" : "behind"} plan
-            </span></>;
-          })()}
-          <div style={{ color: "var(--mist-mute)" }}>
-            ETAs below are still the planned ones — “auto” hands the next station back to the clock.
-          </div>
-        </div>
       )}
     </Shell>
   );
