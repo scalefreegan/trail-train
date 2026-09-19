@@ -163,6 +163,15 @@ const RACE_GROUPS: { status: RaceListEntry["status"]; label: string }[] = [
   { status: "archived", label: "archived" },
 ];
 
+/** The last successfully-loaded race list, so a switcher open with the dev
+    server unreachable can still show what races exist (greyed out) instead
+    of collapsing to "New race…" as the only row that looks actionable
+    (round 3, new finding 3). Written on every successful /api/races read;
+    read only when that fetch fails AND the menu never loaded a list this
+    session (`races` is still null) — a list already in state is kept as-is
+    regardless of this cache. */
+const RACES_CACHE_KEY = "bc.cache.races";
+
 /** The only mode a folder may be pointed at in — mirrors validateActivation
     in scripts/race-config.mjs, which is what actually enforces it. Picking it
     here rather than offering both keeps the menu one click deep: an active
@@ -337,16 +346,30 @@ function RaceSwitcher() {
         // next reopen even without an intervening switch of its own (round
         // 2, generic finding 5).
         setError(null);
+        // So a LATER open with the server down (below) has something to show
+        // instead of nothing — the whole point of this cache.
+        try { localStorage.setItem(RACES_CACHE_KEY, JSON.stringify(d.races)); } catch { /* ignore */ }
       })
       .catch((e: unknown) => {
         if (stale) return;
         // Keep whatever was loaded last, rather than blanking the list to
         // "New race…" as the one thing left that looks clickable — a paid
         // agent run is not a reasonable stand-in for "the server is down"
-        // (round 2, resilience finding 6). Only a folder that has genuinely
-        // never loaded (first open, server already unreachable) falls back
-        // to empty.
-        setRaces((prev) => prev ?? []);
+        // (round 2, resilience finding 6; round 3, new finding 3: a menu
+        // that had never successfully loaded this session — first open,
+        // server already unreachable — still fell back to empty, since
+        // there was nothing in `prev` to keep). Fall back to the last
+        // successfully-loaded list from localStorage in that case; the rows
+        // render disabled/greyed (see `error` below) so nothing here claims
+        // to be current.
+        setRaces((prev) => {
+          if (prev) return prev;
+          try {
+            const cached = localStorage.getItem(RACES_CACHE_KEY);
+            if (cached) return JSON.parse(cached) as RaceListEntry[];
+          } catch { /* ignore — falls through to empty */ }
+          return [];
+        });
         setError(friendlyFetchError(e));
       });
     return () => { stale = true; };
@@ -550,14 +573,17 @@ function RaceSwitcher() {
                       swatch={entry.error ? null : (
                         <ThemePreview visual={entry.visual} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round />
                       )}
-                      disabled={!!entry.error || busy != null}
-                      busy={busy?.slug === entry.slug}
-                      // The rebuild stage shares this row's busy slot with a
-                      // real pointer switch (both key off the same slug) —
-                      // "switching…" would be simply wrong while a free
-                      // course rebuild is what's actually running (round 2,
-                      // generic finding 6).
-                      busyLabel={busy?.slug === entry.slug && busy.kind === "build" ? "building…" : "switching…"}
+                      disabled={!!entry.error || busy != null || !!error}
+                      // The rebuild stage shares this row's busy SLOT with a
+                      // real pointer switch (both key off the same slug), but
+                      // it must not borrow this row's busy DISPLAY too — a
+                      // build is the "↳ Run course again…" row's own action,
+                      // and confining the "building…" hint to that row (not
+                      // also replacing this row's own subtitle) is round 2,
+                      // generic finding 6's second half, still open as round
+                      // 3's new finding 5.
+                      busy={busy?.slug === entry.slug && busy.kind === "switch"}
+                      busyLabel="switching…"
                       current={entry.slug === currentSlug}
                       onSelect={() => choose(entry.slug, modeFor(entry.status))}
                     />
@@ -566,7 +592,7 @@ function RaceSwitcher() {
                         {...itemProps("review", entry.slug)}
                         label="↳ Review…"
                         hint="aid chart, profile, unresolved · activate"
-                        disabled={busy != null}
+                        disabled={busy != null || !!error}
                         onSelect={() => { setOpen(false); setIntake({ slug: entry.slug }); }}
                       />
                     )}
@@ -575,7 +601,7 @@ function RaceSwitcher() {
                         {...itemProps("refresh", entry.slug)}
                         label="↳ Refresh from sources…"
                         hint="re-read the site and manual · diff before anything is written"
-                        disabled={busy != null}
+                        disabled={busy != null || !!error}
                         onSelect={() => { setOpen(false); setRefreshing(entry); }}
                       />
                     )}
@@ -587,7 +613,7 @@ function RaceSwitcher() {
                           ? "course rebuilt ✓"
                           : "rebuild course.json from the stored gpx — free, no agent turn"}
                         busyLabel="building…"
-                        disabled={busy != null}
+                        disabled={busy != null || !!error}
                         busy={busy?.slug === entry.slug && busy.kind === "build"}
                         onSelect={() => runCourseAgain(entry.slug)}
                       />
@@ -604,7 +630,7 @@ function RaceSwitcher() {
                   hint={trainingSlug
                     ? `${archiveTarget.short} · link the Strava run`
                     : `${archiveTarget.short} · no activity linked`}
-                  disabled={busy != null}
+                  disabled={busy != null || !!error}
                   onSelect={() => { setOpen(false); setArchiveOpen(archiveTarget); }}
                 />
               )}
@@ -1493,6 +1519,16 @@ function Trajectory() {
     .join(" ").replace(/^L/, "M");
 
   const todayX = wx(currentWeek - 1);
+  // The "WK NN · TODAY" caption sits to the right of the today line by
+  // default, but "today" is very often the last (or near-last) week of the
+  // block — that put the label's box entirely past the svg's own right edge
+  // at every width tested, with `overflow: hidden` on the panel silently
+  // dropping all of it (round 3, new finding 4). ~100px is the label's
+  // rendered width at this fontSize/letterSpacing (measured: ~98px, "WK 12
+  // · TODAY"); once it wouldn't fit to the right of the line, anchor it to
+  // the LEFT of the line instead, still inside the plot.
+  const TODAY_LABEL_W = 100;
+  const todayLabelFitsRight = todayX + 6 + TODAY_LABEL_W <= width - 2;
 
   /* ---- hover: snap to nearest week ---- */
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -1749,7 +1785,12 @@ function Trajectory() {
                     initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 0.6, delay: 1 }}
                     opacity={mode === "cum" ? 1 : 0.45}
                   />
-                  <text x={todayX + 6} y={PAD.top - 8} fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)">
+                  <text
+                    x={todayLabelFitsRight ? todayX + 6 : todayX - 6}
+                    y={PAD.top - 8}
+                    textAnchor={todayLabelFitsRight ? "start" : "end"}
+                    fontSize="10" fontFamily="Spline Sans Mono" letterSpacing="1.5" fill="var(--lamp)"
+                  >
                     WK {currentWeek} · TODAY
                   </text>
     

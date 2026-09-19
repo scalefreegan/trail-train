@@ -414,6 +414,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
                     disabled={uploading || running}
                     onChange={(e) => { void upload(e.target.files); e.target.value = ""; }}
                     style={{ fontSize: 11.5, color: "var(--mist-mute)" }}
+                    aria-label="uploads · PDF, GPX, KML, HTML"
                   />
                   {uploads.length > 0 && (
                     <ul style={{ listStyle: "none", padding: 0, margin: "8px 0 0", display: "flex", flexDirection: "column", gap: 4 }}>

@@ -131,7 +131,8 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
   // to onArchived() instead of a bare onClose(): the pointer and race.json
   // already changed, and the caller's reload() is what picks that up.
   const finish = resultWarning ? onArchived : onClose;
-  const { titleId, dialogProps } = useDialog({ onClose: finish, locked: busy });
+  const dialogTitle = resultWarning ? "archived — one thing to check" : linkedActivityId ? "link result" : "archive with result";
+  const { dialogProps } = useDialog({ onClose: finish, locked: busy, label: dialogTitle });
   // Can't tell locally (no parseable race date) → don't block; the server
   // guard is still the one that actually enforces this.
   const selectedActivity = candidates.find((a) => a.id === activityId) ?? null;
@@ -210,8 +211,8 @@ export function ArchiveRace({ slug, name, raceDate, linkedActivityId, onClose, o
           display: "flex", justifyContent: "space-between", alignItems: "center",
           borderBottom: "1px solid var(--edge)", padding: "16px 24px",
         }}>
-          <div id={titleId} className="eyebrow" style={{ color: "var(--mist-dim)" }}>
-            {resultWarning ? "archived — one thing to check" : linkedActivityId ? "link result" : "archive with result"}
+          <div className="eyebrow" style={{ color: "var(--mist-dim)" }}>
+            {dialogTitle}
           </div>
           <button className="chip" onClick={finish} disabled={busy} style={{ fontSize: 9 }}>close esc</button>
         </div>
