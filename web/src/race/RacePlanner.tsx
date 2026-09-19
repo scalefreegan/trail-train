@@ -12,7 +12,7 @@ import { FuelCard } from "./FuelCard";
 import { DropBagCard } from "./DropBagCard";
 import { fmtCarry } from "./nutrition";
 import { useRunCourseAgain } from "./runCourseAgain";
-import type { VisibleColumns } from "./features";
+import { isTuneUp, type VisibleColumns } from "./features";
 import {
   projectRace, nightIntervals,
   fmtElapsed, raceClockHM,
@@ -449,7 +449,22 @@ export function RacePlanner() {
     return m;
   }, [result]);
   const hasActual = actualByStation.size > 0;
-  const gridClass = "race-grid" + (hasActual ? " has-actual" : "");
+
+  /* The reduced planner (PRD-v2 §3). A tune-up's crew sheet, drop-bag card
+     and caffeine schedule are already gone — features.ts defaults them off
+     for kind "b" — and the fuel PLAN is the last piece that would otherwise
+     be furniture: the quick form writes no nutrition.json, so every gram in
+     the fuel column would come from the impersonal defaults (nutrition.ts's
+     DEFAULT_NUTRITION), for a race short enough that the honest answer is
+     "carry what you like". The column goes with it, rather than standing
+     there empty. Write a nutrition.json into the folder and the column —
+     and the fuel view's own chip, which App.tsx gates on the same two facts
+     — comes straight back. An A race is untouched: defaults with a warning
+     beat no fuel plan on a hundred. */
+  const tuneUp = isTuneUp(raceConfig);
+  const showFuel = !tuneUp || nutritionSource !== "default";
+
+  const gridClass = "race-grid" + (hasActual ? " has-actual" : "") + (showFuel ? "" : " no-fuel");
   const { fatigue, calibration, restraint, goalH, altitude, acclimationOverride,
     aidStopMin, crewStopMin, stopOverrides } = settings;
   const { fatigue: setFatigue, calibration: setCalibration, restraint: setRestraint,
@@ -669,7 +684,8 @@ export function RacePlanner() {
           </span>
         }
       >
-        race planner — {race.short} · {u.dist(course.distance_mi, 0)} {u.distUnit} · {u.elev(course.gain_ft)} {u.elevUnit}↑
+        {tuneUp ? "tune-up planner" : "race planner"} — {race.short} · {u.dist(course.distance_mi, 0)} {u.distUnit} · {u.elev(course.gain_ft)} {u.elevUnit}↑
+        {tuneUp && raceConfig.parent_slug ? ` · inside ${raceConfig.parent_slug}` : ""}
       </SectionTag>
 
       <div className="panel notch" style={{ overflow: "hidden" }}>
@@ -727,10 +743,10 @@ export function RacePlanner() {
               <span style={{ textAlign: "right" }}>cutoff</span>
               <span>margin</span>
             </span>
-            <span className="eyebrow col-fuel" style={{ fontSize: 8.5, textAlign: "right" }}
+            {showFuel && <span className="eyebrow col-fuel" style={{ fontSize: 8.5, textAlign: "right" }}
               title="fuel carried OUT of the previous refill for this split — carb target, Gels/Bloks/tabs beyond the drink mix, heat-adjusted fluid + fill code counting every flask (M mix · W plain water · ↑ drink at aid before leaving); constants in nutrition.json">
               fuel
-            </span>
+            </span>}
             <span className="eyebrow col-flags" style={{ fontSize: 8.5 }}>access</span>
           </div>
           {proj.stations.map((sp, i) => {
@@ -837,7 +853,7 @@ export function RacePlanner() {
                       : ""}
                   </span>
                 </span>
-                <span className="numerals col-fuel" style={{ fontSize: 10.5, textAlign: "right" }}
+                {showFuel && <span className="numerals col-fuel" style={{ fontSize: 10.5, textAlign: "right" }}
                   title={(() => {
                     const f = fuelPlan?.segments.find((seg) => seg.toIdx === i);
                     if (!f) return "no resupply here (no-crew plan) — this station is covered by the carry from the previous refill point";
@@ -858,7 +874,7 @@ export function RacePlanner() {
                       </>
                     );
                   })()}
-                </span>
+                </span>}
                 <span className="col-flags" style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-start" }}>
                   <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
                     {stationFlags(s, columns).map((f) => <FlagChip key={f.label} label={f.label} color={f.color} />)}
@@ -930,7 +946,7 @@ export function RacePlanner() {
                 ) : <span />;
               })()}
             </span>
-            <span className="numerals col-fuel" style={{ fontSize: 10.5, textAlign: "right" }}
+            {showFuel && <span className="numerals col-fuel" style={{ fontSize: 10.5, textAlign: "right" }}
               title={panels.drop_bag_card
                 ? "race totals from the fuel plan — distributed across the drop bags (see ⎙ drop bags 3×5)"
                 : "race totals from the fuel plan — no drop bags on this course, so this is what you carry and what gets restocked at aid"}>
@@ -940,7 +956,7 @@ export function RacePlanner() {
                   <span style={{ display: "block", fontSize: 9, whiteSpace: "nowrap", color: "var(--mist-dim)" }}>{fuelPlan.total_hcf_scoops} hcf</span>
                 </>
               )}
-            </span>
+            </span>}
             <span className="col-flags" />
           </div>
 
@@ -950,7 +966,7 @@ export function RacePlanner() {
             <span className="numerals" style={{ fontSize: 13.5, fontWeight: 700, color: "var(--lamp)" }}>
               {fmtElapsed(proj.stopped_h)}
             </span>
-            {fuelPlan && (
+            {showFuel && fuelPlan && (
               <>
                 <span className="eyebrow" style={{ fontSize: 8.5 }}>fuel totals</span>
                 <span className="numerals" style={{ fontSize: 11, fontWeight: 600 }}
@@ -975,7 +991,7 @@ export function RacePlanner() {
                     {paceGrade?.fitted_at && ` (fitted ${relativeAgo(new Date(paceGrade.fitted_at).getTime())}${paceGrade.runs_pending_time ? `, ${paceGrade.runs_pending_time} runs awaiting time streams` : ""})`}
                     {paceGradeError && <span style={{ color: "var(--ember)" }}> · {paceGradeError}</span>}
                     {nutritionError && <span style={{ color: "var(--ember)" }}> · {nutritionError}</span>}
-                    {!nutritionError && nutritionSource === "default" && raceConfig && (
+                    {!nutritionError && nutritionSource === "default" && raceConfig && showFuel && (
                       <span style={{ color: "var(--ember)" }}> · using default fueling constants — races/{raceConfig.slug}/nutrition.json missing</span>
                     )}
                     {physiologyError && <span style={{ color: "var(--ember)" }}> · {physiologyError}</span>}

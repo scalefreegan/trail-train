@@ -20,6 +20,7 @@ import {
   FEATURE_KEYS,
   PANEL_KEYS,
   hasFeature,
+  isTuneUp,
   resolveFeatures,
   visibleColumns,
   visiblePanels,
@@ -109,6 +110,55 @@ test("visual.panels cannot resurrect a panel the feature flag killed", () => {
 test("an unknown panel key in visual.panels is ignored, not crashed on", () => {
   const r = race({ visual: { panels: { made_up_panel: false } } });
   assert.deepEqual(visiblePanels(r), visiblePanels(null));
+});
+
+/* ---- tune-ups: the one place an absent flag is OFF (PRD-v2 §3) ---- */
+
+/** What scripts/race-intake.mjs's quickCreateRace writes: no `features`
+    block at all, because the quick form never asks about crew. */
+const tuneUp = (patch = {}) => race({ kind: "b", parent_slug: "big-race-2027", status: "draft", ...patch });
+
+test("a tune-up with no features block: no crew, no drop bags, no pacers, no night", () => {
+  const b = tuneUp();
+  assert.equal(isTuneUp(b), true);
+  const f = resolveFeatures(b);
+  assert.equal(f.crew, false);
+  assert.equal(f.drop_bags, false);
+  assert.equal(f.pacers, false);
+  assert.equal(f.night, false, "no caffeine schedule on a Saturday tune-up");
+  // the flags TUNE_UP_DEFAULTS says nothing about keep the default-visible rule
+  assert.equal(f.heat, true);
+  assert.equal(f.altitude, true);
+  assert.equal(f.water_crossings, true);
+});
+
+test("a tune-up's reduced planner: no crew sheet, no drop-bag card, no crew/drop columns", () => {
+  const b = tuneUp();
+  assert.deepEqual(visibleColumns(b), { crew: false, drop_bag: false, pacers: false });
+  const panels = visiblePanels(b);
+  assert.equal(panels.crew_sheet, false);
+  assert.equal(panels.drop_bag_card, false);
+  // the model check and the climb comparison are not feature-gated — a
+  // tune-up still has a course to compare and a projection to check
+  assert.equal(panels.climb_comparison, true);
+  assert.equal(panels.model_check, true);
+});
+
+test("an explicit flag still wins on a tune-up — a crewed tune-up says so", () => {
+  const b = tuneUp({ features: { crew: true, night: true } });
+  assert.equal(hasFeature(b, "crew"), true);
+  assert.equal(hasFeature(b, "night"), true);
+  assert.equal(visiblePanels(b).crew_sheet, true);
+  // the flags it did NOT mention keep the tune-up default
+  assert.equal(hasFeature(b, "drop_bags"), false);
+});
+
+test("kind \"a\" and a folder written before v2 are untouched", () => {
+  assert.equal(isTuneUp(race({ kind: "a" })), false);
+  assert.equal(isTuneUp(race()), false);
+  assert.equal(isTuneUp(null), false);
+  assert.deepEqual(resolveFeatures(race({ kind: "a" })), resolveFeatures(null));
+  assert.deepEqual(resolveFeatures(race()), resolveFeatures(null));
 });
 
 /* ---- the committed fixture ---- */

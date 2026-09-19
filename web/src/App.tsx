@@ -28,11 +28,14 @@ import { RaceDayRoute } from "./race/RaceDay";
 import { RACE_DAY_HASH, useHashRoute } from "./race/hashRoute";
 import { useCourse, useRaceResult } from "./race/useRaceData";
 import { ArchiveRace } from "./race/ArchiveRace";
+import { AddTuneUp } from "./race/AddTuneUp";
 import { friendlyFetchError, runStage } from "./race/dialogChrome";
 import type { RaceView } from "./data";
 import { raceClockHM } from "./race/pacing";
 import { ThemePreview } from "./themes/ThemePreview";
 import type { VisualInput } from "./themes/visual";
+import type { ActiveRaceResponse, RaceKind } from "./race/types";
+import { isTuneUp } from "./race/features";
 
 /* ================================================================== */
 /*  BASECAMP — pre-dawn ops surface for ultra training                 */
@@ -131,8 +134,25 @@ const isAppView = (v: string | null): v is AppView => v != null && (ALL_APP_VIEW
 /** The views this athlete actually has. Race and fuel are a race's views:
     with none active there is no course to project and no start clock to fuel
     against, so they are hidden rather than shown empty (PRD §6). */
-function appViews(race: RaceView | null): AppView[] {
-  return race ? ALL_APP_VIEWS : ["training"];
+function appViews(race: RaceView | null, hideFuel = false): AppView[] {
+  if (!race) return ["training"];
+  return hideFuel ? ALL_APP_VIEWS.filter((v) => v !== "nutrition") : ALL_APP_VIEWS;
+}
+
+/**
+ * Whether the "fuel" chip is worth offering at all.
+ *
+ * The fuel view is built on races/<slug>/nutrition.json, and with no file it
+ * falls back to the impersonal defaults (nutrition.ts) — which is the right
+ * behaviour for an A race: a hundred always needs a fuel plan, and defaults
+ * with a warning beat no page. A tune-up is the opposite case (PRD-v2 §3):
+ * the quick form writes no nutrition.json, and a whole carb/caffeine plan
+ * derived from nobody's numbers for a Saturday 50k is furniture, not advice.
+ * So for kind "b" ONLY, the chip is hidden until the folder actually has a
+ * nutrition.json — write one and it comes straight back.
+ */
+function fuelViewHidden(payload: ActiveRaceResponse | null): boolean {
+  return isTuneUp(payload?.race ?? null) && (payload?.nutrition ?? null) == null;
 }
 
 const VIEW_LABEL: Record<AppView, string> = { training: "training", race: "race", nutrition: "fuel" };
@@ -152,8 +172,23 @@ type RaceListEntry = {
   date: string | null;
   /** the folder's `visual` block — the menu draws each race's accent */
   visual: VisualInput | null;
+  /** "b" = a tune-up sitting inside `parent_slug`'s block (PRD-v2 §3). The
+      server resolves the default: a folder written before v2 reads as "a". */
+  kind?: RaceKind;
+  parent_slug?: string | null;
   error: string | null;
 };
+
+/** The same rows nested, as GET /api/races' `groups` sends them: every A race
+    carrying its tune-ups, oldest first, and an orphan B (its parent folder is
+    gone) left at the top level rather than hidden. The nesting is derived
+    SERVER-side — scripts/race-config.mjs's groupRaces — so the menu and the
+    coach can never disagree about what hangs off what. */
+type RaceGroupEntry = RaceListEntry & { b_races: RaceListEntry[] };
+
+/** An older dev server (or a cache written before v2) answers with the flat
+    list only: every folder then stands on its own, which is the v1 menu. */
+const flatGroups = (list: RaceListEntry[]): RaceGroupEntry[] => list.map((r) => ({ ...r, b_races: [] }));
 
 /** The groups, in menu order. A folder with an unreadable race.json falls
     through all three and lands in its own group at the bottom. */
@@ -169,8 +204,10 @@ const RACE_GROUPS: { status: RaceListEntry["status"]; label: string }[] = [
     (round 3, new finding 3). Written on every successful /api/races read;
     read only when that fetch fails AND the menu never loaded a list this
     session (`races` is still null) — a list already in state is kept as-is
-    regardless of this cache. */
-const RACES_CACHE_KEY = "bc.cache.races";
+    regardless of this cache. The ".v2" suffix is the tune-up nesting: the
+    entry now holds the flat list AND the server's groups, and a v1 cache
+    (a bare array) is simply not read rather than migrated. */
+const RACES_CACHE_KEY = "bc.cache.races.v2";
 
 /** The only mode a folder may be pointed at in — mirrors validateActivation
     in scripts/race-config.mjs, which is what actually enforces it. Picking it
@@ -180,8 +217,10 @@ const modeFor = (status: RaceListEntry["status"]) => (status === "active" ? "tra
 
 /** The races in menu order — grouped by status, unreadable folders last.
     The roving-focus index counts these after the "No race" row, so this
-    order and the render order below are the same list. */
-function orderedRaces(list: RaceListEntry[]): RaceListEntry[] {
+    order and the render order below are the same list. Tune-ups are NOT in
+    it: a B race is rendered inside its A race's block (see rowsFor), not as
+    a top-level row of its own. */
+function orderedRaces(list: RaceGroupEntry[]): RaceGroupEntry[] {
   const known = RACE_GROUPS.flatMap((g) => list.filter((r) => r.status === g.status));
   return [...known, ...list.filter((r) => !RACE_GROUPS.some((g) => g.status === r.status))];
 }
@@ -209,32 +248,48 @@ const isRefreshable = (r: RaceListEntry) => !r.error;
     course data" empty state now offers (RaceDay.tsx, NutritionPlan.tsx). */
 const isRerunnable = (r: RaceListEntry) => r.status === "archived" && !r.error;
 
+/** Only the race being TRAINED for gets an "Add tune-up…" row: a tune-up is
+    a race inside a block, and a draft or an archived folder has no live block
+    to sit inside (PRD-v2 §3 — `weeks_out` is counted from the A race the
+    athlete is actually counting down to). A tune-up cannot itself hold one,
+    and an unreadable folder has no slug to hang one off. */
+const canAddTuneUp = (r: RaceGroupEntry, trainingSlug: string | null) =>
+  r.slug === trainingSlug && r.kind !== "b" && !r.error;
+
 /** How many menu rows a race contributes: itself, plus its "Review…",
-    "Refresh from sources…" and "Run course again…" rows. cursorForSlug and
-    itemCount both count with this, and the render order below has to match
-    it. */
-const rowsFor = (r: RaceListEntry) =>
-  1 + (isReviewable(r) ? 1 : 0) + (isRefreshable(r) ? 1 : 0) + (isRerunnable(r) ? 1 : 0);
+    "Refresh from sources…" and "Run course again…" rows, plus one indented
+    row per tune-up in its block and the "Add tune-up…" row that adds one.
+    cursorForSlug and itemCount both count with this, and the render order
+    below has to match it. */
+const rowsFor = (r: RaceGroupEntry, trainingSlug: string | null) =>
+  1 + (isReviewable(r) ? 1 : 0) + (isRefreshable(r) ? 1 : 0) + (isRerunnable(r) ? 1 : 0)
+  + r.b_races.length + (canAddTuneUp(r, trainingSlug) ? 1 : 0);
 
 /** Where the cursor lands on a given slug, counting the "No race" row above
-    the list and the extra "Review…" row each draft contributes. Has to agree
-    with the render order below — the roving-focus index is an index into the
-    buttons as they are emitted. */
-function cursorForSlug(list: RaceListEntry[], slug: string | null): number {
+    the list and the extra rows each race contributes. Has to agree with the
+    render order below — the roving-focus index is an index into the buttons
+    as they are emitted, tune-up rows included. */
+function cursorForSlug(list: RaceGroupEntry[], slug: string | null, trainingSlug: string | null): number {
   let i = 1;
   for (const r of orderedRaces(list)) {
     if (r.slug === slug) return i;
-    i += rowsFor(r);
+    // its own row, then Review / Refresh / Run-course-again, then the
+    // tune-ups indented under it — the same order the render emits
+    const own = 1 + (isReviewable(r) ? 1 : 0) + (isRefreshable(r) ? 1 : 0) + (isRerunnable(r) ? 1 : 0);
+    const bIdx = r.b_races.findIndex((b) => b.slug === slug);
+    if (bIdx >= 0) return i + own + bIdx;
+    i += rowsFor(r, trainingSlug);
   }
   return 0;
 }
 
 /** The kinds of row in the menu, in order: "No race (generic)", one per race
     folder (a draft followed by its "Review…" row, then every race's "Refresh
-    from sources…" row, then an archived race's "Run course again…" row),
-    then — when there is a race to retire — "Archive with result…", then
-    "New race…". */
-type SwitcherItemKind = "generic" | "race" | "review" | "refresh" | "rerun" | "archive" | "new";
+    from sources…" row, then an archived race's "Run course again…" row, then
+    the tune-ups indented inside that race's block and — on the race being
+    trained for — "Add tune-up…"), then, when there is a race to retire,
+    "Archive with result…", then "New race…". */
+type SwitcherItemKind = "generic" | "race" | "review" | "refresh" | "rerun" | "add-tune-up" | "archive" | "new";
 
 /**
  * The short code in the command bar, as a menu over every race folder.
@@ -251,6 +306,10 @@ function RaceSwitcher() {
 
   const [open, setOpen] = useState(false);
   const [races, setRaces] = useState<RaceListEntry[] | null>(null);
+  /* The same rows nested (GET /api/races' `groups`): tune-ups live inside
+     their A race here, and this — not the flat list — is what the menu
+     renders and what the roving-focus index counts. */
+  const [grouped, setGrouped] = useState<RaceGroupEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   // `kind` distinguishes a real pointer switch from the free course-rebuild
   // stage sharing the same "which row is busy" slot (round 2, generic finding
@@ -271,8 +330,11 @@ function RaceSwitcher() {
   const busyRef = useRef(false);
   /* The intake dialog, and which folder it opens on: null is the form ("New
      race…"), a slug is the review screen of a draft already on disk. */
-  const [intake, setIntake] = useState<{ slug: string | null } | null>(null);
+  const [intake, setIntake] = useState<{ slug: string | null; parentSlug?: string } | null>(null);
   const [archiveOpen, setArchiveOpen] = useState<RaceListEntry | null>(null);
+  /* The tune-up quick form, on the A race whose "Add tune-up…" row opened it
+     (PRD-v2 §3). Null = closed. */
+  const [tuneUpOn, setTuneUpOn] = useState<RaceGroupEntry | null>(null);
   /* The re-intake dialog. It opens on a folder that already exists, and may
      find a diff from an earlier run still waiting in it. */
   const [refreshing, setRefreshing] = useState<RaceListEntry | null>(null);
@@ -284,14 +346,18 @@ function RaceSwitcher() {
 
   const currentSlug = viewing?.slug ?? trainingSlug;
 
-  // Flat, in render order — the roving-focus index is an index into THIS.
+  // Top-level rows bucketed by status, in render order — the roving-focus
+  // index is an index into THIS (each entry's tune-ups included, see
+  // rowsFor). A tune-up is never its own bucket row: it is drawn indented
+  // under its A race whatever its own status is, which is the whole point
+  // of grouping them (PRD-v2 §3).
   const groups = useMemo(() => {
-    const list = races ?? [];
+    const list = grouped ?? [];
     const known = RACE_GROUPS.map((g) => ({ label: g.label, entries: list.filter((r) => r.status === g.status) }));
     // a folder whose race.json would not parse belongs to no status
     const broken = list.filter((r) => !RACE_GROUPS.some((g) => g.status === r.status));
     return [...known, { label: "unreadable", entries: broken }].filter((g) => g.entries.length > 0);
-  }, [races]);
+  }, [grouped]);
 
   // An archived race with no activity linked still has a result to capture —
   // MM100 was archived by the migration long before its Strava run was.
@@ -315,7 +381,7 @@ function RaceSwitcher() {
 
   /** menu length: "No race", every race with its own extra rows, maybe
       "Archive with result…", then "New race…" */
-  const itemCount = (races ?? []).reduce((n, r) => n + rowsFor(r), 0)
+  const itemCount = (grouped ?? []).reduce((n, r) => n + rowsFor(r, trainingSlug), 0)
     + 2 + (archiveTarget ? 1 : 0);
 
   const close = useCallback((restoreFocus = true) => {
@@ -333,12 +399,17 @@ function RaceSwitcher() {
     fetch(`/api/races?t=${Date.now()}`)
       .then(async (r) => {
         if (!r.ok) throw new Error(`races failed to load (HTTP ${r.status})`);
-        return (await r.json()) as { races: RaceListEntry[] };
+        return (await r.json()) as { races: RaceListEntry[]; groups?: RaceGroupEntry[] };
       })
       .then((d) => {
         if (stale) return;
+        // `groups` is the server's nesting (scripts/race-config.mjs's
+        // groupRaces). A server that predates it still answers with the
+        // flat list, and the menu then reads as it did in v1.
+        const nested = d.groups ?? flatGroups(d.races);
         setRaces(d.races);
-        setCursor(cursorForSlug(d.races, currentSlug));
+        setGrouped(nested);
+        setCursor(cursorForSlug(nested, currentSlug, trainingSlug));
         // A successful read of the current server state is as good a signal
         // as any that whatever this menu was complaining about no longer
         // applies — clears a stale "another activation is already in
@@ -348,7 +419,9 @@ function RaceSwitcher() {
         setError(null);
         // So a LATER open with the server down (below) has something to show
         // instead of nothing — the whole point of this cache.
-        try { localStorage.setItem(RACES_CACHE_KEY, JSON.stringify(d.races)); } catch { /* ignore */ }
+        try {
+          localStorage.setItem(RACES_CACHE_KEY, JSON.stringify({ races: d.races, groups: nested }));
+        } catch { /* ignore */ }
       })
       .catch((e: unknown) => {
         if (stale) return;
@@ -362,18 +435,21 @@ function RaceSwitcher() {
         // successfully-loaded list from localStorage in that case; the rows
         // render disabled/greyed (see `error` below) so nothing here claims
         // to be current.
-        setRaces((prev) => {
-          if (prev) return prev;
+        const cached = (() => {
           try {
-            const cached = localStorage.getItem(RACES_CACHE_KEY);
-            if (cached) return JSON.parse(cached) as RaceListEntry[];
-          } catch { /* ignore — falls through to empty */ }
-          return [];
-        });
+            const raw = localStorage.getItem(RACES_CACHE_KEY);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw) as { races?: RaceListEntry[]; groups?: RaceGroupEntry[] };
+            if (!Array.isArray(parsed?.races)) return null;
+            return { races: parsed.races, groups: parsed.groups ?? flatGroups(parsed.races) };
+          } catch { return null; }
+        })();
+        setRaces((prev) => prev ?? cached?.races ?? []);
+        setGrouped((prev) => prev ?? cached?.groups ?? []);
         setError(friendlyFetchError(e));
       });
     return () => { stale = true; };
-  }, [open, currentSlug]);
+  }, [open, currentSlug, trainingSlug]);
 
   useEffect(() => {
     if (open) itemRefs.current[cursor]?.focus();
@@ -499,7 +575,8 @@ function RaceSwitcher() {
       tabIndex: cursor === i ? 0 : -1,
       onMouseEnter: () => setCursor(i),
     };
-    return kind === "new" || kind === "archive" || kind === "review" || kind === "refresh" || kind === "rerun"
+    return kind === "new" || kind === "archive" || kind === "review" || kind === "refresh"
+      || kind === "rerun" || kind === "add-tune-up"
       ? { ...common, role: "menuitem" as const }
       : { ...common, role: "menuitemradio" as const, "aria-checked": kind === "generic" ? currentSlug == null : slug === currentSlug };
   };
@@ -618,6 +695,39 @@ function RaceSwitcher() {
                         onSelect={() => runCourseAgain(entry.slug)}
                       />
                     )}
+                    {/* the tune-ups inside this race's block, oldest first —
+                        indented, and always browsed rather than trained for:
+                        a B folder is never "active" (PRD-v2 §3), so picking
+                        one is a view-mode switch whatever its status says */}
+                    {entry.b_races.map((b) => (
+                      <SwitcherRow
+                        key={b.slug}
+                        {...itemProps("race", b.slug)}
+                        indent
+                        label={b.name}
+                        hint={b.error
+                          ? "race.json unreadable"
+                          : `tune-up · ${b.short}${b.date ? ` · ${b.date}` : ""} · read-only`}
+                        swatch={b.error ? null : (
+                          <ThemePreview visual={b.visual} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round />
+                        )}
+                        disabled={!!b.error || busy != null || !!error}
+                        busy={busy?.slug === b.slug && busy.kind === "switch"}
+                        busyLabel="switching…"
+                        current={b.slug === currentSlug}
+                        onSelect={() => choose(b.slug, "view")}
+                      />
+                    ))}
+                    {canAddTuneUp(entry, trainingSlug) && (
+                      <SwitcherRow
+                        {...itemProps("add-tune-up", entry.slug)}
+                        indent
+                        label="↳ Add tune-up…"
+                        hint="name, date, distance, gain, optional gpx — free, no agent turn"
+                        disabled={busy != null || !!error}
+                        onSelect={() => { setOpen(false); setTuneUpOn(entry); }}
+                      />
+                    )}
                   </Fragment>
                 ))}
               </div>
@@ -652,6 +762,7 @@ function RaceSwitcher() {
       {intake && (
         <RaceIntake
           slug={intake.slug}
+          parentSlug={intake.parentSlug ?? null}
           onClose={() => { setIntake(null); triggerRef.current?.focus(); }}
         />
       )}
@@ -660,6 +771,29 @@ function RaceSwitcher() {
           slug={refreshing.slug}
           name={refreshing.name}
           onClose={() => { setRefreshing(null); triggerRef.current?.focus(); }}
+        />
+      )}
+      {tuneUpOn && (
+        <AddTuneUp
+          parentSlug={tuneUpOn.slug}
+          parentName={tuneUpOn.name}
+          // the parent IS the training race (canAddTuneUp), so the payload on
+          // screen is its own race.json — the zone the form offers to inherit
+          parentTimezone={tuneUpOn.slug === trainingSlug ? race?.timeZone ?? null : null}
+          parentDate={tuneUpOn.date}
+          onClose={() => { setTuneUpOn(null); triggerRef.current?.focus(); }}
+          onCreated={() => {
+            setTuneUpOn(null);
+            triggerRef.current?.focus();
+            // the folder is on disk: the switcher's next open re-reads it,
+            // and the payload's b_races (trajectory markers) refetch now
+            reload();
+          }}
+          onRunIntake={() => {
+            const parent = tuneUpOn.slug;
+            setTuneUpOn(null);
+            setIntake({ slug: null, parentSlug: parent });
+          }}
         />
       )}
       {archiveOpen && (
@@ -682,9 +816,14 @@ function RaceSwitcher() {
   );
 }
 
-const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, busyLabel = "switching…", swatch, ...rest }: {
+const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, busyLabel = "switching…", swatch, indent, ...rest }: {
   label: string; hint: string; onSelect: () => void;
   current?: boolean; disabled?: boolean; busy?: boolean;
+  /** a row that belongs INSIDE the race above it — a tune-up in its A
+      race's block, or the row that adds one (PRD-v2 §3). Indentation is the
+      whole of the grouping the menu shows; the nesting itself is the
+      server's (GET /api/races' `groups`). */
+  indent?: boolean;
   /** what the hint line says while `busy` — a real pointer switch and the
       free course-rebuild stage are both "this row is busy" but are not the
       same claim (round 2, generic finding 6: a rebuild used to report
@@ -698,7 +837,7 @@ const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, busyLabel
     onClick={disabled ? undefined : onSelect}
     disabled={disabled || busy}
     style={{
-      width: "100%", textAlign: "left", padding: "7px 14px",
+      width: "100%", textAlign: "left", padding: indent ? "7px 14px 7px 32px" : "7px 14px",
       display: "flex", flexWrap: "wrap", alignItems: "baseline", rowGap: 2, columnGap: 8,
       cursor: disabled ? "not-allowed" : "pointer",
       opacity: disabled ? 0.5 : 1,
@@ -793,7 +932,10 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
   const { syncing, lastSync, refresh, currentStep, lastLog, status } = useRefresh();
   const { fetchedAt, currentWeek } = useStrava();
   const { race, viewing, totalWeeks } = useBlockConfig();
-  const views = appViews(race);
+  // the raw payload, for the one question RaceView cannot answer: is the
+  // folder on screen a tune-up, and does it carry a nutrition.json?
+  const { activeRace } = useActiveRace();
+  const views = appViews(race, fuelViewHidden(activeRace));
   const stamp = fetchedAt ? fetchedAt.getTime() : lastSync;
   // null in generic mode — every countdown below is gated on it, not faked —
   // and null while browsing, where "race in -371 days" is both useless and a
@@ -1443,12 +1585,31 @@ function weekDates(wk: number, blockStart: string): string {
   return `${f(start)} – ${f(end)}`;
 }
 
+/** A tune-up's marker label: initials plus the distance in the name, the
+    same rule scripts/race-intake.mjs's shortFromName writes into race.json's
+    `short` ("Deadman Peaks 50k" → "DP50K"). A cosmetic twin, not a contract —
+    the payload's b_races carry the full name and no short, and a chart axis
+    has room for about five characters. */
+function tuneUpTag(name: string): string {
+  const words = String(name ?? "").split(/\s+/).filter(Boolean);
+  const initials = words.filter((w) => /^[a-z]/i.test(w)).map((w) => w[0].toUpperCase()).join("");
+  const distance = words.map((w) => /^(\d+(?:\.\d+)?)(k|km|mi|m|h)?$/i.exec(w)).find(Boolean);
+  const tail = distance ? `${distance[1]}${(distance[2] ?? "").toUpperCase()}` : "";
+  return `${initials}${tail}`.slice(0, 8) || name.slice(0, 8).toUpperCase() || "TUNE-UP";
+}
+
 function Trajectory() {
   const u = useUnits();
   const { weekly, currentWeek } = useStrava();
   // `mode` below is the CHART mode (cumulative/weekly); the block's own mode
   // is renamed so the two never get confused in this component.
   const { targets, totalWeeks, blockStart, mode: blockMode, loading } = useBlockConfig();
+  /* The tune-ups inside THIS block (PRD-v2 §3), straight off the payload —
+     the server counts `weeks_out` in the A race's own zone, so the marker
+     sits on the same week the coach is told to taper into. Empty in view and
+     generic mode, where there is no block for one to belong to. */
+  const { activeRace } = useActiveRace();
+  const bRaces = activeRace?.b_races ?? [];
   const [view, setView] = useState<"dist" | "elev">("dist");
   const [mode, setMode] = useState<"cum" | "wk">("cum");
   const [hoverWk, setHoverWk] = useState<number | null>(null); // 0-indexed
@@ -1586,6 +1747,28 @@ function Trajectory() {
   // last KEPT label, then re-check the final pair since the last week is
   // pinned to the true end of the block regardless of the every-5 stride
   // and can still collide with whatever the walk kept just before it.
+  /* One marker per tune-up, placed by the week the server counted: the A
+     race IS the last week of the block, so a race `weeks_out` weeks before
+     it sits at index totalWeeks - 1 - weeks_out. A tune-up whose date the
+     folder never had (weeks_out null), or one that lands outside the block
+     entirely (a date after race day — negative weeks_out — or one from
+     before the block started), gets NO marker rather than a clamped one on
+     a week it is not in: a marker is a claim about a week.
+
+     Only in race mode. Generic mode's rolling window ends on today rather
+     than on a start line, and the payload sends no b_races there anyway. */
+  const bMarkers = (blockMode === "race" ? bRaces : [])
+    .map((b) => ({ b, idx: b.weeks_out == null ? -1 : totalWeeks - 1 - b.weeks_out }))
+    .filter(({ idx }) => idx >= 0 && idx <= totalWeeks - 1)
+    .map(({ b, idx }) => ({
+      slug: b.slug,
+      tag: tuneUpTag(b.name),
+      x: wx(idx),
+      // the native SVG tooltip: what it is, when it is, how far out
+      tip: `${b.name}${b.date ? ` · ${b.date}` : ""} · ${b.weeks_out === 0 ? "race week" : `${b.weeks_out} wk out`}`
+        + (b.distance_mi != null ? ` · ${b.distance_mi} mi` : ""),
+    }));
+
   const WEEK_LABEL_W = 34; // px — "WK NN" at fontSize 9 / letterSpacing 1
   const WEEK_LABEL_GAP = 3; // px — minimum clear space between labels
   const weekLabelExtent = (w: number): [number, number] => {
@@ -1716,6 +1899,29 @@ function Trajectory() {
                     </text>
                   ))}
     
+                  {/* tune-up markers — one per B race in this block, at its
+                      own week (PRD-v2 §3). Drawn under the plan/actual
+                      lines so they never hide the data they sit behind. */}
+                  {bMarkers.map((m) => (
+                    <g key={`b-${m.slug}`} data-tune-up={m.slug}>
+                      <title>{m.tip}</title>
+                      <line
+                        x1={m.x} x2={m.x} y1={PAD.top + 14} y2={H - PAD.bottom}
+                        stroke="var(--creek)" strokeWidth="1" strokeDasharray="2 4" opacity="0.7"
+                      />
+                      <path
+                        d={`M ${m.x} ${H - PAD.bottom - 4.5} L ${m.x + 4} ${H - PAD.bottom} L ${m.x} ${H - PAD.bottom + 4.5} L ${m.x - 4} ${H - PAD.bottom} Z`}
+                        fill="var(--creek)"
+                      />
+                      <text
+                        x={m.x} y={PAD.top + 10} textAnchor="middle"
+                        fontSize="8" fontFamily="Spline Sans Mono" letterSpacing="1" fill="var(--creek)"
+                      >
+                        {m.tag}
+                      </text>
+                    </g>
+                  ))}
+
                   {mode === "cum" ? (
                     <>
                       {/* plan target */}
@@ -3032,7 +3238,7 @@ function AppBody() {
   const { race, viewing } = useBlockConfig();
   // the slug ON SCREEN, for the crash boundary's message and its "back to
   // generic mode" pointer reset — same source useRacePlanInstance itself reads.
-  const { viewing: viewingSlug } = useActiveRace();
+  const { activeRace, viewing: viewingSlug } = useActiveRace();
   const hash = useHashRoute();
   const [view, setViewState] = useState<AppView>(() => {
     // validate rather than cast — a stale or hand-edited key would otherwise
@@ -3058,7 +3264,7 @@ function AppBody() {
   // WITHOUT rewriting the preference: once a race is active again the
   // athlete gets the view they last chose back, instead of having had it
   // quietly overwritten by a loading frame.
-  const views = appViews(race);
+  const views = appViews(race, fuelViewHidden(activeRace));
   const activeView = views.includes(view) ? view : "training";
   // Race-day mode takes the whole screen: the command bar and the agent
   // rail are desk furniture, and on a phone they cost a third of the page
