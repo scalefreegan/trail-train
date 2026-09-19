@@ -558,6 +558,31 @@ test("a checkpoint the sheet cannot place is refused by name, not guessed at", a
   assert.ok(typo.result.observed_h < 0.3, "…and the observed time is still honoured");
 });
 
+test("a sheet opened long after the gun still places a split inside the race", async () => {
+  // checkpointHold resolves a bare HH:MM to its latest occurrence before
+  // `now`. An archived sheet opened a week later would otherwise read
+  // "13:40" as 13:40 SEVEN DAYS ON — a 163-hour split — so the crew page
+  // clamps the horizon to the race's own window (cutoff + slack).
+  const data = await buildCrewData(root, SLUG, { now: NOW });
+  const { projectRace } = await import("../web/src/race/pacing.ts");
+  const { projectOptions } = await import("../web/src/crew/crewData.ts");
+  const { applyCheckpoint } = await import("../web/src/crew/checkpoint.ts");
+  const live = projectRace(data.course, data.fit, projectOptions(data));
+
+  const planned = data.projection.stations[1].eta_h.avg;
+  const outcome = applyCheckpoint(
+    data,
+    live,
+    { station: "Hell's Gate", clock: raceHHMM(data.race, planned) },
+    { now: raceInstant(data.race, 24 * 7) },
+  );
+  assert.equal(outcome.ok, true, outcome.ok ? "" : outcome.reason);
+  assert.ok(
+    Math.abs(outcome.result.observed_h - planned) < 1 / 60,
+    `resolved to ${outcome.result.observed_h.toFixed(2)} h, expected ~${planned.toFixed(2)} h`,
+  );
+});
+
 test("the last checkpoint survives a reload, and “clear” forgets it", async () => {
   const { checkpointKey, clearCheckpoint, loadCheckpoint, saveCheckpoint } =
     await import("../web/src/crew/checkpoint.ts");

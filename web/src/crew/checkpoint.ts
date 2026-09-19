@@ -78,6 +78,10 @@ export type CheckpointOutcome =
   | { ok: true; result: CheckpointResult }
   | { ok: false; reason: string };
 
+/** Slack past the posted cutoff that still counts as "during the race" — a
+    sweeper walking the last runner in, a finish line that stays up. */
+const RACE_WINDOW_SLACK_H = 3;
+
 /** How far the realized-pace ratio may run before it stops being extrapolated.
     0.6 is a runner an hour up on a 3-hour split; 2.5 is a death march. Beyond
     either, the number is far likelier to be a typo than a performance. */
@@ -170,12 +174,22 @@ export function applyCheckpoint(
   if (!/^\d{1,2}:\d{2}$/.test(clock)) return { ok: false, reason: "type the time as HH:MM on the race's clock" };
 
   const start = raceStart(data.race.date, data.race.start_time, data.race.timezone);
+  // Which DAY a bare "01:14" belongs to is checkpointHold's job, and it reads
+  // it against `now`: the latest occurrence that has already happened. On race
+  // day that is exactly right. Opened a week later — an archived sheet, a
+  // phone whose clock is wrong — it would resolve the same 01:14 seven days
+  // out and report a 163-hour split. A checkpoint cannot happen after the
+  // course has closed, so the horizon is clamped to the race's own window and
+  // the split lands inside the race whenever the sheet is opened.
+  const closeH = data.race.cutoff_h ?? data.projection.finish_h.worst + RACE_WINDOW_SLACK_H;
+  const windowEnd = start.getTime() + (closeH + RACE_WINDOW_SLACK_H) * 3_600_000;
+  const asked = opts.now === undefined ? Date.now() : new Date(opts.now).getTime();
   const hold = checkpointHold(
     { station, clock, source: "manual" },
     data.course,
     start,
     data.race.timezone,
-    opts.now === undefined ? {} : { now: opts.now },
+    { now: Math.min(Number.isFinite(asked) ? asked : windowEnd, windowEnd) },
   );
   if (!hold || hold.mile == null) {
     return { ok: false, reason: `“${station}” is not on this race's aid chart` };

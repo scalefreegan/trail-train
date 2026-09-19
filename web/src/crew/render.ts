@@ -1,6 +1,7 @@
 import { fmtElapsed, fmtRaceClock, type RaceProjection, type Scenario } from "../race/pacing";
 import { raceStart } from "../race/clock";
 import type { CrewData, CrewPickup, CrewStation } from "./crewData";
+import type { FuelSegment } from "../race/nutrition";
 import type { CheckpointResult } from "./checkpoint";
 
 /* ------------------------------------------------------------------ */
@@ -257,6 +258,15 @@ export function checkpointMessage(cp: CheckpointResult): string {
   );
 }
 
+/** The first sentence of a station's written directions, capped — the table
+    row is a TIMES table on a 390-px phone, and the full paragraph (all of it,
+    unabridged) prints under “getting to each stop” a section later. */
+function shortDirections(note: string | undefined): string {
+  if (!note) return "";
+  const first = /^[^.]*\./.exec(note.trim())?.[0] ?? note.trim();
+  return first.length <= 96 ? first : `${first.slice(0, 95).trimEnd()}…`;
+}
+
 type RowContext = {
   drives: Record<string, { min: number; mi: number }>;
   notes: Record<string, string>;
@@ -270,7 +280,7 @@ function stationRowHtml(s: CrewStation, ctx: RowContext, cp: CheckpointResult | 
   const passed = cp != null && i <= cp.index;
   const at = cp != null && i === cp.index;
   const drive = ctx.drives[s.name];
-  const dir = ctx.notes[s.name];
+  const dir = shortDirections(ctx.notes[s.name]);
   const gps = ctx.coords[s.name];
   const margin = s.cutoff_margin_h;
   return (
@@ -318,6 +328,11 @@ function stationsHtml(data: CrewData, rows: CrewStation[], cp: CheckpointResult 
     `<section id="stations-section">` +
     `<h2>stations</h2>` +
     `<table id="stations">` +
+    // A fixed layout, because the browser's automatic one gives the name
+    // column whatever the prose leaves over — which on a 390-px phone is
+    // about eight characters.
+    `<colgroup><col class="c-name" /><col class="c-mi" /><col class="c-eta" />` +
+    `<col class="c-cut" /><col class="c-drive" /></colgroup>` +
     `<caption>crew stops are shaded · drive times are road estimates from the base` +
     (cp ? ` · rows down to ${esc(cp.station)} have been run` : "") +
     `</caption>` +
@@ -333,10 +348,20 @@ function stationsHtml(data: CrewData, rows: CrewStation[], cp: CheckpointResult 
   );
 }
 
-/** What the crew physically hands over at one stop. */
-function pickupHtml(p: CrewPickup, cfgFlask: number | null): string {
+/** What the crew physically hands over at one stop.
+ *
+ * Not every crew stop is a fuel-plan stop. planFuel builds the NO-CREW plan —
+ * drop bags are the only restock it counts on — so a crew station that is not
+ * a mix-refill point has no departing leg at all. Saying "nothing on the fuel
+ * plan" there and stopping would be useless to the person standing in the
+ * parking lot; what they need is the leg she is in the MIDDLE of, so they can
+ * see what she left with and how long it still has to last. */
+function pickupHtml(p: CrewPickup, ctx: PickupContext): string {
   const seg = p.segment;
   const bag = p.drop_bag;
+  const cfgFlask = ctx.flaskMl;
+  const covering = seg ? null : ctx.covering(p);
+  const isFinish = p.station === ctx.finishName;
   const hand: string[] = [];
   if (seg) {
     if (seg.gels > 0) hand.push(`${seg.gels} gel${seg.gels === 1 ? "" : "s"}`);
@@ -354,9 +379,14 @@ function pickupHtml(p: CrewPickup, cfgFlask: number | null): string {
     `<article class="pickup" data-station="${esc(p.station)}">` +
     `<h3>${esc(p.station)}<span class="when">mi ${esc(round(p.total_mi, 1))} · expected ${esc(p.clock)}` +
     ` · ${esc(fmtElapsed(p.eta_h))}</span></h3>` +
-    `<p class="hand"><b>hand over:</b> ${hand.length > 0 ? esc(hand.join(" · ")) : "nothing on the fuel plan — top up water and go"}` +
-    (seg ? ` · <span class="fill">fill ${esc(seg.fill)}</span>` : "") +
-    `</p>` +
+    (isFinish
+      ? ""
+      : `<p class="hand"><b>hand over:</b> ` +
+        (hand.length > 0
+          ? esc(hand.join(" · "))
+          : "nothing the plan counts on here — water, ice and whatever she asks for") +
+        (seg ? ` · <span class="fill">fill ${esc(seg.fill)}</span>` : "") +
+        `</p>`) +
     (seg
       ? `<p class="leg"><b>leg out:</b> ${esc(seg.from)} → ${esc(seg.to)} · ${esc(fmtCarry(seg.carryH))} carry` +
         ` · ${esc(String(seg.carb_g))} g carbs · ${esc((seg.fluid_ml / 1000).toFixed(1))} L` +
@@ -369,7 +399,14 @@ function pickupHtml(p: CrewPickup, cfgFlask: number | null): string {
           .join("") +
         (seg.ration ? ` · <b class="heat">ration the carry</b>` : "") +
         `</p>`
-      : `<p class="leg"><b>leg out:</b> none — this is the last time you see her before the finish</p>`) +
+      : isFinish
+        ? `<p class="leg"><b>at the finish:</b> dry clothes, somewhere to sit and real food — no leg out of here.</p>`
+        : covering
+          ? `<p class="leg"><b>carrying through:</b> she is mid-leg — left ${esc(covering.from)} at` +
+            ` ${esc(ctx.clock(covering.departH))} with ${esc(String(covering.gels))} gel` +
+            `${covering.gels === 1 ? "" : "s"} and ${esc(covering.fill)}, due into ${esc(covering.to)}` +
+            ` around ${esc(ctx.clock(covering.arriveH))} (${esc(fmtCarry(covering.carryH))} carry).</p>`
+          : `<p class="leg"><b>leg out:</b> none on the plan — water, a top-up and go.</p>`) +
     (bag
       ? `<p class="bag"><b>drop bag here:</b> ${esc(String(bag.gels))} gel · ${esc(String(bag.bloks))} blok` +
         ` · ${esc(String(bag.hcf_scoops))} HCF scoop · ${esc(String(bag.salt_tabs))} tab` +
@@ -380,15 +417,36 @@ function pickupHtml(p: CrewPickup, cfgFlask: number | null): string {
   );
 }
 
+type PickupContext = {
+  flaskMl: number | null;
+  finishName: string;
+  /** race-local wall clock at an elapsed hour */
+  clock: (h: number) => string;
+  /** the leg in progress at a crew stop that starts none */
+  covering: (p: CrewPickup) => FuelSegment | null;
+};
+
 function pickupsHtml(data: CrewData): string {
   if (data.crew_pickups.length === 0) return "";
-  const flaskMl = data.nutrition?.flask_ml ?? null;
+  const start = raceStart(data.race.date, data.race.start_time, data.race.timezone);
+  const segments = data.fuel?.segments ?? [];
+  const ctx: PickupContext = {
+    flaskMl: data.nutrition?.flask_ml ?? null,
+    finishName: data.projection.stations[data.projection.stations.length - 1]?.name ?? "",
+    clock: (h) => fmtRaceClock(start, h, data.race.timezone),
+    covering: (p) =>
+      segments.find((sg) => p.eta_h > sg.departH && p.eta_h <= sg.arriveH) ??
+      segments.find((sg) => sg.via.includes(p.station)) ??
+      null,
+  };
   return (
     `<section id="pickups">` +
     `<h2>what she takes from you</h2>` +
     `<p class="lead">One block per crew stop, in course order: what to be holding when she runs in, and the` +
-    ` leg it has to cover. Quantities are the fuel plan as exported — if she is eating more, believe her.</p>` +
-    data.crew_pickups.map((p) => pickupHtml(p, flaskMl)).join("") +
+    ` leg it has to cover. The quantities are the fuel plan as exported — which is the NO-CREW plan, where the` +
+    ` drop bags are the only restock, so at a stop with no leg of its own you are a bonus rather than the plan.` +
+    ` If she is eating more than this, believe her.</p>` +
+    data.crew_pickups.map((p) => pickupHtml(p, ctx)).join("") +
     `</section>`
   );
 }
@@ -437,23 +495,42 @@ function crewNotesHtml(data: CrewData): string {
   );
 }
 
+/**
+ * The written directions, in full, one paragraph per stop.
+ *
+ * Every crew-access station gets one whether the manual had prose for it or
+ * not, because this section is also where the coordinates and the drive time
+ * print: the table's directions line is abridged and its GPS line is
+ * screen-only, so this is the copy a crew chief reads off paper.
+ */
 function directionsHtml(data: CrewData): string {
   const info = data.course.crew_info ?? data.race.crew_info ?? null;
-  const notes = info?.station_notes ?? {};
+  const notes: Record<string, string> = info?.station_notes ?? {};
   const drives = data.crew_base?.drives ?? {};
-  const entries = Object.entries(notes);
-  if (entries.length === 0 && !info?.start_notes) return "";
+  const coords = new Map(
+    data.course.aid_stations
+      .filter((s) => s.lat != null && s.lon != null)
+      .map((s) => [s.name, `${(s.lat as number).toFixed(4)}, ${(s.lon as number).toFixed(4)}`]),
+  );
+  const crewStops = data.projection.stations.filter((s) => s.crew || s.crew_only).map((s) => s.name);
+  const names = [...crewStops, ...Object.keys(notes).filter((n) => !crewStops.includes(n))];
+  if (names.length === 0 && !info?.start_notes) return "";
   return (
     `<div id="directions">` +
     `<h3>getting to each stop</h3>` +
     (info?.start_notes ? `<p><b>start / parking.</b> ${esc(info.start_notes)}</p>` : "") +
-    entries
-      .map(
-        ([name, note]) =>
+    names
+      .map((name) => {
+        const drive = drives[name];
+        const gps = coords.get(name);
+        return (
           `<p data-station="${esc(name)}"><b>${esc(name)}` +
-          (drives[name] ? ` (${esc(fmtDrive(drives[name].min))} drive)` : "") +
-          `.</b> ${esc(note)}</p>`,
-      )
+          (drive ? ` (${esc(fmtDrive(drive.min))} drive · ${esc(round(drive.mi, 0))} mi)` : "") +
+          `.</b> ${notes[name] ? `${esc(notes[name])} ` : ""}` +
+          (gps ? `<span class="gps">${esc(gps)}</span>` : "") +
+          `</p>`
+        );
+      })
       .join("") +
     `</div>`
   );
@@ -586,11 +663,14 @@ export function profileSvg(data: CrewData): string {
         `<line x1="${x.toFixed(1)}" y1="${PAD_T}" x2="${x.toFixed(1)}" y2="${(H - PAD_B).toFixed(1)}"` +
         ` class="tick${crew ? " crew" : ""}" />`;
       if (!crew) return tick;
-      // crew names alternate between two baselines so they cannot overprint
+      // crew names alternate between two baselines so they cannot overprint,
+      // and the first/last labels anchor inwards rather than off the edge of
+      // the drawing (the finish is always at x = the right margin)
       const y = H - PAD_B + 14 + (i % 2) * 12;
+      const anchor = x < PAD_L + 40 ? "start" : x > W - PAD_R - 40 ? "end" : "middle";
       return (
         tick +
-        `<text x="${x.toFixed(1)}" y="${y}" text-anchor="middle" class="tick-label">` +
+        `<text x="${x.toFixed(1)}" y="${y}" text-anchor="${anchor}" class="tick-label">` +
         `${esc(s.name)}</text>`
       );
     })

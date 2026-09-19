@@ -73,7 +73,10 @@ header { border-bottom: 3px solid var(--ink); padding-bottom: 10px; }
   border: 2px solid var(--ink); padding: 7px 10px; margin-top: 14px; font-size: 12.5px;
 }
 #emergency .tag { letter-spacing: 0.08em; }
-#emergency .num { white-space: nowrap; color: var(--muted); }
+/* the label wraps, the NUMBER never does — a phone number broken across two
+   lines at 2 a.m. is the one thing this strip must not do */
+#emergency .num { color: var(--muted); }
+#emergency .num strong { white-space: nowrap; }
 #emergency .num strong { color: var(--ink); font-variant-numeric: tabular-nums; }
 
 /* ---------------- the updater ---------------- */
@@ -103,6 +106,12 @@ header { border-bottom: 3px solid var(--ink); padding-bottom: 10px; }
 /* ---------------- the station table ---------------- */
 
 table { width: 100%; border-collapse: collapse; }
+#stations { table-layout: fixed; }
+.c-name { width: 38%; }
+.c-mi { width: 12%; }
+.c-eta { width: 22%; }
+.c-cut { width: 16%; }
+.c-drive { width: 12%; }
 caption { text-align: left; color: var(--muted); font-size: 10.5px; padding-bottom: 6px; }
 th, td { padding: 6px 5px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
 thead th {
@@ -125,7 +134,7 @@ tbody tr:not(.crew) .access { color: var(--muted); }
 .gps { font-family: var(--mono); font-size: 9px; }
 
 .num { font-variant-numeric: tabular-nums; }
-.mi { font-family: var(--mono); font-weight: 600; white-space: nowrap; }
+.mi { font-family: var(--mono); font-weight: 600; white-space: nowrap; text-align: right; padding-right: 10px; }
 .eta { white-space: nowrap; }
 .eta .exp { display: block; color: var(--accent); font-weight: 700; font-size: 13px; }
 .eta .elapsed, .eta .band, .eta .goal { display: block; font-size: 9.5px; color: var(--muted); }
@@ -204,6 +213,11 @@ code { font-family: var(--mono); font-size: 0.92em; }
   tr { page-break-inside: avoid; }
   thead { display: table-header-group; }
   #pickups, #crew-notes, #drawings { break-before: page; page-break-before: always; }
+  /* On paper the table is a times table: the abridged directions line and the
+     coordinates both print in full under “getting to each stop”, so printing
+     them twice only costs ink and column width. */
+  #stations .dir, #stations .gps { display: none; }
+  #directions .gps { display: inline; }
   .pickup, #directions p, #map, #profile { break-inside: avoid; page-break-inside: avoid; }
   footer { margin-top: 12px; }
 }
