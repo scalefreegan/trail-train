@@ -46,7 +46,17 @@ import { GOAL_PHASES, PHYSIOLOGY_FIELDS } from './src/contracts'
 function resolveProjectRoot(): string {
   const raw = (process.env.TRAIL_PROJECT_ROOT ?? '').trim()
   if (raw) {
-    if (path.isAbsolute(raw)) return path.resolve(raw)
+    if (path.isAbsolute(raw)) {
+      const resolved = path.resolve(raw)
+      // The only signal a developer gets that the dev server is NOT serving
+      // the checkout it lives in — e.g. a stale export left over from
+      // debugging a failing Playwright run in the same shell. Silent
+      // otherwise: this is a one-line startup fact, not a warning, and it
+      // only fires when the override is actually in effect (a malformed
+      // value already gets its own console.warn above).
+      console.log(`[dev-api] TRAIL_PROJECT_ROOT is set — serving ${resolved}`)
+      return resolved
+    }
     console.warn(`[dev-api] ignoring TRAIL_PROJECT_ROOT="${raw}" — it must be an absolute path`)
   }
   return path.resolve(__dirname, '..')

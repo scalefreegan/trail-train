@@ -110,6 +110,18 @@ test("web/vite.config.ts resolves the project root once, from the same variable"
     false,
     "a dev-API plugin is still deriving its own project root from __dirname",
   );
+  // A malformed override already warned; a VALID one resolved no differently
+  // from unset — nothing printed to say the dev server is serving somewhere
+  // other than the checkout it lives in. A developer who exports it while
+  // debugging a failing Playwright run, forgets to unset it, then runs
+  // `npm run dev` in the same shell gets no signal that anything is off.
+  const body = /function resolveProjectRoot\(\): string \{(.+?)\n\}/s.exec(src);
+  assert.ok(body, "could not find resolveProjectRoot");
+  assert.match(
+    body[1],
+    /console\.log\(.*TRAIL_PROJECT_ROOT.*\$\{resolved\}/,
+    "resolveProjectRoot must log the resolved root once when the override is in effect",
+  );
 });
 
 /* -------------------------- TRAIL_FAKE_AGENT --------------------------- */
