@@ -233,6 +233,58 @@ export type RaceProvenanceEntry = {
 export type RaceSource = { kind: "url" | "pdf" | "gpx"; ref: string; fetched_at?: string };
 
 /** races/<slug>/race.json */
+/** PRD §4 — which live tracker race day polls, and who to look for on it.
+    `url` is seeded by intake from the race site's tracking link; `bib` and
+    `name` are the athlete's and are filled in the review screen, so all
+    three are independently absent until they are known. */
+export type RaceTracking = {
+  /** absolute http(s) URL; scripts/trackers/ picks the adapter by hostname */
+  url?: string | null;
+  bib?: string | null;
+  name?: string | null;
+};
+
+/** GET /api/races/:slug/tracker — one poll of the configured tracker,
+    served from a 60 s per-race cache. `tracker` is null when the runner is
+    not on the tracker's page, or is on it with no checkpoint past the
+    start. Errors come back as `{error}` with a status: 404 no tracker
+    configured / no adapter for the URL, 501 a recognised but unsupported
+    tracker (MAProgress), 502 the tracker was unreachable or unparseable. */
+export type TrackerResponse = {
+  slug: string;
+  /** adapter id, e.g. "opensplittime" */
+  source: string;
+  tracker: TrackerCheckpoint | null;
+  /** true when this answer came from the cache rather than a fresh poll */
+  cached: boolean;
+  /** how old the cached answer is, seconds; 0 on a fresh poll */
+  age_s: number;
+  /** ISO instant the underlying poll happened */
+  polled_at: string;
+};
+
+/** Where the runner was last seen, per the tracker. */
+export type TrackerCheckpoint = {
+  /** the race.json aid station name when the checkpoint mapped onto one,
+      otherwise the tracker's own label */
+  station: string;
+  /** the tracker's own label for the checkpoint, always */
+  checkpoint: string;
+  /** false when `station` is the tracker's label because nothing matched */
+  matched: boolean;
+  /** race-local wall clock the tracker printed, HH:MM */
+  clock: string;
+  /** hours since the runner's own start, per the tracker */
+  elapsed_h: number | null;
+  /** adapter id */
+  source: string;
+  /** ISO instant of the poll that produced this */
+  at: string;
+  bib: string;
+  /** the tracker's status text, e.g. "Finished", "Dropped", "" in progress */
+  runner_status: string;
+};
+
 export type RaceConfig = {
   schema_version: number;
   slug: string;
@@ -267,6 +319,7 @@ export type RaceConfig = {
   };
   coach_notes?: RaceCoachNotes;
   links?: Record<string, string>;
+  tracking?: RaceTracking | null;
   visual?: RaceVisual;
   provenance?: Record<string, RaceProvenanceEntry>;
   sources?: RaceSource[];

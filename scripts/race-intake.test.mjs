@@ -188,6 +188,26 @@ test("buildRaceJson writes a draft with agent provenance on every field it took"
   assert.equal(race.review_notes.startsWith("The aid chart is an image"), true);
 });
 
+test("buildRaceJson seeds tracking.url from links.tracking, and nothing when the site links no tracker", async () => {
+  // the fixture's links.tracking is "" — most races publish no live tracker
+  const none = buildRaceJson(await loadDraft(), { slug: "cinder-cone-50k-2027", year: 2027, manifest: MANIFEST });
+  assert.equal("tracking" in none, false, "an empty tracking link must not become an empty tracking object");
+
+  const url = "https://www.opensplittime.org/events/2026-san-juan-softie-100/spread";
+  const draft = await loadDraft();
+  const tracked = buildRaceJson(
+    { ...draft, links: { ...draft.links, tracking: `  ${url}  ` } },
+    { slug: "cinder-cone-50k-2027", year: 2027, manifest: MANIFEST, at: "2026-09-18T12:00:00Z" },
+  );
+  // bib and name are the ATHLETE's and are months from being issued — the
+  // review screen fills them, intake does not guess
+  assert.deepEqual(tracked.tracking, { url, bib: null, name: null });
+  assert.equal(tracked.provenance.tracking.by, "agent");
+  assert.equal(tracked.provenance.tracking.at, "2026-09-18T12:00:00Z");
+  // and the schema accepts what was written
+  assert.equal(validateRaceJson(tracked).errors.filter((e) => e.startsWith("tracking")).length, 0);
+});
+
 test("buildRaceJson keeps a source whose refetch failed, marked with an error, instead of dropping it", async () => {
   const draft = await loadDraft();
   const manifest = [
