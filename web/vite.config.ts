@@ -382,6 +382,7 @@ async function loadFailureHint(projectRoot: string): Promise<FailureHint> {
    not a degraded answer, it is a different agent, so the request fails loudly. */
 type CoachPrompt = {
   COACH_MODEL: string
+  RACE_STATE_WARN_TOKENS: number
   chatSystemPrompt: (
     facts: unknown,
     profile: Record<string, unknown>,
@@ -391,8 +392,15 @@ type CoachPrompt = {
       units?: 'imperial' | 'metric'
       hasPacing?: boolean
       root?: string
+      raceState?: Record<string, unknown> | null
     },
   ) => string
+  /* Validates and normalizes the client's race_state. Server-side because the
+     size cap and the shape are a trust boundary: the dashboard is the only
+     intended caller, but /api/chat is a local HTTP endpoint. */
+  parseRaceState: (raw: unknown) => { state: Record<string, unknown> | null; error?: undefined } | { error: string; state?: undefined }
+  raceStateBlock: (state: Record<string, unknown> | null) => string
+  estimateTokens: (text: string) => number
 }
 function loadCoachPrompt(projectRoot: string): Promise<CoachPrompt> {
   return import(path.join(projectRoot, 'scripts/coach-prompt.mjs')) as Promise<CoachPrompt>
@@ -434,23 +442,43 @@ function chatApi(): Plugin {
         // Read JSON body
         const chunks: Buffer[] = []
         for await (const c of req) chunks.push(c as Buffer)
-        let body: { messages?: Array<{ role: string; content: string }>; units?: string }
+        let body: { messages?: Array<{ role: string; content: string }>; units?: string; race_state?: unknown }
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
         catch { res.statusCode = 400; res.end('bad json'); return }
         const messages = body.messages || []
         const chatUnits: 'imperial' | 'metric' = body.units === 'imperial' ? 'imperial' : 'metric'
         if (!messages.length) { res.statusCode = 400; res.end('no messages'); return }
 
+        /* race_state (PRD-v2 §6) is CLIENT state — the projection, the knob
+           settings and the fuel plan the athlete is looking at, which are
+           recomputed in the browser on every knob drag and are never written
+           to disk. So it is read from the REQUEST and never from a file: an
+           on-disk fallback would answer about the active race while the
+           athlete is looking at a different one, which is exactly the bug
+           this block exists to avoid. Absent in generic mode.
+
+           Validated here, before the facts digest is built and before the SSE
+           stream opens, so a bad one is an ordinary 400 the fetch can see
+           rather than an error event inside a 200 stream. */
+        let coachPrompt: CoachPrompt
+        try { coachPrompt = await loadCoachPrompt(projectRoot) }
+        catch (e) { res.statusCode = 500; res.end(`coach prompt error: ${(e as Error).message}`); return }
+        const parsedState = coachPrompt.parseRaceState(body.race_state)
+        if (parsedState.error !== undefined) {
+          res.statusCode = 400
+          res.end(parsedState.error)
+          return
+        }
+        const raceState = parsedState.state
+
         // Compute facts → write to temp file the agent can Read. The digest is
         // kept in memory too: the system prompt is built from the same object
         // (race paragraph, goals, history), not re-derived from the file.
         let factsPath = ''
         let facts: { pacing?: unknown }
-        let coachPrompt: CoachPrompt
         try {
           facts = await import(path.join(projectRoot, 'scripts/facts.mjs'))
             .then((m: { loadFactsFromRoot: (root: string) => Promise<{ pacing: unknown }> }) => m.loadFactsFromRoot(projectRoot))
-          coachPrompt = await loadCoachPrompt(projectRoot)
           factsPath = path.join(os.tmpdir(), `trail-chat-${Date.now()}.json`)
           fs.writeFileSync(factsPath, JSON.stringify(facts, null, 2))
         } catch (e) {
@@ -499,8 +527,23 @@ function chatApi(): Plugin {
           units: chatUnits,
           hasPacing: Boolean(facts.pacing),
           root: projectRoot,
+          raceState,
         })
-        send('start', { facts_path: factsPath })
+
+        /* What the race-state block actually costs, against the same budget
+           CHAT_MAX_TURNS is drawn from. It is the only part of the system
+           prompt that grows with the athlete's plan, and unlike a file the
+           agent chooses to read it is re-sent on EVERY turn of the thread —
+           so it is measured (chars/4) rather than assumed, and a block that
+           has outgrown its share is a warning in the server log before it is
+           a mystery `error_max_turns`. */
+        const stateTokens = coachPrompt.estimateTokens(coachPrompt.raceStateBlock(raceState))
+        const promptTokens = coachPrompt.estimateTokens(sysPrompt) + coachPrompt.estimateTokens(prompt)
+        if (stateTokens > coachPrompt.RACE_STATE_WARN_TOKENS) {
+          console.warn(`[chat] race_state block is ~${stateTokens} tokens, over the ~${coachPrompt.RACE_STATE_WARN_TOKENS}-token guideline — it is resent every turn and eats into the ${CHAT_MAX_TURNS}-turn budget`)
+        }
+        console.log(`[chat] prompt ~${promptTokens} tokens (race_state ~${stateTokens}); budget ${CHAT_MAX_TURNS} turns / ${CHAT_TIMEOUT_MS / 1000}s`)
+        send('start', { facts_path: factsPath, race_state_tokens: stateTokens })
 
         let stdout = ''
         let stderrLast = ''
