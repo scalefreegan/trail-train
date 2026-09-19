@@ -427,7 +427,7 @@ export function RacePlanner() {
   // useRacePlan.ts. Both views must agree to the minute, so there is exactly
   // one projectRace/planFuel call and one set of persisted sliders.
   const { course, missing, error, fit, proj, nutrition, fuelPlan, settings, set,
-    paceGrade, paceGradeError, nutritionError, nutritionSource, physiologyError, features, panels, columns,
+    paceGrade, paceGradeError, nutritionError, physiologyError, features, panels, columns,
     raceConfig, sun } = useRacePlan();
   const { reload } = useRefresh();
   // D8: "no course data" used to just tell the athlete to run a shell
@@ -888,10 +888,6 @@ export function RacePlanner() {
                     {paceGrade?.fitted_at && ` (fitted ${relativeAgo(new Date(paceGrade.fitted_at).getTime())}${paceGrade.runs_pending_time ? `, ${paceGrade.runs_pending_time} runs awaiting time streams` : ""})`}
                     {paceGradeError && <span style={{ color: "var(--ember)" }}> · {paceGradeError}</span>}
                     {nutritionError && <span style={{ color: "var(--ember)" }}> · {nutritionError}</span>}
-                    {/* silent-404 case only — a real load failure already shows via nutritionError above */}
-                    {nutritionSource === "default" && !nutritionError && (
-                      <span style={{ color: "var(--ember)" }}> · using default fueling constants — races/{raceConfig.slug}/nutrition.json missing</span>
-                    )}
                     {physiologyError && <span style={{ color: "var(--ember)" }}> · {physiologyError}</span>}
                     {" "}· tech: {course.aid_stations.filter((s) => (s.tech_pct ?? 0) > 0).map((s) => `${s.name.toLowerCase()} +${s.tech_pct}%`).join(", ") || "none"} · race-cal +{calibration}% all paces · restraint +{restraint}% thru mi {restraintWin?.fullMi.toFixed(0)} (fades by {restraintWin?.endMi.toFixed(0)}, restrained miles age ×{(1 - RESTRAINT_FATIGUE_PAYOFF * restraint / 100).toFixed(2)} on the fatigue clock) · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}{(columns.crew || columns.drop_bag) && `/${crewStopMin}`}m fresh
                   </span>
