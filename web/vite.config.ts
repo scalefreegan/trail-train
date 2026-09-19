@@ -1336,14 +1336,20 @@ function raceResultApi(): Plugin {
         // req.url is the remainder after the mount point: "/<slug>/archive".
         const m = /^\/([^/?]+)\/(archive|result)(?:\?.*)?$/.exec(req.url ?? '')
         if (!m) { next(); return }
-        const [, slug, route] = m
+        const [, rawSlug, route] = m
         if (crossSiteBlocked(req, res)) return
+        // PR #23 review round 1, finding 1: the capture above allows any
+        // non-"/",non-"?" character, so a traversal or non-kebab slug must be
+        // rejected HERE, before it reaches raceDir/loadResult/archiveRace —
+        // the same guard every sibling /api/races/:slug/* endpoint applies.
+        const slug = parseSlugParam(rawSlug)
+        if (!slug) { json(res, 400, { error: 'slug: lowercase kebab-case required' }); return }
 
         if (route === 'result') {
           if (req.method !== 'GET') { res.statusCode = 405; res.end('GET required'); return }
           try {
             const { loadResult } = await raceResult()
-            json(res, 200, { slug, result: await loadResult(projectRoot, decodeURIComponent(slug)) })
+            json(res, 200, { slug, result: await loadResult(projectRoot, slug) })
           } catch (e) {
             fail(res, e)
           }
@@ -1366,7 +1372,7 @@ function raceResultApi(): Plugin {
           const { archiveRace } = await raceResult()
           const { result, pointer } = await archiveRace({
             root: projectRoot,
-            slug: decodeURIComponent(slug),
+            slug,
             activityId: body.activity_id,
             official: body.official ?? null,
             notes: body.notes,
