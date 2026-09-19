@@ -666,11 +666,10 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
 /*  Clock helpers                                                      */
 /* ------------------------------------------------------------------ */
 
-/** "18:35" → 18.583 */
-export function clockToH(clock: string): number {
-  const [h, m] = clock.split(":").map(Number);
-  return h + (m || 0) / 60;
-}
+/** "18:35" → 18.583 — moved to nightWindow.ts (zero imports, so it can be
+    unit-tested directly with node's type stripping); re-exported here so
+    every existing `from "./pacing"` import keeps working. */
+export { clockToH } from "./nightWindow";
 
 /**
  * Clock-of-day of an instant in the RACE's zone, in hours (06:30 → 6.5).
@@ -728,25 +727,14 @@ export function fmtElapsed(h: number): string {
 
 /**
  * Night windows in elapsed race hours: darkness = clock time past sunset or
- * before sunrise. Returns [startH, endH] intervals clipped to [0, horizonH].
- * All three clock strings are RACE-local — `startClock` comes from
- * raceClockHM() above, never from the browser's idea of the start hour.
+ * before sunrise. Returns [startH, endH] intervals clipped to [0, horizonH],
+ * or [] when either clock string is missing (a course built before the
+ * race's date was known has no sun times — see types.ts's Course.sun).
+ * All clock strings are RACE-local — `startClock` comes from raceClockHM()
+ * above, never from the browser's idea of the start hour.
+ *
+ * Moved to nightWindow.ts (zero imports, unit-tested directly by
+ * scripts/sun-null.test.mjs); re-exported here so every existing
+ * `from "./pacing"` import keeps working.
  */
-export function nightIntervals(
-  startClock: string, sunset: string, sunrise: string, horizonH: number,
-): Array<[number, number]> {
-  const start = clockToH(startClock);
-  const set = clockToH(sunset);
-  const rise = clockToH(sunrise);
-  const out: Array<[number, number]> = [];
-  // first sunset after the race start, then repeat every 24h
-  let s = set - start;
-  if (s < 0) s += 24;
-  for (; s < horizonH; s += 24) {
-    const e = s + (24 - set + rise); // sunset → next sunrise
-    out.push([Math.max(0, s), Math.min(horizonH, e)]);
-  }
-  // race could also start pre-dawn (MM100: 6:00 start vs 6:05 sunrise → 5 min of dark)
-  if (start < rise) out.unshift([0, Math.min(horizonH, rise - start)]);
-  return out;
-}
+export { nightIntervals } from "./nightWindow";
