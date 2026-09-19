@@ -1,0 +1,601 @@
+{
+  "schema_version": 1,
+  "slug": "san-juan-softie-100-2027",
+  "status": "draft",
+  "edition_year": 2027,
+  "name": "San Juan Softie 100",
+  "short": "SJS100",
+  "date": "2027-08-13",
+  "start_time": "06:00",
+  "timezone": "America/Denver",
+  "location": "Durango Nordic Center (49786 U.S. 550) · Durango, CO",
+  "format": "loop",
+  "distance_mi": 103.4,
+  "gain_ft": 19000,
+  "elevation": {
+    "min_ft": 8400,
+    "max_ft": 12438,
+    "avg_ft": 10282,
+    "altitude_significant": true
+  },
+  "cutoff_h": 38,
+  "features": {
+    "crew": true,
+    "drop_bags": true,
+    "pacers": true,
+    "night": true,
+    "heat": false,
+    "altitude": true,
+    "water_crossings": true
+  },
+  "aid_stations": [
+    {
+      "name": "Start",
+      "total_mi": 0,
+      "seg_mi": 0,
+      "cutoff_h": null,
+      "cutoff_clock": null,
+      "crew": true,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "menu": "full",
+      "notes": "Durango Nordic Center, 49786 U.S. 550, ~30 min north of Durango. Indoor bathrooms. Chart lists 6:00 AM in the cutoff column — that is the gun time, not a cutoff. Drop bags due here 5:30 AM; 8.3 mi to Cascade #1."
+    },
+    {
+      "name": "Cascade #1",
+      "total_mi": 8.3,
+      "seg_mi": 8.3,
+      "cutoff_h": null,
+      "cutoff_clock": null,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "menu": "basic",
+      "notes": "Cutoff listed as n/a. No bathroom listed. Longest carry out of here is 11.2 mi to EMT #2.",
+      "gpx_wpt": "#1 Cascade"
+    },
+    {
+      "name": "EMT #2",
+      "total_mi": 19.5,
+      "seg_mi": 11.2,
+      "cutoff_h": 6.5,
+      "cutoff_clock": "12:30",
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": true,
+      "pacers": false,
+      "water_only": false,
+      "menu": "full",
+      "notes": "Portable toilet. Start of the first flagged long water carry: 16.3 mi to Middle of Nowhere #4 with only the backcountry Engine Creek aid in between — 1.5L capacity required.",
+      "gpx_wpt": "#2 EMT"
+    },
+    {
+      "name": "Engine Creek #3",
+      "total_mi": 28,
+      "seg_mi": 8.5,
+      "cutoff_h": null,
+      "cutoff_clock": null,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "menu": "backcountry",
+      "notes": "Cutoff n/a. Everything is hiked in several miles — expect no more than gels/gummies and Tailwind/water. No bathroom listed. Course high point (12,438 ft on the Colorado Trail) falls shortly after here.",
+      "gpx_wpt": "#3 Engine Creek"
+    },
+    {
+      "name": "Middle of Nowhere #4",
+      "total_mi": 35.8,
+      "seg_mi": 7.8,
+      "cutoff_h": 14,
+      "cutoff_clock": "20:00",
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": true,
+      "pacers": false,
+      "water_only": false,
+      "menu": "full",
+      "notes": "Portable toilet. Crews are told to wait in Rico until their runner clears this station on the tracker before driving to Cross Mountain.",
+      "gpx_wpt": "#4 Middle of Nowhere"
+    },
+    {
+      "name": "Cross Mountain #5",
+      "total_mi": 45.8,
+      "seg_mi": 10,
+      "cutoff_h": 16,
+      "cutoff_clock": "22:00",
+      "crew": true,
+      "crew_only": false,
+      "drop_bag": true,
+      "pacers": true,
+      "water_only": false,
+      "menu": "full",
+      "notes": "First crew access of the race and first place a pacer may join. Portable toilet; highway crossing here. Crews asked NOT to arrive until certain their runner is within one hour.",
+      "gpx_wpt": "#5 Cross Mountain"
+    },
+    {
+      "name": "Calico #6",
+      "total_mi": 52.8,
+      "seg_mi": 7,
+      "cutoff_h": 18,
+      "cutoff_clock": "00:00",
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "menu": "full",
+      "notes": "Pit toilet. Start of the second flagged long water carry: 12 mi and +3,278 ft to Burnett #7, the biggest single-segment climb on the course.",
+      "gpx_wpt": "#6 Calico"
+    },
+    {
+      "name": "Burnett #7",
+      "total_mi": 64.8,
+      "seg_mi": 12,
+      "cutoff_h": null,
+      "cutoff_clock": null,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "menu": "full",
+      "notes": "Cutoff n/a. No bathroom listed. The manual chart types this Full; the website chart types it Basic — see review notes.",
+      "gpx_wpt": "#7 Burnett"
+    },
+    {
+      "name": "Ryman Creek #8",
+      "total_mi": 71.3,
+      "seg_mi": 6.5,
+      "cutoff_h": 26,
+      "cutoff_clock": "08:00",
+      "crew": true,
+      "crew_only": false,
+      "drop_bag": true,
+      "pacers": true,
+      "water_only": false,
+      "menu": "full",
+      "notes": "Crew access and pacer exchange. Portable toilet; highway crossing here. Lowest charted aid-station elevation region of the course (8,451 ft) and the foot of a +2,663 ft climb to Corral #9.",
+      "gpx_wpt": "#8 Ryman"
+    },
+    {
+      "name": "Corral #9",
+      "total_mi": 79.9,
+      "seg_mi": 8.6,
+      "cutoff_h": 29.5,
+      "cutoff_clock": "11:30",
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "menu": "full",
+      "notes": "No bathroom listed. Spelled 'Corral' on the aid chart, the website chart and OpenSplitTime; the Gaia waypoint spells it 'Coral'.",
+      "gpx_wpt": "#9 Coral"
+    },
+    {
+      "name": "Big Lick #10",
+      "total_mi": 87.8,
+      "seg_mi": 7.9,
+      "cutoff_h": null,
+      "cutoff_clock": null,
+      "crew": false,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "menu": "basic",
+      "notes": "Cutoff n/a. No bathroom listed. Lowest charted point on the course (8,402 ft), followed by +2,429 ft to Elbert Creek #11.",
+      "gpx_wpt": "#10 Big Lick"
+    },
+    {
+      "name": "Elbert Creek #11",
+      "total_mi": 95.5,
+      "seg_mi": 7.7,
+      "cutoff_h": 36,
+      "cutoff_clock": "18:00",
+      "crew": true,
+      "crew_only": false,
+      "drop_bag": true,
+      "pacers": true,
+      "water_only": false,
+      "menu": "full",
+      "notes": "Last crew access and last pacer pickup. No bathroom listed. Reached by CR 39 then Elbert Creek Rd / FS 581; small parking area at the Elbert Creek Trail junction.",
+      "gpx_wpt": "#11 Elbert Creek"
+    },
+    {
+      "name": "Finish",
+      "total_mi": 103.4,
+      "seg_mi": 7.9,
+      "cutoff_h": 38,
+      "cutoff_clock": "20:00",
+      "crew": true,
+      "crew_only": false,
+      "drop_bag": false,
+      "pacers": false,
+      "water_only": false,
+      "menu": "full",
+      "notes": "Same location as the start (Durango Nordic Center). Indoor bathrooms. OpenSplitTime lists the finish at mile 103.5 and the manual's elevation profile at 103.7."
+    }
+  ],
+  "race_climbs": [
+    {
+      "id": "cascade",
+      "label": "Cascade",
+      "approx_mi": [
+        0,
+        8.3
+      ]
+    },
+    {
+      "id": "colorado-trail-high-point",
+      "label": "Colorado Trail High Point",
+      "approx_mi": [
+        19.5,
+        30
+      ]
+    },
+    {
+      "id": "calico-to-burnett",
+      "label": "Calico to Burnett",
+      "approx_mi": [
+        52.8,
+        64.8
+      ]
+    },
+    {
+      "id": "ryman-to-corral",
+      "label": "Ryman Creek to Corral",
+      "approx_mi": [
+        71.3,
+        79.9
+      ]
+    },
+    {
+      "id": "big-lick-to-elbert",
+      "label": "Big Lick to Elbert Creek",
+      "approx_mi": [
+        87.8,
+        95.5
+      ]
+    }
+  ],
+  "crew_info": {
+    "rules": [
+      "Crew are only allowed at aid stations marked for Crew Access on the aid station chart: Start/Finish, Cross Mountain #5 (mile 45.8), Ryman Creek #8 (mile 71.3), Elbert Creek #11 (mile 95.5).",
+      "The first aid station where you can see crew is Cross Mountain at mile 45.8 — the Forest Service permit requires the race to stick to this plan.",
+      "Crew may only enter the aid station tents once their runner has arrived; aid station food and amenities are for runners and actively running pacers ONLY.",
+      "Do NOT arrive at Cross Mountain until certain your runner will arrive within one hour; wait in Rico (under a 15 minute drive, has cell service) and track from there.",
+      "Pacers may start at mile 45.8 (Cross Mountain), one pacer at a time, picked up or exchanged only at crew-access aids; every pacer must sign a waiver and collect a PACER bib at the aid station before leaving.",
+      "No muling — pacers may not carry water, food, lights, shoes, clothing or any other supplies for their runner.",
+      "No stashing supplies along the course and no accepting aid except within 400 yards of a designated aid station.",
+      "Runners are responsible and accountable for the actions of their crew and pacers before, during and after the race.",
+      "Drop bags are due at the starting line by 5:30 am, clearly labeled with aid station name and bib number; weatherproof bags recommended. Drop bags go to EMT #2, Middle of Nowhere #4, Cross Mountain #5, Ryman Creek #8 and Elbert Creek #11, and return to the start/finish once that aid closes.",
+      "If a runner drops, it is the runner's responsibility to get themselves out — volunteers cannot be expected to have the capacity, and several aids are reachable only by hiking, OHV or rough 4wd road.",
+      "Cupless and bowl-less race: runners carry their own reusable cup and ideally a collapsible bowl."
+    ],
+    "cell_strategy": "This is a REMOTE course — the manual tells runners and crews to expect no service for the majority of the route, including most aid stations. Rico is the reliable crew basecamp with cell service and is less than a 15 minute drive from Cross Mountain, so crews are encouraged to hang there and watch the tracker. Every runner carries a satellite tracker (MAProgress live tracking, own device or rented) with messaging, and OpenSplitTime aid-station splits back it up; tracking updates poorly in dense timber and low canyons, so gaps are expected rather than alarming. A race headquarters phone number is emailed to runners shortly before the race to pass to crew.",
+    "station_notes": {
+      "Start": "Durango Nordic Center, 49786 U.S. 550, ~30 min north of Durango on 550. Indoor bathrooms. Two highway crossings happen right at the start/finish; cars are stopped for the first one only.",
+      "Cross Mountain #5": "2+ hours from the start/finish and on the other side of the range: 550 south to Durango, 160 west to Mancos, 184 to Dolores, then 145 north. Trailhead is about 2 miles south of Lizard Head Pass off Hwy 145. Portable toilet. Do not arrive until your runner is within an hour — wait in Rico.",
+      "Ryman Creek #8": "~20 min south of Cross Mountain TH on Hwy 145; about 14 miles down, a dirt road on the left leads to the trailhead. The entrance has a brief steep section with ruts and loose rock — low-clearance or 2wd vehicles should use the large lot slightly north on 145 and walk over. Portable toilet.",
+      "Elbert Creek #11": "~2.5 hours from Ryman Creek, back over to the Durango side: 145 south to Dolores, 184 east to Mancos, 160 east to Durango, then 550 north. Turn left at Purgatory resort onto CR 39 toward Hermosa Creek Road for 3.2 miles, then left on Elbert Creek Road / FS 581 for 5.5 miles to a small parking area at the Elbert Creek Trail junction.",
+      "Finish": "Same site as the start; indoor bathrooms. Finish cutoff 8:00 PM Saturday."
+    },
+    "start_notes": "Start and finish are both at the Durango Nordic Center, 49786 U.S. 550, Durango CO 81301, roughly 30 minutes north of town. The live site lists 2027 packet pickup Thursday 2:00–6:00 PM MT at Durango Running Company (473 E. College Dr.) and a 6:00 AM MT Friday start with an 8:00 PM MT Saturday finish. In 2026 the morning ran check-in 5:00–5:30 am, drop bags due 5:30 am, briefing and raffle 5:45 am, start 6:00 am; attendance at Thursday pickup was mandatory so satellite trackers could be verified.",
+    "driving": {
+      "Start": "~30 min from Durango — north on US 550 to the Durango Nordic Center, 49786 U.S. 550, Durango, CO 81301.",
+      "Cross Mountain #5": "2+ hours from the Start/Finish. 550 south to Durango, 160 west to Mancos, 184 to Dolores, 145 north to the Cross Mountain trailhead ~2 miles south of Lizard Head Pass.",
+      "Ryman Creek #8": "~20 min from Cross Mountain TH. South on 145 about 14 miles to a dirt road on the left; steep rutted entrance, alternate parking in the large lot slightly north on 145.",
+      "Elbert Creek #11": "~2.5 hours from Ryman Creek. 145 south to Dolores, 184 east to Mancos, 160 east to Durango, 550 north to Purgatory; left on CR 39 for 3.2 mi, then left on Elbert Creek Rd / FS 581 for 5.5 mi.",
+      "notes": "All mountain roads — winding, slow, and the most efficient route is often not the shortest by mileage. Exact GPS coordinates for every aid are printed on the manual's aid station chart."
+    }
+  },
+  "coach_notes": {
+    "terrain": "103.4 mi and ~19,000 ft of San Juan singletrack in a loop out of the Durango Nordic Center, with the vert stacked in five big blocks rather than rollers: Cascade off the line, +3,012 ft from EMT #2 to Engine Creek #3 on the way to the 12,438 ft high point, +3,278 ft from Calico #6 to Burnett #7 (the largest single segment), then +2,663 ft to Corral #9 and +2,429 ft to Elbert Creek #11 after mile 87. Long stretches run above treeline on very rugged footing with creek crossings, and poles are explicitly endorsed by the organizers. Train the shape rather than the total: 2,000–3,000 ft continuous climbs hiked with poles, and the matching technical descents repeated on already-tired legs. The two hardest climbs land at mile 52.8 and mile 87, so late-race climbing on wrecked quads is the specific quality to build.",
+    "climate": "The race runs in August in the San Juans — monsoon season, where afternoon thunderstorms build fast and the only answer above treeline is to get below it quickly. Town forecasts for Durango or Rico do not describe conditions at 11,000–12,400 ft; plan for cold, wet wind on the same day the sun burns. A waterproof hard shell, gloves and a hat/buff are required gear, so rehearse getting layers on and off without stopping long. Heat is not the limiter at these elevations, but sun exposure above treeline through the middle of Friday is, and the night above 10,000 ft gets genuinely cold.",
+    "altitude": "The course averages 10,282 ft and tops out at 12,438 ft on the Colorado Trail; the lowest charted aid stations sit at 8,402 ft (Big Lick #10) and 8,451 ft (Ryman Creek #8), so there is no low-altitude recovery anywhere on the loop. This is the headline demand: expect climbing paces well below flatland equivalents and build the pacing plan around the posted cutoffs, not a sea-level fitness estimate. What usually breaks up here is the stomach, not the legs, so rehearse the full fueling rate high and on climbs rather than on rolling home trails. Get as much time above 10,000 ft into the block as the calendar allows, and arrive either properly acclimatized or as late as possible.",
+    "key_demands": "Self-sufficiency comes first: no crew and no pacer until Cross Mountain at mile 45.8, and two long carries the manual flags by name — 16.3 mi from EMT #2 to Middle of Nowhere #4 with only backcountry aid (gels, gummies, Tailwind, water) between, and 12 mi with +3,278 ft from Calico #6 to Burnett #7. 1.5 L of capacity is required and a filter is recommended, so every long training day should be run off the vest you will actually carry. The 38 h limit off a 06:00 Friday start means one full night on the move and possibly a second dusk; rehearse night sections at altitude with the real light setup. The middle cutoffs are the tight ones — 14 h at 35.8, 16 h at 45.8, 18 h at 52.8 — so the block needs race-effort simulation days that prove an honest, unhurried first half still clears them.",
+    "race_week": "Thursday packet pickup in Durango is effectively mandatory: every runner's satellite tracker is checked in and connected there, and a rental is available if you don't own one. Lay the full required kit out before you travel — tracker, waterproof shell, two light sources, whistle, gloves, hat/buff, 1.5 L capacity, reusable cup and collapsible bowl — since the race is cupless and bowl-less and gear can be checked anywhere on course. Build and label the five drop bags (EMT #2, Middle of Nowhere #4, Cross Mountain #5, Ryman Creek #8, Elbert Creek #11) Thursday night in weatherproof bags; they are due at the start by 5:30 AM for the 6:00 AM gun. Sleep as high as you can the last few nights and walk crew through the drives — Cross Mountain is 2+ hours from the start and Elbert Creek 2.5 hours from Ryman, all slow mountain roads with no service."
+  },
+  "links": {
+    "site": "https://www.sanjuansoftie.com/",
+    "manual": "https://www.sanjuansoftie.com/s/San-Juan-Softie-Runners-Manual-2026-July-25-2026.pdf",
+    "gpx": "https://www.gaiagps.com/api/objects/folder/60467a20-9900-4314-852e-6419da3cad82.gpx/?pubLink=KfhcSlSlgITOA6GmGHSJCyyM",
+    "results": "https://www.opensplittime.org/events/2026-san-juan-softie-100/spread",
+    "map": "https://caltopo.com/m/P3E6AHG"
+  },
+  "visual": {
+    "theme_preset": "alpine",
+    "accent": "#7fd3f0"
+  },
+  "provenance": {
+    "name": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "sanjuansoftie.com footer ('The San Juan Softie 100 takes place in the San Juan National Forest…')"
+    },
+    "short": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "race-intake"
+    },
+    "date": {
+      "by": "user",
+      "at": "2026-09-18T23:23:02.493Z"
+    },
+    "start_time": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "sanjuansoftie.com ('Start: 6am MT Friday'); runner-manual-2026.pdf p4 schedule ('6:00 am: RACE START!')"
+    },
+    "timezone": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "sanjuansoftie.com ('6am MT') + Durango, CO location"
+    },
+    "location": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "runner-manual-2026.pdf p10 ('Drive north on 550 from Durango to the Durango Nordic Center: 49786 U.S. 550, Durango, CO 81301')"
+    },
+    "format": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "runner-manual-2026.pdf p9 chart — Start and Finish share 37.63189, -107.80674; sanjuansoftie.com ('starts and finishes just north of Durango')"
+    },
+    "distance_mi": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "runner-manual-2026.pdf p9 aid chart (Finish, Total Mileage 103.4)"
+    },
+    "gain_ft": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "sanjuansoftie.com course section and runner-manual-2026.pdf p5 ('Total elevation gain: ~19,000 feet')"
+    },
+    "elevation": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "race-intake"
+    },
+    "cutoff_h": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "sanjuansoftie.com ('38 hour cut-off'); runner-manual-2026.pdf p4 ('8:00 pm: Race finish cutoff')"
+    },
+    "features": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "race-intake"
+    },
+    "aid_stations": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "runner-manual-2026.pdf p9 aid station chart (image, transcribed cell by cell); cross-checked against the sanjuansoftie.com course table and OpenSplitTime 2026 split headers"
+    },
+    "race_climbs": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "segment gains and mileages from the runner-manual-2026.pdf p9 chart; high-point placement read off the p5 elevation profile image"
+    },
+    "crew_info": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "runner-manual-2026.pdf p2 (rules), p8 (aid/drop bags), p9 (crew and pacers), p10 (driving directions), p11–12 (safety)"
+    },
+    "coach_notes": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "runner-manual-2026.pdf p5, p8, p9, p11, p12; sanjuansoftie.com course and FAQ sections"
+    },
+    "links": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "sanjuansoftie.com course and results sections"
+    },
+    "visual": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "race-intake"
+    },
+    "edition_year": {
+      "by": "agent",
+      "at": "2026-09-18T21:07:12.736Z",
+      "source": "intake request"
+    },
+    "aid_stations[1].gpx_wpt": {
+      "by": "matcher",
+      "at": "2026-09-18T23:11:29.155Z",
+      "confidence": 0.95,
+      "method": "fuzzy"
+    },
+    "aid_stations[2].gpx_wpt": {
+      "by": "matcher",
+      "at": "2026-09-18T23:11:29.155Z",
+      "confidence": 0.95,
+      "method": "fuzzy"
+    },
+    "aid_stations[3].gpx_wpt": {
+      "by": "matcher",
+      "at": "2026-09-18T23:11:29.155Z",
+      "confidence": 0.95,
+      "method": "fuzzy"
+    },
+    "aid_stations[4].gpx_wpt": {
+      "by": "matcher",
+      "at": "2026-09-18T23:11:29.155Z",
+      "confidence": 0.95,
+      "method": "fuzzy"
+    },
+    "aid_stations[5].gpx_wpt": {
+      "by": "matcher",
+      "at": "2026-09-18T23:11:29.155Z",
+      "confidence": 0.95,
+      "method": "fuzzy"
+    },
+    "aid_stations[6].gpx_wpt": {
+      "by": "matcher",
+      "at": "2026-09-18T23:11:29.155Z",
+      "confidence": 0.95,
+      "method": "fuzzy"
+    },
+    "aid_stations[7].gpx_wpt": {
+      "by": "matcher",
+      "at": "2026-09-18T23:11:29.155Z",
+      "confidence": 0.95,
+      "method": "fuzzy"
+    },
+    "aid_stations[8].gpx_wpt": {
+      "by": "matcher",
+      "at": "2026-09-18T23:11:29.155Z",
+      "confidence": 0.633,
+      "method": "fuzzy"
+    },
+    "aid_stations[10].gpx_wpt": {
+      "by": "matcher",
+      "at": "2026-09-18T23:11:29.155Z",
+      "confidence": 0.95,
+      "method": "fuzzy"
+    },
+    "aid_stations[11].gpx_wpt": {
+      "by": "matcher",
+      "at": "2026-09-18T23:11:29.155Z",
+      "confidence": 0.95,
+      "method": "fuzzy"
+    },
+    "coach_notes.terrain": {
+      "by": "agent",
+      "at": "2026-09-18T23:12:05.686Z",
+      "source": "race-plan"
+    },
+    "coach_notes.climate": {
+      "by": "agent",
+      "at": "2026-09-18T23:12:05.686Z",
+      "source": "race-plan"
+    },
+    "coach_notes.altitude": {
+      "by": "agent",
+      "at": "2026-09-18T23:12:05.686Z",
+      "source": "race-plan"
+    },
+    "coach_notes.key_demands": {
+      "by": "agent",
+      "at": "2026-09-18T23:12:05.686Z",
+      "source": "race-plan"
+    },
+    "coach_notes.race_week": {
+      "by": "agent",
+      "at": "2026-09-18T23:12:05.686Z",
+      "source": "race-plan"
+    },
+    "visual.theme_preset": {
+      "by": "agent",
+      "at": "2026-09-18T23:12:05.686Z",
+      "source": "race-plan"
+    },
+    "visual.accent": {
+      "by": "agent",
+      "at": "2026-09-18T23:12:05.686Z",
+      "source": "race-plan"
+    },
+    "aid_stations[9].gpx_wpt": {
+      "by": "user",
+      "at": "2026-09-18T23:23:02.493Z"
+    },
+    "elevation.min_ft": {
+      "by": "user",
+      "at": "2026-09-18T23:23:02.493Z"
+    },
+    "unresolved_acknowledged": {
+      "by": "user",
+      "at": "2026-09-18T23:23:39.325Z"
+    },
+    "status": {
+      "by": "user",
+      "at": "2026-09-18T23:28:58.825Z",
+      "source": "integrator: reset to draft after the tt-yib.14 walk; activate deliberately from the switcher"
+    },
+    "sun": {
+      "by": "computed",
+      "at": "2026-09-19T13:50:43.192Z",
+      "source": "scripts/race-sun.mjs"
+    }
+  },
+  "sources": [
+    {
+      "kind": "url",
+      "ref": "https://www.sanjuansoftie.com/",
+      "fetched_at": "2026-09-18T21:05:06.549Z",
+      "file": "www-sanjuansoftie-com.html"
+    },
+    {
+      "kind": "gpx",
+      "ref": "https://www.gaiagps.com/api/objects/folder/60467a20-9900-4314-852e-6419da3cad82.gpx/?pubLink=KfhcSlSlgITOA6GmGHSJCyyM",
+      "fetched_at": "2026-09-18T21:05:07.829Z",
+      "file": "www-gaiagps-com-api-objects-folder-60467a20-9900-4314-852e-6419da3cad82-gpx.gpx"
+    },
+    {
+      "kind": "pdf",
+      "ref": "https://www.sanjuansoftie.com/s/San-Juan-Softie-Runners-Manual-2026-July-25-2026.pdf",
+      "fetched_at": "2026-09-18T21:05:08.392Z",
+      "file": "www-sanjuansoftie-com-s-san-juan-softie-runners-manual-2026-july-25-2026-pdf.pdf"
+    },
+    {
+      "kind": "gpx",
+      "ref": "https://caltopo.com/m/P3E6AHG",
+      "fetched_at": "2026-09-18T21:05:10.596Z",
+      "file": "caltopo-com-m-p3e6ahg.gpx"
+    },
+    {
+      "kind": "url",
+      "ref": "https://www.opensplittime.org/events/2026-san-juan-softie-100/spread",
+      "fetched_at": "2026-09-18T21:05:10.827Z",
+      "file": "www-opensplittime-org-events-2026-san-juan-softie-100-spread.html"
+    },
+    {
+      "kind": "url",
+      "ref": "https://www.opensplittime.org/events/2025-san-juan-softie-100/spread",
+      "fetched_at": "2026-09-18T21:05:10.947Z",
+      "file": "www-opensplittime-org-events-2025-san-juan-softie-100-spread.html"
+    },
+    {
+      "kind": "url",
+      "ref": "https://ultrasignup.com/results_event.aspx?did=121004",
+      "fetched_at": "2026-09-18T21:05:11.220Z",
+      "file": "ultrasignup-com-results-event-aspx.html"
+    },
+    {
+      "kind": "url",
+      "ref": "https://www.opensplittime.org/events/san-juan-softie-2024/spread",
+      "fetched_at": "2026-09-18T21:05:11.355Z",
+      "file": "www-opensplittime-org-events-san-juan-softie-2024-spread.html"
+    },
+    {
+      "kind": "url",
+      "ref": "https://www.sanjuansoftie.com/stoner-mesa-course-reroute",
+      "fetched_at": "2026-09-18T21:05:11.408Z",
+      "file": "www-sanjuansoftie-com-stoner-mesa-course-reroute.html"
+    },
+    {
+      "kind": "pdf",
+      "ref": "San-Juan-Softie-Runners-Manual-2026.pdf",
+      "fetched_at": "2026-09-18T21:05:11.413Z",
+      "file": "uploads/San-Juan-Softie-Runners-Manual-2026.pdf"
+    }
+  ],
+  "review_notes": "No block is returned: race.json has date: null (the site gives month only, 'August, 2027'), so there is no race day to count weeks back from, and web/public/strava.json has never been synced — the athlete's current load is unknown, so even week 1's floor would be a guess. Both the calendar and the ramp anchor are missing, not just one; once a 2027 date is published and Strava is synced, the block can be built from the athlete's trailing four weeks. The nutrition file is tuned for altitude rather than heat: features.heat is false and the course never drops below ~8,400 ft, so heat_window is deliberately omitted (fluid_ml_hr_heat is retained as the rate for the exposed above-treeline afternoon hours, but no window schedules it). Carb rates ladder down from 72 to 52 g/h across four phases ending at 40 h — past the 38 h cutoff — and the 62 g/h cap over 3 h is set below the opening rate because appetite and gut tolerance at 10,000+ ft are the documented failure point. Drop-bag choices assume a mid-pack runner near the posted cutoffs: lights go into Middle of Nowhere #4 because its 14 h cutoff is 20:00 clock time and it is the last bag before dark at that pace — a faster runner will be past it in daylight and should move the headlamp forward to Cross Mountain #5, which is worth confirming once a 2027 date fixes sunset. Warmth is loaded at Cross Mountain #5 because the next bag is 25.5 mi later at Ryman Creek #8, spanning the coldest hours and the 12 mi / +3,278 ft Calico-to-Burnett carry with no drop bag at Calico; fresh socks wait until Ryman Creek, the lowest and wettest point, and a backup light goes to Elbert Creek #11 for a possible second dusk before the 20:00 finish. The 1.5 L requirement is met by two 600 ml flasks plus a spare soft flask carried from the Start, since the required capacity applies before the first drop bag. Caffeine is 11 × 100 mg gels at a 2 h minimum spacing plus pre-race and cola, which spans roughly 20 h if the first dose lands with the lights at ~14 h — check that against the athlete's own tolerance. Two things to double-check before activating: the gel and chew specs are placeholders (30 g / 23 g carb) and should be swapped for the athlete's actual products with their real sodium figures, and every cutoff clock time here is carried over from the 2026 manual and must be re-verified when the 2027 manual drops.",
+  "unresolved": [
+    "links.tracking"
+  ],
+  "unresolved_acknowledged": true,
+  "sun": {
+    "sunrise": "06:25",
+    "sunset": "20:07"
+  }
+}

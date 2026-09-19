@@ -146,10 +146,21 @@ export const Block = ({ children }: { children: React.ReactNode }) => (
 /*  The dialog                                                         */
 /* ------------------------------------------------------------------ */
 
-export default function RaceIntake({ slug: openAt = null, onClose }: {
+export default function RaceIntake({ slug: openAt = null, parentSlug = null, onClose }: {
   /** A draft to review straight away — the switcher's "Review…" row. Absent
       means the intake form, the "New race…" row. */
   slug?: string | null;
+  /** Opened from a tune-up's "run the full intake instead" link (PRD-v2 §3):
+      the A race the athlete was adding a tune-up to, carried over so the form
+      says which block this race was reached from and the intake agent is told
+      as much in the notes.
+
+      What it does NOT do: make the folder a B race. POST /api/race-intake has
+      no parent_slug field and `kind`/`parent_slug` are not editable keys
+      (scripts/race-edit.mjs EDITABLE_RACE_KEYS) — the intake writes an A-race
+      draft, and the quick form next door is the only thing that writes a
+      tune-up. The copy below says so rather than implying otherwise. */
+  parentSlug?: string | null;
   onClose: () => void;
 }) {
   const { reload } = useRefresh();
@@ -166,7 +177,12 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   const [siteUrl, setSiteUrl] = useState(() => readNewRaceDraft(openAt)?.siteUrl ?? "");
   const [extraUrls, setExtraUrls] = useState(() => readNewRaceDraft(openAt)?.extraUrls ?? "");
   const [year, setYear] = useState(() => readNewRaceDraft(openAt)?.year ?? String(new Date().getFullYear() + 1));
-  const [notes, setNotes] = useState(() => readNewRaceDraft(openAt)?.notes ?? "");
+  const [notes, setNotes] = useState(() =>
+    readNewRaceDraft(openAt)?.notes
+    // The prefill, and the only place parentSlug reaches the request: the
+    // notes are free prose the intake agent reads, so naming the block the
+    // athlete came from is context, not schema.
+    ?? (parentSlug ? `Entered as a tune-up inside the ${parentSlug} block.` : ""));
   const [themePreset, setThemePreset] = useState<string>(() => readNewRaceDraft(openAt)?.themePreset ?? "");
   const [uploads, setUploads] = useState<{ name: string; path: string; bytes: number }[]>(() => readNewRaceDraft(openAt)?.uploads ?? []);
   const [uploading, setUploading] = useState(false);
@@ -381,6 +397,14 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
                   >
                     discard draft
                   </button>
+                </p>
+              )}
+              {parentSlug && screen === "form" && (
+                <p style={{ fontSize: 11, color: "var(--lamp)", margin: "0 0 16px", lineHeight: 1.5 }}>
+                  Reached from <span className="numerals">{parentSlug}</span>'s "add tune-up" row. This is the
+                  paid intake: it reads the race's own website in an agent turn and writes a full race folder of
+                  its own — a draft A race, not a tune-up inside that block. The quick form is what writes a
+                  tune-up.
                 </p>
               )}
               <Block>
