@@ -238,14 +238,33 @@ a { color: inherit; }
    The sheet portals to <body> (outside #root), so the app can be fully
    display:none'd — no blank trailing pages from hidden layout. */
 @media print {
+  /* the dark app background would otherwise show through every page after
+     the first — .crew-sheet no longer pins to one page box (below), so
+     without this the spillover paints the app's near-black body color */
+  html:has(body.crew-printing), body.crew-printing,
+  html:has(body.card-printing), body.card-printing {
+    background: #fff !important;
+    background-image: none !important;
+  }
+
   body.crew-printing #root { display: none !important; }
   body.crew-printing .crew-sheet {
-    position: absolute !important;
-    inset: 0 !important;
+    /* static, not absolute/fixed: an absolutely positioned box with
+       inset:0 is pinned to the height of ONE page box, so content past
+       that height spilled onto the page's own (dark) background instead
+       of flowing onto page 2+. Static lets it sit in normal flow and
+       paginate across as many pages as its content needs. */
+    position: static !important;
     overflow: visible !important;
     background: #fff !important;
+    min-height: 0 !important;
   }
   body.crew-printing .no-print { display: none !important; }
+  /* paginate the table by row, not mid-row, and keep the map + each crew
+     note together rather than splitting across a page break */
+  body.crew-printing table { break-inside: auto; }
+  body.crew-printing tr { break-inside: avoid; }
+  body.crew-printing svg { break-inside: avoid; }
 
   /* runner card: same isolation; each face becomes one 5×3in page */
   body.card-printing #root { display: none !important; }
