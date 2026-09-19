@@ -6,6 +6,7 @@ import { useCrewBase, useRaceResult } from "./useRaceData";
 import { useRacePlan } from "./useRacePlan";
 import { gmapsDirectionsUrl } from "./links";
 import { CrewSheet } from "./CrewSheet";
+import { CrewExportButton } from "../crew/ExportButton";
 import { RunnerCard } from "./RunnerCard";
 import { FuelCard } from "./FuelCard";
 import { DropBagCard } from "./DropBagCard";
@@ -1008,6 +1009,7 @@ export function RacePlanner() {
                   ⎙ crew sheet pdf
                 </button>
               )}
+              {panels.crew_sheet && <CrewExportButton />}
             </span>
           </div>
         </div>
