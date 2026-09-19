@@ -170,6 +170,7 @@ const SLUG_OP_LABEL: Record<string, string> = {
   intake: 'an intake',
   archive: 'an archive',
   edit: 'a save',
+  'refresh-review': 'a refresh accept/reject',
 }
 
 function slugLockKey(slug: string): string {
@@ -2224,11 +2225,23 @@ function raceRefreshApi(): Plugin {
             return
           }
           if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
-          if (action === '/reject') {
-            json(res, 200, await mod.rejectRefresh({ root: projectRoot, slug }))
+          // accept rewrites race/block/nutrition + course files and reject
+          // deletes the shadow: both must serialize against a running build,
+          // plan, refresh or edit on this slug — and against each other (a
+          // double-clicked Accept would otherwise interleave two applies).
+          if (!acquireSlugLock(slug, 'refresh-review')) {
+            json(res, 409, { error: `${slugLockLabel(slug, 'refresh-review')} for "${slug}" is already running` })
             return
           }
-          json(res, 200, await mod.acceptRefresh({ root: projectRoot, slug }))
+          try {
+            if (action === '/reject') {
+              json(res, 200, await mod.rejectRefresh({ root: projectRoot, slug }))
+              return
+            }
+            json(res, 200, await mod.acceptRefresh({ root: projectRoot, slug }))
+          } finally {
+            releaseSlugLock(slug)
+          }
         } catch (e) {
           const message = (e as Error).message || String(e)
           console.error(`[race-refresh] ${message}`)
