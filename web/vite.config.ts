@@ -119,20 +119,25 @@ function parseSlugParam(raw: string): string | null {
   return KEBAB_SLUG_RE.test(slug) ? slug : null
 }
 
-// PR #23 review round 1, finding 4 (and round 2, finding 2): raceBuildApi,
-// racePlanApi, raceIntakeApi and raceRefreshApi each spawn a paid `claude -p`
-// turn (plan/intake/refresh) or run a long CPU pass (build), and write
-// races/<slug>/*.json atomically at the end. A double-click, or two browser
-// tabs open to the same race, fires two concurrent requests: two concurrent
-// agent turns silently double the bill, and two concurrent writers to the
-// same file interleave via writeJsonAtomic (whichever settles last wins,
-// silently discarding the other run's result) instead of erroring.
+// PR #23 review round 1 finding 4, round 2 findings 2 and 3 (scripts report)
+// / high finding (web report): raceBuildApi, racePlanApi, raceIntakeApi and
+// raceRefreshApi each spawn a paid `claude -p` turn (plan/intake/refresh) or
+// run a long CPU pass (build); raceEditApi (PUT and POST .../status) and the
+// archive route in raceResultApi are quick, no-agent writes but touch the
+// exact same file. ALL of them write races/<slug>/race.json (some also
+// block.json) at the end, and every one of them is a candidate for "two
+// concurrent tabs/requests silently clobber each other's write" — the
+// archive-during-build case is the sharpest version: buildRace snapshots
+// race.json once at the start and writes that whole (by-then-stale) copy
+// back at the end, so a build finishing after a concurrent archive completes
+// SILENTLY REVERTS the archive's status flip with no error to either caller.
 //
 // One Set for the dev server's lifetime, holding two KINDS of key:
 //
-//   "slug:<slug>"   — build, plan, refresh, and (once its slug is known)
-//                     intake ALL write races/<slug>/race.json independently,
-//                     so they must be mutually exclusive with EACH OTHER, not
+//   "slug:<slug>"   — build, plan, refresh, archive, edit (PUT and
+//                     POST .../status), and (once its slug is known) intake
+//                     ALL write races/<slug>/race.json independently, so
+//                     they must be mutually exclusive with EACH OTHER, not
 //                     just with a second call to the same endpoint. Round 1
 //                     keyed each endpoint separately ("build:<slug>" vs
 //                     "plan:<slug>"), which let a build and a plan for the
@@ -147,7 +152,12 @@ function parseSlugParam(raw: string): string | null {
 //
 // A request for a key already in the Set gets 409 instead of starting a
 // second run, and every acquirer releases its key in `finally`, including on
-// a thrown error or a client disconnect.
+// a thrown error or a client disconnect. The lock alone is not sufficient for
+// build/plan, though: see buildRace's own re-read-before-write guard
+// (scripts/race-build.mjs) for the other half of the archive-during-build fix
+// — a slow build started BEFORE a fast archive/edit is still in flight when
+// the archive completes, still holds no lock on it (it acquired first), and
+// must not blindly overwrite whatever the archive/edit wrote meanwhile.
 const inFlightSlugs = new Set<string>()
 // Which operation currently holds each "slug:<slug>" key — the key alone no
 // longer says whether a build, a plan or a refresh is running, and the 409
@@ -158,6 +168,8 @@ const SLUG_OP_LABEL: Record<string, string> = {
   plan: 'a plan run',
   refresh: 'a refresh',
   intake: 'an intake',
+  archive: 'an archive',
+  edit: 'a save',
 }
 
 function slugLockKey(slug: string): string {
@@ -165,8 +177,8 @@ function slugLockKey(slug: string): string {
 }
 
 /** Acquire the shared per-slug lock for `op` ('build' | 'plan' | 'refresh' |
-    'intake'). Returns false — without touching anything — when another
-    operation already holds it. */
+    'intake' | 'archive' | 'edit'). Returns false — without touching
+    anything — when another operation already holds it. */
 function acquireSlugLock(slug: string, op: string): boolean {
   const key = slugLockKey(slug)
   if (inFlightSlugs.has(key)) return false
@@ -1426,6 +1438,15 @@ function raceResultApi(): Plugin {
         }
 
         if (req.method !== 'POST') { res.statusCode = 405; res.end('POST required'); return }
+        // See inFlightSlugs above (PR #23 review round 2, scripts finding
+        // "archive endpoint holds no lock"): archiveRace flips race.json's
+        // status and writes result.json — a build/plan/refresh/edit for the
+        // same slug finishing after (or starting during) an archive must not
+        // silently interleave with it.
+        if (!acquireSlugLock(slug, 'archive')) {
+          json(res, 409, { error: `${slugLockLabel(slug, 'archive')} for "${slug}" is already running` })
+          return
+        }
         try {
           const chunks: Buffer[] = []
           let size = 0
@@ -1450,6 +1471,8 @@ function raceResultApi(): Plugin {
           json(res, 200, { slug, result, pointer })
         } catch (e) {
           fail(res, e)
+        } finally {
+          releaseSlugLock(slug)
         }
       })
     },
@@ -1540,6 +1563,31 @@ function raceEditApi(): Plugin {
           return
         }
 
+        // GET is read-only (loadReview never writes) — answered without
+        // touching the lock, so an athlete can still open the review screen
+        // while a build/plan/refresh/archive is running for that slug.
+        if (!statusPath && req.method === 'GET') {
+          try {
+            const mod = await raceEdit()
+            json(res, 200, await mod.loadReview(projectRoot, slug))
+          } catch (e) {
+            const message = (e as Error).message || String(e)
+            console.error(`[race-edit] ${message}`)
+            json(res, 500, { error: message })
+          }
+          return
+        }
+
+        // Everything else here writes race.json (status promotion, or the
+        // PUT edit, plus block.json for a block-target edit) — see
+        // inFlightSlugs above (PR #23 review round 2, scripts finding
+        // "raceEditApi PUT/status unlocked"): must serialize against a
+        // concurrent build/plan/refresh/archive/intake on the same slug, not
+        // just win a race with `writeJsonAtomic` and lose silently.
+        if (!acquireSlugLock(slug, 'edit')) {
+          json(res, 409, { error: `${slugLockLabel(slug, 'edit')} for "${slug}" is already running` })
+          return
+        }
         try {
           const mod = await raceEdit()
           const { writeJsonAtomic } = await import(path.join(projectRoot, 'scripts/lib.mjs')) as {
@@ -1569,10 +1617,6 @@ function raceEditApi(): Plugin {
             return
           }
 
-          if (req.method === 'GET') {
-            json(res, 200, await mod.loadReview(projectRoot, slug))
-            return
-          }
           if (req.method !== 'PUT') { res.statusCode = 405; res.end('GET or PUT required'); return }
 
           const body = await readBody(req)
@@ -1623,6 +1667,8 @@ function raceEditApi(): Plugin {
           const message = (e as Error).message || String(e)
           console.error(`[race-edit] ${message}`)
           json(res, 500, { error: message })
+        } finally {
+          releaseSlugLock(slug)
         }
       })
     },

@@ -16,6 +16,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import { readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -822,6 +823,58 @@ test("a full run writes the three files, stamps them, and keeps the owner's edit
   assert.equal(written.review_notes, "three loading cycles, peak at week 9");
   assert.deepEqual(result.skipped, ["coach_notes.terrain"]);
   assert.deepEqual(result.unresolved, ["links.results"]);
+});
+
+test("a concurrent archive/edit that finishes during the agent turn survives planRace's later write — merged onto a fresh read, not the stale snapshot from step 1", async (t) => {
+  // PR #23 review round 2: planRace read race.json once at the top and
+  // merged the agent's output onto THAT clone at the end — the agent turn
+  // in between is real wall time (minutes for the paid `claude -p` call;
+  // here, the injected `runAgent` stands in for it), during which the
+  // review dialog's PUT, a status promotion, or an archive may write
+  // races/<slug>/race.json. mergeRaceUpdates itself only ever touches
+  // coach_notes/links/visual/review_notes, so re-basing it on a fresh read
+  // must carry every other field — status included — through untouched.
+  const mm = await mm100();
+  if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-concurrent-"));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+
+  const slug = "future-race-2027";
+  const dir = path.join(tmp, "races", slug);
+  await fs.cp(path.join(ROOT, "races", MM100), dir, { recursive: true });
+  const racePath = path.join(dir, "race.json");
+  const race = { ...mm.race, slug, status: "draft", date: "2027-08-13", distance_mi: 104, gain_ft: 19000 };
+  await fs.writeFile(racePath, JSON.stringify(race, null, 2));
+
+  const reply = await goodOutput();
+  const result = await planRace({
+    root: tmp,
+    slug,
+    today: new Date(2027, 4, 18),
+    runAgent: async () => {
+      // Stands in for the wall-clock gap a real `claude -p` turn leaves open
+      // — the archive endpoint (or the review dialog's PUT) landing its own
+      // write to the exact same file while this run is still "in the agent".
+      const onDisk = JSON.parse(readFileSync(racePath, "utf8"));
+      onDisk.status = "archived";
+      writeFileSync(racePath, JSON.stringify(onDisk, null, 2));
+      return { text: JSON.stringify(reply), wrapper: { numTurns: 3, costUsd: 0.12, durationMs: 4000 }, retried: false };
+    },
+  });
+
+  assert.deepEqual(result.wrote, [
+    `races/${slug}/block.json`,
+    `races/${slug}/nutrition.json`,
+    `races/${slug}/race.json`,
+  ]);
+  const written = await readJson(racePath);
+  // The concurrent write survives — the whole point of the fix.
+  assert.equal(written.status, "archived", "a concurrent archive must not be silently reverted by the plan finishing later");
+  // AND planRace's own generated fields still landed onto that same
+  // (now-archived) file.
+  assert.equal(written.coach_notes.climate, OK_NOTES.climate);
+  assert.equal(written.provenance["coach_notes.climate"].by, "agent");
+  assert.equal(written.review_notes, "three loading cycles, peak at week 9");
 });
 
 test("user-owned block targets survive a re-plan — the agent's proposal is a warning, not a write", async (t) => {

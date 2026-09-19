@@ -13,6 +13,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import { readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -381,6 +382,51 @@ test("the course.gpx mismatch is persisted onto race.json's unresolved list, and
     !(onDiskFixed.unresolved ?? []).includes("course.gpx"),
     JSON.stringify(onDiskFixed.unresolved)
   );
+});
+
+/* --------------- concurrent archive/edit during a build -------------------- */
+
+test("a concurrent archive/edit that finishes mid-build survives buildRace's later writes — patched on, not overwritten by the stale snapshot", async () => {
+  // PR #23 review round 2: buildRace used to clone race.json once at the top
+  // and write that whole (by-then-stale) clone back at the end. A build runs
+  // for real wall time; simulate the web layer's archive endpoint (or the
+  // review dialog's PUT) landing its own write — a status flip, here — while
+  // this build is still in flight between its own two internal writes.
+  const slug = "concurrent-archive-2027";
+  const { root, dir } = await makeRoot(slug);
+  const racePath = path.join(dir, "race.json");
+
+  let injected = false;
+  const r = await buildRace({
+    root, slug,
+    onProgress: (e) => {
+      // Fires once, right as the course build starts — after buildRace's own
+      // first write (matched stations + sun) has already landed, and before
+      // its second (the course.gpx mismatch flag) — the exact window the
+      // finding describes a fast concurrent archive/edit completing in.
+      if (!injected && e.step === "build" && e.status === "start") {
+        injected = true;
+        const race = JSON.parse(readFileSync(racePath, "utf8"));
+        race.status = "archived"; // stands in for POST /api/races/:slug/archive
+        writeFileSync(racePath, JSON.stringify(race, null, 2));
+      }
+    },
+  });
+
+  assert.ok(injected, "the injection point never fired — this test is not exercising the race");
+  assert.ok(Array.isArray(r.unresolved), "buildRace's own return value is unaffected either way");
+
+  const onDisk = await readJson(racePath);
+  // The concurrent write survives — the whole point of the fix.
+  assert.equal(onDisk.status, "archived", "a concurrent archive must not be silently reverted by the build finishing later");
+  // AND buildRace's own work from BOTH internal writes still landed onto
+  // that same (now-archived) file — this is a real field-level merge, not
+  // "the build just became a no-op because something else touched the file".
+  assert.equal(onDisk.aid_stations[0].gpx_wpt, "Cross Mtn TH");
+  assert.equal(onDisk.aid_stations[1].gpx_wpt, "Bear Creek Aid");
+  assert.equal(onDisk.provenance["aid_stations[0].gpx_wpt"].by, "matcher");
+  assert.match(onDisk.sun?.sunrise ?? "", /^\d{2}:\d{2}$/);
+  assert.equal(onDisk.provenance.sun.by, "computed");
 });
 
 test("an unresolved (null) distance_mi fails the course build with an actionable error, not Infinity/NaN", async () => {

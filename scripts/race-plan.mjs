@@ -1224,7 +1224,20 @@ export async function planRace({
     wrote.push(`races/${slug}/nutrition.json`);
     say("write", `races/${slug}/nutrition.json — ${Object.keys(nutrition.drop_bag_gear ?? {}).length} drop-bag entries`);
 
-    merged = mergeRaceUpdates(race, out, { at });
+    // Merged onto race.json's CURRENT contents, not the snapshot `race`
+    // (`folder.race`) read back at step 1 — the agent turn between there and
+    // here is real wall time, minutes long, during which the review
+    // dialog's PUT, a status promotion, or an archive may all have written
+    // races/<slug>/race.json (PR #23 review round 2: the same
+    // stale-snapshot-overwrite risk buildRace had, here with an even wider
+    // window). mergeRaceUpdates only ever touches coach_notes/links/visual/
+    // review_notes on whatever base it is given — never status, unresolved
+    // or aid_stations — so re-basing it on a fresh read is a straight
+    // improvement: everything the fresh copy has that `out` doesn't name is
+    // carried through untouched, exactly as it already was for those four
+    // fields; nothing else changes shape.
+    const freshRace = JSON.parse(await fs.readFile(path.join(dir, "race.json"), "utf8"));
+    merged = mergeRaceUpdates(freshRace, out, { at });
     await writeJsonAtomic(path.join(dir, "race.json"), merged.race);
     wrote.push(`races/${slug}/race.json`);
   } catch (e) {
