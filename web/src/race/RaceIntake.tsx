@@ -195,6 +195,15 @@ export default function RaceIntake({ slug: openAt = null, parentSlug = null, onC
   const [running, setRunning] = useState(false);
   const [stageState, setStageState] = useState<Record<StageId, StageState>>({ intake: "pending", build: "pending", plan: "pending" });
   const [stageLog, setStageLog] = useState<Record<StageId, string>>({ intake: "", build: "", plan: "" });
+  // Round 3 finding 5 (r3-sweep-b.md / r3-sweep.md): `ok: true` from the
+  // build/plan stages is not "nothing to say" — race-plan.mjs routinely
+  // returns real degradation (no fitness snapshot, no course.json to plan
+  // against) alongside a success, and `stageLog`'s per-stage LAST line is
+  // overwritten by the very next log line and vanishes outright once
+  // `setScreen("review")` unmounts this whole view — there was no surface
+  // that outlived the transition. Seeds ReviewScreen's own copy (below) so a
+  // wizard run's warnings are still visible once the screen switches.
+  const [stageWarnings, setStageWarnings] = useState<{ stage: "build" | "plan"; message: string }[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -271,6 +280,7 @@ export default function RaceIntake({ slug: openAt = null, parentSlug = null, onC
     setError(null);
     setStageState({ intake: "pending", build: "pending", plan: "pending" });
     setStageLog({ intake: "", build: "", plan: "" });
+    setStageWarnings([]);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
@@ -280,6 +290,17 @@ export default function RaceIntake({ slug: openAt = null, parentSlug = null, onC
       else if (e.kind === "error") setStageLog((p) => ({ ...p, [id]: e.message }));
     };
     const mark = (id: StageId, s: StageState) => setStageState((p) => ({ ...p, [id]: s }));
+    // Round 3 finding 5: build/plan both answer `ok: true` with a real
+    // `warnings` array on real degradation (race-plan.mjs: "no fitness
+    // snapshot…the block's ramp is unanchored"; race-build.mjs: a course.gpx
+    // mismatch) — mirrors AddTuneUp.tsx's own `created.build?.ok &&
+    // created.build.warnings?.length` check, folded into stageWarnings so it
+    // survives the switch to the review screen below.
+    const noteStageWarnings = (stage: "build" | "plan", result: Record<string, unknown>) => {
+      const warnings = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
+      if (warnings.length === 0) return;
+      setStageWarnings((p) => [...p, { stage, message: warnings.join(" · ") }]);
+    };
 
     try {
       mark("intake", "running");
@@ -307,12 +328,14 @@ export default function RaceIntake({ slug: openAt = null, parentSlug = null, onC
       }
 
       mark("build", "running");
-      await runStage("/api/race-intake/build", { slug: made }, events("build"), ctrl.signal);
+      const build = await runStage("/api/race-intake/build", { slug: made }, events("build"), ctrl.signal);
       mark("build", "done");
+      noteStageWarnings("build", build);
 
       mark("plan", "running");
-      await runStage("/api/race-intake/plan", { slug: made }, events("plan"), ctrl.signal);
+      const plan = await runStage("/api/race-intake/plan", { slug: made }, events("plan"), ctrl.signal);
       mark("plan", "done");
+      noteStageWarnings("plan", plan);
 
       // The form's job is done — the draft folder is now the source of
       // truth, so the localStorage safety net (bug D8) is cleared with it.
@@ -378,6 +401,7 @@ export default function RaceIntake({ slug: openAt = null, parentSlug = null, onC
             onDone={() => { reload(); onClose(); }}
             onReload={reload}
             onLockedChange={setReviewLocked}
+            initialStageWarnings={stageWarnings}
           />
         ) : (
           <>
@@ -637,12 +661,18 @@ const diskAcked = (data: Pick<ReviewPayload, "unresolved_acknowledged"> | null, 
   return v === true;
 };
 
-function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
+function ReviewScreen({ slug, onDone, onReload, onLockedChange, initialStageWarnings }: {
   slug: string; onDone: () => void; onReload: () => void;
   /** Reports "a write or a stage re-run is in flight" up to RaceIntake, whose
       Escape/backdrop/close-button guards can't see this component's own
       `busy`/`stage` state otherwise (PR #23 review round 1, finding 6). */
   onLockedChange: (locked: boolean) => void;
+  /** Round 3 finding 5: whatever the wizard's own run() collected from the
+      build/plan stages before switching to this screen — seeds this
+      component's OWN copy (below) on mount so a fresh "New race…" run's
+      warnings survive the transition. Undefined for a draft opened straight
+      via "Review…" (run() never ran), which is exactly "nothing to seed". */
+  initialStageWarnings?: { stage: "build" | "plan"; message: string }[];
 }) {
   const [data, setData] = useState<ReviewPayload | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -655,6 +685,12 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
      rather than something the build chains into. */
   const [stage, setStage] = useState<null | "build" | "plan">(null);
   const [stageLine, setStageLine] = useState("");
+  // Round 3 finding 5: persistent, unlike stageLine above (the transient SSE
+  // log, one line at a time, gone the moment the NEXT log line or a stage
+  // switch overwrites it) — seeded from the wizard's own run() when this
+  // screen is the tail end of a fresh "New race…" (initialStageWarnings),
+  // and updated by runStageAgain below when a stage is re-run from here.
+  const [stageWarnings, setStageWarnings] = useState(initialStageWarnings ?? []);
   const [aidEdits, setAidEdits] = useState<Record<number, AidEdit>>({});
   const [blockEdits, setBlockEdits] = useState<Record<number, { target_dist?: number; target_elev?: number }>>({});
   const [themeEdit, setThemeEdit] = useState<string | null>(null);
@@ -820,7 +856,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
     const ctrl = new AbortController();
     stageAbortRef.current = ctrl;
     try {
-      await runStage(
+      const result = await runStage(
         which === "build" ? "/api/race-intake/build" : "/api/race-intake/plan",
         { slug },
         (e) => {
@@ -831,6 +867,14 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
         ctrl.signal,
       );
       setStageLine("");
+      // Round 3 finding 5: replace THIS stage's own entry — a clean rerun
+      // (no warnings this time) clears a stale one rather than leaving it to
+      // look like the problem is still current.
+      const warnings = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
+      setStageWarnings((p) => [
+        ...p.filter((w) => w.stage !== which),
+        ...(warnings.length ? [{ stage: which, message: warnings.join(" · ") }] : []),
+      ]);
       load();
     } catch (e) {
       // The dialog was closed (stageAbortRef's cleanup effect) — nothing to
@@ -1158,6 +1202,29 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
             <p style={{ fontSize: 11.5, color: "var(--ember)", margin: 0 }}>
               a refresh didn't finish landing — some files here may be updated while others are not. Re-run Accept from the refresh review to repair it.
             </p>
+          </Block>
+        )}
+
+        {/* Round 3 findings 5 & 6: two different sources of the same shape —
+            "the pipeline succeeded but has something to say" — that neither
+            had a durable home on this screen before. `race.intake_warnings`
+            (finding 6) is scripts/race-intake.mjs's stage-1 record, written
+            to race.json and diffed through every re-intake merge, so it is
+            true for as long as the condition it describes stays true.
+            `stageWarnings` (finding 5) is THIS session's own build/plan
+            results (from the wizard's run(), or a "stages · run again" click
+            below) — real but never written to disk, so it is gone the moment
+            this dialog closes. Same banner slot; not conflated into one list
+            item, since one survives a reopen and the other never did. */}
+        {((race.intake_warnings?.length ?? 0) > 0 || stageWarnings.length > 0) && (
+          <Block>
+            <Eyebrow>stage warnings</Eyebrow>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11.5, color: "var(--lamp)", lineHeight: 1.6 }}>
+              {(race.intake_warnings ?? []).map((w, i) => <li key={`intake-${i}`}>{w}</li>)}
+              {stageWarnings.map((w, i) => (
+                <li key={`stage-${w.stage}-${i}`}>{w.stage === "build" ? "course" : "block + fuel"}: {w.message}</li>
+              ))}
+            </ul>
           </Block>
         )}
 
