@@ -659,7 +659,13 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   // name the athlete is entered under are things only they know, so they are
   // filled in here. Absent until touched, so a save that never went near
   // them sends no `tracking` at all.
-  const [trackingEdit, setTrackingEdit] = useState<{ bib?: string; name?: string } | null>(null);
+  //
+  // `url` was added by v2 review ui2 #3: intake writes `links.tracking` (the
+  // race site's own tracking page) but never `tracking.url` (what the
+  // tracker endpoint actually reads), and nothing in the UI could set the
+  // one field that turns live tracking on. See the seed logic below
+  // (linksTrackingSeed) and buildBody's use of it.
+  const [trackingEdit, setTrackingEdit] = useState<{ bib?: string; name?: string; url?: string } | null>(null);
   const [fills, setFills] = useState<Record<string, string>>({});
   const [acked, setAcked] = useState<Record<string, boolean>>({});
 
@@ -720,6 +726,19 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
 
   const race = data?.race;
   const stations = race?.aid_stations ?? [];
+
+  // v2 review ui2 #3: once `tracking.url` is empty, seed the tracker URL
+  // field from `links.tracking` — the race site's own tracking link, which
+  // intake fills in but the tracker endpoint never reads, so a race could
+  // have a tracking LINK and still never be trackable. Prefers whatever the
+  // athlete is typing into the links.tracking unresolved field THIS session
+  // (fills) over what's already on disk — filling that box and setting the
+  // tracker bib in one save is exactly how a first-time setup goes. Purely a
+  // display/save-time stand-in: nothing here calls setTrackingEdit, so it
+  // never reaches disk unless the athlete actually presses SAVE (buildBody).
+  const linksTrackingSeed = race?.tracking?.url
+    ? null
+    : (fills["links.tracking"]?.trim() || race?.links?.tracking || null);
 
   const stationValue = <K extends keyof AidEdit>(i: number, key: K): AidEdit[K] =>
     (key in (aidEdits[i] ?? {}) ? aidEdits[i][key] : stations[i]?.[key]) as AidEdit[K];
@@ -819,10 +838,17 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       .filter((r) => Object.keys(r).length > 1);
     if (rows.length) body.aid_stations = rows;
     if (themeEdit !== null) body.visual = { theme_preset: themeEdit };
-    // Only the two fields this screen renders. The url rides along
-    // untouched — it is intake's, and the server's whitelist would take it
-    // from here too, but nothing here offers to change it.
-    if (trackingEdit !== null) body.tracking = trackingEdit;
+    // bib/name/url all ride in `trackingEdit`. `url` gets one extra step: if
+    // the athlete never touched the URL field this save (trackingEdit.url is
+    // undefined, not "") AND there's a seed on offer (linksTrackingSeed),
+    // that seed goes out as tracking.url too — so saving just the bib on a
+    // race whose links.tracking is already known is enough to make tracking
+    // live, matching the copy the URL field itself shows (v2 review ui2 #3).
+    // A deliberately CLEARED url (trackingEdit.url === "") is left alone.
+    if (trackingEdit !== null) {
+      const url = trackingEdit.url !== undefined ? trackingEdit.url : linksTrackingSeed ?? undefined;
+      body.tracking = url !== undefined ? { ...trackingEdit, url } : trackingEdit;
+    }
     // Contract with fixer A: unresolved_acknowledged becomes a list of
     // acknowledged paths. The current server still stores/returns a single
     // boolean (`diskAcked` tolerates that on read), but every write from here
@@ -1031,19 +1057,42 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
           )}
         </Block>
 
-        {/* PRD v2 §4 — who to look for on the race's live tracker. The URL
-            is intake's (it comes off the race site) and is shown, not
-            edited; the bib and the name are the athlete's own and nothing
-            but a human knows them, which is the whole reason they are here
-            and not in a generated file. Both are optional: the
-            OpenSplitTime adapter finds a runner by either. */}
+        {/* PRD v2 §4 — who to look for on the race's live tracker, and where
+            to find them. The URL was shown-not-edited until v2 review ui2 #3
+            found that nothing in the UI could ever SET tracking.url: intake
+            only ever writes links.tracking (the race site's own tracking
+            page), which the tracker endpoint never reads — a race could have
+            a tracking link and still never be trackable, and the review
+            screen's own bib/name fields had no url to poll against. The bib
+            and the name are the athlete's own and nothing but a human knows
+            them, which is why they're here and not in a generated file.
+            All three are optional: the OpenSplitTime adapter finds a runner
+            by bib or by name once a URL is set. */}
         <Block>
           <Eyebrow>live tracker</Eyebrow>
           <div style={{ fontSize: 11, color: "var(--mist-mute)", marginBottom: 8, overflowWrap: "anywhere" }}>
-            {race.tracking?.url
-              ? race.tracking.url
-              : "no tracker URL on this folder yet — intake fills it in from the race site, and race-day mode falls back to the manual checkpoint without one"}
+            {race.tracking?.url ? (
+              "race-day mode polls this URL for a checkpoint."
+            ) : linksTrackingSeed ? (
+              <>no tracker URL saved yet — seeded below from this folder's own tracking link
+                (<span style={{ overflowWrap: "anywhere" }}>{linksTrackingSeed}</span>). Save to make it live, or clear the field first.</>
+            ) : (
+              "no tracker URL on this folder yet — paste one below, or fill in links.tracking above and it will seed this field. Race-day mode falls back to the manual checkpoint without one."
+            )}
           </div>
+          <label style={{ fontSize: 11, color: "var(--mist-mute)", display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 }}>
+            tracker url
+            <input
+              aria-label="tracker url"
+              maxLength={300}
+              style={{ ...inputStyle, width: "100%" }}
+              value={trackingEdit?.url ?? race.tracking?.url ?? linksTrackingSeed ?? ""}
+              onChange={(e) => {
+                setSaveError(null);
+                setTrackingEdit((p) => ({ ...p, url: e.target.value }));
+              }}
+            />
+          </label>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
             <label style={{ fontSize: 11, color: "var(--mist-mute)", display: "flex", flexDirection: "column", gap: 4 }}>
               bib
