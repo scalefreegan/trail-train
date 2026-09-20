@@ -76,3 +76,30 @@ test('a chat turn in view mode renders the reply and carries race_state', async 
 
   expect(trouble.all(), 'the chat turn logged something').toEqual([])
 })
+
+/**
+ * PR #24 review round 3, MEDIUM finding: every sibling POST route
+ * (raceCreateApi, raceSwitchApi, raceResultApi, raceEditApi, raceBuildApi,
+ * racePlanApi, raceRefreshApi, crewExportApi) tracks a running total while
+ * reading the body and rejects 413 past a byte cap; `chatApi` buffered
+ * `messages[].content` — the chat transcript — with no cap at all. Hit
+ * directly at the curl level (no browser, no real chat send) so the size
+ * check is exercised before anything downstream (facts digest, agent spawn)
+ * ever runs.
+ */
+test('an oversize /api/chat body is refused with 413, before it is ever parsed', async ({ request }) => {
+  // just over the 1 MB cap — one long message is enough, no need for a
+  // realistic transcript shape
+  const big = 'x'.repeat(1024 * 1024 + 4096)
+  const res = await request.post('/api/chat', { data: { messages: [{ role: 'user', content: big }] } })
+  expect(res.status()).toBe(413)
+})
+
+test('a normal-size /api/chat body is unaffected by the cap and still reaches the fake agent', async ({ request }) => {
+  const res = await request.post('/api/chat', {
+    data: { messages: [{ role: 'user', content: 'how does this week look?' }] },
+  })
+  expect(res.status()).toBe(200)
+  const text = await res.text()
+  expect(text).toMatch(CANNED_MARKER)
+})
