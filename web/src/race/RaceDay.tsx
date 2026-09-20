@@ -3,9 +3,10 @@ import { useActiveRace, useBlockConfig, useRefresh, useUnits } from "../data";
 import { raceLocalParts } from "./clock";
 import { clearHash } from "./hashRoute";
 import { fmtCarry, type DropBag, type FuelPlan, type FuelSegment } from "./nutrition";
-import { fmtElapsed, type StationProjection } from "./pacing";
+import { fmtElapsed, fmtRaceClock, type StationProjection } from "./pacing";
 import { checkpointHold, type CheckpointHold } from "./checkpointHold";
 import { resolveHold } from "./raceDayHold";
+import { parseWhereAmI } from "./whereAmI";
 import { RacePlanProvider } from "./RacePlanProvider";
 import { RaceErrorBoundary } from "./RaceErrorBoundary";
 import { useCrewBase, useRaceResult, useTracker } from "./useRaceData";
@@ -347,6 +348,12 @@ export function RaceDay() {
   const [mutedH, setMutedH] = useTrackerMute(viewing);
   const [miDraft, setMiDraft] = useState("");
   const [stationDraft, setStationDraft] = useState("");
+  // Set only when the free-text box held something SET could not place —
+  // "mile 50", "50 mi", "80 km", a station name typed instead of picked —
+  // so the box can say so instead of looking broken (v2 review ui1 #3).
+  // Cleared on the next keystroke or a successful commit, never carried
+  // across an unrelated field.
+  const [whereAmIError, setWhereAmIError] = useState<string | null>(null);
   // the "passed <station> at HH:MM" form's two controls
   const [cpStation, setCpStation] = useState("");
   const [cpClock, setCpClock] = useState<string | null>(null);
@@ -457,7 +464,17 @@ export function RaceDay() {
               on a screen that has just said there is nothing left to show.
               The recorded finish, once archived, is worth the same space;
               until then it's a dash, not a stale countdown. */}
-          {racePast ? (pastResult?.finish_h != null ? race.clock(pastResult.finish_h) : "—") : race.clock(elapsedH)}
+          {racePast
+            ? (pastResult?.finish_h != null ? race.clock(pastResult.finish_h) : "—")
+            : started
+            ? race.clock(elapsedH)
+            /* Before the gun, elapsedH is negative and stands in for "right
+               now", not a race-relative ETA — a +/-N day marker on it is a
+               number about the calendar, not about the race, and glitchy to
+               read at that (v2 review ui2 #7: "5:47p-328" 327 days out). The
+               line right under this already says "starts in 327d 12h · gun
+               6:00a"; this one just wants the current race-local wall clock. */
+            : fmtRaceClock(raceStart, elapsedH, plan.timeZone, { dayMarker: false })}
         </div>
         <div className="numerals" style={{ fontSize: 15, color: "var(--mist-dim)", marginTop: 6 }}>
           {racePast
@@ -565,18 +582,47 @@ export function RaceDay() {
                 // Nothing valid to commit (both drafts empty, or an
                 // unparseable/negative mile) is a no-op — SET must never
                 // fall back to mile 0 (D1/D2).
-                if (resolved == null) return;
-                setManual({ mi: resolved, station: null, clock: null, at: new Date(now).toISOString() });
-                setStationDraft("");
-                setMiDraft("");
+                if (resolved != null) {
+                  setManual({ mi: resolved, station: null, clock: null, at: new Date(now).toISOString() });
+                  setStationDraft("");
+                  setMiDraft("");
+                  setWhereAmIError(null);
+                  return;
+                }
+                // resolveHold only reads the station <select> or a bare
+                // number — everything else typed into the free-text box
+                // (the select itself is untouched here, since it's exact by
+                // construction) falls through to the wider parser: "mile
+                // 50", "50 mi", "80 km", a station name (v2 review ui1 #3).
+                if (stationDraft === "" && miDraft.trim() !== "") {
+                  const parsed = parseWhereAmI(miDraft, stations.map((sp) => sp.station.name), u.system);
+                  const mi = parsed.kind === "mile"
+                    ? parsed.mi
+                    : parsed.kind === "station"
+                    ? stations.find((sp) => sp.station.name === parsed.name)?.station.total_mi ?? null
+                    : null;
+                  if (mi != null) {
+                    setManual({ mi, station: null, clock: null, at: new Date(now).toISOString() });
+                    setStationDraft("");
+                    setMiDraft("");
+                    setWhereAmIError(null);
+                    return;
+                  }
+                  // Unparsable: leave the text so the runner can fix it,
+                  // rather than clearing a box that never took the entry.
+                  setWhereAmIError(
+                    `can't read "${miDraft.trim()}" — try a mile number, "mile 50", "50 mi", "80 km", or a station name`,
+                  );
+                }
               }}
               style={{ display: "flex", gap: 6, flex: "1 1 150px", minWidth: 0 }}
             >
               <input
                 value={miDraft}
-                onChange={(e) => { setMiDraft(e.target.value); setStationDraft(""); }}
-                /* decimal, not numeric: mile 42.3 needs the point on iOS */
-                inputMode="decimal"
+                onChange={(e) => { setMiDraft(e.target.value); setStationDraft(""); setWhereAmIError(null); }}
+                /* decimal, not numeric: mile 42.3 needs the point on iOS, and
+                   "mile 50"/"50 mi"/"80 km"/a station name all need letters */
+                inputMode="text"
                 placeholder={`mile (${u.distUnit})`}
                 aria-label={`current mile (${u.distUnit})`}
                 className="numerals"
@@ -598,6 +644,7 @@ export function RaceDay() {
                   setMutedH(trackerHold ? trackerObsH ?? elapsedH : null);
                   setStationDraft("");
                   setMiDraft("");
+                  setWhereAmIError(null);
                   setCpStation("");
                   setCpClock(null);
                 }}
@@ -607,6 +654,11 @@ export function RaceDay() {
               </button>
             )}
           </div>
+          {whereAmIError && (
+            <div className="numerals" style={{ fontSize: 11, color: "var(--ember)", marginTop: 6, lineHeight: 1.5 }}>
+              {whereAmIError}
+            </div>
+          )}
           {/* Controlled by stationDraft, not committed until SET: picking a
               station used to move the hold on *change*, and then SET — read
               as "confirm what I just picked" — actually submitted the (now
@@ -617,7 +669,7 @@ export function RaceDay() {
               placeholder. */}
           <select
             value={stationDraft}
-            onChange={(e) => { setStationDraft(e.target.value); setMiDraft(""); }}
+            onChange={(e) => { setStationDraft(e.target.value); setMiDraft(""); setWhereAmIError(null); }}
             aria-label="just left a station"
             style={{
               width: "100%", minHeight: 44, marginTop: 8, padding: "0 10px", fontSize: 15,
