@@ -109,6 +109,21 @@ a { color: inherit; }
   color: var(--night);
 }
 
+/* the topline race actions (App.tsx's RaceTopline) — ordinary buttons in the
+   page's tab order, so they need a real focus ring rather than the inline
+   one the switcher's roving-focus rows paint on themselves. */
+.race-action:focus-visible {
+  outline: 1px solid var(--lamp);
+  outline-offset: 1px;
+  color: var(--lamp);
+  border-color: var(--lamp);
+}
+.race-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.race-action:disabled:hover { border-color: var(--edge-bright); color: var(--mist-dim); }
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--edge);
