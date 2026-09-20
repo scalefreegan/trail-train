@@ -5,6 +5,7 @@ import type { ClimbsSnapshot, Course, CrewBase, TrackerCheckpoint, TrackerRespon
 import type { PaceGradeCurve } from "./pacing";
 import { PHYSIOLOGY_FIELDS } from "../contracts";
 import { loadFailureMessage } from "./loadFailureMessage";
+import { isKnownCourseless } from "./courseAvailability";
 
 /* Snapshot hooks for the Race views — same provider-less pattern as
    useGoogleCal (data.ts): fetch keyed on the refresh pulse.
@@ -34,12 +35,20 @@ export function useCourse() {
   // names, which in view mode (tt-yib.7) is the archived race being
   // browsed rather than the training target. Keying the cache on the
   // training slug would file one race's course under another's name.
-  const { viewing: slug, resolved } = useActiveRace();
+  const { viewing: slug, resolved, activeRace } = useActiveRace();
   const [data, setData] = useState<Course | null>(null);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // v2 review ui1 #14: see courseAvailability.ts — a tune-up created
+  // without a GPX 404s on /course.json for its whole life, and Chrome logs
+  // that to the console on its own no matter how the response is handled.
+  // Overridden only in the RETURNED value, never via setState in the effect
+  // (a synchronous setState right in an effect body is its own lint-flagged
+  // smell) — so a stale `data`/`missing`/`error` left over from whatever was
+  // on screen before switching to this tune-up can never leak through.
+  const knownCourseless = isKnownCourseless(activeRace?.race);
   useEffect(() => {
-    if (!resolved) return;
+    if (!resolved || knownCourseless) return;
     let stale = false;
     const cacheKey = slugKey("course", slug);
     // a load failure is not an absence: fall back to the last copy that DID
@@ -73,8 +82,10 @@ export function useCourse() {
       })
       .catch((e) => fallback(loadFailureMessage(e, "course.json corrupt or unreadable")));
     return () => { stale = true; };
-  }, [refreshKey, resolved, slug]);
-  return { course: data, missing, error };
+  }, [refreshKey, resolved, slug, knownCourseless]);
+  return knownCourseless
+    ? { course: null, missing: true, error: null }
+    : { course: data, missing, error };
 }
 
 /** Optional — crew-base.json exists wherever the race folder has a

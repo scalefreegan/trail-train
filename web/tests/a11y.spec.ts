@@ -156,7 +156,7 @@ test.describe('dialog accessibility', () => {
   test('the review dialog — the one that was left out of round 2', async ({ page, trouble }) => {
     await openSwitcher(page)
     await openReviewFor(page, DRAFT.name)
-    await assertDialogContract(page, 'review · draft race')
+    await assertDialogContract(page, 'review · race')
     expect(trouble.pageErrors).toEqual([])
   })
 

@@ -144,7 +144,7 @@ export async function chooseRace(page: Page, name: string | RegExp) {
  */
 export async function openReviewFor(page: Page, raceName: string) {
   await clickSubRowFor(page, raceName, '↳ Review')
-  const dialog = page.getByRole('dialog', { name: 'review · draft race' })
+  const dialog = page.getByRole('dialog', { name: 'review · race' })
   await expect(dialog).toBeVisible()
   return dialog
 }
