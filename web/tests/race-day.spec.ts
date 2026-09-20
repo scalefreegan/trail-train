@@ -116,6 +116,32 @@ test('an unparsable WHERE AM I entry names the unit the toggle is actually showi
   expect(trouble.pageErrors).toEqual([])
 })
 
+test('the "passed <station> at" form clears a stale WHERE AM I error on success', async ({ page, trouble }) => {
+  // Round 3 finding 3: "where am i" and "passed <station> at HH:MM" both
+  // commit a hold through the same setManual(...)/draft-clearing path, and
+  // both forms clear their OWN stationDraft/miDraft on success — but the
+  // "passed at" form's onSubmit skipped whereAmIError, so a stale "can't
+  // read …" banner from an earlier "where am i" typo stayed on screen right
+  // under a hold that had just succeeded, from a box this second form never
+  // even touches.
+  const miInput = page.getByPlaceholder(/^mile \(/i)
+  await miInput.fill('banana')
+  await page.getByRole('button', { name: /^set$/i }).click()
+  const staleError = page.getByText(/can't read "banana"/i)
+  await expect(staleError).toBeVisible()
+
+  const passedStation = page.getByLabel('passed a station')
+  const option = passedStation.locator('option', { hasText: /^Slabtown/ })
+  const value = await option.getAttribute('value')
+  await passedStation.selectOption(value!)
+  await page.getByRole('button', { name: /^at$/i }).click()
+
+  await expect(page.getByText(/held at/i)).toBeVisible()
+  await expect(staleError).toBeHidden()
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
 test('the hold survives a reload, and ← dashboard leaves race-day mode', async ({ page }) => {
   const select = stationSelect(page)
   const value = await select.locator('option', { hasText: /^Tin Cup/ }).getAttribute('value')

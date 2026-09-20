@@ -353,6 +353,16 @@ function RaceSwitcher() {
   // generic finding 6). Self-clears; overwritten by the next thing that
   // matters (a fresh `error`, or busy again) via the effect below.
   const [builtNotice, setBuiltNotice] = useState<string | null>(null);
+  // Round 3 finding 1: `ok: true` from the build endpoint is not "nothing
+  // left to say" — a course.gpx measuring far off race.json's declared
+  // distance/gain still builds and still answers ok: true, with the mismatch
+  // named in `warnings` (scripts/build-course.mjs's courseMismatches, same
+  // channel AddTuneUp.tsx's own build-warning banner reads). This hand-rolled
+  // call used to pass `() => {}` as onEvent and never look at the `done`
+  // payload at all, so that case showed the same "course rebuilt ✓" tick as
+  // a clean build. Self-clears the same way builtNotice does; the two are
+  // mutually exclusive per slug (see the `hint` below).
+  const [builtWarning, setBuiltWarning] = useState<{ slug: string; message: string } | null>(null);
   // Synchronous re-entrancy guard: state-driven `disabled` on the rows can
   // only take effect once React re-renders, which does not happen mid-script
   // for a burst of clicks fired in the same tick (round 2, generic finding 2
@@ -550,15 +560,38 @@ function RaceSwitcher() {
     setBusy({ slug, kind: "build" });
     setError(null);
     setBuiltNotice(null);
+    setBuiltWarning(null);
     try {
-      await runStage("/api/race-intake/build", { slug }, () => {}, new AbortController().signal);
+      const result = await runStage("/api/race-intake/build", { slug }, () => {}, new AbortController().signal);
+      // Round 3 finding 1, first check (mirrors runCourseAgain.ts's own
+      // useRunCourseAgain hook): `ok: true` is not "there is now a course to
+      // show" — a folder with no course.gpx and no http(s) links.gpx to
+      // fetch one from answers this way too, with `course: null` and the
+      // reason in `warnings`. Route it through the same error banner every
+      // other switcher failure uses rather than the row's success tick.
+      if (result.course == null) {
+        const warnings = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
+        setError(warnings[0] ?? "the build finished without a course to show");
+        return;
+      }
       // Confirmation, not a silent close (round 2, generic finding 6): the
       // menu stays open long enough to say the build actually finished. The
       // reload pulse still fires now — the race/course views refetch right
       // away even though the row keeps its notice a little longer.
       reload();
-      setBuiltNotice(slug);
-      window.setTimeout(() => setBuiltNotice((cur) => (cur === slug ? null : cur)), 4000);
+      // Second check: a course DID build, but measures far enough off the
+      // declared distance/gain to be worth a second look (still `ok: true`,
+      // still `warnings`) — a real result, not a failure, so it gets the
+      // row's hint rather than the top-level error banner, worded like
+      // AddTuneUp.tsx's own build-warning banner for the same payload shape.
+      const warnings = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
+      if (warnings.length > 0) {
+        setBuiltWarning({ slug, message: warnings[0] });
+        window.setTimeout(() => setBuiltWarning((cur) => (cur?.slug === slug ? null : cur)), 4000);
+      } else {
+        setBuiltNotice(slug);
+        window.setTimeout(() => setBuiltNotice((cur) => (cur === slug ? null : cur)), 4000);
+      }
     } catch (e) {
       setError(friendlyFetchError(e));
     } finally {
@@ -756,6 +789,8 @@ function RaceSwitcher() {
                         label="↳ Run course again…"
                         hint={builtNotice === entry.slug
                           ? "course rebuilt ✓"
+                          : builtWarning?.slug === entry.slug
+                          ? `⚠ ${builtWarning.message}`
                           : "rebuild course.json from the stored gpx — free, no agent turn"}
                         busyLabel="building…"
                         disabled={busy != null || !!error}

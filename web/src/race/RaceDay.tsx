@@ -716,6 +716,12 @@ export function RaceDay() {
               setCpClock(null);
               setStationDraft("");
               setMiDraft("");
+              // Round 3 finding 3: this form commits a hold exactly like the
+              // "where am i" one above and clears the same two drafts, but
+              // used to leave whereAmIError on screen — a stale complaint
+              // about a mile/station typo the runner never even used this
+              // form to retype, sitting under a hold that just succeeded.
+              setWhereAmIError(null);
             }}
             style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}
           >

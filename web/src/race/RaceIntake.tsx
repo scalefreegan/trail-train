@@ -730,6 +730,21 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   const race = data?.race;
   const stations = race?.aid_stations ?? [];
 
+  // Round 3 finding 2: `race.tracking?.url` being falsy is NOT "url has
+  // never been set" — scripts/race-edit.mjs's applyRaceEdit stores a cleared
+  // field as an explicit `null` (its "" → null normalization, so a consumer
+  // only ever checks for absence, never emptiness), and that write always
+  // puts the `url` KEY on the object, same as a real value would. So once an
+  // athlete has saved tracking.url at all — including blanking it back out —
+  // `"url" in race.tracking` is true forever after, while a race whose url
+  // has genuinely never been touched (intake found no tracking link, or only
+  // bib/name have ever been saved) has no `url` key on the object at all.
+  // That is the distinction "was this decided" needs, and it is already on
+  // disk today — no server/schema change required, just reading key
+  // presence instead of value truthiness.
+  const trackingObj = race?.tracking;
+  const trackingUrlEverSet = trackingObj != null && "url" in trackingObj;
+
   // v2 review ui2 #3: once `tracking.url` is empty, seed the tracker URL
   // field from `links.tracking` — the race site's own tracking link, which
   // intake fills in but the tracker endpoint never reads, so a race could
@@ -739,7 +754,15 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   // tracker bib in one save is exactly how a first-time setup goes. Purely a
   // display/save-time stand-in: nothing here calls setTrackingEdit, so it
   // never reaches disk unless the athlete actually presses SAVE (buildBody).
-  const linksTrackingSeed = race?.tracking?.url
+  //
+  // Gated on trackingUrlEverSet, not on `race.tracking?.url` itself (round 3
+  // finding 2): the old gate treated "cleared" the same as "never asked" and
+  // put the same seed right back in front of the athlete — worse, buildBody
+  // below read this same value to decide what an UNRELATED bib/name-only
+  // save should send for `url`, so it silently resurrected a URL the athlete
+  // had deliberately blanked in an earlier session, on the very next save
+  // that touched nothing but the bib.
+  const linksTrackingSeed = trackingUrlEverSet
     ? null
     : (fills["links.tracking"]?.trim() || race?.links?.tracking || null);
 
@@ -847,7 +870,11 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
     // that seed goes out as tracking.url too — so saving just the bib on a
     // race whose links.tracking is already known is enough to make tracking
     // live, matching the copy the URL field itself shows (v2 review ui2 #3).
-    // A deliberately CLEARED url (trackingEdit.url === "") is left alone.
+    // A deliberately CLEARED url (trackingEdit.url === "") is left alone, and
+    // so is one cleared in an EARLIER session: linksTrackingSeed is already
+    // null once trackingUrlEverSet (round 3 finding 2), so this line sends no
+    // `url` at all for a bib/name-only save on a folder whose url was decided
+    // — set or explicitly blanked — rather than reaching for the seed again.
     if (trackingEdit !== null) {
       const url = trackingEdit.url !== undefined ? trackingEdit.url : linksTrackingSeed ?? undefined;
       body.tracking = url !== undefined ? { ...trackingEdit, url } : trackingEdit;
