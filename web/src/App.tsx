@@ -410,10 +410,21 @@ function RaceSwitcher() {
    * shares with "Add tune-up…"). Each race already carries its own `status`
    * from GET /api/races, and "active" IS "the training target" (only one
    * folder may hold it), so it is checked directly instead.
+   *
+   * Round 5 confirm, finding 5: `canAddTuneUp` above guards this same
+   * `status === "active"` fact with `r.kind !== "b"` because a hand-edited
+   * or pre-migration folder can carry `kind: "b"` and `status: "active"` at
+   * once (ui3-resilience.md BUG 1's repro) — `validateActivation` now closes
+   * off reaching that state through the normal activate path, but it does
+   * not retroactively repair a folder that already has it, and GET
+   * /api/races reports it "active" verbatim with no server-side read-time
+   * check. Without the matching guard here, `list.find` could return that
+   * corrupted tune-up and point "Archive with result…" at a B race instead
+   * of the real A race.
    */
   const archiveTarget = useMemo(() => {
     const list = races ?? [];
-    const active = list.find((r) => r.status === "active");
+    const active = list.find((r) => r.kind !== "b" && r.status === "active");
     if (active) return active;
     if (viewing?.status === "archived" && viewedResult?.strava_activity_id == null) {
       return list.find((r) => r.slug === viewing.slug) ?? null;
