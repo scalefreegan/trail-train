@@ -395,12 +395,23 @@ export async function fetchLastCheckpoint(req, fetchImpl = fetch) {
 
   let res;
   let current = target;
+  // One deadline for the WHOLE chase, not one per hop: a fresh
+  // AbortSignal.timeout(TIMEOUT_MS) on every iteration would let a
+  // MAX_REDIRECTS-hop chain take up to (MAX_REDIRECTS + 1) * TIMEOUT_MS,
+  // contradicting TIMEOUT_MS's own rationale above ("a stuck request must
+  // not stack up"). Each hop gets whatever budget remains; a hop that starts
+  // with none left times out immediately rather than getting a fresh window.
+  const deadline = Date.now() + TIMEOUT_MS;
   try {
     for (let hop = 0; ; hop++) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw Object.assign(new Error("deadline exceeded"), { name: "TimeoutError" });
+      }
       res = await fetchImpl(current, {
         redirect: "manual",
         headers: { accept: "text/html", "user-agent": "trail-train/basecamp tracker" },
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: AbortSignal.timeout(remaining),
       });
       if (!REDIRECT_STATUSES.has(res?.status)) break;
       if (hop >= MAX_REDIRECTS) {

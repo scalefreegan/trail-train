@@ -32,3 +32,33 @@ test('two concurrent PUT /api/settings serialize: one 200, one 409', async ({ re
   // the winner's write actually completed — not just "not the loser"
   expect((await winner.json()).preferences).toBeTruthy()
 })
+
+/**
+ * PR #24 review round 4, MEDIUM finding: unlike raceSwitchApi/ACTIVATE_LOCK_KEY
+ * (the lock's own precedent) and every other body-reading route in
+ * web/vite.config.ts, settingsApi's PUT read its body with no BODY_MAX_BYTES
+ * cap at all — and it did so *inside* SETTINGS_LOCK_KEY, so a multi-MB body
+ * would be fully buffered and JSON.parsed while holding the one lock every
+ * other settings save must wait on. Fixed by capping the read (413 before
+ * JSON.parse, same streamed shape as the siblings) and moving it entirely
+ * BEFORE acquireSlugLock, so an oversized request never holds the lock.
+ */
+test('an oversize PUT /api/settings body is refused with 413, before it is ever parsed', async ({ request }) => {
+  // just over the 512 KB cap
+  const big = 'x'.repeat(512 * 1024 + 4096)
+  const res = await request.put('/api/settings', { data: { preferences: { training_philosophy: big } } })
+  expect(res.status()).toBe(413)
+})
+
+test('a concurrent normal PUT /api/settings is not blocked by an oversize one', async ({ request }) => {
+  const big = 'x'.repeat(512 * 1024 + 4096)
+  const [oversize, normal] = await Promise.all([
+    request.put('/api/settings', { data: { preferences: { training_philosophy: big } } }),
+    request.put('/api/settings', { data: {} }),
+  ])
+  // the oversize request is refused at the body cap, not the lock — it must
+  // never 409 the normal save, and the normal save must actually complete
+  expect(oversize.status()).toBe(413)
+  expect(normal.status()).toBe(200)
+  expect((await normal.json()).preferences).toBeTruthy()
+})
