@@ -372,6 +372,13 @@ export type RaceConfig = {
   /** What the intake wants a human to double-check before this race is
       trusted — written by scripts/race-intake.mjs, read by the review dialog. */
   review_notes?: string;
+  /** A source that couldn't be read cleanly this run (a PDF with no renderer
+      available, a GPX that failed to parse) — written by
+      scripts/race-intake.mjs (buildRaceJson), diffed through re-intake merges
+      (scripts/race-merge.mjs), and always present as an array (possibly
+      empty) once a race has been through intake at all. Distinct from
+      `unresolved`: these are facts about a SOURCE, not a hole in the schema. */
+  intake_warnings?: string[];
   /** Field paths nothing could establish. Recomputed on every review write
       (scripts/race-edit.mjs) and gated on before activation. */
   unresolved?: string[];

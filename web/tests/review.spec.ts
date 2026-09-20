@@ -102,6 +102,30 @@ test('acknowledging every hole clears the unresolved gate on activate', async ({
 })
 
 /**
+ * Round 3 finding 5 (r3-sweep-b.md HIGH) — runStageAgain() (the review
+ * screen's own "stages · run again" buttons) discarded the build/plan
+ * stage's `warnings` entirely: the only place a real degradation ever
+ * showed was `stageLine`, a one-line SSE readout the very next log line (or
+ * a later stage switch) overwrites — nothing survived even a moment on
+ * screen. DRAFT has no course.gpx and no links.gpx, so a "course" re-run
+ * answers `ok: true` with race-build.mjs's own reason in `warnings` — this
+ * never touches the folder (round 4/race-build.test.mjs's own "no
+ * course.gpx and no links.gpx: unresolved, not a failure" — no build/ dir,
+ * race.json untouched), so it cannot disturb the unresolved counts the
+ * tests above and below this one depend on.
+ */
+test('a stage re-run\'s warnings land in a persistent banner, not just the transient run sheet', async ({ page, trouble }) => {
+  await openDashboard(page)
+  await openSwitcher(page)
+  const dialog = await openReviewFor(page, DRAFT.name)
+
+  await dialog.getByRole('button', { name: /^course$/i }).click()
+  await expect(dialog.getByText(/no course\.gpx in the folder and no http\(s\) links\.gpx/i)).toBeVisible()
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
  * v2 review ui2 #2/#3 — once a race is ACTIVE, its review screen used to be
  * unreachable at all (isReviewable was drafts-only), and even when it was
  * reachable nothing in the UI could set `tracking.url` — the one field the
@@ -226,6 +250,26 @@ test('clearing the tracker url is durable — a later bib-only save does not res
 
   // Cleanup: see the file-header comment on the test above this one.
   await request.put(`/api/races/${MM.slug}`, { data: { tracking: { url: null, bib: null, name: null } } })
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * Round 3 finding 6 (r3-sweep-b.md MEDIUM / r3-sweep.md MEDIUM) —
+ * race.intake_warnings (scripts/race-intake.mjs:909, diffed through every
+ * re-intake merge in scripts/race-merge.mjs) had no consumer anywhere in
+ * web/src — a real, durably-recorded degradation from stage 1 ("no PDF
+ * renderer on this machine — the PDF is passed as text only") was tracked
+ * forever and shown nowhere. DRAFT's fixture (races/_fixtures/
+ * unresolved-draft-50k/race.json) now carries one, added for this test —
+ * it was previously absent from every fixture race.json in the suite.
+ */
+test('a durable intake warning (race.intake_warnings) is shown on the review screen', async ({ page, trouble }) => {
+  await openDashboard(page)
+  await openSwitcher(page)
+  const dialog = await openReviewFor(page, DRAFT.name)
+
+  await expect(dialog.getByText(/no pdf renderer on this machine/i)).toBeVisible()
 
   expect(trouble.pageErrors).toEqual([])
 })

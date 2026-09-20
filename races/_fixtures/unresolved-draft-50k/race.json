@@ -42,6 +42,9 @@
   },
   "links": { "site": "https://example.invalid/nine-mile-flat-50k", "tracking": null },
   "visual": { "theme_preset": "alpine", "panels": { "climb_comparison": false, "model_check": false, "crew_sheet": false } },
+  "intake_warnings": [
+    "manual-2026.pdf: no PDF renderer on this machine — the PDF is passed as text only"
+  ],
   "unresolved": [
     "elevation.avg_ft",
     "elevation.min_ft",
