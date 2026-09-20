@@ -232,8 +232,12 @@ function emergencyHtml(data: CrewData): string {
 }
 
 /** The updater's chrome. The status line is written by main.ts, which owns
-    the applied checkpoint; everything here is the same on every render. */
-function updaterHtml(data: CrewData, cp: CheckpointResult | null, message: string): string {
+    the applied checkpoint; everything here is the same on every render.
+    @param warn true when `message` is a REFUSAL — bug 4 means a refused
+      submit leaves `cp` exactly as it was (the good checkpoint stays in
+      force), so `cp` being non-null can no longer be read as "the current
+      message is a success". main.ts says explicitly which one this is. */
+function updaterHtml(data: CrewData, cp: CheckpointResult | null, message: string, warn: boolean): string {
   const options = data.projection.stations
     .map(
       (s) =>
@@ -253,7 +257,8 @@ function updaterHtml(data: CrewData, cp: CheckpointResult | null, message: strin
     `<button id="cp-apply" type="submit">update</button>` +
     `<button id="cp-clear" type="button"${cp ? "" : " disabled"}>clear</button>` +
     `</form>` +
-    `<p id="cp-status" class="${cp ? "applied" : message ? "warn" : "idle"}">${message}</p>` +
+    `<p id="cp-status" class="${warn ? "warn" : cp ? (cp.extremePace ? "applied extreme" : "applied") : message ? "warn" : "idle"}">` +
+    `${message}</p>` +
     `</section>`
   );
 }
@@ -265,13 +270,23 @@ export function checkpointMessage(cp: CheckpointResult): string {
       ? "exactly on plan"
       : `${esc(fmtSigned(cp.delta_h))} ${cp.delta_h > 0 ? "behind" : "ahead of"} plan` +
         ` · pace ×${esc(cp.ratio.toFixed(2))}`;
+  // A split under a quarter of the plan's moving time (bug 5) gets the loud
+  // treatment — a bare "capped" footnote is easy to skim past on a phone at
+  // 2 a.m., and this is far likelier a mistyped clock than a real split.
+  // extremePace implies clamped (0.25 is well inside the 0.6 floor), so the
+  // two notes are mutually exclusive rather than stacked.
+  const paceNote = cp.extremePace
+    ? ` <strong class="extreme">⚠ that has her covering the leg into ${esc(cp.station)} in under a quarter of` +
+      ` the model's planned moving time — check the clock before trusting this split. The pace carried forward` +
+      ` is capped; the times below are held to the checkpoint, not extrapolated from it.</strong>`
+    : cp.clamped
+      ? ` <em>· that split is far enough off the model that the pace carried forward is capped —` +
+        ` the times below are held to the checkpoint, not extrapolated from it</em>`
+      : "";
   return (
     `updated from <strong>${esc(cp.station)}</strong> at <strong>${esc(cp.clock)}</strong>` +
     ` (mi ${esc(round(cp.mile, 1))}, ${esc(fmtElapsed(cp.observed_h))} on the clock) — ${pace}` +
-    (cp.clamped
-      ? ` <em>· that split is far enough off the model that the pace carried forward is capped —` +
-        ` the times below are held to the checkpoint, not extrapolated from it</em>`
-      : "") +
+    paceNote +
     `. Everything below is re-projected; “clear” puts the exported plan back.`
   );
 }
@@ -497,7 +512,16 @@ function crewNotesHtml(data: CrewData): string {
       ? `<li><b>pacers:</b> from ${esc(firstPacer.name)} (mi ${esc(round(firstPacer.total_mi, 0))}) onward, one at a time</li>`
       : "") +
     (sun
-      ? `<li><b>night:</b> sunset ${esc(sun.sunset)} · sunrise ${esc(sun.sunrise)} — lights and warm layers ride in the bags above</li>`
+      ? `<li><b>night:</b> sunset ${esc(sun.sunset)} · sunrise ${esc(sun.sunrise)} — ` +
+        // Bug 9: this used to always point at "the bags above" even on a
+        // sheet with no drop bags and no crew pickups at all (a crewless
+        // tune-up, a race with no drop-bag stations) — pointing the crew at
+        // a section the sheet does not have. Only true when there is
+        // something above to point at.
+        (dropNames.length > 0 || data.crew_pickups.length > 0
+          ? `lights and warm layers ride in the bags above`
+          : `bring her lights and warm layers yourself — this sheet has no drop bags`) +
+        `</li>`
       : "") +
     (info?.cell_strategy ? `<li><b>cell service:</b> ${esc(info.cell_strategy)}</li>` : "") +
     `<li><b>if she drops:</b> she reports to the aid-station captain in person — nobody leaves the course unreported.</li>` +
@@ -586,8 +610,23 @@ export function mapSvg(data: CrewData): string {
     .join(" ");
 
   const placed = data.course.aid_stations.filter((s) => s.lat != null && s.lon != null);
+  const startX = xAt(pts[0][1]);
+  const startY = yAt(pts[0][0]);
+  // Bug 8: on a loop course (start ≈ finish), and on any course where the
+  // literal "Start" aid station is ALSO crew-flagged, the per-station loop
+  // below would draw its own dot + label right on top of the bold START
+  // marker — three overlapping texts collapsing into "StarSTART●". Anything
+  // that lands within a few pixels of the start point (in the map's own
+  // projection, not raw lat/lon degrees, so it scales with the drawing) is
+  // pulled out of the normal per-station loop and folded into ONE label on
+  // the start marker instead — "Start / Finish" rather than three stacked
+  // strings fighting over the same dot.
+  const COINCIDE_PX = 10;
+  const coincidesWithStart = (s: (typeof placed)[number]) =>
+    Math.hypot(xAt(s.lon as number) - startX, yAt(s.lat as number) - startY) < COINCIDE_PX;
+  const startCoincident = placed.filter((s) => (s.crew || s.crew_only) && coincidesWithStart(s));
   const crew = placed
-    .filter((s) => s.crew || s.crew_only)
+    .filter((s) => (s.crew || s.crew_only) && !coincidesWithStart(s))
     .sort((a, b) => yAt(a.lat as number) - yAt(b.lat as number));
   // greedy de-collision: a label that would land on a neighbour drops a line
   const labels: string[] = [];
@@ -613,9 +652,14 @@ export function mapSvg(data: CrewData): string {
         `<circle cx="${xAt(s.lon as number).toFixed(1)}" cy="${yAt(s.lat as number).toFixed(1)}" r="2.6" class="aid-dot" />`,
     )
     .join("");
-  const startX = xAt(pts[0][1]);
-  const startY = yAt(pts[0][0]);
   const startLeft = startX > W * 0.68;
+  // "Start" itself is dropped from the merged name (it would otherwise read
+  // "Start / Start / Finish" whenever the start station is literally named
+  // "Start") — everything ELSE sharing the point is appended to it.
+  const startExtras = startCoincident
+    .map((s) => s.name)
+    .filter((n) => n.trim().toLowerCase() !== "start");
+  const startLabel = startExtras.length > 0 ? `Start / ${startExtras.join(" / ")}` : "START";
 
   return (
     `<svg id="course-map" viewBox="0 0 ${W} ${H + 26}" role="img" aria-label="course overview">` +
@@ -624,7 +668,7 @@ export function mapSvg(data: CrewData): string {
     labels.join("") +
     `<circle cx="${startX.toFixed(1)}" cy="${startY.toFixed(1)}" r="4.5" class="start-dot" />` +
     `<text x="${(startLeft ? startX - 8 : startX + 8).toFixed(1)}" y="${(startY + 4).toFixed(1)}"` +
-    ` text-anchor="${startLeft ? "end" : "start"}" class="start-label">START</text>` +
+    ` text-anchor="${startLeft ? "end" : "start"}" class="start-label">${esc(startLabel)}</text>` +
     (base
       ? `<rect x="${(xAt(base.lon) - 5).toFixed(1)}" y="${(yAt(base.lat) - 5).toFixed(1)}" width="10" height="10" class="base-dot" />` +
         `<text x="${(xAt(base.lon) + 9).toFixed(1)}" y="${(yAt(base.lat) + 4).toFixed(1)}" class="base-label">` +
@@ -739,12 +783,17 @@ function footerHtml(data: CrewData): string {
  * @param live the page's own re-projection, or null when it could not be run
  * @param cp the applied checkpoint, or null
  * @param message the updater's status line (already HTML)
+ * @param warn true when `message` is a refusal (bug 4: `cp` may still be
+ *   non-null on a refusal — the checkpoint already in force stays applied —
+ *   so this is the only way the status line knows to read as a warning
+ *   rather than as that checkpoint's own success message)
  */
 export function renderCrewPage(
   data: CrewData,
   live: RaceProjection | null,
   cp: CheckpointResult | null = null,
   message = "",
+  warn = false,
 ): string {
   const rows = stationRows(data, live, cp);
   const finish = finishTimes(data, live, cp);
@@ -752,7 +801,7 @@ export function renderCrewPage(
   return (
     headerHtml(data, finish, goalH) +
     emergencyHtml(data) +
-    updaterHtml(data, cp, message) +
+    updaterHtml(data, cp, message, warn) +
     stationsHtml(data, rows, cp) +
     pickupsHtml(data) +
     crewNotesHtml(data) +

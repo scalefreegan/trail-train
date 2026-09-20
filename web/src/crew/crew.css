@@ -102,6 +102,12 @@ header { border-bottom: 3px solid var(--ink); padding-bottom: 10px; }
 #cp-status.applied strong { color: var(--accent); }
 #cp-status.warn { color: var(--bad); }
 #cp-status em { font-style: normal; color: var(--bad); }
+/* bug 5: an implausibly fast split is still applied, but flagged loud enough
+   that a crew chief skimming the sheet at 2 a.m. cannot miss it — bold and
+   the same "something is wrong" red as a refusal, not just the muted italic
+   the ordinary clamp footnote gets. */
+#cp-status.extreme { color: var(--bad); }
+#cp-status .extreme { font-style: normal; }
 
 /* ---------------- the station table ---------------- */
 
