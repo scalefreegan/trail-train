@@ -191,6 +191,46 @@ test.describe('dialog accessibility', () => {
     expect(trouble.pageErrors).toEqual([])
   })
 
+  /**
+   * Browser check BUG 1 — the one flow the topline change is built around:
+   * Review… → acknowledge → SAVE EDITS → Escape back to the strip → Activate.
+   *
+   * SAVE EDITS disables itself the moment there are no pending edits left, and
+   * the browser drops focus from a disabled element to <body> silently. That
+   * put focus outside the dialog with nothing to put it back, and `useDialog`'s
+   * Escape lived on a React onKeyDown on the dialog element — so Escape became
+   * a no-op while the header still advertised "CLOSE ESC", the focus trap was
+   * gone, and one Tab re-entered the dialog landing on ACTIVATE.
+   *
+   * Pre-existing (dialogChrome.ts is untouched by the topline diff), but the
+   * strip's Review… button is now the primary way into this dialog.
+   */
+  test('Escape still closes the review dialog after a save has disabled the focused button', async ({ page, request, trouble }) => {
+    const dialog = await openReviewFor(page, MM.name)
+
+    await dialog.getByLabel('tracker bib').fill('7')
+    const save = dialog.getByRole('button', { name: /^save edits$/i })
+    await save.click()
+    await expect(save).toBeDisabled()
+
+    // The precondition the bug needs, asserted rather than assumed: the save
+    // button disabled itself out from under focus and the browser dropped
+    // focus to <body>, outside the dialog entirely.
+    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('BODY')
+
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    // …and focus comes back to the strip button that opened it, so the next
+    // Tab starts where the athlete left off rather than at the top of the page.
+    await expect(raceAction(page, /Review…/)).toBeFocused()
+
+    // Cleanup: this is the shared 100-miler fixture; race-day specs poll its
+    // tracker fields.
+    await request.put(`/api/races/${MM.slug}`, { data: { tracking: { url: null, bib: null, name: null } } })
+
+    expect(trouble.pageErrors).toEqual([])
+  })
+
   test('the tune-up quick form', async ({ page, trouble }) => {
     // Only the race being trained for carries this action, which is why the
     // beforeEach above points at the 100-miler.
