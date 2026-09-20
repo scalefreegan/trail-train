@@ -6,18 +6,21 @@ import { useCrewBase, useRaceResult } from "./useRaceData";
 import { useRacePlan } from "./useRacePlan";
 import { gmapsDirectionsUrl } from "./links";
 import { CrewSheet } from "./CrewSheet";
+import { CrewExportButton } from "../crew/ExportButton";
 import { RunnerCard } from "./RunnerCard";
 import { FuelCard } from "./FuelCard";
 import { DropBagCard } from "./DropBagCard";
 import { fmtCarry } from "./nutrition";
 import { useRunCourseAgain } from "./runCourseAgain";
-import type { VisibleColumns } from "./features";
+import { courseHasCutoffs, cutoffSourceLabel } from "./cutoffSource";
+import { isTuneUp, type VisibleColumns } from "./features";
 import {
   projectRace, nightIntervals,
   fmtElapsed, raceClockHM,
   restraintWindowMi, raceDistanceMi, RESTRAINT_FATIGUE_PAYOFF,
   type StationProjection,
 } from "./pacing";
+import { ALTITUDE_THRESHOLD_FT } from "./altitude";
 import type { Course } from "./types";
 
 /** m:ss from seconds — rounds to whole seconds FIRST (independent
@@ -428,13 +431,25 @@ export function RacePlanner() {
   // one projectRace/planFuel call and one set of persisted sliders.
   const { course, missing, error, fit, proj, nutrition, fuelPlan, settings, set,
     paceGrade, paceGradeError, nutritionError, nutritionSource, physiologyError, features, panels, columns,
-    raceConfig, sun } = useRacePlan();
+    raceConfig, sun, acclimation } = useRacePlan();
   const { reload } = useRefresh();
   // D8: "no course data" used to just tell the athlete to run a shell
   // command — the empty state now offers the same free, deterministic
   // build the switcher's "Run course again…" row and the fuel view's own
   // empty state (NutritionPlan.tsx) call.
-  const courseBuild = useRunCourseAgain(missing ? raceConfig.slug : null, reload);
+  //
+  // Round 3 sweep, second pass: the slug is passed unconditionally now, not
+  // `missing ? raceConfig.slug : null` — `run` can still only ever be
+  // triggered from the button inside the `missing` empty state below, so
+  // this changes nothing about when a build can start. What it enables is
+  // runCourseAgain.ts's resultStore-recovery effect: that effect keys off
+  // `slug` actually being there, and once a build succeeds, `missing` (and
+  // with it, the OLD `slug` this hook used to be handed) flips false — this
+  // is a genuinely different course now, not "still building," so a null
+  // slug here would have permanently locked the hook out of ever reading
+  // its own just-written store entry back on the fresh mount App.tsx's
+  // `key={`race-${key}`}` produces for it.
+  const courseBuild = useRunCourseAgain(raceConfig.slug, reload);
   // An archived race has a result: what actually happened, station by station
   // (PRD §10). Only then does the table grow an "actual" column — a race that
   // has not been run has nothing to put in it.
@@ -447,46 +462,65 @@ export function RacePlanner() {
     return m;
   }, [result]);
   const hasActual = actualByStation.size > 0;
-  const gridClass = "race-grid" + (hasActual ? " has-actual" : "");
-  const { fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides } = settings;
+
+  /* The reduced planner (PRD-v2 §3). A tune-up's crew sheet, drop-bag card
+     and caffeine schedule are already gone — features.ts defaults them off
+     for kind "b" — and the fuel PLAN is the last piece that would otherwise
+     be furniture: the quick form writes no nutrition.json, so every gram in
+     the fuel column would come from the impersonal defaults (nutrition.ts's
+     DEFAULT_NUTRITION), for a race short enough that the honest answer is
+     "carry what you like". The column goes with it, rather than standing
+     there empty. Write a nutrition.json into the folder and the column —
+     and the fuel view's own chip, which App.tsx gates on the same two facts
+     — comes straight back. An A race is untouched: defaults with a warning
+     beat no fuel plan on a hundred. */
+  const tuneUp = isTuneUp(raceConfig);
+  const showFuel = !tuneUp || nutritionSource !== "default";
+
+  const gridClass = "race-grid" + (hasActual ? " has-actual" : "") + (showFuel ? "" : " no-fuel");
+  const { fatigue, calibration, restraint, goalH, altitude, acclimationOverride,
+    aidStopMin, crewStopMin, stopOverrides } = settings;
   const { fatigue: setFatigue, calibration: setCalibration, restraint: setRestraint,
-    goalH: setGoalH, aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
+    goalH: setGoalH, altitude: setAltitude, acclimationOverride: setAcclimationOverride,
+    aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
     stopOverride: setStopOverride, clearStopOverrides } = set;
+  // Where the acclimation day count came from, in the fewest words that can
+  // still be argued with. The distinction matters: "4 days" off the calendar
+  // is evidence, "1 day" off the default is an assumption the athlete may
+  // never have noticed being made for them.
+  const acclimSource =
+    acclimation.source === "calendar" ? `from calendar (${acclimation.event ?? "travel event"})`
+    : acclimation.source === "override" ? "your override"
+    : "default — the night before";
+  // The altitude slider appears only where the model would do something: a
+  // course that never gets above the threshold would give it a knob wired to
+  // nothing (same rule as the crew-stop number on a crewless race). The test
+  // is the COURSE's elevation, not the knob's value, so turning the term down
+  // to 0 doesn't make the control that did it disappear.
+  // (null already when the race declares features.altitude: false — see
+  // useRacePlan's projectRace call)
+  const alt = proj?.altitude ?? null;
+  const showAltitude = alt != null && alt.max_seg_ele_ft > ALTITUDE_THRESHOLD_FT;
   // one printable document at a time — the print-isolation body classes
   // (crew-printing / card-printing) must never coexist
   const [openDoc, setOpenDoc] = useState<null | "crew" | "card" | "fuel" | "drops">(null);
   // the hold-back window is a fraction of THIS race (tt-yib.9), so the copy
   // that names its miles has to be computed, not typed
   const restraintWin = course ? restraintWindowMi(raceDistanceMi(course)) : null;
-  // "cutoffs from …" names the document they came from — same derivation as
-  // the crew sheet's cutoffSource (CrewSheet.tsx), duplicated here because
-  // the two views don't share a component. A plain expression (not
-  // useMemo): it has to run unconditionally above the early return below,
-  // and a scan of a handful of `sources` entries needs no memoizing.
-  const cutoffSource = (() => {
-    const sources = course?.sources ?? [];
-    const manual = sources.find((s) => /manual|guide|handbook/i.test(s.ref));
-    const ref = (manual ?? sources.find((s) => s.kind !== "gpx"))?.ref;
-    const fallback = `the runner manual${raceConfig.edition_year ? ` (${raceConfig.edition_year})` : ""}`;
-    if (!ref) return fallback;
-    const stripped = ref.replace(/\s*\([^)]*\)\s*$/, "");
-    // The common case is a manual's own PDF link — the caption's caps
-    // styling turns a 70-character URL into a wall of slug (round 2,
-    // draft finding 6: "CUTOFFS FROM HTTPS://…RUNNERS-MANUAL-2026…PDF").
-    // The hostname is the fact an athlete actually recognizes a source by;
-    // anything that isn't a URL at all (a bare document title) is short
-    // enough to print as-is.
-    try {
-      return new URL(stripped).hostname.replace(/^www\./, "");
-    } catch {
-      return stripped || fallback;
-    }
-  })();
+  // "cutoffs from …" names the document they came from — shared with the
+  // crew sheet's own footer (CrewSheet.tsx) via cutoffSource.ts, so the two
+  // views can never again disagree about whether there is a cutoff to
+  // attribute in the first place (round 4 finding 12). Plain expressions
+  // (not useMemo): they have to run unconditionally above the early return
+  // below, and a scan of a handful of `sources`/`aid_stations` entries needs
+  // no memoizing.
+  const hasCutoffs = course ? courseHasCutoffs(course) : false;
+  const cutoffSource = course ? cutoffSourceLabel(course, { editionYear: raceConfig.edition_year }) : "";
 
   if (missing || !course) {
     return (
       <section>
-        <SectionTag>race planner</SectionTag>
+        <SectionTag>{tuneUp ? "tune-up planner" : "race planner"}</SectionTag>
         <div className="panel notch" style={{ padding: "28px 26px" }}>
           <span className="eyebrow" style={{ color: missing || error ? "var(--ember)" : "var(--mist-mute)" }}>
             {missing ? "no course data yet" : error ? error : "loading course…"}
@@ -506,6 +540,23 @@ export function RacePlanner() {
               </div>
               {courseBuild.error && (
                 <div style={{ fontSize: 11, color: "var(--ember)", marginTop: 6 }}>{courseBuild.error}</div>
+              )}
+              {/* Round 3 sweep extension (render-only edit, per the fixer who
+                  owns the rest of this file): mainly useful for a course.gpx
+                  that STILL doesn't build (courseBuild.error, above) — the
+                  reason survives a plain tab-away-and-back (which unmounts
+                  this component just as completely as the reload-remount
+                  below does) via runCourseAgain.ts's `resultStore`, since
+                  that path never calls onDone()/reload() and `missing` stays
+                  true the whole time regardless. A course that DID build
+                  with `warnings` behaves differently: `missing` (and the
+                  `slug` this hook is handed) flips to `false` for good the
+                  moment it succeeds — correctly, a course now exists — so
+                  this particular block never renders again for that case.
+                  See the note near the persisted mismatch banner below for
+                  where that one actually shows. */}
+              {courseBuild.warnings.length > 0 && (
+                <div style={{ fontSize: 11, color: "var(--lamp)", marginTop: 6 }}>⚠ {courseBuild.warnings.join(" · ")}</div>
               )}
             </div>
           )}
@@ -562,6 +613,59 @@ export function RacePlanner() {
                 style={{ width: 70, accentColor: "var(--lamp)" }}
               />
             </label>
+            {showAltitude && (
+              <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                title={`how much of the modeled altitude penalty to apply — 100% is the published curve (nothing below ${u.elev(ALTITUDE_THRESHOLD_FT)} ${u.elevUnit}, then a per-${u.system === "metric" ? "300 m" : "1,000 ft"} cost above your acclimated elevation), 0% switches the term off. This course peaks at a ${u.elev(alt.max_seg_ele_ft)} ${u.elevUnit} segment; at ${altitude}% the model adds ${fmtElapsed(alt.added_h)} to the expected finish.`}>
+                altitude {altitude.toFixed(0)}%
+                <input
+                  type="range" min={0} max={150} step={5} value={altitude}
+                  onChange={(e) => setAltitude(Number(e.target.value))}
+                  style={{ width: 70, accentColor: "var(--lamp)" }}
+                />
+              </label>
+            )}
+            {/* Days at altitude before the gun — the other half of the term
+                the slider above scales. Shown beside it because the two are
+                read together: 12,000 ft after four days and 12,000 ft after
+                one are different races, and the athlete cannot check the
+                second number unless the planner prints where it came from. */}
+            {showAltitude && (
+              <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                title={`days at altitude before race day, scaling the penalty down the acclimatization curve (about half the available relief by day 3, ~90% by day 14 — and it is never total). Currently ${acclimation.days} day${acclimation.days === 1 ? "" : "s"}, ${acclimSource}${acclimation.arrivalDate ? `, arriving ${acclimation.arrivalDate}` : ""}. Type a number to override it; the × puts it back.`}>
+                acclim
+                <input
+                  type="number" min={0} max={60} step={1} value={acclimation.days}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    // an emptied field is "no override", not zero days
+                    if (raw.trim() === "") { setAcclimationOverride(null); return; }
+                    setAcclimationOverride(Math.min(60, Math.max(0, Math.floor(Number(raw) || 0))));
+                  }}
+                  className="numerals"
+                  style={{
+                    width: 42, background: "var(--night-deep)", border: "1px solid var(--edge-bright)",
+                    color: "var(--mist)", fontSize: 11, padding: "3px 6px",
+                  }}
+                />
+                d
+                <span style={{ color: acclimation.source === "default" ? "var(--mist-mute)" : "var(--creek)" }}>
+                  {acclimation.source}
+                </span>
+                {acclimationOverride != null && (
+                  <button
+                    type="button"
+                    onClick={() => setAcclimationOverride(null)}
+                    title={acclimation.derived
+                      ? `back to the derived ${acclimation.derived.days_at_altitude} day${acclimation.derived.days_at_altitude === 1 ? "" : "s"} (${acclimation.derived.source})`
+                      : "clear the override"}
+                    style={{
+                      background: "none", border: "none", color: "var(--mist-mute)",
+                      cursor: "pointer", fontSize: 11, padding: 0, lineHeight: 1,
+                    }}
+                  >×</button>
+                )}
+              </label>
+            )}
             <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               fatigue +{fatigue.toFixed(1)}%/10{u.distUnit}
               <input
@@ -595,8 +699,62 @@ export function RacePlanner() {
           </span>
         }
       >
-        race planner — {race.short} · {u.dist(course.distance_mi, 0)} {u.distUnit} · {u.elev(course.gain_ft)} {u.elevUnit}↑
+        {tuneUp ? "tune-up planner" : "race planner"} — {race.short} · {u.dist(course.distance_mi, 0)} {u.distUnit} · {u.elev(course.gain_ft)} {u.elevUnit}↑
+        {tuneUp && raceConfig.parent_slug ? ` · inside ${raceConfig.parent_slug}` : ""}
       </SectionTag>
+
+      {/* Round 3 sweep extension (render-only edit, per the fixer who owns
+          the rest of this file) — the other half of the note above: a
+          course that just built successfully but with `warnings` (the
+          hook's own resultStore-recovered outcome, since a reload-triggered
+          remount wiped the render that would otherwise have shown this)
+          gets its say here, in the view that now actually renders instead
+          of the empty state. Distinct from the persisted banner below —
+          `warnings` can carry things that never touch race.json's
+          `unresolved` (an unhonored user waypoint override, for one) — so
+          this is not simply the same fact twice. */}
+      {courseBuild.warnings.length > 0 && (
+        <div className="panel notch" style={{
+          padding: "10px 16px", marginBottom: 10, borderColor: "var(--lamp)",
+          color: "var(--lamp)", fontSize: 11.5, lineHeight: 1.5,
+        }}>
+          ⚠ the last course build had this to say: {courseBuild.warnings.join(" · ")}
+        </div>
+      )}
+
+      {/* course.gpx measured far enough off race.json's declared distance/gain
+          that scripts/build-course.mjs's courseMismatches flagged it and
+          race-build.mjs persisted "course.gpx" onto race.json's own
+          unresolved[] (the same signal the review screen shows) — surfaced
+          here too because a station table with no crew/drop-bag columns to
+          fill the panel makes a bad GPX easy to miss otherwise: the header
+          above and every "seg" cell in the table below are the MEASURED gpx
+          numbers. For an A race each row's own mile column is race.json's
+          DECLARED chart mile (pacing.ts projectRace) — two spaces that
+          normally nearly coincide but visibly don't here (round 4 finding 1).
+          A tune-up's synthesized Finish takes the measured distance instead
+          (build-course.mjs, round 5), so its one row agrees with the header
+          and the banner says which figure it is contradicting.
+
+          Round 5 confirm, finding 4: build-course.mjs only snaps total_mi to
+          the measured distance for `kind === "b" && lastStationIdx === 0` —
+          the quick form's own one-station shape. A hand-authored or
+          pre-v2 B-kind folder with more than one aid station keeps the
+          stale DECLARED mile on every row, same as an A race, so the
+          reassuring copy below is gated on that same one-station case
+          rather than on `tuneUp` alone. */}
+      {raceConfig.unresolved?.includes("course.gpx") && (
+        <div className="panel notch" style={{
+          padding: "10px 16px", marginBottom: 10, borderColor: "var(--ember)",
+          color: "var(--ember)", fontSize: 11.5, lineHeight: 1.5,
+        }}>
+          ⚠ course.gpx measures {u.dist(course.distance_mi, 1)} {u.distUnit} of the declared {u.dist(course.official_distance_mi, 1)} {u.distUnit}
+          {" "}— far enough off to not be normal GPX drift. The chart above and the "seg" column below are read off
+          this GPX; {tuneUp && course.aid_stations.length === 1
+            ? "the finish row uses the measured distance, so only the declared figure above is in doubt"
+            : "the station miles are still the declared chart miles, so a pace or climb number that looks wrong may just be the wrong file uploaded"}. Re-check the GPX before trusting either.
+        </div>
+      )}
 
       <div className="panel notch" style={{ overflow: "hidden" }}>
         <Contours seed={7} opacity={0.07} />
@@ -653,10 +811,10 @@ export function RacePlanner() {
               <span style={{ textAlign: "right" }}>cutoff</span>
               <span>margin</span>
             </span>
-            <span className="eyebrow col-fuel" style={{ fontSize: 8.5, textAlign: "right" }}
+            {showFuel && <span className="eyebrow col-fuel" style={{ fontSize: 8.5, textAlign: "right" }}
               title="fuel carried OUT of the previous refill for this split — carb target, Gels/Bloks/tabs beyond the drink mix, heat-adjusted fluid + fill code counting every flask (M mix · W plain water · ↑ drink at aid before leaving); constants in nutrition.json">
               fuel
-            </span>
+            </span>}
             <span className="eyebrow col-flags" style={{ fontSize: 8.5 }}>access</span>
           </div>
           {proj.stations.map((sp, i) => {
@@ -763,7 +921,7 @@ export function RacePlanner() {
                       : ""}
                   </span>
                 </span>
-                <span className="numerals col-fuel" style={{ fontSize: 10.5, textAlign: "right" }}
+                {showFuel && <span className="numerals col-fuel" style={{ fontSize: 10.5, textAlign: "right" }}
                   title={(() => {
                     const f = fuelPlan?.segments.find((seg) => seg.toIdx === i);
                     if (!f) return "no resupply here (no-crew plan) — this station is covered by the carry from the previous refill point";
@@ -784,7 +942,7 @@ export function RacePlanner() {
                       </>
                     );
                   })()}
-                </span>
+                </span>}
                 <span className="col-flags" style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-start" }}>
                   <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
                     {stationFlags(s, columns).map((f) => <FlagChip key={f.label} label={f.label} color={f.color} />)}
@@ -856,7 +1014,7 @@ export function RacePlanner() {
                 ) : <span />;
               })()}
             </span>
-            <span className="numerals col-fuel" style={{ fontSize: 10.5, textAlign: "right" }}
+            {showFuel && <span className="numerals col-fuel" style={{ fontSize: 10.5, textAlign: "right" }}
               title={panels.drop_bag_card
                 ? "race totals from the fuel plan — distributed across the drop bags (see ⎙ drop bags 3×5)"
                 : "race totals from the fuel plan — no drop bags on this course, so this is what you carry and what gets restocked at aid"}>
@@ -866,7 +1024,7 @@ export function RacePlanner() {
                   <span style={{ display: "block", fontSize: 9, whiteSpace: "nowrap", color: "var(--mist-dim)" }}>{fuelPlan.total_hcf_scoops} hcf</span>
                 </>
               )}
-            </span>
+            </span>}
             <span className="col-flags" />
           </div>
 
@@ -876,7 +1034,7 @@ export function RacePlanner() {
             <span className="numerals" style={{ fontSize: 13.5, fontWeight: 700, color: "var(--lamp)" }}>
               {fmtElapsed(proj.stopped_h)}
             </span>
-            {fuelPlan && (
+            {showFuel && fuelPlan && (
               <>
                 <span className="eyebrow" style={{ fontSize: 8.5 }}>fuel totals</span>
                 <span className="numerals" style={{ fontSize: 11, fontWeight: 600 }}
@@ -901,11 +1059,20 @@ export function RacePlanner() {
                     {paceGrade?.fitted_at && ` (fitted ${relativeAgo(new Date(paceGrade.fitted_at).getTime())}${paceGrade.runs_pending_time ? `, ${paceGrade.runs_pending_time} runs awaiting time streams` : ""})`}
                     {paceGradeError && <span style={{ color: "var(--ember)" }}> · {paceGradeError}</span>}
                     {nutritionError && <span style={{ color: "var(--ember)" }}> · {nutritionError}</span>}
-                    {!nutritionError && nutritionSource === "default" && raceConfig && (
+                    {!nutritionError && nutritionSource === "default" && raceConfig && showFuel && (
                       <span style={{ color: "var(--ember)" }}> · using default fueling constants — races/{raceConfig.slug}/nutrition.json missing</span>
                     )}
                     {physiologyError && <span style={{ color: "var(--ember)" }}> · {physiologyError}</span>}
                     {" "}· tech: {course.aid_stations.filter((s) => (s.tech_pct ?? 0) > 0).map((s) => `${s.name.toLowerCase()} +${s.tech_pct}%`).join(", ") || "none"} · race-cal +{calibration}% all paces · restraint +{restraint}% thru mi {restraintWin?.fullMi.toFixed(0)} (fades by {restraintWin?.endMi.toFixed(0)}, restrained miles age ×{(1 - RESTRAINT_FATIGUE_PAYOFF * restraint / 100).toFixed(2)} on the fatigue clock) · fatigue ×{(1 + fatigue / 100).toFixed(2)}/10{u.distUnit} compounding · stops {aidStopMin}{(columns.crew || columns.drop_bag) && `/${crewStopMin}`}m fresh
+                    {showAltitude && (
+                      <> · altitude {altitude}%: {alt.max_penalty > 0
+                        ? <>up to +{(alt.max_penalty * 100).toFixed(1)}% pace on the high segments, {fmtElapsed(alt.added_h)} added, measured from {alt.home_assumed ? "SEA LEVEL (set your home elevation in settings)" : `${u.elev(alt.home_ft)} ${u.elevUnit} home`}</>
+                        : <>off</>}</>
+                    )}
+                    {showAltitude && (
+                      <> · acclimation {acclimation.days} day{acclimation.days === 1 ? "" : "s"} · {acclimSource}
+                        {acclimation.arrivalDate && <> (arrive {acclimation.arrivalDate})</>}</>
+                    )}
                   </span>
                 </>
               )}
@@ -938,7 +1105,8 @@ export function RacePlanner() {
               )}
               <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)" }}>race</span>
               <span className="eyebrow" style={{ fontSize: 8.5, lineHeight: 1.9 }}>
-                cutoffs from {cutoffSource} · start {race.clock(0)} ·{" "}
+                {hasCutoffs ? <>cutoffs from {cutoffSource} · </> : "no cutoffs on this course · "}
+                start {race.clock(0)} ·{" "}
                 {sun
                   ? `sunset ${sun.sunset} · sunrise ${sun.sunrise}`
                   : "sun unknown — run the course build after setting the date"}
@@ -957,13 +1125,21 @@ export function RacePlanner() {
               >
                 ⎙ runner card 3×5
               </button>
-              <button
-                className="chip"
-                style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
-                onClick={() => setOpenDoc("fuel")}
-              >
-                ⎙ fuel card 3×5
-              </button>
+              {/* Gated the same as the fuel COLUMN above (showFuel): a tune-up
+                  with no nutrition.json has nothing but DEFAULT_NUTRITION
+                  behind this button, which is exactly the "impersonal
+                  defaults" the column's own comment says must not reach the
+                  athlete (round 4 finding 4 — the print button was the one
+                  place that gate was missing). */}
+              {showFuel && (
+                <button
+                  className="chip"
+                  style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
+                  onClick={() => setOpenDoc("fuel")}
+                >
+                  ⎙ fuel card 3×5
+                </button>
+              )}
               {panels.drop_bag_card && (
                 <button
                   className="chip"
@@ -982,6 +1158,7 @@ export function RacePlanner() {
                   ⎙ crew sheet pdf
                 </button>
               )}
+              {panels.crew_sheet && <CrewExportButton />}
             </span>
           </div>
         </div>

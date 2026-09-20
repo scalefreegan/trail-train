@@ -146,16 +146,30 @@ export const Block = ({ children }: { children: React.ReactNode }) => (
 /*  The dialog                                                         */
 /* ------------------------------------------------------------------ */
 
-export default function RaceIntake({ slug: openAt = null, onClose }: {
+export default function RaceIntake({ slug: openAt = null, parentSlug = null, onClose }: {
   /** A draft to review straight away — the switcher's "Review…" row. Absent
       means the intake form, the "New race…" row. */
   slug?: string | null;
+  /** Opened from a tune-up's "run the full intake instead" link (PRD-v2 §3):
+      the A race the athlete was adding a tune-up to, carried over so the form
+      says which block this race was reached from and the intake agent is told
+      as much in the notes.
+
+      What it does NOT do: make the folder a B race. POST /api/race-intake has
+      no parent_slug field and `kind`/`parent_slug` are not editable keys
+      (scripts/race-edit.mjs EDITABLE_RACE_KEYS) — the intake writes an A-race
+      draft, and the quick form next door is the only thing that writes a
+      tune-up. The copy below says so rather than implying otherwise. */
+  parentSlug?: string | null;
   onClose: () => void;
 }) {
   const { reload } = useRefresh();
   const [slug, setSlug] = useState<string | null>(openAt);
   const [screen, setScreen] = useState<"form" | "review">(openAt ? "review" : "form");
-  const header = screen === "review" ? "review · draft race" : "new race";
+  // Not "review · draft race": the review screen is reachable for an active
+  // race too now (v2 review ui2 #2), and this label is set here, before the
+  // fetch inside ReviewScreen below has even told us the folder's status.
+  const header = screen === "review" ? "review · race" : "new race";
 
   // Restore a form abandoned by ESC/backdrop (round 1, bug D8) — read once,
   // synchronously, during the first render, so the fields never flash empty
@@ -166,7 +180,12 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   const [siteUrl, setSiteUrl] = useState(() => readNewRaceDraft(openAt)?.siteUrl ?? "");
   const [extraUrls, setExtraUrls] = useState(() => readNewRaceDraft(openAt)?.extraUrls ?? "");
   const [year, setYear] = useState(() => readNewRaceDraft(openAt)?.year ?? String(new Date().getFullYear() + 1));
-  const [notes, setNotes] = useState(() => readNewRaceDraft(openAt)?.notes ?? "");
+  const [notes, setNotes] = useState(() =>
+    readNewRaceDraft(openAt)?.notes
+    // The prefill, and the only place parentSlug reaches the request: the
+    // notes are free prose the intake agent reads, so naming the block the
+    // athlete came from is context, not schema.
+    ?? (parentSlug ? `Entered as a tune-up inside the ${parentSlug} block.` : ""));
   const [themePreset, setThemePreset] = useState<string>(() => readNewRaceDraft(openAt)?.themePreset ?? "");
   const [uploads, setUploads] = useState<{ name: string; path: string; bytes: number }[]>(() => readNewRaceDraft(openAt)?.uploads ?? []);
   const [uploading, setUploading] = useState(false);
@@ -176,6 +195,15 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
   const [running, setRunning] = useState(false);
   const [stageState, setStageState] = useState<Record<StageId, StageState>>({ intake: "pending", build: "pending", plan: "pending" });
   const [stageLog, setStageLog] = useState<Record<StageId, string>>({ intake: "", build: "", plan: "" });
+  // Round 3 finding 5 (r3-sweep-b.md / r3-sweep.md): `ok: true` from the
+  // build/plan stages is not "nothing to say" — race-plan.mjs routinely
+  // returns real degradation (no fitness snapshot, no course.json to plan
+  // against) alongside a success, and `stageLog`'s per-stage LAST line is
+  // overwritten by the very next log line and vanishes outright once
+  // `setScreen("review")` unmounts this whole view — there was no surface
+  // that outlived the transition. Seeds ReviewScreen's own copy (below) so a
+  // wizard run's warnings are still visible once the screen switches.
+  const [stageWarnings, setStageWarnings] = useState<{ stage: "build" | "plan"; message: string }[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -252,6 +280,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
     setError(null);
     setStageState({ intake: "pending", build: "pending", plan: "pending" });
     setStageLog({ intake: "", build: "", plan: "" });
+    setStageWarnings([]);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
@@ -261,6 +290,17 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
       else if (e.kind === "error") setStageLog((p) => ({ ...p, [id]: e.message }));
     };
     const mark = (id: StageId, s: StageState) => setStageState((p) => ({ ...p, [id]: s }));
+    // Round 3 finding 5: build/plan both answer `ok: true` with a real
+    // `warnings` array on real degradation (race-plan.mjs: "no fitness
+    // snapshot…the block's ramp is unanchored"; race-build.mjs: a course.gpx
+    // mismatch) — mirrors AddTuneUp.tsx's own `created.build?.ok &&
+    // created.build.warnings?.length` check, folded into stageWarnings so it
+    // survives the switch to the review screen below.
+    const noteStageWarnings = (stage: "build" | "plan", result: Record<string, unknown>) => {
+      const warnings = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
+      if (warnings.length === 0) return;
+      setStageWarnings((p) => [...p, { stage, message: warnings.join(" · ") }]);
+    };
 
     try {
       mark("intake", "running");
@@ -288,12 +328,14 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
       }
 
       mark("build", "running");
-      await runStage("/api/race-intake/build", { slug: made }, events("build"), ctrl.signal);
+      const build = await runStage("/api/race-intake/build", { slug: made }, events("build"), ctrl.signal);
       mark("build", "done");
+      noteStageWarnings("build", build);
 
       mark("plan", "running");
-      await runStage("/api/race-intake/plan", { slug: made }, events("plan"), ctrl.signal);
+      const plan = await runStage("/api/race-intake/plan", { slug: made }, events("plan"), ctrl.signal);
       mark("plan", "done");
+      noteStageWarnings("plan", plan);
 
       // The form's job is done — the draft folder is now the source of
       // truth, so the localStorage safety net (bug D8) is cleared with it.
@@ -359,6 +401,7 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
             onDone={() => { reload(); onClose(); }}
             onReload={reload}
             onLockedChange={setReviewLocked}
+            initialStageWarnings={stageWarnings}
           />
         ) : (
           <>
@@ -381,6 +424,14 @@ export default function RaceIntake({ slug: openAt = null, onClose }: {
                   >
                     discard draft
                   </button>
+                </p>
+              )}
+              {parentSlug && screen === "form" && (
+                <p style={{ fontSize: 11, color: "var(--lamp)", margin: "0 0 16px", lineHeight: 1.5 }}>
+                  Reached from <span className="numerals">{parentSlug}</span>'s "add tune-up" row. This is the
+                  paid intake: it reads the race's own website in an agent turn and writes a full race folder of
+                  its own — a draft A race, not a tune-up inside that block. The quick form is what writes a
+                  tune-up.
                 </p>
               )}
               <Block>
@@ -610,12 +661,18 @@ const diskAcked = (data: Pick<ReviewPayload, "unresolved_acknowledged"> | null, 
   return v === true;
 };
 
-function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
+function ReviewScreen({ slug, onDone, onReload, onLockedChange, initialStageWarnings }: {
   slug: string; onDone: () => void; onReload: () => void;
   /** Reports "a write or a stage re-run is in flight" up to RaceIntake, whose
       Escape/backdrop/close-button guards can't see this component's own
       `busy`/`stage` state otherwise (PR #23 review round 1, finding 6). */
   onLockedChange: (locked: boolean) => void;
+  /** Round 3 finding 5: whatever the wizard's own run() collected from the
+      build/plan stages before switching to this screen — seeds this
+      component's OWN copy (below) on mount so a fresh "New race…" run's
+      warnings survive the transition. Undefined for a draft opened straight
+      via "Review…" (run() never ran), which is exactly "nothing to seed". */
+  initialStageWarnings?: { stage: "build" | "plan"; message: string }[];
 }) {
   const [data, setData] = useState<ReviewPayload | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -628,9 +685,26 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
      rather than something the build chains into. */
   const [stage, setStage] = useState<null | "build" | "plan">(null);
   const [stageLine, setStageLine] = useState("");
+  // Round 3 finding 5: persistent, unlike stageLine above (the transient SSE
+  // log, one line at a time, gone the moment the NEXT log line or a stage
+  // switch overwrites it) — seeded from the wizard's own run() when this
+  // screen is the tail end of a fresh "New race…" (initialStageWarnings),
+  // and updated by runStageAgain below when a stage is re-run from here.
+  const [stageWarnings, setStageWarnings] = useState(initialStageWarnings ?? []);
   const [aidEdits, setAidEdits] = useState<Record<number, AidEdit>>({});
   const [blockEdits, setBlockEdits] = useState<Record<number, { target_dist?: number; target_elev?: number }>>({});
   const [themeEdit, setThemeEdit] = useState<string | null>(null);
+  // PRD v2 §4: intake seeds tracking.url off the race site; the bib and the
+  // name the athlete is entered under are things only they know, so they are
+  // filled in here. Absent until touched, so a save that never went near
+  // them sends no `tracking` at all.
+  //
+  // `url` was added by v2 review ui2 #3: intake writes `links.tracking` (the
+  // race site's own tracking page) but never `tracking.url` (what the
+  // tracker endpoint actually reads), and nothing in the UI could set the
+  // one field that turns live tracking on. See the seed logic below
+  // (linksTrackingSeed) and buildBody's use of it.
+  const [trackingEdit, setTrackingEdit] = useState<{ bib?: string; name?: string; url?: string } | null>(null);
   const [fills, setFills] = useState<Record<string, string>>({});
   const [acked, setAcked] = useState<Record<string, boolean>>({});
 
@@ -680,7 +754,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
         // REVERT is "every control in the dialog back to the on-disk state"
         // (round 1, bug R3/D6) — that includes the acknowledge checkboxes,
         // not just the edit buffers.
-        setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setFills({}); setAcked({});
+        setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setTrackingEdit(null); setFills({}); setAcked({});
         setSaveError(keepErrorRef.current);
         keepErrorRef.current = null;
         setLoadError(null);
@@ -691,6 +765,42 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
 
   const race = data?.race;
   const stations = race?.aid_stations ?? [];
+
+  // Round 3 finding 2: `race.tracking?.url` being falsy is NOT "url has
+  // never been set" — scripts/race-edit.mjs's applyRaceEdit stores a cleared
+  // field as an explicit `null` (its "" → null normalization, so a consumer
+  // only ever checks for absence, never emptiness), and that write always
+  // puts the `url` KEY on the object, same as a real value would. So once an
+  // athlete has saved tracking.url at all — including blanking it back out —
+  // `"url" in race.tracking` is true forever after, while a race whose url
+  // has genuinely never been touched (intake found no tracking link, or only
+  // bib/name have ever been saved) has no `url` key on the object at all.
+  // That is the distinction "was this decided" needs, and it is already on
+  // disk today — no server/schema change required, just reading key
+  // presence instead of value truthiness.
+  const trackingObj = race?.tracking;
+  const trackingUrlEverSet = trackingObj != null && "url" in trackingObj;
+
+  // v2 review ui2 #3: once `tracking.url` is empty, seed the tracker URL
+  // field from `links.tracking` — the race site's own tracking link, which
+  // intake fills in but the tracker endpoint never reads, so a race could
+  // have a tracking LINK and still never be trackable. Prefers whatever the
+  // athlete is typing into the links.tracking unresolved field THIS session
+  // (fills) over what's already on disk — filling that box and setting the
+  // tracker bib in one save is exactly how a first-time setup goes. Purely a
+  // display/save-time stand-in: nothing here calls setTrackingEdit, so it
+  // never reaches disk unless the athlete actually presses SAVE (buildBody).
+  //
+  // Gated on trackingUrlEverSet, not on `race.tracking?.url` itself (round 3
+  // finding 2): the old gate treated "cleared" the same as "never asked" and
+  // put the same seed right back in front of the athlete — worse, buildBody
+  // below read this same value to decide what an UNRELATED bib/name-only
+  // save should send for `url`, so it silently resurrected a URL the athlete
+  // had deliberately blanked in an earlier session, on the very next save
+  // that touched nothing but the bib.
+  const linksTrackingSeed = trackingUrlEverSet
+    ? null
+    : (fills["links.tracking"]?.trim() || race?.links?.tracking || null);
 
   const stationValue = <K extends keyof AidEdit>(i: number, key: K): AidEdit[K] =>
     (key in (aidEdits[i] ?? {}) ? aidEdits[i][key] : stations[i]?.[key]) as AidEdit[K];
@@ -737,7 +847,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
   const ackDirty = openHoles.some((p) => isAcked(p) !== diskAcked(data, p));
 
   const dirty = Object.keys(aidEdits).length > 0 || Object.keys(blockEdits).length > 0 ||
-    themeEdit !== null || Object.values(fills).some((v) => v.trim()) || ackDirty;
+    themeEdit !== null || trackingEdit !== null || Object.values(fills).some((v) => v.trim()) || ackDirty;
 
   const runStageAgain = async (which: "build" | "plan") => {
     setStage(which);
@@ -746,7 +856,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
     const ctrl = new AbortController();
     stageAbortRef.current = ctrl;
     try {
-      await runStage(
+      const result = await runStage(
         which === "build" ? "/api/race-intake/build" : "/api/race-intake/plan",
         { slug },
         (e) => {
@@ -757,6 +867,14 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
         ctrl.signal,
       );
       setStageLine("");
+      // Round 3 finding 5: replace THIS stage's own entry — a clean rerun
+      // (no warnings this time) clears a stale one rather than leaving it to
+      // look like the problem is still current.
+      const warnings = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
+      setStageWarnings((p) => [
+        ...p.filter((w) => w.stage !== which),
+        ...(warnings.length ? [{ stage: which, message: warnings.join(" · ") }] : []),
+      ]);
       load();
     } catch (e) {
       // The dialog was closed (stageAbortRef's cleanup effect) — nothing to
@@ -790,6 +908,21 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       .filter((r) => Object.keys(r).length > 1);
     if (rows.length) body.aid_stations = rows;
     if (themeEdit !== null) body.visual = { theme_preset: themeEdit };
+    // bib/name/url all ride in `trackingEdit`. `url` gets one extra step: if
+    // the athlete never touched the URL field this save (trackingEdit.url is
+    // undefined, not "") AND there's a seed on offer (linksTrackingSeed),
+    // that seed goes out as tracking.url too — so saving just the bib on a
+    // race whose links.tracking is already known is enough to make tracking
+    // live, matching the copy the URL field itself shows (v2 review ui2 #3).
+    // A deliberately CLEARED url (trackingEdit.url === "") is left alone, and
+    // so is one cleared in an EARLIER session: linksTrackingSeed is already
+    // null once trackingUrlEverSet (round 3 finding 2), so this line sends no
+    // `url` at all for a bib/name-only save on a folder whose url was decided
+    // — set or explicitly blanked — rather than reaching for the seed again.
+    if (trackingEdit !== null) {
+      const url = trackingEdit.url !== undefined ? trackingEdit.url : linksTrackingSeed ?? undefined;
+      body.tracking = url !== undefined ? { ...trackingEdit, url } : trackingEdit;
+    }
     // Contract with fixer A: unresolved_acknowledged becomes a list of
     // acknowledged paths. The current server still stores/returns a single
     // boolean (`diskAcked` tolerates that on read), but every write from here
@@ -865,7 +998,7 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
       const body = buildBody();
       if (Object.keys(body).length === 0) { setBusy(null); return; }
       setData(await put(body));
-      setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setFills({}); setAcked({});
+      setAidEdits({}); setBlockEdits({}); setThemeEdit(null); setTrackingEdit(null); setFills({}); setAcked({});
       onReload();
     } catch (e) {
       // `put()`'s own refusals carry `.errors` (the server's per-field
@@ -998,11 +1131,100 @@ function ReviewScreen({ slug, onDone, onReload, onLockedChange }: {
           )}
         </Block>
 
+        {/* PRD v2 §4 — who to look for on the race's live tracker, and where
+            to find them. The URL was shown-not-edited until v2 review ui2 #3
+            found that nothing in the UI could ever SET tracking.url: intake
+            only ever writes links.tracking (the race site's own tracking
+            page), which the tracker endpoint never reads — a race could have
+            a tracking link and still never be trackable, and the review
+            screen's own bib/name fields had no url to poll against. The bib
+            and the name are the athlete's own and nothing but a human knows
+            them, which is why they're here and not in a generated file.
+            All three are optional: the OpenSplitTime adapter finds a runner
+            by bib or by name once a URL is set. */}
+        <Block>
+          <Eyebrow>live tracker</Eyebrow>
+          <div style={{ fontSize: 11, color: "var(--mist-mute)", marginBottom: 8, overflowWrap: "anywhere" }}>
+            {race.tracking?.url ? (
+              "race-day mode polls this URL for a checkpoint."
+            ) : linksTrackingSeed ? (
+              <>no tracker URL saved yet — seeded below from this folder's own tracking link
+                (<span style={{ overflowWrap: "anywhere" }}>{linksTrackingSeed}</span>). Save to make it live, or clear the field first.</>
+            ) : (
+              "no tracker URL on this folder yet — paste one below, or fill in links.tracking above and it will seed this field. Race-day mode falls back to the manual checkpoint without one."
+            )}
+          </div>
+          <label style={{ fontSize: 11, color: "var(--mist-mute)", display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 }}>
+            tracker url
+            <input
+              aria-label="tracker url"
+              maxLength={300}
+              style={{ ...inputStyle, width: "100%" }}
+              value={trackingEdit?.url ?? race.tracking?.url ?? linksTrackingSeed ?? ""}
+              onChange={(e) => {
+                setSaveError(null);
+                setTrackingEdit((p) => ({ ...p, url: e.target.value }));
+              }}
+            />
+          </label>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <label style={{ fontSize: 11, color: "var(--mist-mute)", display: "flex", flexDirection: "column", gap: 4 }}>
+              bib
+              <input
+                aria-label="tracker bib"
+                maxLength={40}
+                style={{ ...inputStyle, width: 110 }}
+                value={trackingEdit?.bib ?? race.tracking?.bib ?? ""}
+                onChange={(e) => {
+                  setSaveError(null);
+                  setTrackingEdit((p) => ({ ...p, bib: e.target.value }));
+                }}
+              />
+            </label>
+            <label style={{ fontSize: 11, color: "var(--mist-mute)", display: "flex", flexDirection: "column", gap: 4, flex: "1 1 200px", minWidth: 0 }}>
+              name on the tracker
+              <input
+                aria-label="tracker name"
+                maxLength={40}
+                style={{ ...inputStyle, width: "100%" }}
+                value={trackingEdit?.name ?? race.tracking?.name ?? ""}
+                onChange={(e) => {
+                  setSaveError(null);
+                  setTrackingEdit((p) => ({ ...p, name: e.target.value }));
+                }}
+              />
+            </label>
+          </div>
+        </Block>
+
         {data.refresh_interrupted && (
           <Block>
             <p style={{ fontSize: 11.5, color: "var(--ember)", margin: 0 }}>
               a refresh didn't finish landing — some files here may be updated while others are not. Re-run Accept from the refresh review to repair it.
             </p>
+          </Block>
+        )}
+
+        {/* Round 3 findings 5 & 6: two different sources of the same shape —
+            "the pipeline succeeded but has something to say" — that neither
+            had a durable home on this screen before. `race.intake_warnings`
+            (finding 6) is scripts/race-intake.mjs's stage-1 record, written
+            to race.json and diffed through every re-intake merge, so it is
+            true for as long as the condition it describes stays true.
+            `stageWarnings` (finding 5) is THIS session's own build/plan
+            results (from the wizard's run(), or a "stages · run again" click
+            below) — real but never written to disk, so it is gone the moment
+            this dialog closes. Same banner slot; not conflated into one list
+            item, since one survives a reopen and the other never did. */}
+        {((race.intake_warnings?.length ?? 0) > 0 || stageWarnings.length > 0) && (
+          <Block>
+            <Eyebrow>stage warnings</Eyebrow>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11.5, color: "var(--lamp)", lineHeight: 1.6 }}>
+              {(race.intake_warnings ?? []).map((w, i) => <li key={`intake-${i}`}>{w}</li>)}
+              {stageWarnings.map((w, i) => (
+                <li key={`stage-${w.stage}-${i}`}>{w.stage === "build" ? "course" : "block + fuel"}: {w.message}</li>
+              ))}
+            </ul>
           </Block>
         )}
 

@@ -57,8 +57,8 @@ async function captureWarn(fn) {
 /* ---------------- normalizePhysiology ---------------- */
 
 test("a complete physiology block passes through untouched and silently", () => {
-  const { physiology, warnings } = normalizePhysiology({ body_kg: 68.2, long_run_ref_mi: 26 });
-  assert.deepEqual(physiology, { body_kg: 68.2, long_run_ref_mi: 26 });
+  const { physiology, warnings } = normalizePhysiology({ body_kg: 68.2, long_run_ref_mi: 26, home_elevation_ft: 5300 });
+  assert.deepEqual(physiology, { body_kg: 68.2, long_run_ref_mi: 26, home_elevation_ft: 5300 });
   assert.deepEqual(warnings, []);
 });
 
@@ -94,8 +94,33 @@ test("out-of-band, non-finite and non-numeric values fall back with a warning", 
 
 test("a physiology that isn't an object is reported, not spread", () => {
   const { physiology, warnings } = normalizePhysiology("70");
-  assert.deepEqual(physiology, { body_kg: DEFAULT_BODY_KG, long_run_ref_mi: DEFAULT_LONG_RUN_REF_MI });
+  assert.deepEqual(physiology, {
+    body_kg: DEFAULT_BODY_KG, long_run_ref_mi: DEFAULT_LONG_RUN_REF_MI, home_elevation_ft: null,
+  });
   assert.ok(warnings.some((w) => w.includes("not an object")));
+});
+
+test("home_elevation_ft is optional: null when unset, silently, and bounded when set", () => {
+  // Every other physiology field has a defensible stand-in. This one does
+  // not — assuming sea level for a Denver athlete would quietly add hours of
+  // altitude penalty to a race plan — so it normalizes to null and says
+  // nothing, and the views that read it ask for it by name.
+  const unset = normalizePhysiology({ body_kg: 70, long_run_ref_mi: 22 });
+  assert.equal(unset.physiology.home_elevation_ft, null);
+  assert.deepEqual(unset.warnings, [], "an absent optional field is not a substitution");
+
+  // 0 ft is a real answer (sea level), not a missing one
+  assert.equal(normalizePhysiology({ home_elevation_ft: 0 }).physiology.home_elevation_ft, 0);
+  const { lo, hi } = PHYSIOLOGY_FIELDS.home_elevation_ft;
+  assert.equal(normalizePhysiology({ home_elevation_ft: lo }).physiology.home_elevation_ft, lo);
+  assert.equal(normalizePhysiology({ home_elevation_ft: hi }).physiology.home_elevation_ft, hi);
+
+  // out of range or the wrong type IS a substitution — that one is announced
+  for (const bad of [hi + 1, lo - 1, "5280", NaN, true]) {
+    const { physiology, warnings } = normalizePhysiology({ body_kg: 70, long_run_ref_mi: 22, home_elevation_ft: bad });
+    assert.equal(physiology.home_elevation_ft, null, `${JSON.stringify(bad)} should not survive`);
+    assert.ok(warnings.some((w) => w.includes("home_elevation_ft")), `${JSON.stringify(bad)} went unreported`);
+  }
 });
 
 test("the defaults are impersonal round numbers, not anyone's real values", () => {
@@ -116,7 +141,7 @@ test("loadProfile reads config/profile.json and normalizes its physiology", asyn
 
   const { profile, warnings } = await loadProfileWithWarnings(root);
   assert.equal(profile.athlete_name, "test runner");
-  assert.deepEqual(profile.physiology, { body_kg: 58.5, long_run_ref_mi: 15 });
+  assert.deepEqual(profile.physiology, { body_kg: 58.5, long_run_ref_mi: 15, home_elevation_ft: null });
   assert.deepEqual(warnings, []);
 });
 
@@ -133,6 +158,10 @@ test("a profile written before physiology existed gets defaults AND a console wa
   assert.deepEqual(profile.physiology, {
     body_kg: DEFAULT_BODY_KG,
     long_run_ref_mi: DEFAULT_LONG_RUN_REF_MI,
+    // …and the OPTIONAL one is filled in with null, silently: there is no
+    // honest default for where somebody lives, so nothing was substituted
+    // and there is nothing to warn about
+    home_elevation_ft: null,
   });
   assert.equal(lines.length, 2, `expected two warnings, got: ${lines.join(" | ")}`);
   assert.ok(lines.every((l) => l.includes("profile.json")));
@@ -233,15 +262,23 @@ test("the committed profile.example.json is complete, impersonal and race_base-f
   assert.equal(example.race_base, undefined, "race_base must be gone from the example profile");
 });
 
-test("the settings PUT bounds match the loader's (KEEP IN SYNC comment, enforced)", async () => {
-  // vite.config.ts can't import from scripts/, so the bounds are typed twice.
-  // A silent drift means the dialog saves a value the loader then rejects and
-  // replaces with a default — the exact silent-substitution this bead removed.
+test("the settings PUT validates against the shared bounds, not a second copy", async () => {
+  // vite.config.ts can't import from scripts/, so its bounds used to be typed
+  // out again by hand; a silent drift meant the dialog saved a value the
+  // loader then rejected and replaced with a default — the exact silent
+  // substitution the physiology block exists to end. They now come from the
+  // generated web/src/contracts.ts, and this is the guard against somebody
+  // pasting the numbers back in.
   const vite = await fs.readFile(path.join(PROJECT_ROOT, "web", "vite.config.ts"), "utf8");
+  assert.match(
+    vite,
+    /import \{[^}]*\bPHYSIOLOGY_FIELDS\b[^}]*\} from '\.\/src\/contracts'/,
+    "web/vite.config.ts must import PHYSIOLOGY_FIELDS from the generated contracts",
+  );
   for (const [key, spec] of Object.entries(PHYSIOLOGY_FIELDS)) {
     assert.ok(
-      vite.includes(`${key}: [${spec.lo}, ${spec.hi}]`),
-      `web/vite.config.ts PHYSIOLOGY_BOUNDS is missing "${key}: [${spec.lo}, ${spec.hi}]"`,
+      !vite.includes(`${key}: [${spec.lo}, ${spec.hi}]`),
+      `web/vite.config.ts hand-types bounds for "${key}" again — read them from PHYSIOLOGY_FIELDS`,
     );
   }
 });

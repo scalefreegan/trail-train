@@ -9,18 +9,22 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  bRacesFor,
   getActiveRace,
   getTrainingSlug,
   listRaces,
   loadActiveRace,
   loadActiveRaceFolder,
+  groupRaces,
   loadRaceFolder,
+  raceKind,
   readActivePointer,
   resolveViewedRace,
   setActivePointer,
   validateActivation,
   validateRaceJson,
   validateSingleActive,
+  weeksOut,
 } from "./race-config.mjs";
 import { draftValidationErrors } from "./race-intake.mjs";
 
@@ -141,6 +145,27 @@ test("validateRaceJson accepts intake_warnings as an optional array of strings, 
   assert.equal(validateRaceJson(validRace()).ok, true, "absent entirely is fine — most drafts have none");
   assertRejects(validRace({ intake_warnings: "no PDF renderer" }), "intake_warnings: array of strings");
   assertRejects(validRace({ intake_warnings: [{ message: "no PDF renderer" }] }), "intake_warnings: array of strings");
+});
+
+test("validateRaceJson accepts tracking as an optional {url, bib, name}", () => {
+  assert.equal(validateRaceJson(validRace()).ok, true, "absent entirely is fine — most races have no tracker");
+  assert.equal(validateRaceJson(validRace({ tracking: null })).ok, true, "explicitly null is fine too");
+  assert.equal(validateRaceJson(validRace({
+    tracking: { url: "https://www.opensplittime.org/events/2026-san-juan-softie-100/spread", bib: "999", name: "Aaron Brooks" },
+  })).ok, true);
+  // intake fills url months before the athlete has a bib
+  assert.equal(validateRaceJson(validRace({
+    tracking: { url: "https://www.opensplittime.org/events/x/spread", bib: null, name: null },
+  })).ok, true);
+  assert.equal(validateRaceJson(validRace({ tracking: {} })).ok, true, "an empty object says 'no tracker yet'");
+
+  assertRejects(validRace({ tracking: "https://www.opensplittime.org/events/x" }), "tracking: object");
+  assertRejects(validRace({ tracking: { url: "https://x.test/e", bib: 999 } }), "tracking.bib: string or null");
+  assertRejects(validRace({ tracking: { url: "https://x.test/e", name: { first: "A" } } }), "tracking.name: string or null");
+  // the adapter registry detects by hostname, so a scheme-less URL would
+  // only fail on race morning
+  assertRejects(validRace({ tracking: { url: "opensplittime.org/events/x/spread" } }), "tracking.url: absolute http(s) URL");
+  assertRejects(validRace({ tracking: { url: "ftp://x.test/e" } }), "tracking.url: absolute http(s) URL");
 });
 
 test("listRaces returns [] when races/ is missing and skips non-races", async (t) => {
@@ -319,6 +344,53 @@ test("validateActivation: train needs an active folder, view does not", async (t
   assert.equal(validateActivation([], races).code, "bad_request");
 });
 
+test("validateActivation refuses a tune-up hand-edited to active, and a corrupted double-active", async (t) => {
+  const root = await tempRoot(t);
+  // A quick-form tune-up whose status was hand-edited to "active" (bug: the
+  // PRD invariant "a tune-up is never active" was only enforced at write
+  // time — validateKind — never again here, at the one other place a folder
+  // becomes the training target).
+  await writeRaceFolder(root, "san-juan-softie-100-2027", { "race.json": validRace({ status: "active" }) });
+  await writeRaceFolder(root, "jemez-mountain-50k-2027", { "race.json": validBRace({ status: "active" }) });
+  // ...and the same for an ORPHANED tune-up — no parent folder on disk at all.
+  await writeRaceFolder(root, "orphan-tuneup-2027", {
+    "race.json": validBRace({ slug: "orphan-tuneup-2027", parent_slug: "no-such-race-2099", status: "active" }),
+  });
+  const races = await listRaces(root);
+
+  for (const slug of ["jemez-mountain-50k-2027", "orphan-tuneup-2027"]) {
+    const bad = validateActivation({ slug, mode: "train" }, races);
+    assert.equal(bad.ok, false);
+    assert.equal(bad.code, "bad_request");
+    assert.match(bad.errors[0], /is a tune-up \(kind "b"\)/);
+    // view mode still works — a tune-up can be browsed, just never trained for
+    assert.equal(validateActivation({ slug, mode: "view" }, races).ok, true);
+  }
+
+  // The A race is unaffected by its tune-ups also (wrongly) reading "active".
+  assert.equal(validateActivation({ slug: "san-juan-softie-100-2027", mode: "train" }, races).ok, true);
+});
+
+test("validateActivation refuses train mode while two A folders both read active on disk", async (t) => {
+  const root = await tempRoot(t);
+  await writeRaceFolder(root, "one-100-2026", { "race.json": validRace({ slug: "one-100-2026", status: "active" }) });
+  await writeRaceFolder(root, "two-100-2027", { "race.json": validRace({ slug: "two-100-2027", status: "active" }) });
+  const races = await listRaces(root);
+
+  // Neither can be trained for while the disk disagrees with itself — the
+  // pointer must not silently pick a winner (race-edit.mjs's own
+  // draft-to-active transition refuses the same way rather than demoting the
+  // other folder).
+  for (const slug of ["one-100-2026", "two-100-2027"]) {
+    const bad = validateActivation({ slug, mode: "train" }, races);
+    assert.equal(bad.ok, false);
+    assert.equal(bad.code, "bad_request");
+    assert.match(bad.errors[0], /more than one active race/);
+    // view mode is unaffected — browsing either folder is still fine
+    assert.equal(validateActivation({ slug, mode: "view" }, races).ok, true);
+  }
+});
+
 test("setActivePointer writes only what validateActivation allows", async (t) => {
   const root = await tempRoot(t);
   await writeRaceFolder(root, "one-100-2026", { "race.json": validRace({ slug: "one-100-2026", status: "archived" }) });
@@ -400,4 +472,202 @@ test("the committed race folders validate", async () => {
   assert.equal(mm100.race.timezone, "America/Phoenix");
   assert.equal(mm100.race.aid_stations.length, 15);
   assert.ok(mm100.nutrition.caffeine, "nutrition.json should carry the caffeine block");
+});
+
+/* ===================== A-races and their tune-ups (PRD-v2 §3) ===================== */
+
+/** A tune-up hanging off validRace()'s slug. The quick form writes exactly
+    this much: no cutoff, no features, one finish line. */
+function validBRace(over = {}) {
+  return {
+    schema_version: 1,
+    slug: "jemez-mountain-50k-2027",
+    kind: "b",
+    parent_slug: "san-juan-softie-100-2027",
+    status: "draft",
+    name: "Jemez Mountain 50K",
+    short: "JM50K",
+    date: "2027-05-22",
+    start_time: "06:00",
+    timezone: "America/Denver",
+    distance_mi: 31,
+    gain_ft: 5000,
+    cutoff_h: null,
+    aid_stations: [{ name: "Finish", total_mi: 31, cutoff_h: null }],
+    ...over,
+  };
+}
+
+/** listRaces' shape, for the validator's optional `races` context. */
+const rows = (...races) => races.map((race) => ({ slug: race.slug, race, error: null }));
+
+test("kind defaults to a, so every folder written before v2 is unchanged", () => {
+  const legacy = validRace();
+  assert.equal("kind" in legacy, false);
+  assert.equal(raceKind(legacy), "a");
+  assert.equal(raceKind({ kind: "b" }), "b");
+  assert.equal(raceKind(null), "a");
+  assert.equal(validateRaceJson(legacy).ok, true);
+});
+
+test("validateRaceJson accepts a tune-up whose parent is an A folder on disk", () => {
+  const { ok, errors } = validateRaceJson(validBRace(), { races: rows(validRace()) });
+  assert.deepEqual(errors, []);
+  assert.equal(ok, true);
+});
+
+test("validateRaceJson: a tune-up needs a parent, and it must be an A race that exists", () => {
+  const orphan = validBRace();
+  delete orphan.parent_slug;
+  assertRejects(orphan, "parent_slug");
+
+  // shape alone passes without the folder list — the caller that has not read
+  // races/ gets the honest answer, not a guess
+  assert.equal(validateRaceJson(validBRace({ parent_slug: "ghost-race-2027" })).ok, true);
+  const { ok, errors } = validateRaceJson(validBRace({ parent_slug: "ghost-race-2027" }), { races: rows(validRace()) });
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes("no race folder races/ghost-race-2027/")), errors.join(" | "));
+
+  // ... and a tune-up cannot hang off another tune-up
+  const chained = validBRace({ slug: "second-50k-2027", parent_slug: "jemez-mountain-50k-2027" });
+  const nested = validateRaceJson(chained, { races: rows(validRace(), validBRace()) });
+  assert.equal(nested.ok, false);
+  assert.ok(nested.errors.some((e) => e.includes("is itself a tune-up")), nested.errors.join(" | "));
+
+  assertRejects(validBRace({ parent_slug: "jemez-mountain-50k-2027" }), "cannot be its own parent");
+  assertRejects(validBRace({ parent_slug: "Not Kebab" }), "lowercase kebab-case");
+  assertRejects(validRace({ parent_slug: "something-2027" }), "only a tune-up");
+  assertRejects(validBRace({ kind: "c" }), "kind must be one of");
+});
+
+test("validateRaceJson: a tune-up is never active — the A race stays the training target", () => {
+  assertRejects(validBRace({ status: "active" }), 'is never "active"');
+  for (const status of ["draft", "archived"]) {
+    assert.equal(validateRaceJson(validBRace({ status }), { races: rows(validRace()) }).ok, true, status);
+  }
+});
+
+test("validateRaceJson: a tune-up may carry no course at all, but a course it has must be ordered", () => {
+  const noStations = validBRace();
+  delete noStations.aid_stations;
+  assert.equal(validateRaceJson(noStations, { races: rows(validRace()) }).ok, true);
+  assert.equal(validateRaceJson(validBRace({ aid_stations: [] }), { races: rows(validRace()) }).ok, true);
+
+  // the same hole in an A race is still a hole
+  const aNoStations = validRace();
+  delete aNoStations.aid_stations;
+  assertRejects(aNoStations, "aid_stations: non-empty array required");
+
+  // and a station list that IS there gets the full ordering check
+  assertRejects(
+    validBRace({ aid_stations: [{ name: "Half", total_mi: 20 }, { name: "Finish", total_mi: 10 }] }),
+    "is behind the previous station",
+  );
+});
+
+test("weeksOut counts whole weeks back from race day in the A race's own zone", () => {
+  const parent = { date: "2027-08-13", timezone: "America/Denver" };
+  assert.equal(weeksOut("2027-08-13", parent), 0, "race week");
+  assert.equal(weeksOut("2027-08-06", parent), 1);
+  assert.equal(weeksOut("2027-05-22", parent), 12);
+  // a 41-day gap rounds to 6 whole weeks — and the DST change between May and
+  // August in Denver cannot move it
+  assert.equal(weeksOut("2027-07-03", parent), 6);
+  // after race day: negative, so a tune-up left behind by a moved A date is
+  // visible rather than silently dropped
+  assert.equal(weeksOut("2027-08-27", parent), -2);
+  assert.equal(weeksOut("not-a-date", parent), null);
+  assert.equal(weeksOut("2027-08-06", { date: "2027-08-13", timezone: "Mars/Olympus" }), 1, "a bad zone still counts weeks");
+  assert.equal(weeksOut("2027-08-06", null), null);
+});
+
+test("bRacesFor lists a race's own tune-ups, oldest first, with weeks_out", () => {
+  const a = validRace({ status: "active" });
+  const early = validBRace({ slug: "cinder-cone-25k-2027", name: "Cinder Cone 25K", date: "2027-04-10", distance_mi: 15.5, gain_ft: 2200 });
+  const late = validBRace();
+  const other = validBRace({ slug: "someone-elses-50k-2027", parent_slug: "another-race-2027" });
+  const list = bRacesFor(rows(a, late, early, other), { ...a, slug: a.slug });
+  assert.deepEqual(list, [
+    { slug: "cinder-cone-25k-2027", name: "Cinder Cone 25K", date: "2027-04-10", distance_mi: 15.5, gain_ft: 2200, weeks_out: 18 },
+    { slug: "jemez-mountain-50k-2027", name: "Jemez Mountain 50K", date: "2027-05-22", distance_mi: 31, gain_ft: 5000, weeks_out: 12 },
+  ]);
+  assert.deepEqual(bRacesFor(rows(a), { ...a, slug: a.slug }), []);
+  assert.deepEqual(bRacesFor(rows(a, late), null), []);
+});
+
+test("groupRaces nests tune-ups under their A race and never loses an orphan", () => {
+  const list = [
+    { slug: "san-juan-softie-100-2027", kind: "a", parent_slug: null, date: "2027-08-13" },
+    { slug: "jemez-mountain-50k-2027", kind: "b", parent_slug: "san-juan-softie-100-2027", date: "2027-05-22" },
+    { slug: "cinder-cone-25k-2027", kind: "b", parent_slug: "san-juan-softie-100-2027", date: "2027-04-10" },
+    { slug: "stray-50k-2027", kind: "b", parent_slug: "deleted-race-2026", date: "2027-03-01" },
+    { slug: "mogollon-monster-100-2026", kind: "a", parent_slug: null, date: "2026-09-12" },
+  ];
+  const grouped = groupRaces(list);
+  assert.deepEqual(grouped.map((g) => g.slug), [
+    "san-juan-softie-100-2027",
+    // the orphan keeps its place in the flat order rather than vanishing
+    "stray-50k-2027",
+    "mogollon-monster-100-2026",
+  ]);
+  assert.deepEqual(grouped[0].b_races.map((b) => b.slug), ["cinder-cone-25k-2027", "jemez-mountain-50k-2027"]);
+  assert.deepEqual(grouped[1].b_races, []);
+  assert.deepEqual(groupRaces([]), []);
+});
+
+test("groupRaces flags an orphan tune-up as parent_missing rather than an ordinary A race", () => {
+  const list = [
+    { slug: "san-juan-softie-100-2027", kind: "a", parent_slug: null, date: "2027-08-13" },
+    { slug: "cinder-cone-25k-2027", kind: "b", parent_slug: "san-juan-softie-100-2027", date: "2027-04-10" },
+    { slug: "stray-50k-2027", kind: "b", parent_slug: "deleted-race-2026", date: "2027-03-01" },
+  ];
+  const grouped = groupRaces(list);
+  const [parent, orphan] = grouped;
+  assert.equal(parent.slug, "san-juan-softie-100-2027");
+  assert.equal("parent_missing" in parent, false, "a real A race must not be flagged");
+  assert.equal(orphan.slug, "stray-50k-2027");
+  assert.equal(orphan.kind, "b");
+  assert.equal(orphan.parent_missing, true);
+  assert.equal(orphan.parent_missing_reason, "not_found");
+  assert.deepEqual(orphan.b_races, []);
+});
+
+test("groupRaces orphans a B chained onto another B, never nests it, and never renders it twice", () => {
+  // round 3 resilience NEW-1: chain-tuneup-2027's parent_slug names
+  // orphan-tuneup-2027 — a real row in the list, but itself a tune-up, not
+  // an A race. It must come out as its own top-level orphan (never nested
+  // under the other orphan, which would otherwise duplicate the row and
+  // throw off rowsFor/cursorForSlug's row counts).
+  const list = [
+    { slug: "san-juan-softie-100-2027", kind: "a", parent_slug: null, date: "2027-08-13" },
+    { slug: "orphan-tuneup-2027", kind: "b", parent_slug: "no-such-race-2099", date: "2027-04-10" },
+    { slug: "chain-tuneup-2027", kind: "b", parent_slug: "orphan-tuneup-2027", date: "2027-04-20" },
+  ];
+  const grouped = groupRaces(list);
+  // Exactly one row per input race — no duplicates.
+  assert.deepEqual(grouped.map((g) => g.slug), [
+    "san-juan-softie-100-2027",
+    "orphan-tuneup-2027",
+    "chain-tuneup-2027",
+  ]);
+  const orphan = grouped.find((g) => g.slug === "orphan-tuneup-2027");
+  const chain = grouped.find((g) => g.slug === "chain-tuneup-2027");
+  assert.equal(orphan.parent_missing, true);
+  assert.equal(orphan.parent_missing_reason, "not_found");
+  assert.deepEqual(orphan.b_races, [], "an orphan is never a nesting target for another B");
+  assert.equal(chain.parent_missing, true);
+  assert.equal(chain.parent_missing_reason, "parent_is_tune_up");
+  assert.deepEqual(chain.b_races, []);
+  // The A race's own block is unaffected.
+  assert.deepEqual(grouped[0].b_races, []);
+});
+
+test("validateSingleActive is unaffected by tune-ups", async (t) => {
+  const root = await tempRoot(t);
+  await writeRaceFolder(root, "san-juan-softie-100-2027", { "race.json": validRace({ status: "active" }) });
+  await writeRaceFolder(root, "jemez-mountain-50k-2027", { "race.json": validBRace() });
+  const races = await listRaces(root);
+  const { ok, active } = validateSingleActive(races);
+  assert.equal(ok, true);
+  assert.deepEqual(active, ["san-juan-softie-100-2027"]);
 });

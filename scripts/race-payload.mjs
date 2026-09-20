@@ -15,11 +15,29 @@
 //               context the coach is actually working from, so the rail can
 //               say so instead of implying the browsed race is the target.
 
-import { resolveViewedRace } from "./race-config.mjs";
+import fs from "node:fs/promises";
+import path from "node:path";
+
+import { bRacesFor, listRaces, resolveViewedRace } from "./race-config.mjs";
 import { loadPlanBlocks } from "./state.mjs";
 import { loadGoals } from "./goals.mjs";
 import { rollingBlock } from "./block.mjs";
 import { computeDaysUntilRace } from "./facts.mjs";
+import { deriveArrival } from "./acclimation.mjs";
+
+/**
+ * The calendar snapshot, or null. Absent is the normal state of a machine
+ * that has never run `sync:google`, and an unreadable one must not take the
+ * race payload down — deriveArrival degrades to its day-before default and
+ * says "default" on the planner, which is exactly the honest answer.
+ */
+async function loadCalendar(root) {
+  try {
+    return JSON.parse(await fs.readFile(path.join(root, "web", "public", "google-cal.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
 
 /**
  * @param {string} root  project root
@@ -29,6 +47,9 @@ import { computeDaysUntilRace } from "./facts.mjs";
  *   race: object|null, goals: object|null, block: object|null,
  *   plan: {plan_blocks: object[]}, nutrition: object|null,
  *   training: {goals: object|null, block: object|null, plan: {plan_blocks: object[]}}|null,
+ *   b_races: {slug, name, date, distance_mi, gain_ft, weeks_out}[],
+ *   acclimation?: {arrival_date: string|null, days_at_altitude: number,
+ *                  source: "calendar"|"default"|"override", matched_event?: object},
  *   warning?: string }>}
  */
 export async function activeRacePayload(root, now = Date.now()) {
@@ -62,6 +83,11 @@ export async function activeRacePayload(root, now = Date.now()) {
       plan: { plan_blocks },
       nutrition: null,
       training: null,
+      // Tune-ups hang off an A RACE's block (PRD-v2 §3). With no race being
+      // trained for there is nothing for one to sit inside, so this is empty
+      // rather than absent — the key is always there, and a client that maps
+      // over it never has to null-check the mode first.
+      b_races: [],
     });
   }
 
@@ -73,6 +99,30 @@ export async function activeRacePayload(root, now = Date.now()) {
 
   if (viewed.training) {
     const daysUntil = computeDaysUntilRace(folder.race, now);
+    // When the athlete gets to altitude (PRD-v2 §2). Derived HERE rather
+    // than in the client because the travel events live in a file the client
+    // would otherwise have to fetch and re-classify, and because facts.mjs
+    // hands the coach the same number from the same function. The planner's
+    // manual override is applied on top, client-side, per slug — the server
+    // reports what the calendar says and the athlete overrules it.
+    const acclimation = deriveArrival({
+      race: folder.race,
+      calendar: await loadCalendar(root),
+      today: new Date(now).toISOString(),
+    });
+    // The tune-ups entered inside THIS race's block, oldest first, each with
+    // the weeks between it and race day (scripts/race-config.mjs's
+    // bRacesFor — facts.mjs reads the same function, so the dashboard's
+    // markers and the coach's list can never be different races). A races/
+    // that cannot be read is not worth taking the dashboard down for: the
+    // race itself already loaded.
+    const b_races = bRacesFor(
+      await listRaces(root).catch((e) => {
+        warning = warning ?? `races/ unreadable (${e.message}) — tune-up races omitted`;
+        return [];
+      }),
+      { ...folder.race, slug: folder.slug },
+    );
     return withWarning({
       active: folder.slug,
       mode: "train",
@@ -92,6 +142,8 @@ export async function activeRacePayload(root, now = Date.now()) {
       // instead of a pace projection nobody is running anymore.
       days_until: daysUntil,
       past: typeof daysUntil === "number" && daysUntil < 0,
+      acclimation,
+      b_races,
     });
   }
 
@@ -118,5 +170,9 @@ export async function activeRacePayload(root, now = Date.now()) {
       block: rollingBlock(goals, plan_blocks, now),
       plan: { plan_blocks },
     },
+    // View mode is by definition not training for anything (the pointer's
+    // mode, not the folder's status, decides that) — so there is no A-race
+    // block for a tune-up to belong to. See the generic branch above.
+    b_races: [],
   });
 }

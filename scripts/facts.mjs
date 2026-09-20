@@ -8,7 +8,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { loadState, loadPlanBlocks, activeContext, isoDate } from "./state.mjs";
-import { listRaces, loadActiveRaceFolder, raceDir } from "./race-config.mjs";
+import { bRacesFor, listRaces, loadActiveRaceFolder, raceDir, raceKind } from "./race-config.mjs";
 import { loadGoals } from "./goals.mjs";
 import { ROLLING_WEEKS, rollingBlock } from "./block.mjs";
 import { raceStart, isValidTimeZone } from "./clock.mjs";
@@ -22,6 +22,7 @@ const HOT_THRESHOLD_C = 24;
 // cheaper import for vite.config.ts than all of facts.mjs. Re-exported here
 // so every existing `import { loadProfile } from "./facts.mjs"` still works.
 import { loadProfile } from "./profile.mjs";
+import { deriveArrival } from "./acclimation.mjs";
 export { loadProfile };
 
 // Generic mode's window length. Re-exported because this module was its
@@ -437,15 +438,24 @@ export function computeFacts(strava, oura, ctx, now = Date.now()) {
  * Nothing here throws on race absence: generic mode is the default state of
  * the app, and even a broken pointer degrades to it with a warning rather
  * than taking the dashboard down.
+ * @param {string} projectRoot
+ * @param {object|null} [calendar] web/public/google-cal.json, already loaded
+ *   by the caller — the acclimation derivation reads its travel events
  * @returns {Promise<{race: object|null, block: object|null, goals: object|null, plan_blocks: object[]}>}
  */
-async function trainingContext(projectRoot) {
+async function trainingContext(projectRoot, calendar = null) {
   const folder = await loadActiveRaceFolder(projectRoot).catch((e) => {
     console.warn(`• active race unreadable (${e.message}) — coaching in generic mode`);
     return null;
   });
   const { plan_blocks } = await loadPlanBlocks(projectRoot);
-  const history = await raceHistory(projectRoot);
+  // One listing, two questions: what the athlete has already run (history)
+  // and which tune-ups sit inside the current block (race.b_races below).
+  const races = await listRaces(projectRoot).catch((e) => {
+    console.warn(`• races/ unreadable (${e.message}) — coaching without race history`);
+    return [];
+  });
+  const history = await raceHistory(projectRoot, races);
   if (!folder) {
     const { goals, bootstrapped, errors } = await loadGoals(projectRoot).catch((e) => {
       console.warn(`• config/goals.json unreadable (${e.message}) — coaching without goals`);
@@ -489,6 +499,20 @@ async function trainingContext(projectRoot) {
         drop_bag: Boolean(a.drop_bag),
         pacers: Boolean(a.pacers),
       })),
+      // The tune-ups entered INSIDE this block (PRD-v2 §3), oldest first,
+      // each with the weeks between it and race day. The same list the
+      // dashboard draws markers from (scripts/race-payload.mjs) — one
+      // function, so the coach cannot plan a taper around a race the
+      // trajectory does not show.
+      b_races: bRacesFor(races, { ...race, slug: folder.slug }),
+      // When the athlete reaches the race's elevation, and where that came
+      // from (PRD-v2 §2). Same function the dashboard payload calls
+      // (scripts/race-payload.mjs), so the coach cannot be planning a taper
+      // around a different arrival than the planner is projecting off. The
+      // planner's manual override lives in the browser and is NOT visible
+      // here — `source` therefore reads "calendar" or "default" only, and
+      // the prompt should treat the number as the derived one.
+      acclimation: deriveArrival({ race, calendar }),
     },
     block: block ?? null,
     goals: null,
@@ -505,13 +529,13 @@ async function trainingContext(projectRoot) {
  * one is on the calendar. result.json is gitignored (it records a real
  * finish), so its absence is normal and lands as `result: null` rather than
  * dropping the race from the athlete's history.
- * @returns {Promise<{slug, name, date, distance_mi, gain_ft, result}[]>}
+ * A finished TUNE-UP is history too — `kind` says which it was, so the coach
+ * reads a B-race finish as the rehearsal it was rather than as a goal race.
+ * @param {string} projectRoot
+ * @param {{slug: string, race: object|null}[]} races listRaces' output
+ * @returns {Promise<{slug, name, kind, date, distance_mi, gain_ft, result}[]>}
  */
-async function raceHistory(projectRoot) {
-  const races = await listRaces(projectRoot).catch((e) => {
-    console.warn(`• races/ unreadable (${e.message}) — coaching without race history`);
-    return [];
-  });
+async function raceHistory(projectRoot, races) {
   const archived = races.filter((r) => r.race?.status === "archived");
   const out = [];
   for (const { slug, race } of archived) {
@@ -523,6 +547,7 @@ async function raceHistory(projectRoot) {
       slug,
       name: race.name,
       short: race.short ?? null,
+      kind: raceKind(race),
       date: race.date ?? null,
       distance_mi: race.distance_mi ?? null,
       gain_ft: race.gain_ft ?? null,
@@ -560,20 +585,31 @@ export async function loadFactsFromRoot(projectRoot) {
   const ouraPath    = path.join(projectRoot, "web", "public", "oura.json");
   const calPath     = path.join(projectRoot, "web", "public", "google-cal.json");
   const [strava, cross, oura, cal, profile, state] = await Promise.all([
-    fs.readFile(stravaPath, "utf8").then(JSON.parse).catch(() => null),
+    fs.readFile(stravaPath, "utf8").then(JSON.parse).catch((e) => {
+      // absent is expected (pre-first-sync); anything else deserves a trace —
+      // same ENOENT-vs-other distinction as cross-train.json just below.
+      if (e.code !== "ENOENT") console.warn(`${stravaPath} unreadable: ${e.message}`);
+      return null;
+    }),
     fs.readFile(crossPath,  "utf8").then(JSON.parse).catch((e) => {
       // absent is expected (pre-first-sync); anything else deserves a trace
       if (e.code !== "ENOENT") console.warn(`cross-train.json unreadable: ${e.message}`);
       return null;
     }),
-    fs.readFile(ouraPath,   "utf8").then(JSON.parse).catch(() => null),
-    fs.readFile(calPath,    "utf8").then(JSON.parse).catch(() => null),
+    fs.readFile(ouraPath,   "utf8").then(JSON.parse).catch((e) => {
+      if (e.code !== "ENOENT") console.warn(`${ouraPath} unreadable: ${e.message}`);
+      return null;
+    }),
+    fs.readFile(calPath,    "utf8").then(JSON.parse).catch((e) => {
+      if (e.code !== "ENOENT") console.warn(`${calPath} unreadable: ${e.message}`);
+      return null;
+    }),
     loadProfile(projectRoot),
     loadState(projectRoot),
   ]);
   // state.json no longer carries race/block/plan_blocks (v3) — the race (or
   // the goals that stand in for it) comes from the folder, not from state.
-  const ctx = { ...state, ...(await trainingContext(projectRoot)) };
+  const ctx = { ...state, ...(await trainingContext(projectRoot, cal)) };
   if (!strava) throw new Error("strava.json missing — run sync:strava");
   const base = {
     profile,

@@ -22,12 +22,12 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { arg, writeJsonAtomic } from "./lib.mjs";
+import { arg, projectRoot, writeJsonAtomic } from "./lib.mjs";
 import { parseGpx } from "./aid-match.mjs";
 import { sunTimes } from "./sun.mjs";
 import { loadRaceFolder, loadRaceOrMostRecent, raceDir } from "./race-config.mjs";
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = projectRoot();
 
 /** The provenance `source` every sun block this script writes carries. */
 export const SUN_SOURCE = "scripts/race-sun.mjs";

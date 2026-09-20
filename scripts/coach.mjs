@@ -21,11 +21,11 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { loadFactsFromRoot } from "./facts.mjs";
 import { loadState, saveState, mergeAgentUpdate } from "./state.mjs";
-import { arg, writeJsonAtomic } from "./lib.mjs";
+import { arg, projectRoot, writeJsonAtomic } from "./lib.mjs";
 import { runClaudeJson, extractJson } from "./agent-run.mjs";
 import { COACH_MODEL, coachFocus, readoutSystemPrompt, chatSystemPrompt } from "./coach-prompt.mjs";
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = projectRoot();
 const OUT_PATH = path.join(ROOT, "web", "public", "coach.json");
 
 // Turn budget. The agent runs Read-only against snapshots far larger than one

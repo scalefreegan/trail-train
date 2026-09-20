@@ -23,16 +23,20 @@ import { ClimbComparison } from "./race/ClimbComparison";
 import { NutritionPlan } from "./race/NutritionPlan";
 import { ModelCheck } from "./race/ModelCheck";
 import { RacePlanProvider } from "./race/RacePlanProvider";
+import { buildRaceState } from "./race/raceState";
 import { RaceErrorBoundary } from "./race/RaceErrorBoundary";
 import { RaceDayRoute } from "./race/RaceDay";
 import { RACE_DAY_HASH, useHashRoute } from "./race/hashRoute";
 import { useCourse, useRaceResult } from "./race/useRaceData";
 import { ArchiveRace } from "./race/ArchiveRace";
+import { AddTuneUp } from "./race/AddTuneUp";
 import { friendlyFetchError, runStage } from "./race/dialogChrome";
 import type { RaceView } from "./data";
 import { raceClockHM } from "./race/pacing";
 import { ThemePreview } from "./themes/ThemePreview";
 import type { VisualInput } from "./themes/visual";
+import type { ActiveRaceResponse, RaceKind } from "./race/types";
+import { isTuneUp } from "./race/features";
 
 /* ================================================================== */
 /*  BASECAMP — pre-dawn ops surface for ultra training                 */
@@ -131,8 +135,25 @@ const isAppView = (v: string | null): v is AppView => v != null && (ALL_APP_VIEW
 /** The views this athlete actually has. Race and fuel are a race's views:
     with none active there is no course to project and no start clock to fuel
     against, so they are hidden rather than shown empty (PRD §6). */
-function appViews(race: RaceView | null): AppView[] {
-  return race ? ALL_APP_VIEWS : ["training"];
+function appViews(race: RaceView | null, hideFuel = false): AppView[] {
+  if (!race) return ["training"];
+  return hideFuel ? ALL_APP_VIEWS.filter((v) => v !== "nutrition") : ALL_APP_VIEWS;
+}
+
+/**
+ * Whether the "fuel" chip is worth offering at all.
+ *
+ * The fuel view is built on races/<slug>/nutrition.json, and with no file it
+ * falls back to the impersonal defaults (nutrition.ts) — which is the right
+ * behaviour for an A race: a hundred always needs a fuel plan, and defaults
+ * with a warning beat no page. A tune-up is the opposite case (PRD-v2 §3):
+ * the quick form writes no nutrition.json, and a whole carb/caffeine plan
+ * derived from nobody's numbers for a Saturday 50k is furniture, not advice.
+ * So for kind "b" ONLY, the chip is hidden until the folder actually has a
+ * nutrition.json — write one and it comes straight back.
+ */
+function fuelViewHidden(payload: ActiveRaceResponse | null): boolean {
+  return isTuneUp(payload?.race ?? null) && (payload?.nutrition ?? null) == null;
 }
 
 const VIEW_LABEL: Record<AppView, string> = { training: "training", race: "race", nutrition: "fuel" };
@@ -152,8 +173,36 @@ type RaceListEntry = {
   date: string | null;
   /** the folder's `visual` block — the menu draws each race's accent */
   visual: VisualInput | null;
+  /** "b" = a tune-up sitting inside `parent_slug`'s block (PRD-v2 §3). The
+      server resolves the default: a folder written before v2 reads as "a". */
+  kind?: RaceKind;
+  parent_slug?: string | null;
   error: string | null;
 };
+
+/** The same rows nested, as GET /api/races' `groups` sends them: every A race
+    carrying its tune-ups, oldest first, and an orphan B (its parent folder is
+    gone) left at the top level rather than hidden. The nesting is derived
+    SERVER-side — scripts/race-config.mjs's groupRaces — so the menu and the
+    coach can never disagree about what hangs off what. `parent_missing` marks
+    exactly that orphan case: it is still a tune-up (kind "b"), just one whose
+    parent slug names a folder that is not on disk any more, and the row below
+    renders it with the TUNE-UP marker and none of an A race's own actions
+    rather than promoting it to a draft it never was (round 3, resilience
+    finding 4). `parent_missing_reason` distinguishes a parent slug that
+    names nothing on disk ("not_found") from one that names a real folder
+    which is itself a tune-up, never a valid parent ("parent_is_tune_up") —
+    round 3 resilience NEW-1. Either way `b_races` is always empty for an
+    orphan; it is never a nesting target for anything else. */
+type RaceGroupEntry = RaceListEntry & {
+  b_races: RaceListEntry[];
+  parent_missing?: true;
+  parent_missing_reason?: "not_found" | "parent_is_tune_up";
+};
+
+/** An older dev server (or a cache written before v2) answers with the flat
+    list only: every folder then stands on its own, which is the v1 menu. */
+const flatGroups = (list: RaceListEntry[]): RaceGroupEntry[] => list.map((r) => ({ ...r, b_races: [] }));
 
 /** The groups, in menu order. A folder with an unreadable race.json falls
     through all three and lands in its own group at the bottom. */
@@ -169,8 +218,10 @@ const RACE_GROUPS: { status: RaceListEntry["status"]; label: string }[] = [
     (round 3, new finding 3). Written on every successful /api/races read;
     read only when that fetch fails AND the menu never loaded a list this
     session (`races` is still null) — a list already in state is kept as-is
-    regardless of this cache. */
-const RACES_CACHE_KEY = "bc.cache.races";
+    regardless of this cache. The ".v2" suffix is the tune-up nesting: the
+    entry now holds the flat list AND the server's groups, and a v1 cache
+    (a bare array) is simply not read rather than migrated. */
+const RACES_CACHE_KEY = "bc.cache.races.v2";
 
 /** The only mode a folder may be pointed at in — mirrors validateActivation
     in scripts/race-config.mjs, which is what actually enforces it. Picking it
@@ -180,17 +231,26 @@ const modeFor = (status: RaceListEntry["status"]) => (status === "active" ? "tra
 
 /** The races in menu order — grouped by status, unreadable folders last.
     The roving-focus index counts these after the "No race" row, so this
-    order and the render order below are the same list. */
-function orderedRaces(list: RaceListEntry[]): RaceListEntry[] {
+    order and the render order below are the same list. Tune-ups are NOT in
+    it: a B race is rendered inside its A race's block (see rowsFor), not as
+    a top-level row of its own. */
+function orderedRaces(list: RaceGroupEntry[]): RaceGroupEntry[] {
   const known = RACE_GROUPS.flatMap((g) => list.filter((r) => r.status === g.status));
   return [...known, ...list.filter((r) => !RACE_GROUPS.some((g) => g.status === r.status))];
 }
 
-/** A draft gets a second row under it — "Review…" reopens the intake dialog's
-    review screen on a folder that is already on disk, which is the only way
-    back into it once the dialog has been closed (PRD §8). A folder whose
-    race.json will not parse has nothing to review. */
-const isReviewable = (r: RaceListEntry) => r.status === "draft" && !r.error;
+/** A draft or an active race gets a second row under it — "Review…" reopens
+    the intake dialog's review screen on a folder that is already on disk,
+    which is the only way back into it once the dialog has been closed
+    (PRD §8). A folder whose race.json will not parse has nothing to review.
+    Archived races stay without it: their aid chart/tracker are done being
+    edited, and "Refresh from sources…" already covers a re-read of them.
+    Used to be drafts-only (v2 review ui2 #2) — an active race's bib/name/
+    tracker URL and unresolved fields still need a way back in, and race-day
+    mode's own tracker notices ("set your bib on the review screen") send the
+    runner to a screen that did not exist for the one race that most needs
+    it: the one already running. */
+const isReviewable = (r: RaceListEntry) => (r.status === "draft" || r.status === "active") && !r.error;
 
 /** Any race whose race.json parses can be re-read from its own sources —
     draft, active or archived. An archived one is the interesting case: the
@@ -209,32 +269,59 @@ const isRefreshable = (r: RaceListEntry) => !r.error;
     course data" empty state now offers (RaceDay.tsx, NutritionPlan.tsx). */
 const isRerunnable = (r: RaceListEntry) => r.status === "archived" && !r.error;
 
+/** Only the race being TRAINED for gets an "Add tune-up…" row: a tune-up is
+    a race inside a block, and a draft or an archived folder has no live block
+    to sit inside (PRD-v2 §3 — `weeks_out` is counted from the A race the
+    athlete is actually counting down to). A tune-up cannot itself hold one,
+    and an unreadable folder has no slug to hang one off. */
+const canAddTuneUp = (r: RaceGroupEntry, trainingSlug: string | null) =>
+  // `trainingSlug` (useActiveRace().slug) is null in BOTH generic mode and
+  // view mode — so browsing any folder (the active race's own tune-up, a
+  // draft, an archive) used to blank this row for the one race it is always
+  // valid on. `r.status === "active"` is the fact this row actually depends
+  // on (only one folder may hold that status, and it IS the training
+  // target — PRD-v2 §3), so it alone is checked whatever is on screen;
+  // `r.slug === trainingSlug` stays as a redundant fast-path in train mode.
+  (r.status === "active" || r.slug === trainingSlug) && r.kind !== "b" && !r.error;
+
 /** How many menu rows a race contributes: itself, plus its "Review…",
-    "Refresh from sources…" and "Run course again…" rows. cursorForSlug and
-    itemCount both count with this, and the render order below has to match
-    it. */
-const rowsFor = (r: RaceListEntry) =>
-  1 + (isReviewable(r) ? 1 : 0) + (isRefreshable(r) ? 1 : 0) + (isRerunnable(r) ? 1 : 0);
+    "Refresh from sources…" and "Run course again…" rows, plus one indented
+    row per tune-up in its block and the "Add tune-up…" row that adds one.
+    An orphaned tune-up (`parent_missing`) contributes only its own row — it
+    is rendered outside all of that (see the switcher's render below), so it
+    must not be counted as if the Review/Refresh/Rerun rows were there too.
+    cursorForSlug and itemCount both count with this, and the render order
+    below has to match it. */
+const rowsFor = (r: RaceGroupEntry, trainingSlug: string | null) =>
+  r.parent_missing ? 1 :
+  1 + (isReviewable(r) ? 1 : 0) + (isRefreshable(r) ? 1 : 0) + (isRerunnable(r) ? 1 : 0)
+  + r.b_races.length + (canAddTuneUp(r, trainingSlug) ? 1 : 0);
 
 /** Where the cursor lands on a given slug, counting the "No race" row above
-    the list and the extra "Review…" row each draft contributes. Has to agree
-    with the render order below — the roving-focus index is an index into the
-    buttons as they are emitted. */
-function cursorForSlug(list: RaceListEntry[], slug: string | null): number {
+    the list and the extra rows each race contributes. Has to agree with the
+    render order below — the roving-focus index is an index into the buttons
+    as they are emitted, tune-up rows included. */
+function cursorForSlug(list: RaceGroupEntry[], slug: string | null, trainingSlug: string | null): number {
   let i = 1;
   for (const r of orderedRaces(list)) {
     if (r.slug === slug) return i;
-    i += rowsFor(r);
+    // its own row, then Review / Refresh / Run-course-again, then the
+    // tune-ups indented under it — the same order the render emits
+    const own = r.parent_missing ? 1 : 1 + (isReviewable(r) ? 1 : 0) + (isRefreshable(r) ? 1 : 0) + (isRerunnable(r) ? 1 : 0);
+    const bIdx = r.b_races.findIndex((b) => b.slug === slug);
+    if (bIdx >= 0) return i + own + bIdx;
+    i += rowsFor(r, trainingSlug);
   }
   return 0;
 }
 
 /** The kinds of row in the menu, in order: "No race (generic)", one per race
     folder (a draft followed by its "Review…" row, then every race's "Refresh
-    from sources…" row, then an archived race's "Run course again…" row),
-    then — when there is a race to retire — "Archive with result…", then
-    "New race…". */
-type SwitcherItemKind = "generic" | "race" | "review" | "refresh" | "rerun" | "archive" | "new";
+    from sources…" row, then an archived race's "Run course again…" row, then
+    the tune-ups indented inside that race's block and — on the race being
+    trained for — "Add tune-up…"), then, when there is a race to retire,
+    "Archive with result…", then "New race…". */
+type SwitcherItemKind = "generic" | "race" | "review" | "refresh" | "rerun" | "add-tune-up" | "archive" | "new";
 
 /**
  * The short code in the command bar, as a menu over every race folder.
@@ -251,6 +338,10 @@ function RaceSwitcher() {
 
   const [open, setOpen] = useState(false);
   const [races, setRaces] = useState<RaceListEntry[] | null>(null);
+  /* The same rows nested (GET /api/races' `groups`): tune-ups live inside
+     their A race here, and this — not the flat list — is what the menu
+     renders and what the roving-focus index counts. */
+  const [grouped, setGrouped] = useState<RaceGroupEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   // `kind` distinguishes a real pointer switch from the free course-rebuild
   // stage sharing the same "which row is busy" slot (round 2, generic finding
@@ -262,6 +353,16 @@ function RaceSwitcher() {
   // generic finding 6). Self-clears; overwritten by the next thing that
   // matters (a fresh `error`, or busy again) via the effect below.
   const [builtNotice, setBuiltNotice] = useState<string | null>(null);
+  // Round 3 finding 1: `ok: true` from the build endpoint is not "nothing
+  // left to say" — a course.gpx measuring far off race.json's declared
+  // distance/gain still builds and still answers ok: true, with the mismatch
+  // named in `warnings` (scripts/build-course.mjs's courseMismatches, same
+  // channel AddTuneUp.tsx's own build-warning banner reads). This hand-rolled
+  // call used to pass `() => {}` as onEvent and never look at the `done`
+  // payload at all, so that case showed the same "course rebuilt ✓" tick as
+  // a clean build. Self-clears the same way builtNotice does; the two are
+  // mutually exclusive per slug (see the `hint` below).
+  const [builtWarning, setBuiltWarning] = useState<{ slug: string; message: string } | null>(null);
   // Synchronous re-entrancy guard: state-driven `disabled` on the rows can
   // only take effect once React re-renders, which does not happen mid-script
   // for a burst of clicks fired in the same tick (round 2, generic finding 2
@@ -271,8 +372,11 @@ function RaceSwitcher() {
   const busyRef = useRef(false);
   /* The intake dialog, and which folder it opens on: null is the form ("New
      race…"), a slug is the review screen of a draft already on disk. */
-  const [intake, setIntake] = useState<{ slug: string | null } | null>(null);
+  const [intake, setIntake] = useState<{ slug: string | null; parentSlug?: string } | null>(null);
   const [archiveOpen, setArchiveOpen] = useState<RaceListEntry | null>(null);
+  /* The tune-up quick form, on the A race whose "Add tune-up…" row opened it
+     (PRD-v2 §3). Null = closed. */
+  const [tuneUpOn, setTuneUpOn] = useState<RaceGroupEntry | null>(null);
   /* The re-intake dialog. It opens on a folder that already exists, and may
      find a diff from an earlier run still waiting in it. */
   const [refreshing, setRefreshing] = useState<RaceListEntry | null>(null);
@@ -284,14 +388,18 @@ function RaceSwitcher() {
 
   const currentSlug = viewing?.slug ?? trainingSlug;
 
-  // Flat, in render order — the roving-focus index is an index into THIS.
+  // Top-level rows bucketed by status, in render order — the roving-focus
+  // index is an index into THIS (each entry's tune-ups included, see
+  // rowsFor). A tune-up is never its own bucket row: it is drawn indented
+  // under its A race whatever its own status is, which is the whole point
+  // of grouping them (PRD-v2 §3).
   const groups = useMemo(() => {
-    const list = races ?? [];
+    const list = grouped ?? [];
     const known = RACE_GROUPS.map((g) => ({ label: g.label, entries: list.filter((r) => r.status === g.status) }));
     // a folder whose race.json would not parse belongs to no status
     const broken = list.filter((r) => !RACE_GROUPS.some((g) => g.status === r.status));
     return [...known, { label: "unreadable", entries: broken }].filter((g) => g.entries.length > 0);
-  }, [races]);
+  }, [grouped]);
 
   // An archived race with no activity linked still has a result to capture —
   // MM100 was archived by the migration long before its Strava run was.
@@ -303,19 +411,40 @@ function RaceSwitcher() {
    * the archived race on screen that never got its activity linked.
    * Null while the menu has not loaded the list yet: the row needs the
    * folder's name and date, not just its slug.
+   *
+   * Same root cause and fix as canAddTuneUp above: `trainingSlug`
+   * (useActiveRace().slug) is null in BOTH generic mode and view mode, so
+   * gating the first branch on it hid this row the instant anything but the
+   * active race's own train-mode screen was on screen — even though nothing
+   * about the training target changed (round 4 finding 5, the row this bug
+   * shares with "Add tune-up…"). Each race already carries its own `status`
+   * from GET /api/races, and "active" IS "the training target" (only one
+   * folder may hold it), so it is checked directly instead.
+   *
+   * Round 5 confirm, finding 5: `canAddTuneUp` above guards this same
+   * `status === "active"` fact with `r.kind !== "b"` because a hand-edited
+   * or pre-migration folder can carry `kind: "b"` and `status: "active"` at
+   * once (ui3-resilience.md BUG 1's repro) — `validateActivation` now closes
+   * off reaching that state through the normal activate path, but it does
+   * not retroactively repair a folder that already has it, and GET
+   * /api/races reports it "active" verbatim with no server-side read-time
+   * check. Without the matching guard here, `list.find` could return that
+   * corrupted tune-up and point "Archive with result…" at a B race instead
+   * of the real A race.
    */
   const archiveTarget = useMemo(() => {
     const list = races ?? [];
-    if (trainingSlug) return list.find((r) => r.slug === trainingSlug) ?? null;
+    const active = list.find((r) => r.kind !== "b" && r.status === "active");
+    if (active) return active;
     if (viewing?.status === "archived" && viewedResult?.strava_activity_id == null) {
       return list.find((r) => r.slug === viewing.slug) ?? null;
     }
     return null;
-  }, [races, trainingSlug, viewing, viewedResult]);
+  }, [races, viewing, viewedResult]);
 
   /** menu length: "No race", every race with its own extra rows, maybe
       "Archive with result…", then "New race…" */
-  const itemCount = (races ?? []).reduce((n, r) => n + rowsFor(r), 0)
+  const itemCount = (grouped ?? []).reduce((n, r) => n + rowsFor(r, trainingSlug), 0)
     + 2 + (archiveTarget ? 1 : 0);
 
   const close = useCallback((restoreFocus = true) => {
@@ -333,12 +462,17 @@ function RaceSwitcher() {
     fetch(`/api/races?t=${Date.now()}`)
       .then(async (r) => {
         if (!r.ok) throw new Error(`races failed to load (HTTP ${r.status})`);
-        return (await r.json()) as { races: RaceListEntry[] };
+        return (await r.json()) as { races: RaceListEntry[]; groups?: RaceGroupEntry[] };
       })
       .then((d) => {
         if (stale) return;
+        // `groups` is the server's nesting (scripts/race-config.mjs's
+        // groupRaces). A server that predates it still answers with the
+        // flat list, and the menu then reads as it did in v1.
+        const nested = d.groups ?? flatGroups(d.races);
         setRaces(d.races);
-        setCursor(cursorForSlug(d.races, currentSlug));
+        setGrouped(nested);
+        setCursor(cursorForSlug(nested, currentSlug, trainingSlug));
         // A successful read of the current server state is as good a signal
         // as any that whatever this menu was complaining about no longer
         // applies — clears a stale "another activation is already in
@@ -348,7 +482,9 @@ function RaceSwitcher() {
         setError(null);
         // So a LATER open with the server down (below) has something to show
         // instead of nothing — the whole point of this cache.
-        try { localStorage.setItem(RACES_CACHE_KEY, JSON.stringify(d.races)); } catch { /* ignore */ }
+        try {
+          localStorage.setItem(RACES_CACHE_KEY, JSON.stringify({ races: d.races, groups: nested }));
+        } catch { /* ignore */ }
       })
       .catch((e: unknown) => {
         if (stale) return;
@@ -362,18 +498,21 @@ function RaceSwitcher() {
         // successfully-loaded list from localStorage in that case; the rows
         // render disabled/greyed (see `error` below) so nothing here claims
         // to be current.
-        setRaces((prev) => {
-          if (prev) return prev;
+        const cached = (() => {
           try {
-            const cached = localStorage.getItem(RACES_CACHE_KEY);
-            if (cached) return JSON.parse(cached) as RaceListEntry[];
-          } catch { /* ignore — falls through to empty */ }
-          return [];
-        });
+            const raw = localStorage.getItem(RACES_CACHE_KEY);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw) as { races?: RaceListEntry[]; groups?: RaceGroupEntry[] };
+            if (!Array.isArray(parsed?.races)) return null;
+            return { races: parsed.races, groups: parsed.groups ?? flatGroups(parsed.races) };
+          } catch { return null; }
+        })();
+        setRaces((prev) => prev ?? cached?.races ?? []);
+        setGrouped((prev) => prev ?? cached?.groups ?? []);
         setError(friendlyFetchError(e));
       });
     return () => { stale = true; };
-  }, [open, currentSlug]);
+  }, [open, currentSlug, trainingSlug]);
 
   useEffect(() => {
     if (open) itemRefs.current[cursor]?.focus();
@@ -432,15 +571,41 @@ function RaceSwitcher() {
     setBusy({ slug, kind: "build" });
     setError(null);
     setBuiltNotice(null);
+    setBuiltWarning(null);
     try {
-      await runStage("/api/race-intake/build", { slug }, () => {}, new AbortController().signal);
+      const result = await runStage("/api/race-intake/build", { slug }, () => {}, new AbortController().signal);
+      // Round 3 finding 1, first check (mirrors runCourseAgain.ts's own
+      // useRunCourseAgain hook): `ok: true` is not "there is now a course to
+      // show" — a folder with no course.gpx and no http(s) links.gpx to
+      // fetch one from answers this way too, with `course: null` and the
+      // reason in `warnings`. Route it through the same error banner every
+      // other switcher failure uses rather than the row's success tick.
+      if (result.course == null) {
+        const warnings = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
+        setError(warnings[0] ?? "the build finished without a course to show");
+        return;
+      }
       // Confirmation, not a silent close (round 2, generic finding 6): the
       // menu stays open long enough to say the build actually finished. The
       // reload pulse still fires now — the race/course views refetch right
       // away even though the row keeps its notice a little longer.
       reload();
-      setBuiltNotice(slug);
-      window.setTimeout(() => setBuiltNotice((cur) => (cur === slug ? null : cur)), 4000);
+      // Second check: a course DID build, but measures far enough off the
+      // declared distance/gain to be worth a second look (still `ok: true`,
+      // still `warnings`) — a real result, not a failure, so it gets the
+      // row's hint rather than the top-level error banner. All of them,
+      // joined, not just the first — AddTuneUp.tsx's own build-warning
+      // banner for the same payload shape (`created.build.warnings.join("
+      // · ")`) does the same, since a distance AND a gain mismatch are two
+      // separate things to check, not a pick-one.
+      const warnings = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
+      if (warnings.length > 0) {
+        setBuiltWarning({ slug, message: warnings.join(" · ") });
+        window.setTimeout(() => setBuiltWarning((cur) => (cur?.slug === slug ? null : cur)), 4000);
+      } else {
+        setBuiltNotice(slug);
+        window.setTimeout(() => setBuiltNotice((cur) => (cur === slug ? null : cur)), 4000);
+      }
     } catch (e) {
       setError(friendlyFetchError(e));
     } finally {
@@ -499,7 +664,8 @@ function RaceSwitcher() {
       tabIndex: cursor === i ? 0 : -1,
       onMouseEnter: () => setCursor(i),
     };
-    return kind === "new" || kind === "archive" || kind === "review" || kind === "refresh" || kind === "rerun"
+    return kind === "new" || kind === "archive" || kind === "review" || kind === "refresh"
+      || kind === "rerun" || kind === "add-tune-up"
       ? { ...common, role: "menuitem" as const }
       : { ...common, role: "menuitemradio" as const, "aria-checked": kind === "generic" ? currentSlug == null : slug === currentSlug };
   };
@@ -569,7 +735,19 @@ function RaceSwitcher() {
                       label={entry.name}
                       hint={entry.error
                         ? "race.json unreadable"
-                        : `${entry.short}${entry.date ? ` · ${entry.date}` : ""}${entry.status === "active" ? "" : " · read-only"}`}
+                        // An orphaned tune-up (its parent folder is gone,
+                        // round 3 resilience finding 4) keeps the same
+                        // "tune-up ·" marker a nested one gets, plus WHY it
+                        // is not nested under anything — a menu that quietly
+                        // promoted it to a top-level A-shaped row looked
+                        // exactly like a fresh draft the athlete never made.
+                        : entry.parent_missing
+                          ? `tune-up · ${entry.short}${entry.date ? ` · ${entry.date}` : ""} · read-only · ${
+                              entry.parent_missing_reason === "parent_is_tune_up"
+                                ? `parent "${entry.parent_slug ?? "?"}" is itself a tune-up`
+                                : `parent "${entry.parent_slug ?? "?"}" not found`
+                            }`
+                          : `${entry.short}${entry.date ? ` · ${entry.date}` : ""}${entry.status === "active" ? "" : " · read-only"}`}
                       swatch={entry.error ? null : (
                         <ThemePreview visual={entry.visual} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round />
                       )}
@@ -585,18 +763,32 @@ function RaceSwitcher() {
                       busy={busy?.slug === entry.slug && busy.kind === "switch"}
                       busyLabel="switching…"
                       current={entry.slug === currentSlug}
-                      onSelect={() => choose(entry.slug, modeFor(entry.status))}
+                      // A tune-up — orphaned or not — is never trained for
+                      // (PRD-v2 §3); modeFor(entry.status) would hand back
+                      // "train" if a hand-edit ever left one reading
+                      // "active" on disk, which is exactly the shape the
+                      // pointer must refuse (scripts/race-config.mjs's
+                      // validateActivation, kind gate).
+                      onSelect={() => choose(entry.slug, entry.parent_missing ? "view" : modeFor(entry.status))}
                     />
-                    {isReviewable(entry) && (
+                    {/* An orphan's parent folder is gone, so it gets none of
+                        an A race's own actions — no Review (nothing to
+                        activate it INTO), no Refresh (a quick-form tune-up
+                        has no sources to re-read), no Run-course-again, no
+                        tune-ups of its own and no Add-tune-up row. Only its
+                        own row above, same as a normally-nested tune-up. */}
+                    {!entry.parent_missing && isReviewable(entry) && (
                       <SwitcherRow
                         {...itemProps("review", entry.slug)}
                         label="↳ Review…"
-                        hint="aid chart, profile, unresolved · activate"
+                        hint={entry.status === "active"
+                          ? "aid chart, profile, tracker bib/url"
+                          : "aid chart, profile, unresolved · activate"}
                         disabled={busy != null || !!error}
                         onSelect={() => { setOpen(false); setIntake({ slug: entry.slug }); }}
                       />
                     )}
-                    {isRefreshable(entry) && (
+                    {!entry.parent_missing && isRefreshable(entry) && (
                       <SwitcherRow
                         {...itemProps("refresh", entry.slug)}
                         label="↳ Refresh from sources…"
@@ -605,17 +797,58 @@ function RaceSwitcher() {
                         onSelect={() => { setOpen(false); setRefreshing(entry); }}
                       />
                     )}
-                    {isRerunnable(entry) && (
+                    {!entry.parent_missing && isRerunnable(entry) && (
                       <SwitcherRow
                         {...itemProps("rerun", entry.slug)}
                         label="↳ Run course again…"
                         hint={builtNotice === entry.slug
                           ? "course rebuilt ✓"
+                          : builtWarning?.slug === entry.slug
+                          ? `⚠ ${builtWarning.message}`
                           : "rebuild course.json from the stored gpx — free, no agent turn"}
                         busyLabel="building…"
                         disabled={busy != null || !!error}
                         busy={busy?.slug === entry.slug && busy.kind === "build"}
                         onSelect={() => runCourseAgain(entry.slug)}
+                      />
+                    )}
+                    {/* the tune-ups inside this race's block, oldest first —
+                        indented, and always browsed rather than trained for:
+                        a B folder is never "active" (PRD-v2 §3), so picking
+                        one is a view-mode switch whatever its status says.
+                        Gated on !parent_missing too: an orphan's own b_races
+                        (if it somehow had any) are never legitimate nested
+                        children — groupRaces never populates them, but this
+                        keeps the render honest even if that ever changes
+                        (round 3 resilience NEW-1 — a chained orphan used to
+                        render twice, once here and once as its own row). */}
+                    {!entry.parent_missing && entry.b_races.map((b) => (
+                      <SwitcherRow
+                        key={b.slug}
+                        {...itemProps("race", b.slug)}
+                        indent
+                        label={b.name}
+                        hint={b.error
+                          ? "race.json unreadable"
+                          : `tune-up · ${b.short}${b.date ? ` · ${b.date}` : ""} · read-only`}
+                        swatch={b.error ? null : (
+                          <ThemePreview visual={b.visual} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round />
+                        )}
+                        disabled={!!b.error || busy != null || !!error}
+                        busy={busy?.slug === b.slug && busy.kind === "switch"}
+                        busyLabel="switching…"
+                        current={b.slug === currentSlug}
+                        onSelect={() => choose(b.slug, "view")}
+                      />
+                    ))}
+                    {!entry.parent_missing && canAddTuneUp(entry, trainingSlug) && (
+                      <SwitcherRow
+                        {...itemProps("add-tune-up", entry.slug)}
+                        indent
+                        label="↳ Add tune-up…"
+                        hint="name, date, distance, gain, optional gpx — free, no agent turn"
+                        disabled={busy != null || !!error}
+                        onSelect={() => { setOpen(false); setTuneUpOn(entry); }}
                       />
                     )}
                   </Fragment>
@@ -626,8 +859,12 @@ function RaceSwitcher() {
               {archiveTarget && (
                 <SwitcherRow
                   {...itemProps("archive")}
-                  label={trainingSlug ? "Archive with result…" : "Link result…"}
-                  hint={trainingSlug
+                  // Which case archiveTarget matched — the active race
+                  // (ending it), or an already-archived one merely missing
+                  // its activity link — not `trainingSlug`, which reads null
+                  // in view mode even while the active-race case applies.
+                  label={archiveTarget.status === "active" ? "Archive with result…" : "Link result…"}
+                  hint={archiveTarget.status === "active"
                     ? `${archiveTarget.short} · link the Strava run`
                     : `${archiveTarget.short} · no activity linked`}
                   disabled={busy != null || !!error}
@@ -652,6 +889,7 @@ function RaceSwitcher() {
       {intake && (
         <RaceIntake
           slug={intake.slug}
+          parentSlug={intake.parentSlug ?? null}
           onClose={() => { setIntake(null); triggerRef.current?.focus(); }}
         />
       )}
@@ -660,6 +898,29 @@ function RaceSwitcher() {
           slug={refreshing.slug}
           name={refreshing.name}
           onClose={() => { setRefreshing(null); triggerRef.current?.focus(); }}
+        />
+      )}
+      {tuneUpOn && (
+        <AddTuneUp
+          parentSlug={tuneUpOn.slug}
+          parentName={tuneUpOn.name}
+          // the parent IS the training race (canAddTuneUp), so the payload on
+          // screen is its own race.json — the zone the form offers to inherit
+          parentTimezone={tuneUpOn.slug === trainingSlug ? race?.timeZone ?? null : null}
+          parentDate={tuneUpOn.date}
+          onClose={() => { setTuneUpOn(null); triggerRef.current?.focus(); }}
+          onCreated={() => {
+            setTuneUpOn(null);
+            triggerRef.current?.focus();
+            // the folder is on disk: the switcher's next open re-reads it,
+            // and the payload's b_races (trajectory markers) refetch now
+            reload();
+          }}
+          onRunIntake={() => {
+            const parent = tuneUpOn.slug;
+            setTuneUpOn(null);
+            setIntake({ slug: null, parentSlug: parent });
+          }}
         />
       )}
       {archiveOpen && (
@@ -682,9 +943,14 @@ function RaceSwitcher() {
   );
 }
 
-const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, busyLabel = "switching…", swatch, ...rest }: {
+const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, busyLabel = "switching…", swatch, indent, ...rest }: {
   label: string; hint: string; onSelect: () => void;
   current?: boolean; disabled?: boolean; busy?: boolean;
+  /** a row that belongs INSIDE the race above it — a tune-up in its A
+      race's block, or the row that adds one (PRD-v2 §3). Indentation is the
+      whole of the grouping the menu shows; the nesting itself is the
+      server's (GET /api/races' `groups`). */
+  indent?: boolean;
   /** what the hint line says while `busy` — a real pointer switch and the
       free course-rebuild stage are both "this row is busy" but are not the
       same claim (round 2, generic finding 6: a rebuild used to report
@@ -698,7 +964,7 @@ const SwitcherRow = ({ label, hint, onSelect, current, disabled, busy, busyLabel
     onClick={disabled ? undefined : onSelect}
     disabled={disabled || busy}
     style={{
-      width: "100%", textAlign: "left", padding: "7px 14px",
+      width: "100%", textAlign: "left", padding: indent ? "7px 14px 7px 32px" : "7px 14px",
       display: "flex", flexWrap: "wrap", alignItems: "baseline", rowGap: 2, columnGap: 8,
       cursor: disabled ? "not-allowed" : "pointer",
       opacity: disabled ? 0.5 : 1,
@@ -776,7 +1042,13 @@ function ViewingBanner() {
       padding: "9px 14px", margin: "18px 0 0",
     }}>
       <span className="eyebrow" style={{ color: "var(--lamp)", whiteSpace: "nowrap" }}>
-        {viewing.status === "archived" ? `archived · ${when} · read-only` : "draft · not activated"}
+        {viewing.status === "archived" ? `archived · ${when} · read-only`
+          // An active race opened in view mode (only reachable by hand-editing
+          // config/active-race.json today, per round 3, resilience finding 9)
+          // still IS the training target — "draft · not activated" told the
+          // athlete the opposite of the ACTIVE chip right next to it.
+          : viewing.status === "active" ? "active · viewing read-only"
+          : "draft · not activated"}
       </span>
       <span style={{ fontSize: 11.5, color: "var(--mist-mute)", lineHeight: 1.45 }}>
         viewing {race.name}. Training, the trajectory and the coach still work from your current
@@ -793,7 +1065,10 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
   const { syncing, lastSync, refresh, currentStep, lastLog, status } = useRefresh();
   const { fetchedAt, currentWeek } = useStrava();
   const { race, viewing, totalWeeks } = useBlockConfig();
-  const views = appViews(race);
+  // the raw payload, for the one question RaceView cannot answer: is the
+  // folder on screen a tune-up, and does it carry a nutrition.json?
+  const { activeRace } = useActiveRace();
+  const views = appViews(race, fuelViewHidden(activeRace));
   const stamp = fetchedAt ? fetchedAt.getTime() : lastSync;
   // null in generic mode — every countdown below is gated on it, not faked —
   // and null while browsing, where "race in -371 days" is both useless and a
@@ -810,6 +1085,44 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
     const id = setInterval(() => force((n) => n + 1), 20_000);
     return () => clearInterval(id);
   }, []);
+  // Roving-tabindex focus targets, keyed by view — the WAI-ARIA tabs pattern
+  // moves DOM focus itself on Arrow/Home/End, not just the selection state.
+  const tabRefs = useRef<Partial<Record<AppView, HTMLButtonElement | null>>>({});
+  // Which view's tab button DOM focus currently sits on, tracked via each
+  // button's own onFocus/onBlur below (not document.activeElement — by the
+  // time an effect runs after a re-render, a tab that just unmounted has
+  // already had the browser drop focus to <body>, so activeElement can no
+  // longer tell us which tab it USED to be on).
+  //
+  // Round 6 confirm, finding 2: onFocus alone latches the LAST tab ever
+  // focused and never forgets it, rather than the tab CURRENTLY focused —
+  // if a keyboard user tabs off the tablist into something else entirely
+  // (a setting, a race-day input) and a background event later shrinks
+  // `views` out from under the tab they left, the recovery effect below
+  // used to yank focus back onto the tablist away from whatever the user
+  // had since moved on to. Clearing the ref on blur (guarded so an old
+  // tab's blur can never clobber a newer tab's focus — blur always fires
+  // before the next element's focus, but the guard is free insurance) means
+  // the effect only ever recovers focus when the vanishing tab still
+  // genuinely holds it. A tab that unmounts WHILE focused never fires its
+  // own blur (the browser drops focus straight to <body> without one), so
+  // the ref is still correctly set to it in exactly the case recovery is
+  // for.
+  const focusedTabRef = useRef<AppView | null>(null);
+  // Round 5 confirm, finding 3: `views` can shrink out from under the
+  // currently focused tab (e.g. FUEL disappears the instant `activeRace`
+  // becomes a tune-up with no nutrition.json, mid-poll, with no view change
+  // initiated by the user). React then unmounts that tab's <button>, and per
+  // standard DOM behavior a focused element being removed silently drops
+  // focus to <body> — the next Tab press starts from the top of the page
+  // instead of back in the tablist. When that happens, move focus to the
+  // tab that IS still selected rather than leaving it stranded.
+  useEffect(() => {
+    if (focusedTabRef.current != null && !views.includes(focusedTabRef.current)) {
+      tabRefs.current[view]?.focus();
+      focusedTabRef.current = view;
+    }
+  }, [views, view]);
 
   return (
     <header style={{
@@ -830,10 +1143,59 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
           <RaceSwitcher />
         </div>
 
-        {/* view switcher */}
-        <div style={{ display: "flex", gap: 6 }}>
-          {views.map((v) => (
-            <button key={v} className={"chip" + (view === v ? " active" : "")} onClick={() => setView(v)}>
+        {/* view switcher — training / race / fuel are one tabbed view, not
+            three independent toggles, so a screen reader needs the tablist
+            role and each button's selected state (round 3, resilience
+            finding 12) rather than three plain buttons it has no way to
+            relate to each other.
+
+            Round 4 confirm, PARTIAL #12: the role was there but none of the
+            keyboard contract it promises — no roving tabindex (both tabs
+            carried tabindex=0), ArrowLeft/Right/Home/End moved nothing, and
+            there was no aria-controls/role=tabpanel pair. Full WAI-ARIA tabs
+            pattern below: roving tabindex (only the selected tab is in the
+            page Tab order), arrow keys move AND activate (automatic
+            activation — Enter/Space also work for free, since these stay
+            native <button>s), Home/End jump to the ends with no wrap needed
+            there, and each tab's aria-controls names the one tabpanel
+            AppBody renders for the active view (see its `role="tabpanel"`
+            wrapper).
+
+            Round 5 confirm, finding 2: AppBody renders exactly ONE tabpanel
+            at a time — the active view's — so a non-selected tab's
+            aria-controls would always name an id that is not in the DOM,
+            which violates the attribute's own contract. The APG's
+            single-dynamically-rendered-panel variant explicitly allows
+            omitting aria-controls on a tab when there is nothing for it to
+            point at; that is the choice made here, rather than rendering all
+            three panels (hidden) just to give every tab a target. */}
+        <div role="tablist" aria-label="view" style={{ display: "flex", gap: 6 }}>
+          {views.map((v, i) => (
+            <button
+              key={v}
+              ref={(el) => { tabRefs.current[v] = el; }}
+              id={`tab-${v}`}
+              role="tab"
+              aria-selected={view === v}
+              aria-controls={view === v ? `tabpanel-${v}` : undefined}
+              tabIndex={view === v ? 0 : -1}
+              className={"chip" + (view === v ? " active" : "")}
+              onClick={() => setView(v)}
+              onFocus={() => { focusedTabRef.current = v; }}
+              onBlur={() => { if (focusedTabRef.current === v) focusedTabRef.current = null; }}
+              onKeyDown={(e) => {
+                let nextIdx: number | null = null;
+                if (e.key === "ArrowRight") nextIdx = (i + 1) % views.length;
+                else if (e.key === "ArrowLeft") nextIdx = (i - 1 + views.length) % views.length;
+                else if (e.key === "Home") nextIdx = 0;
+                else if (e.key === "End") nextIdx = views.length - 1;
+                if (nextIdx == null) return;
+                e.preventDefault();
+                const next = views[nextIdx];
+                setView(next);
+                tabRefs.current[next]?.focus();
+              }}
+            >
               {VIEW_LABEL[v]}
             </button>
           ))}
@@ -1443,12 +1805,31 @@ function weekDates(wk: number, blockStart: string): string {
   return `${f(start)} – ${f(end)}`;
 }
 
+/** A tune-up's marker label: initials plus the distance in the name, the
+    same rule scripts/race-intake.mjs's shortFromName writes into race.json's
+    `short` ("Deadman Peaks 50k" → "DP50K"). A cosmetic twin, not a contract —
+    the payload's b_races carry the full name and no short, and a chart axis
+    has room for about five characters. */
+function tuneUpTag(name: string): string {
+  const words = String(name ?? "").split(/\s+/).filter(Boolean);
+  const initials = words.filter((w) => /^[a-z]/i.test(w)).map((w) => w[0].toUpperCase()).join("");
+  const distance = words.map((w) => /^(\d+(?:\.\d+)?)(k|km|mi|m|h)?$/i.exec(w)).find(Boolean);
+  const tail = distance ? `${distance[1]}${(distance[2] ?? "").toUpperCase()}` : "";
+  return `${initials}${tail}`.slice(0, 8) || name.slice(0, 8).toUpperCase() || "TUNE-UP";
+}
+
 function Trajectory() {
   const u = useUnits();
   const { weekly, currentWeek } = useStrava();
   // `mode` below is the CHART mode (cumulative/weekly); the block's own mode
   // is renamed so the two never get confused in this component.
   const { targets, totalWeeks, blockStart, mode: blockMode, loading } = useBlockConfig();
+  /* The tune-ups inside THIS block (PRD-v2 §3), straight off the payload —
+     the server counts `weeks_out` in the A race's own zone, so the marker
+     sits on the same week the coach is told to taper into. Empty in view and
+     generic mode, where there is no block for one to belong to. */
+  const { activeRace } = useActiveRace();
+  const bRaces = activeRace?.b_races ?? [];
   const [view, setView] = useState<"dist" | "elev">("dist");
   const [mode, setMode] = useState<"cum" | "wk">("cum");
   const [hoverWk, setHoverWk] = useState<number | null>(null); // 0-indexed
@@ -1586,6 +1967,31 @@ function Trajectory() {
   // last KEPT label, then re-check the final pair since the last week is
   // pinned to the true end of the block regardless of the every-5 stride
   // and can still collide with whatever the walk kept just before it.
+  /* One marker per tune-up, placed by the week the server counted: the A
+     race IS the last week of the block, so a race `weeks_out` weeks before
+     it sits at index totalWeeks - 1 - weeks_out. A tune-up whose date the
+     folder never had (weeks_out null), or one that lands outside the block
+     entirely (a date after race day — negative weeks_out — or one from
+     before the block started), gets NO marker rather than a clamped one on
+     a week it is not in: a marker is a claim about a week.
+
+     Only in race mode. Generic mode's rolling window ends on today rather
+     than on a start line, and the payload sends no b_races there anyway. */
+  const bMarkers = (blockMode === "race" ? bRaces : [])
+    .map((b) => ({ b, idx: b.weeks_out == null ? -1 : totalWeeks - 1 - b.weeks_out }))
+    .filter(({ idx }) => idx >= 0 && idx <= totalWeeks - 1)
+    .map(({ b, idx }) => ({
+      slug: b.slug,
+      tag: tuneUpTag(b.name),
+      x: wx(idx),
+      // the native SVG tooltip: what it is, when it is, how far out
+      tip: `${b.name}${b.date ? ` · ${b.date}` : ""} · ${b.weeks_out === 0 ? "race week" : `${b.weeks_out} wk out`}`
+        // round 4 finding 9: this used to print a bare "mi" regardless of the
+        // km/m toggle — every other distance on this chart (axis, stats row)
+        // already goes through u.dist/u.distUnit.
+        + (b.distance_mi != null ? ` · ${u.dist(b.distance_mi, 0)} ${u.distUnit}` : ""),
+    }));
+
   const WEEK_LABEL_W = 34; // px — "WK NN" at fontSize 9 / letterSpacing 1
   const WEEK_LABEL_GAP = 3; // px — minimum clear space between labels
   const weekLabelExtent = (w: number): [number, number] => {
@@ -1716,6 +2122,29 @@ function Trajectory() {
                     </text>
                   ))}
     
+                  {/* tune-up markers — one per B race in this block, at its
+                      own week (PRD-v2 §3). Drawn under the plan/actual
+                      lines so they never hide the data they sit behind. */}
+                  {bMarkers.map((m) => (
+                    <g key={`b-${m.slug}`} data-tune-up={m.slug}>
+                      <title>{m.tip}</title>
+                      <line
+                        x1={m.x} x2={m.x} y1={PAD.top + 14} y2={H - PAD.bottom}
+                        stroke="var(--creek)" strokeWidth="1" strokeDasharray="2 4" opacity="0.7"
+                      />
+                      <path
+                        d={`M ${m.x} ${H - PAD.bottom - 4.5} L ${m.x + 4} ${H - PAD.bottom} L ${m.x} ${H - PAD.bottom + 4.5} L ${m.x - 4} ${H - PAD.bottom} Z`}
+                        fill="var(--creek)"
+                      />
+                      <text
+                        x={m.x} y={PAD.top + 10} textAnchor="middle"
+                        fontSize="8" fontFamily="Spline Sans Mono" letterSpacing="1" fill="var(--creek)"
+                      >
+                        {m.tag}
+                      </text>
+                    </g>
+                  ))}
+
                   {mode === "cum" ? (
                     <>
                       {/* plan target */}
@@ -1894,8 +2323,7 @@ function RoadAhead() {
   const u = useUnits();
   const { currentWeek } = useStrava();
   const { data: cal, connected: calOk, missing: calMissing } = useGoogleCal();
-  const { data: state, missing: stateMissing } = usePersistentState();
-  const { missing: agentMissing } = useAgentReadout();
+  const { data: state } = usePersistentState();
 
   /* ---- 14-day calendar strip ---- */
   const days = useMemo(() => {
@@ -1998,7 +2426,16 @@ function RoadAhead() {
             <span style={{ color: live ? "var(--pine)" : "var(--mist-mute)" }}>
               {live
                 ? `agent · ${state?.last_updated ? new Date(state.last_updated).toLocaleDateString("en-US", { month: "short", day: "2-digit" }).toLowerCase() : ""}`
-                : awaiting && (agentMissing || stateMissing || targets.length > 0) ? "targets only" : "loading…"}
+                // `awaiting` means the payload has actually resolved with no
+                // plan — at that point "loading…" would be a lie forever, not
+                // a moment. block.json targets with no plan.json yet reads
+                // "targets only"; neither file existing yet (an active race
+                // activated before its first plan turn — round 3, resilience
+                // finding 3) gets the same honest empty state TRAJECTORY uses
+                // rather than spinning with nothing left to wait for.
+                : !awaiting ? "loading…"
+                : targets.length > 0 ? "targets only"
+                : "no plan yet — resync to generate"}
             </span>
           </span>
         }
@@ -2375,6 +2812,10 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
   const { data: agent, missing: agentMissing } = useAgentReadout();
   const { system } = useUnits();
   const facts = useFacts();
+  // What the athlete has on screen, for the race_state each chat turn carries
+  // (PRD-v2 §6). Free here: useActiveRace shares one in-flight request per
+  // refresh key, and the rail is already mounted beside the views that use it.
+  const { mode: raceMode, viewing: onScreenSlug, activeRace } = useActiveRace();
   const [readoutOpen, setReadoutOpen] = useState(true);
 
   /* chat state */
@@ -2417,6 +2858,16 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
     const t0 = Date.now();
 
     try {
+      /* The planner's own numbers for the race on screen — projection, knobs,
+         fuel, review status, last stated position. Null in generic mode, and
+         then the key is omitted entirely rather than sent as null: the server
+         renders no block at all for a turn with no race (PRD-v2 §6). Never
+         allowed to fail the turn — buildRaceState swallows its own fetch
+         error and returns what it has. */
+      const raceState = await buildRaceState(
+        { mode: raceMode, slug: onScreenSlug, name: activeRace?.race?.name },
+        ctrl.signal,
+      ).catch(() => null);
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2425,6 +2876,7 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
           messages: newHistory.map((m) => ({ role: m.role, content: m.content })),
           // the coach answers in the dashboard's selected unit system
           units: system,
+          ...(raceState ? { race_state: raceState } : {}),
         }),
       });
       if (!res.body) throw new Error("no body");
@@ -2478,7 +2930,7 @@ function AgentRail({ onCollapse }: { onCollapse?: () => void }) {
       setStatusLine("");
       abortRef.current = null;
     }
-  }, [messages, pending, system]);
+  }, [messages, pending, system, raceMode, onScreenSlug, activeRace]);
 
   const cancel = () => {
     abortRef.current?.abort();
@@ -3032,7 +3484,7 @@ function AppBody() {
   const { race, viewing } = useBlockConfig();
   // the slug ON SCREEN, for the crash boundary's message and its "back to
   // generic mode" pointer reset — same source useRacePlanInstance itself reads.
-  const { viewing: viewingSlug } = useActiveRace();
+  const { activeRace, viewing: viewingSlug } = useActiveRace();
   const hash = useHashRoute();
   const [view, setViewState] = useState<AppView>(() => {
     // validate rather than cast — a stale or hand-edited key would otherwise
@@ -3058,7 +3510,7 @@ function AppBody() {
   // WITHOUT rewriting the preference: once a race is active again the
   // athlete gets the view they last chose back, instead of having had it
   // quietly overwritten by a loading frame.
-  const views = appViews(race);
+  const views = appViews(race, fuelViewHidden(activeRace));
   const activeView = views.includes(view) ? view : "training";
   // Race-day mode takes the whole screen: the command bar and the agent
   // rail are desk furniture, and on a phone they cost a third of the page
@@ -3075,47 +3527,63 @@ function AppBody() {
           <main style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
             {/* on every view: the race on screen is not the one being trained for */}
             <ViewingBanner />
-            {activeView === "training" ? (
-              <>
-                {/* no race, no ribbon: there is no course, countdown or
-                    elevation profile to put in it (PRD §6) */}
-                {race && <RaceRibbon race={race} readOnly={!!viewing} />}
-                <div key={`vitals-${key}`}><VitalsBand /></div>
-                <div key={`traj-${key}`}><Trajectory /></div>
-                <div key={`road-${key}`}><RoadAhead /></div>
-                <div key={`log-${key}`}><LogTable /></div>
-                <SetupDrawer />
-              </>
-            ) : activeView === "race" ? (
-              <div key={`race-${key}`}>
-                {/* the boundary sits OUTSIDE the provider: useRacePlanInstance
-                    computes the whole plan (course, projection, fuel) during
-                    RacePlanScope's render, so a bad folder throws before any
-                    child below the provider ever mounts (tt bug fix-sun-null). */}
-                <RaceErrorBoundary slug={viewingSlug}>
-                  {/* one shared plan instance — planner sliders and the model
-                      check must never disagree on the same screen. The climb
-                      comparison takes no sliders, but it reads its visual.panels
-                      gate off the same instance rather than fetching the active
-                      race a second time, so it lives inside the provider too. */}
-                  <RacePlanProvider>
-                    <ClimbComparison />
-                    <RacePlanner />
-                    <ModelCheck />
-                  </RacePlanProvider>
-                </RaceErrorBoundary>
-              </div>
-            ) : (
-              <div key={`fuel-${key}`}>
-                <RaceErrorBoundary slug={viewingSlug}>
-                  {/* single consumer, but useRacePlan requires the provider —
-                      a fallback instance was the divergence footgun */}
-                  <RacePlanProvider>
-                    <NutritionPlan />
-                  </RacePlanProvider>
-                </RaceErrorBoundary>
-              </div>
-            )}
+            {/* CommandBar's tablist points aria-controls at THIS element —
+                one dynamically-swapped panel rather than three permanently
+                mounted ones (each view already unmounts/remounts its own
+                subtree via `key`, RaceErrorBoundary and RacePlanProvider
+                below, and keeping all three alive at once would multiply
+                that machinery for no reader-visible benefit). The id/
+                aria-labelledby pair always names the CURRENTLY selected
+                tab, matching the APG's single-panel SPA pattern. */}
+            <div
+              role="tabpanel"
+              id={`tabpanel-${activeView}`}
+              aria-labelledby={`tab-${activeView}`}
+              tabIndex={0}
+              style={{ display: "flex", flexDirection: "column", minWidth: 0 }}
+            >
+              {activeView === "training" ? (
+                <>
+                  {/* no race, no ribbon: there is no course, countdown or
+                      elevation profile to put in it (PRD §6) */}
+                  {race && <RaceRibbon race={race} readOnly={!!viewing} />}
+                  <div key={`vitals-${key}`}><VitalsBand /></div>
+                  <div key={`traj-${key}`}><Trajectory /></div>
+                  <div key={`road-${key}`}><RoadAhead /></div>
+                  <div key={`log-${key}`}><LogTable /></div>
+                  <SetupDrawer />
+                </>
+              ) : activeView === "race" ? (
+                <div key={`race-${key}`}>
+                  {/* the boundary sits OUTSIDE the provider: useRacePlanInstance
+                      computes the whole plan (course, projection, fuel) during
+                      RacePlanScope's render, so a bad folder throws before any
+                      child below the provider ever mounts (tt bug fix-sun-null). */}
+                  <RaceErrorBoundary slug={viewingSlug}>
+                    {/* one shared plan instance — planner sliders and the model
+                        check must never disagree on the same screen. The climb
+                        comparison takes no sliders, but it reads its visual.panels
+                        gate off the same instance rather than fetching the active
+                        race a second time, so it lives inside the provider too. */}
+                    <RacePlanProvider>
+                      <ClimbComparison />
+                      <RacePlanner />
+                      <ModelCheck />
+                    </RacePlanProvider>
+                  </RaceErrorBoundary>
+                </div>
+              ) : (
+                <div key={`fuel-${key}`}>
+                  <RaceErrorBoundary slug={viewingSlug}>
+                    {/* single consumer, but useRacePlan requires the provider —
+                        a fallback instance was the divergence footgun */}
+                    <RacePlanProvider>
+                      <NutritionPlan />
+                    </RacePlanProvider>
+                  </RaceErrorBoundary>
+                </div>
+              )}
+            </div>
           </main>
 
           {/* the coach — persistent rail (hidden, not unmounted, when collapsed) */}

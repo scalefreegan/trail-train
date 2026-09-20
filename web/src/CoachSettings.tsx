@@ -12,9 +12,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { createPortal } from "react-dom";
 import { useDialog } from "./race/dialogChrome";
 import { usePersistentState, type CoachContext, type TemporaryContextItem } from "./data";
-
-/** PRD §5.3 — KEEP IN SYNC with GOAL_PHASES in scripts/goals.mjs. */
-const GOAL_PHASES = ["recovery", "return_to_run", "base", "build", "peak", "taper", "maintain"] as const;
+import { GOAL_PHASES, PHYSIOLOGY_FIELDS, PHYSIOLOGY_KEYS, type PhysiologyKey } from "./contracts";
 
 type Goals = {
   event_class: string;
@@ -30,25 +28,40 @@ type GoalsForm = Omit<Goals, "weekly_volume_band"> & {
   weekly_volume_band: { dist_mi: (number | "")[]; vert_ft: (number | "")[] };
 };
 
-/** PRD §5.4 — the athlete's own numbers. KEEP THE BOUNDS IN SYNC with
-    PHYSIOLOGY_BOUNDS in web/vite.config.ts and PHYSIOLOGY_FIELDS in
-    scripts/profile.mjs; the server rejects anything outside them. */
-const PHYSIOLOGY_META = [
-  {
-    key: "body_kg" as const,
-    label: "body mass (kg)",
+/** The per-field copy and input granularity: the only part of the physiology
+    contract that is UI, and so the only part that lives here. The field's
+    label and the bounds the server enforces come from PHYSIOLOGY_FIELDS —
+    typing them out again is what let the dialog offer a value the server
+    would reject. */
+const PHYSIOLOGY_UI: Record<PhysiologyKey, { hint: string; step: number }> = {
+  body_kg: {
     hint: "every mg/kg caffeine figure in the race plan scales with this — it lives here, not in a race folder, so a race can be shared without it",
-    min: 30, max: 200, step: 0.1,
+    step: 0.1,
   },
-  {
-    key: "long_run_ref_mi" as const,
-    label: "long-run reference (mi)",
+  long_run_ref_mi: {
     hint: "the distance the pacing fit is read at: your own long-run regime, not the race distance. The projection evaluates fitness pace here and lets the fatigue curve carry everything past it",
-    min: 5, max: 50, step: 1,
+    step: 1,
   },
-];
+  // The one physiology field with no honest default (PHYSIOLOGY_FIELDS'
+  // `optional`): left unset it reads as sea level, which is the WORST case
+  // for the altitude penalty, and the planner and model check both say so in
+  // as many words rather than passing the guess off as a setting. Negative
+  // values are real — Death Valley, the Dead Sea — so the floor is below
+  // zero, not at it.
+  home_elevation_ft: {
+    hint: "where you are acclimated to: the altitude penalty is measured from HERE, not from sea level, so a mountain-town athlete stops being charged for the first 5,000 ft they already live at. Blank means the model assumes sea level and flags it",
+    step: 10,
+  },
+};
 
-type PhysiologyKey = (typeof PHYSIOLOGY_META)[number]["key"];
+/** PRD §5.4 — the athlete's own numbers, in dialog order. */
+const PHYSIOLOGY_META = PHYSIOLOGY_KEYS.map((key) => ({
+  key,
+  label: PHYSIOLOGY_FIELDS[key].label,
+  min: PHYSIOLOGY_FIELDS[key].lo,
+  max: PHYSIOLOGY_FIELDS[key].hi,
+  ...PHYSIOLOGY_UI[key],
+}));
 // "" while a field is being retyped — the save refuses rather than committing
 // a 0 the athlete didn't mean (same rule as the volume band)
 type PhysiologyForm = Record<PhysiologyKey, number | "">;
@@ -65,7 +78,9 @@ type SettingsPayload = {
   calendar_error?: string | null;
   goals?: Partial<Goals> | null;
   goals_error?: string | null;
-  physiology?: Partial<Record<PhysiologyKey, number>> | null;
+  /** `home_elevation_ft` legitimately comes back null — it is the one
+      physiology field with no stand-in, and null means "not set yet". */
+  physiology?: Partial<Record<PhysiologyKey, number | null>> | null;
   /** what the loader substituted, and why — shown so a plan built on the
       impersonal defaults says so instead of looking personal */
   physiology_warnings?: string[] | null;
@@ -279,6 +294,9 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
           physiology: {
             body_kg: d.physiology?.body_kg ?? "",
             long_run_ref_mi: d.physiology?.long_run_ref_mi ?? "",
+            // null (never set) shows as an empty field, not as 0 ft — 0 is
+            // a real elevation somebody could mean
+            home_elevation_ft: d.physiology?.home_elevation_ft ?? "",
           },
           goals: {
             event_class: d.goals?.event_class ?? "",
@@ -469,8 +487,8 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
         <Block>
           <Eyebrow>physiology · yours, not the race's</Eyebrow>
           <Hint style={{ marginTop: 0, marginBottom: 12 }}>
-            the two numbers the race plan needs about your body (config/profile.json, gitignored) ·
-            they used to be hard-coded in a race folder and in the pacing model
+            the numbers the race plan needs about your body and where it lives (config/profile.json,
+            gitignored) · they used to be hard-coded in a race folder and in the pacing model
           </Hint>
           {calendarError && (
             <p style={{ fontSize: 11.5, color: "var(--ember)", marginBottom: 10 }}>

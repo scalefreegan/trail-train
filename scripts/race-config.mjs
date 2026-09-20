@@ -21,29 +21,43 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { writeJsonAtomic } from "./lib.mjs";
+// raceStart parses a race-local wall clock; weeksOut counts B-races back from
+// the A-race date in the A race's OWN zone, never the machine's.
+import { raceStart, isValidTimeZone } from "./clock.mjs";
 // The theme sources are TypeScript and node strips the types on import; the
 // same trick scripts/race-plan.mjs already uses for THEME_PRESET_NAMES.
 import { visualErrors } from "../web/src/themes/visual.ts";
+import { PROVENANCE_BY, RACE_STATUSES } from "./contracts.mjs";
+
+// The status and provenance vocabularies are shared with the client and the
+// dev API — see scripts/contracts.mjs. Re-exported so every existing import
+// site (`from "./race-config.mjs"`) keeps working.
+export { PROVENANCE_BY, RACE_STATUSES };
 
 /** Bump only with a migration; validateRaceJson rejects anything else. */
 export const RACE_SCHEMA_VERSION = 1;
 
-/** At most one folder may be "active" — see validateSingleActive. */
-export const RACE_STATUSES = ["draft", "active", "archived"];
+
+/**
+ * A race folder is either the athlete's A-race — the goal a training block is
+ * counted back from — or a B-race: a tune-up entered INSIDE somebody else's
+ * block (PRD-v2 §3). `kind` is absent in every folder written before v2, and
+ * absent means "a": the default must leave existing folders untouched.
+ *
+ * A B folder is NEVER status "active". "active" means "this is what the
+ * athlete is training for", and validateActivation only lets train mode land
+ * on an active folder — so keeping B out of that status is what stops a
+ * tune-up from stealing the block from the A-race it is supposed to sit
+ * inside. A B folder is "draft" before its date and "archived" after it (the
+ * same two states an A folder uses outside its own active window), and it is
+ * browsed in view mode like any other non-active folder. RACE_STATUSES is
+ * unchanged: the gate is `kind`, not a fourth status.
+ */
+export const RACE_KINDS = ["a", "b"];
 
 /** config/active-race.json's `mode` — see the header. */
 export const ACTIVE_MODES = ["train", "view"];
 
-/**
- * Who last set a field. "computed" and "matcher" are third parties alongside
- * the human and the intake agent: scripts/race-sun.mjs derives `sun` from the
- * course coordinates, and scripts/race-build.mjs's aid-station matcher picks a
- * station's `gpx_wpt` out of the GPX — neither is a hand edit nor an agent
- * claim, and only "user" is protected from a re-intake merge. They are kept
- * apart because a matcher entry also carries its confidence and method, which
- * a re-match is allowed to overwrite; a computed one has no such gradient.
- */
-export const PROVENANCE_BY = ["user", "agent", "computed", "matcher"];
 
 /**
  * race.json's `unresolved_acknowledged` (PR #23 review round 1, resilience
@@ -370,6 +384,35 @@ export function validateActivation(req, races) {
       `${slug} has status "${found.race.status}" — only an "active" race can be trained for; open it in view mode instead`,
     );
   }
+  if (mode === "train" && raceKind(found.race) === "b") {
+    // validateKind refuses a B race being WRITTEN as "active" (RACE_KINDS'
+    // own doc comment: a tune-up never steals the block from the A race it
+    // hangs off), but a hand-edited race.json bypasses every writer — this is
+    // the same invariant enforced again at the one other place a folder
+    // becomes the training target. `kind` gates this, not `status`: an
+    // orphaned tune-up (its parent folder gone) is refused exactly the same
+    // way as one whose parent is still there.
+    return fail(
+      "bad_request",
+      `${slug} is a tune-up (kind "b") — a tune-up is never the training target; activate ${found.race.parent_slug ? `its parent race (${found.race.parent_slug})` : "its parent race"} instead`,
+    );
+  }
+  if (mode === "train") {
+    // At most one A folder may read "active" on disk (validateSingleActive,
+    // restricted to kind "a" — a B folder that is ALSO wrongly "active" is
+    // already refused above by the kind gate, whichever slug this request
+    // named, and must not additionally block re-selecting the legitimate A
+    // race just because a stray tune-up is sitting there corrupted). A
+    // hand-edit that leaves two A folders active must not be papered over by
+    // silently training toward whichever one this request named while the
+    // other still claims the status too — consistent with
+    // scripts/race-edit.mjs's own draft-to-active transition, which REFUSES
+    // when another folder is already active rather than demoting it; the
+    // pointer does the same rather than picking a winner behind the
+    // athlete's back.
+    const single = validateSingleActive(races.filter((r) => raceKind(r.race) !== "b"));
+    if (!single.ok) return fail("bad_request", single.errors.join("; "));
+  }
   return { ok: true, errors: [], code: null, pointer: { slug, mode } };
 }
 
@@ -388,7 +431,7 @@ export async function setActivePointer(root, req) {
 }
 
 /**
- * TODO(tt-yib.5): replaced by goals/generic mode.
+ * A legacy shim, still load-bearing and still worth retiring.
  * The active race, or — when no race is active — the most recent one by date.
  * Scripts written before generic mode existed (build-course.mjs, the dev
  * server's /nutrition.json) assume there IS a race; routing them through
@@ -413,12 +456,32 @@ const isStr = (v) => typeof v === "string" && v.trim() !== "";
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
 
 /**
- * Validate a parsed race.json against the PRD §5.1 schema.
- * Collects every problem rather than throwing on the first — the intake
- * review dialog shows the whole list.
+ * The folder's kind, defaulting an absent `kind` to "a" (see RACE_KINDS).
+ * Every reader goes through here rather than testing `race.kind === "b"` by
+ * hand, so a folder written before v2 reads as the A-race it is.
+ * @param {{kind?: string}|null|undefined} race
+ * @returns {"a"|"b"}
+ */
+export function raceKind(race) {
+  return race?.kind === "b" ? "b" : "a";
+}
+
+/**
+ * Validate a parsed race.json against the PRD §5.1 schema (+ PRD-v2 §3's
+ * A/B kinds). Collects every problem rather than throwing on the first — the
+ * intake review dialog shows the whole list.
+ *
+ * `races` (listRaces' output) is optional and only ever makes the check
+ * STRICTER: with it, a B folder's parent_slug is resolved against the folders
+ * actually on disk. Callers that hold only the one object — race-build's
+ * validateForBuild, the intake's draft check before anything is written —
+ * pass nothing and get the shape rules alone, which is the honest answer when
+ * the rest of races/ was never read.
+ * @param {object} obj parsed race.json
+ * @param {{races?: {slug: string, race: object|null}[]}} [opts]
  * @returns {{ok: boolean, errors: string[]}}
  */
-export function validateRaceJson(obj) {
+export function validateRaceJson(obj, { races = null } = {}) {
   const errors = [];
   const bad = (m) => errors.push(m);
   if (!isObj(obj)) return { ok: false, errors: ["race.json must be a JSON object"] };
@@ -431,6 +494,7 @@ export function validateRaceJson(obj) {
   if (!RACE_STATUSES.includes(obj.status)) {
     bad(`status must be one of ${RACE_STATUSES.join(" | ")} (got ${JSON.stringify(obj.status)})`);
   }
+  validateKind(obj, bad, races);
   if (!isStr(obj.name)) bad("name: non-empty string required");
   if (!isStr(obj.short)) bad("short: non-empty string required");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(obj.date)) || Number.isNaN(Date.parse(`${obj.date}T00:00:00Z`))) {
@@ -522,9 +586,95 @@ export function validateRaceJson(obj) {
       bad("intake_warnings: array of strings required");
     }
   }
+  // PRD §4: which live tracker to poll on race day, and who to look for on
+  // it. Wholly optional — most races have no tracker, and a race with one
+  // usually gets `url` from intake months before the athlete knows their
+  // bib, so bib and name are independently nullable rather than required
+  // together. `url` is the one field with a shape: scripts/trackers/
+  // detect()s an adapter from its HOSTNAME, so a bare "opensplittime.org/…"
+  // with no scheme would not parse as a URL at all and would fail at poll
+  // time, on race morning, instead of here.
+  if (obj.tracking !== undefined && obj.tracking !== null) {
+    if (!isObj(obj.tracking)) bad("tracking: object of {url, bib, name} required");
+    else {
+      for (const k of ["url", "bib", "name"]) {
+        const v = obj.tracking[k];
+        if (v !== undefined && v !== null && typeof v !== "string") bad(`tracking.${k}: string or null required`);
+      }
+      if (isStr(obj.tracking.url)) {
+        let scheme = null;
+        try { scheme = new URL(obj.tracking.url).protocol; } catch { scheme = null; }
+        if (scheme !== "http:" && scheme !== "https:") {
+          bad(`tracking.url: absolute http(s) URL required (got ${JSON.stringify(obj.tracking.url)})`);
+        }
+      }
+    }
+  }
 
-  validateAidStations(obj.aid_stations, bad);
+  // A B-race is entered off a quick form and may carry no course at all yet
+  // (PRD-v2 §3: race.json and optionally course.gpx/build, nothing else is
+  // required). An absent or empty station list is therefore legal for one —
+  // but a list that IS there still has to be a well-ordered course, so a
+  // typo'd tune-up cannot feed a backwards segment to the projection.
+  if (raceKind(obj) === "b" && (obj.aid_stations === undefined || (Array.isArray(obj.aid_stations) && obj.aid_stations.length === 0))) {
+    // nothing to check
+  } else {
+    validateAidStations(obj.aid_stations, bad);
+  }
   return { ok: errors.length === 0, errors };
+}
+
+/**
+ * `kind` and, for a B-race, `parent_slug` (PRD-v2 §3).
+ *
+ * Three rules, each of which a hand-edit could otherwise break silently:
+ *   · kind is "a" or "b" when present (absent = "a");
+ *   · only a b carries parent_slug, and it must name a DIFFERENT folder —
+ *     with `races` in hand, one that exists, is readable and is itself an A
+ *     race, so tune-ups cannot chain into each other;
+ *   · a b is never "active" (see RACE_KINDS): the training target is the A
+ *     race whose block the tune-up sits inside.
+ */
+function validateKind(obj, bad, races) {
+  if (obj.kind !== undefined && !RACE_KINDS.includes(obj.kind)) {
+    bad(`kind must be one of ${RACE_KINDS.join(" | ")} (got ${JSON.stringify(obj.kind)})`);
+    return;
+  }
+  const kind = raceKind(obj);
+  if (kind === "a") {
+    if (obj.parent_slug !== undefined && obj.parent_slug !== null) {
+      bad('parent_slug: only a tune-up (kind "b") has a parent race');
+    }
+    return;
+  }
+  if (obj.status === "active") {
+    bad('status: a tune-up (kind "b") is never "active" — the A race it hangs off is the training target; use "draft" before its date and "archived" after');
+  }
+  if (!isStr(obj.parent_slug)) {
+    bad('parent_slug: non-empty slug of the A race this tune-up sits inside required (kind "b")');
+    return;
+  }
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(obj.parent_slug)) {
+    bad(`parent_slug: "${obj.parent_slug}" must be lowercase kebab-case`);
+    return;
+  }
+  if (obj.parent_slug === obj.slug) {
+    bad("parent_slug: a tune-up cannot be its own parent");
+    return;
+  }
+  if (!Array.isArray(races)) return;
+  const parent = races.find((r) => r.slug === obj.parent_slug);
+  if (!parent) {
+    bad(`parent_slug: no race folder races/${obj.parent_slug}/`);
+    return;
+  }
+  if (!parent.race) {
+    bad(`parent_slug: races/${obj.parent_slug}/race.json is unreadable${parent.error ? ` (${parent.error})` : ""}`);
+    return;
+  }
+  if (raceKind(parent.race) !== "a") {
+    bad(`parent_slug: races/${obj.parent_slug}/ is itself a tune-up — a B race hangs off an A race`);
+  }
 }
 
 // Aid stations are the course's spine: every projection, cutoff margin and
@@ -576,4 +726,126 @@ export function validateSingleActive(races) {
     ? [`more than one active race: ${active.join(", ")} — exactly one folder may have status "active"`]
     : [];
   return { ok: errors.length === 0, errors, active };
+}
+
+/* ======================= A-races and their tune-ups ====================== */
+
+/**
+ * How many weeks before the A race a tune-up sits — the one number the coach
+ * plans a taper and a recovery week around (PRD-v2 §3).
+ *
+ * Counted in the A RACE'S OWN zone (scripts/clock.mjs's raceStart), not the
+ * machine's: both dates are midnight wall clock there, so a block planned
+ * from Durango reads the same on a laptop in Tokyo. Positive = the tune-up is
+ * before the A race; 0 = the same week; negative = after it (a B folder left
+ * behind by a moved A-race date, which the coach should see rather than have
+ * hidden). Rounded to whole weeks — a 41-day gap is "6 weeks out", and the
+ * hour DST may add or drop between the two dates cannot move that.
+ * @param {string} date the tune-up's YYYY-MM-DD
+ * @param {{date?: string, timezone?: string}|null} parent the A race
+ * @returns {number|null} null when either date is unusable
+ */
+export function weeksOut(date, parent) {
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  if (!DATE_RE.test(String(date)) || !DATE_RE.test(String(parent?.date))) return null;
+  // An invalid/absent zone is not worth failing over here — the A race's own
+  // validator already rejects one, and UTC for BOTH dates still counts the
+  // same number of weeks between them.
+  const tz = isValidTimeZone(parent?.timezone) ? parent.timezone : "UTC";
+  try {
+    const a = raceStart(parent.date, "00:00", tz).getTime();
+    const b = raceStart(date, "00:00", tz).getTime();
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+    return Math.round((a - b) / (7 * 86400000));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The tune-ups hanging off one A race, oldest first, in the shape every
+ * consumer wants: the dashboard payload (scripts/race-payload.mjs's
+ * `b_races`), the coach's facts (scripts/facts.mjs's `race.b_races`) and the
+ * readout prompt all read THIS, so none of them can describe a different set
+ * of races from the others.
+ * @param {{slug: string, race: object|null}[]} races listRaces' output
+ * @param {{slug?: string, date?: string, timezone?: string}|null} parent the A race
+ * @returns {{slug, name, date, distance_mi, gain_ft, weeks_out}[]}
+ */
+export function bRacesFor(races, parent) {
+  if (!parent?.slug || !Array.isArray(races)) return [];
+  return races
+    .filter((r) => r.race && raceKind(r.race) === "b" && r.race.parent_slug === parent.slug)
+    .map((r) => ({
+      slug: r.slug,
+      name: r.race.name ?? r.slug,
+      date: r.race.date ?? null,
+      distance_mi: r.race.distance_mi ?? null,
+      gain_ft: r.race.gain_ft ?? null,
+      weeks_out: weeksOut(r.race.date, parent),
+    }))
+    .sort((a, b) => String(a.date ?? "").localeCompare(String(b.date ?? "")) || a.slug.localeCompare(b.slug));
+}
+
+/**
+ * The switcher's shape: each A race carrying its own tune-ups, in the order
+ * the rows came in (the flat list stays the source of truth for status,
+ * errors and the palette swatch — this only says what nests under what).
+ *
+ * A tune-up's parent MUST be a real A race. An orphan B — one whose
+ * parent_slug names a folder that is not in this list at all, OR names
+ * another B race rather than an A race — is kept at the TOP level rather
+ * than dropped or nested. A race that has fallen out of its block still
+ * exists on disk, and a menu that silently omits it looks exactly like a
+ * deleted folder. It is still a tune-up, though — flagged
+ * `parent_missing: true` (with `parent_missing_reason` saying why) so a
+ * consumer (the switcher) can keep its TUNE-UP marker and reduced action
+ * set instead of rendering it as an ordinary A race with Review/Activate/
+ * Refresh rows it never earned.
+ *
+ * A B chained onto another B (round 3 resilience NEW-1) used to be nested
+ * under that other B's entry — which itself carries no legitimate b_races
+ * of its own — so the child rendered TWICE: once as its own top-level
+ * orphan row, and again nested under the other orphan with no warning.
+ * That also threw off rowsFor/cursorForSlug's row counts, since an orphan
+ * is counted as exactly one row. Nesting now only ever happens onto a slug
+ * that is a genuine A race (`aSlugs`), never onto another B's entry.
+ * @template {{slug: string, kind?: string, parent_slug?: string|null}} T
+ * @param {T[]} rows
+ * @returns {(T & {b_races: T[], parent_missing?: true, parent_missing_reason?: "not_found"|"parent_is_tune_up"})[]}
+ */
+export function groupRaces(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const isB = (r) => r.kind === "b" && typeof r.parent_slug === "string" && r.parent_slug;
+  // Only a true A race (kind !== "b") is ever a valid nesting target —
+  // never another B, and never an orphan's own synthesized entry.
+  const aSlugs = new Set(list.filter((r) => r.kind !== "b").map((r) => r.slug));
+  const bySlug = new Map(list.map((r) => [r.slug, r]));
+  const missingReason = (parentSlug) => {
+    const p = bySlug.get(parentSlug);
+    return p && p.kind === "b" ? "parent_is_tune_up" : "not_found";
+  };
+  const out = [];
+  const byParent = new Map();
+  for (const row of list) {
+    if (isB(row) && aSlugs.has(row.parent_slug)) continue;
+    const entry = isB(row)
+      ? { ...row, b_races: [], parent_missing: true, parent_missing_reason: missingReason(row.parent_slug) }
+      : { ...row, b_races: [] };
+    out.push(entry);
+    // Only a real A race's entry is registered as a nesting target — an
+    // orphan (parent_missing) never becomes a "parent" for anything else,
+    // however its own parent_slug happened to resolve.
+    if (!isB(row)) byParent.set(row.slug, entry);
+  }
+  for (const row of list) {
+    if (!isB(row) || !aSlugs.has(row.parent_slug)) continue;
+    const parent = byParent.get(row.parent_slug);
+    if (parent) parent.b_races.push({ ...row, b_races: [] });
+  }
+  for (const entry of out) {
+    entry.b_races.sort((a, b) =>
+      String(a.date ?? "").localeCompare(String(b.date ?? "")) || a.slug.localeCompare(b.slug));
+  }
+  return out;
 }

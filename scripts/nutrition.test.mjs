@@ -77,6 +77,48 @@ test("caffeine hygiene survived the body_kg removal", () => {
   assert.ok(cfg.caffeine.pre_race_before_h <= 24, "an unbounded pre-race offset freezes the render loop");
 });
 
+test("the committed MM100 nutrition.json's own comment/caffeine_comment fields never survive the merge", () => {
+  // Sanity that the source file actually still carries them — the whole
+  // point is that a coach's free-text planning notes exist in nutrition.json
+  // but must never reach a crew handout.
+  const raw = JSON.parse(readFileSync(MM100_PATH, "utf8"));
+  assert.equal(typeof raw.comment, "string", "fixture assumption: MM100's nutrition.json has a comment field");
+  assert.ok(raw.comment.length > 0);
+
+  const cfg = normalizeNutrition(raw);
+  assert.notEqual(cfg, null);
+  assert.equal("comment" in cfg, false, "coach prose must not ride along in the merged config");
+  assert.equal("caffeine_comment" in cfg, false);
+});
+
+test("an unknown top-level key in nutrition.json is dropped, not spread through", () => {
+  const cfg = normalizeNutrition(minimal({
+    comment: "internal planning notes — not for the crew",
+    caffeine_comment: "same, but about caffeine dosing",
+    some_future_field: 42,
+  }));
+  assert.notEqual(cfg, null);
+  assert.equal("comment" in cfg, false);
+  assert.equal("caffeine_comment" in cfg, false);
+  assert.equal("some_future_field" in cfg, false);
+});
+
+test("known numeric/gear fields still come from the raw file, not just the defaults", () => {
+  const cfg = normalizeNutrition(minimal({
+    flask_ml: 750,
+    tailwind_flasks: 3,
+    spare_flasks: 1,
+    salt_tab_mg: 200,
+    drop_bag_gear: { Start: ["headlamp"] },
+  }));
+  assert.notEqual(cfg, null);
+  assert.equal(cfg.flask_ml, 750, "a known field must still be read off the raw file");
+  assert.equal(cfg.tailwind_flasks, 3);
+  assert.equal(cfg.spare_flasks, 1);
+  assert.equal(cfg.salt_tab_mg, 200);
+  assert.deepEqual(cfg.drop_bag_gear, { Start: ["headlamp"] });
+});
+
 test("a structurally unusable payload is rejected outright", () => {
   assert.equal(normalizeNutrition(null), null);
   assert.equal(normalizeNutrition([]), null);

@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 import { useActiveRace, useRefresh } from "../data";
 import { cacheGet, cachePut, slugKey } from "./offlineCache";
-import type { ClimbsSnapshot, Course, CrewBase } from "./types";
+import type { ClimbsSnapshot, Course, CrewBase, TrackerCheckpoint, TrackerResponse } from "./types";
 import type { PaceGradeCurve } from "./pacing";
+import { PHYSIOLOGY_FIELDS } from "../contracts";
+import { loadFailureMessage } from "./loadFailureMessage";
+import { isKnownCourseless } from "./courseAvailability";
 
 /* Snapshot hooks for the Race views — same provider-less pattern as
    useGoogleCal (data.ts): fetch keyed on the refresh pulse.
@@ -32,12 +35,20 @@ export function useCourse() {
   // names, which in view mode (tt-yib.7) is the archived race being
   // browsed rather than the training target. Keying the cache on the
   // training slug would file one race's course under another's name.
-  const { viewing: slug, resolved } = useActiveRace();
+  const { viewing: slug, resolved, activeRace } = useActiveRace();
   const [data, setData] = useState<Course | null>(null);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // v2 review ui1 #14: see courseAvailability.ts — a tune-up created
+  // without a GPX 404s on /course.json for its whole life, and Chrome logs
+  // that to the console on its own no matter how the response is handled.
+  // Overridden only in the RETURNED value, never via setState in the effect
+  // (a synchronous setState right in an effect body is its own lint-flagged
+  // smell) — so a stale `data`/`missing`/`error` left over from whatever was
+  // on screen before switching to this tune-up can never leak through.
+  const knownCourseless = isKnownCourseless(activeRace?.race);
   useEffect(() => {
-    if (!resolved) return;
+    if (!resolved || knownCourseless) return;
     let stale = false;
     const cacheKey = slugKey("course", slug);
     // a load failure is not an absence: fall back to the last copy that DID
@@ -69,10 +80,12 @@ export function useCourse() {
         if (stale) return;
         setData(d); setMissing(false); setError(null);
       })
-      .catch(() => fallback("course.json corrupt or unreadable"));
+      .catch((e) => fallback(loadFailureMessage(e, "course.json corrupt or unreadable")));
     return () => { stale = true; };
-  }, [refreshKey, resolved, slug]);
-  return { course: data, missing, error };
+  }, [refreshKey, resolved, slug, knownCourseless]);
+  return knownCourseless
+    ? { course: null, missing: true, error: null }
+    : { course: data, missing, error };
 }
 
 /** Optional — crew-base.json exists wherever the race folder has a
@@ -113,7 +126,7 @@ export function useCrewBase() {
         if (stale) return;
         setData(d); setError(null);
       })
-      .catch(() => fallback("crew-base.json corrupt or unreadable"));
+      .catch((e) => fallback(loadFailureMessage(e, "crew-base.json corrupt or unreadable")));
     return () => { stale = true; };
   }, [refreshKey, resolved, slug]);
   return { crewBase: data, error };
@@ -125,26 +138,44 @@ export function useCrewBase() {
     an error string, so the projection never silently swaps to the fallback
     grade model mid-session. Entries are validated — a hand-corrupted file
     reads as a load failure, not as a curve. */
+/** Not namespaced by slug: the pace-vs-grade fit is the athlete's own, the
+    same file whichever race is on screen — same reasoning as StravaProvider's
+    STRAVA_CACHE_KEY in providers.tsx. */
+const PACE_GRADE_CACHE_KEY = "pace-grade";
+
 export function usePaceGrade() {
   const { key: refreshKey } = useRefresh();
   const [data, setData] = useState<PaceGradeCurve>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let stale = false;
+    // v2 review ui2 #1: the projection needs this curve offline exactly as
+    // much as it needs course.json, but until now nothing cached it — a
+    // reload with the server unreachable fell back to the fallback grade
+    // model silently mid-race. Same fallback shape as useCourse/useCrewBase:
+    // a load failure (never a 404, which means "not fitted yet") reaches for
+    // the last copy that DID load rather than blanking the curve.
+    const fallback = (message: string) => {
+      if (stale) return;
+      const cached = cacheGet<PaceGradeCurve>(PACE_GRADE_CACHE_KEY);
+      if (cached) { setData(cached); setError(`${message} — showing the last saved copy`); }
+      else setError(message);
+    };
     fetch(`/pace-grade.json?t=${Date.now()}`)
       .then(async (r) => {
         if (stale) return;
         if (r.status === 404) { setData(null); setError(null); return; }
-        if (!r.ok) { setError(`pace-grade.json failed to load (HTTP ${r.status})`); return; }
+        if (!r.ok) { fallback(`pace-grade.json failed to load (HTTP ${r.status})`); return; }
         const d = await r.json().catch(() => { throw new Error("parse"); });
         const valid = d && Array.isArray(d.curve) && d.curve.length > 0 &&
           d.curve.every((p: { g: unknown; mult: unknown }) =>
             Number.isFinite(p.g) && Number.isFinite(p.mult) && (p.mult as number) > 0);
-        if (!valid) { if (!stale) setError("pace-grade.json invalid — using previous curve or fallback"); return; }
+        if (!valid) { fallback("pace-grade.json invalid — using previous curve or fallback"); return; }
         if (stale) return;
+        cachePut(PACE_GRADE_CACHE_KEY, d);
         setData(d); setError(null);
       })
-      .catch(() => { if (!stale) setError("pace-grade.json corrupt or unreadable"); });
+      .catch((e) => fallback(loadFailureMessage(e, "pace-grade.json corrupt or unreadable")));
     return () => { stale = true; };
   }, [refreshKey]);
   return { paceGrade: data, error };
@@ -163,7 +194,7 @@ export function useClimbs() {
         const d = await r.json().catch(() => { throw new Error("parse"); });
         setData(d); setMissing(false); setError(null);
       })
-      .catch(() => { setMissing(false); setError("climbs.json corrupt or unreadable"); });
+      .catch((e) => { setMissing(false); setError(loadFailureMessage(e, "climbs.json corrupt or unreadable")); });
   }, [refreshKey]);
   return { climbs: data, missing, error };
 }
@@ -194,13 +225,36 @@ export type Physiology = {
   body_kg: number;
   /** distance the fitted fitness pace is evaluated at, mi (pacing D_REF) */
   long_run_ref_mi: number;
+  /** the elevation the athlete is acclimated to, ft — the altitude term
+      measures the race's elevation against it. NULL means nobody has set
+      one: the model then falls back to sea level and every view that shows
+      the term says so, because silently assuming sea level would hand a
+      mountain-town athlete hours of penalty they do not owe. Unlike the two
+      above there is no default worth substituting — see PHYSIOLOGY_FIELDS'
+      `optional` in scripts/contracts.mjs. */
+  home_elevation_ft: number | null;
 };
 
-/** KEEP IN SYNC with PHYSIOLOGY_FIELDS in scripts/profile.mjs — the server
-    normalizes to the same numbers, these cover the endpoint being absent. */
-export const DEFAULT_PHYSIOLOGY: Physiology = { body_kg: 75, long_run_ref_mi: 20 };
+/** What the client plans against when /api/settings is unreachable. The
+    numbers are PHYSIOLOGY_FIELDS' own defaults, which is exactly what the
+    server normalizes a fresh profile to — so a missing endpoint and a
+    just-bootstrapped checkout produce the same plan, not two different ones. */
+export const DEFAULT_PHYSIOLOGY: Physiology = {
+  body_kg: PHYSIOLOGY_FIELDS.body_kg.dflt,
+  long_run_ref_mi: PHYSIOLOGY_FIELDS.long_run_ref_mi.dflt,
+  home_elevation_ft: PHYSIOLOGY_FIELDS.home_elevation_ft.dflt,
+};
 
 const isPhysNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
+/** Elevation is the one physiology number that may legitimately be 0 (or
+    below it — the Dead Sea, Death Valley), so it can't use isPhysNumber. The
+    band is the server's own, so a value the settings PUT accepted is never
+    thrown away here. */
+const isElevation = (v: unknown): v is number =>
+  typeof v === "number" &&
+  Number.isFinite(v) &&
+  v >= PHYSIOLOGY_FIELDS.home_elevation_ft.lo &&
+  v <= PHYSIOLOGY_FIELDS.home_elevation_ft.hi;
 
 export function usePhysiology() {
   const { key: refreshKey } = useRefresh();
@@ -224,11 +278,22 @@ export function usePhysiology() {
           setError(`config/profile.json has no usable physiology — planning against ${DEFAULT_PHYSIOLOGY.body_kg} kg / ${DEFAULT_PHYSIOLOGY.long_run_ref_mi} mi defaults`);
           return;
         }
-        setData({ body_kg: p.body_kg, long_run_ref_mi: p.long_run_ref_mi });
+        setData({
+          body_kg: p.body_kg,
+          long_run_ref_mi: p.long_run_ref_mi,
+          // absent until the athlete sets it (bead 02's settings field) —
+          // null, never a stand-in
+          home_elevation_ft: isElevation(p.home_elevation_ft) ? p.home_elevation_ft : null,
+        });
         setError(null);
       })
-      .catch(() => {
-        if (!stale) setError(`athlete profile unreadable — planning against ${DEFAULT_PHYSIOLOGY.body_kg} kg defaults`);
+      .catch((e) => {
+        if (!stale) {
+          setError(loadFailureMessage(
+            e,
+            `athlete profile unreadable — planning against ${DEFAULT_PHYSIOLOGY.body_kg} kg defaults`,
+          ));
+        }
       });
     return () => { stale = true; };
   }, [refreshKey]);
@@ -236,14 +301,24 @@ export function usePhysiology() {
 }
 
 /** races/<slug>/result.json (PRD §10), as GET /api/races/:slug/result serves
-    it. KEEP IN SYNC with scripts/race-result.mjs, which writes it. */
+    it. scripts/race-result.mjs writes the file and is the authority on its
+    shape: it is a whole document rather than a table of values, so there is
+    nothing for scripts/contracts.mjs to share — read that module before
+    adding a field here, and add it there first. */
 export type RaceResult = {
   status: "finished" | "dnf" | "dns";
   strava_activity_id: string | null;
   finish_h: number | null;
   official_time: string | null;
   placement: string | null;
-  splits: { station: string; elapsed_h: number | null; source: "track" | "official" | "manual" }[];
+  // PR #24 review round 3: narrowed from "track" | "official" | "manual".
+  // scripts/race-result.mjs only ever produces "track" (splitsFromStream) or
+  // "official" (mergeOfficialSplits, which is ALSO what the archive dialog's
+  // free-text "official splits" box writes — there is no separate hand-entry
+  // path distinguishable from a scraped/typed official result; both are the
+  // one non-GPS override and both are "official"). See PRD-modular-races.md
+  // §15 for the deviation note.
+  splits: { station: string; elapsed_h: number | null; source: "track" | "official" }[];
   notes: string | null;
 };
 
@@ -274,10 +349,199 @@ export function useRaceResult(slug: string | null) {
         setData(((d as { result?: RaceResult | null }).result) ?? null);
         setError(null);
       })
-      .catch(() => { if (!stale) setError("result.json corrupt or unreadable"); });
+      .catch((e) => { if (!stale) setError(loadFailureMessage(e, "result.json corrupt or unreadable")); });
     return () => { stale = true; };
   }, [slug, refreshKey]);
   // With no slug there is nothing to report — including whatever the last
   // slug left behind, which belonged to a different race.
   return { result: slug ? data : null, error: slug ? error : null };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Live tracker polling — PRD v2 §4, bead tt-cv1b0.6                  */
+/*                                                                    */
+/*  GET /api/races/:slug/tracker asks the race's configured timing     */
+/*  site where the runner was last seen. The SERVER holds a 60 s cache */
+/*  (scripts/trackers/index.mjs) and nothing anywhere polls on a timer */
+/*  unless a browser is asking — this hook is that browser, and these  */
+/*  are its manners:                                                   */
+/*                                                                    */
+/*    · 60 s between polls, matching the server's TTL exactly. Asking  */
+/*      faster only burns battery on a cached answer.                  */
+/*    · PAUSED while the tab is hidden. A phone in a pocket for six    */
+/*      hours must not keep a volunteer-run timing site company; the   */
+/*      first thing it does on coming back is poll.                    */
+/*    · exponential backoff on a 502 (or any other failure, or the     */
+/*      network being gone): the tracker being down mid-race is        */
+/*      ordinary, and hammering it does not bring it back.             */
+/*    · STOPPED, permanently, on 404 (no tracker configured, or no     */
+/*      adapter for the URL) and 501 (a recognised tracker that cannot */
+/*      be read — MAProgress). Neither fixes itself while the page is  */
+/*      open, so it says so in one line and stops asking.              */
+/*                                                                    */
+/*  It fetches nothing but this endpoint. Course files are loaded once */
+/*  by useCourse and never re-read on a tracker tick.                  */
+/* ------------------------------------------------------------------ */
+
+/** Matches CACHE_TTL_MS in scripts/trackers/index.mjs. */
+const TRACKER_POLL_MS = 60_000;
+
+/** First retry after a failure; doubles per consecutive failure. */
+const TRACKER_BACKOFF_MS = 60_000;
+
+/** Ceiling on the backoff — beyond this the page has effectively given up,
+    and a runner who reloads is the recovery path that actually works. */
+const TRACKER_MAX_BACKOFF_MS = 8 * 60_000;
+
+export type TrackerState = {
+  /** the last checkpoint the tracker reported, or null when the runner is
+      not on its page / has no checkpoint past the start */
+  tracker: TrackerCheckpoint | null;
+  /** ISO instant of the poll behind `tracker` */
+  polledAt: string | null;
+  /** one line for the race-day screen; null while everything is fine */
+  notice: string | null;
+  /** true once polling has stopped for good (404/501/409) */
+  stopped: boolean;
+};
+
+const TRACKER_IDLE: TrackerState = { tracker: null, polledAt: null, notice: null, stopped: false };
+
+/**
+ * The notice for a poll that stops for good — a config problem no retry
+ * fixes, so polling does not resume on its own (see `stopped` above).
+ *
+ * 409 is `code: "ambiguous"` (web/vite.config.ts's raceTrackerApi): a bib/name
+ * ties across two or more entrants, which is the athlete's to resolve (set a
+ * bib on the review screen), not a transient failure worth retrying.
+ *
+ * Pure and exported so the copy is unit-testable without mocking `fetch` —
+ * see scripts/tracker-notice.test.mjs.
+ */
+export function stoppedTrackerNotice(status: 404 | 501 | 409, body: { error?: string } | null): string {
+  if (status === 409) return "several runners match — set your bib on the review screen";
+  if (body?.error) return `live tracking is off — ${body.error}`;
+  return status === 501
+    ? "this race's tracker can't be read automatically — use the manual checkpoint below"
+    : "no live tracker is configured for this race";
+}
+
+/**
+ * The notice for a SUCCESSFUL poll whose `tracker` came back null.
+ *
+ * `TrackerResponse.reason` is additive (scripts/trackers/index.mjs's
+ * `pollTracker`): null whenever a checkpoint was found, "no_checkpoint" for
+ * a matched runner who simply hasn't reached one yet — which needs no notice
+ * of its own, since the race-day screen's own "Watching the race tracker…"
+ * line (RaceDay.tsx, shown whenever there is no notice) already says exactly
+ * that — and "runner_not_found" for a bib/name that matches nobody on the
+ * tracker's page, which does.
+ */
+export function successTrackerNotice(reason: TrackerResponse["reason"]): string | null {
+  return reason === "runner_not_found" ? "runner not found on the tracker — check bib/name" : null;
+}
+
+/**
+ * Poll this race's live tracker while the page is open.
+ *
+ * @param slug the race to poll, or `null` to poll nothing at all — which is
+ *   what a race with no `tracking.url` passes, the same way useRaceResult
+ *   takes null for a race with no result worth asking about.
+ */
+export function useTracker(slug: string | null): TrackerState {
+  // Keyed on the slug and re-read in the RENDER phase, the way usePosition
+  // and useRacePlan's knobs are: an effect that reset the state instead
+  // would flash the PREVIOUS race's checkpoint for one paint after a switch.
+  const [state, setState] = useState<{ slug: string | null; v: TrackerState }>(() => ({ slug, v: TRACKER_IDLE }));
+  if (state.slug !== slug) setState({ slug, v: TRACKER_IDLE });
+
+  useEffect(() => {
+    if (!slug) return;
+
+    let stale = false;
+    // `stopped` is local to this effect run, not React state: the scheduler
+    // below reads it synchronously between a response and the next timer,
+    // and a state update would not be visible in time.
+    let stopped = false;
+    let failures = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    /** Every write goes through here so a late response from a race that has
+        since been switched away from can never land on the new one. */
+    const put = (fn: (prev: TrackerState) => TrackerState) => {
+      if (stale) return;
+      setState((s) => (s.slug === slug ? { slug, v: fn(s.v) } : s));
+    };
+
+    const schedule = (ms: number) => {
+      if (stale || stopped) return;
+      timer = setTimeout(() => { timer = null; void poll(); }, ms);
+    };
+
+    const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+
+    const poll = async () => {
+      if (stale || stopped) return;
+      // Hidden: drop the chain entirely rather than re-arming it. The
+      // visibility listener below restarts it the moment the tab is looked
+      // at, which is also when the answer starts mattering again.
+      if (hidden()) return;
+      try {
+        const r = await fetch(`/api/races/${encodeURIComponent(slug)}/tracker?t=${Date.now()}`);
+        if (stale) return;
+        if (r.status === 404 || r.status === 501 || r.status === 409) {
+          const body = await r.json().catch(() => null) as { error?: string } | null;
+          stopped = true;
+          put((v) => ({ ...v, stopped: true, notice: stoppedTrackerNotice(r.status as 404 | 501 | 409, body) }));
+          return;
+        }
+        if (!r.ok) {
+          failures += 1;
+          put((v) => ({ ...v, notice: `tracker unreachable (HTTP ${r.status}) — retrying` }));
+          schedule(backoff(failures));
+          return;
+        }
+        const d = await r.json() as TrackerResponse;
+        if (stale) return;
+        failures = 0;
+        put(() => ({
+          tracker: d.tracker ?? null,
+          polledAt: d.polled_at ?? null,
+          notice: successTrackerNotice(d.reason),
+          stopped: false,
+        }));
+        schedule(TRACKER_POLL_MS);
+      } catch {
+        if (stale) return;
+        failures += 1;
+        // The offline case lands here too. The last checkpoint STAYS on
+        // screen — it was true when it was read, and a runner who has just
+        // walked out of signal still wants to know where they were.
+        put((v) => ({ ...v, notice: "tracker unreachable — retrying" }));
+        schedule(backoff(failures));
+      }
+    };
+
+    const onVisible = () => {
+      if (stale || stopped || hidden() || timer !== null) return;
+      void poll();
+    };
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
+
+    void poll();
+    return () => {
+      stale = true;
+      if (timer !== null) clearTimeout(timer);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [slug]);
+
+  // With no slug there is nothing to report, including whatever the previous
+  // slug left behind — the same rule useRaceResult applies.
+  return slug && state.slug === slug ? state.v : TRACKER_IDLE;
+}
+
+/** Doubling backoff, capped. `n` is the consecutive-failure count. */
+function backoff(n: number): number {
+  return Math.min(TRACKER_MAX_BACKOFF_MS, TRACKER_BACKOFF_MS * 2 ** Math.max(0, n - 1));
 }

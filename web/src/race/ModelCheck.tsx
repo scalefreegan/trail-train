@@ -2,9 +2,10 @@ import { useMemo } from "react";
 import { useStrava, useMeasuredWidth, useUnits } from "../data";
 import { SectionTag } from "../atoms";
 import { useRacePlan } from "./useRacePlan";
-import { useRaceResult } from "./useRaceData";
-import { BIAS_WORTH_ACTING_ON, calibrate, type Band, type Flag } from "./calibration";
+import { useClimbs, useRaceResult } from "./useRaceData";
+import { BIAS_WORTH_ACTING_ON, HIGH_ALTITUDE_MARGIN_FT, calibrate, type Band, type Flag } from "./calibration";
 import { fmtElapsed } from "./pacing";
+import { ALTITUDE_THRESHOLD_FT } from "./altitude";
 
 /* ------------------------------------------------------------------ */
 /*  Model check — how much to trust the number above.                  */
@@ -186,8 +187,27 @@ function Band3({ best, avg, worst, goal, actual = null }: {
 
 export function ModelCheck() {
   const u = useUnits();
-  const { course, proj, fit, paceGrade, settings, features, panels, raceConfig } = useRacePlan();
+  const { course, proj, fit, paceGrade, settings, panels, raceConfig, physiology, acclimation } = useRacePlan();
+  const alt = proj?.altitude ?? null;
   const { activities } = useStrava();
+  // climbs.json carries one number per run the back-test needs and nothing
+  // else does: the run's distance-weighted mean elevation, lifted out of the
+  // gitignored stream cache by scripts/sync-streams.mjs.
+  const { climbs } = useClimbs();
+  // Where the acclimation day count came from — the same three words the
+  // planner prints, because the two panels must not disagree about whether a
+  // number was measured or assumed.
+  const acclimSource =
+    acclimation.source === "calendar" ? `from your calendar${acclimation.event ? `: ${acclimation.event}` : ""}`
+    : acclimation.source === "override" ? "your manual override"
+    : "assumed — nothing on the calendar matched";
+  const meanElevationFtById = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const e of climbs?.activity_elevations ?? []) {
+      if (Number.isFinite(e?.mean_ele_ft)) m[String(e.activity_id)] = e.mean_ele_ft;
+    }
+    return m;
+  }, [climbs]);
   // An archived race puts its real finish on the band it was projected into.
   // Only a finish: a DNF has no time to compare, and saying so is the race
   // view's job, not this scale's.
@@ -198,8 +218,12 @@ export function ModelCheck() {
     () => calibrate({
       fit, course, activities, gradeCurve: paceGrade,
       currentCalibrationPct: settings.calibration,
+      meanElevationFtById,
+      homeElevationFt: physiology.home_elevation_ft,
+      currentAltitudePct: settings.altitude,
     }),
-    [fit, course, activities, paceGrade, settings.calibration],
+    [fit, course, activities, paceGrade, settings.calibration, meanElevationFtById,
+     physiology.home_elevation_ft, settings.altitude],
   );
 
   if (!proj || !cal) return null;
@@ -228,19 +252,44 @@ export function ModelCheck() {
         <div>
           <span className="eyebrow" style={{ fontSize: 8.5, display: "block", marginBottom: 8 }}>projection band</span>
           <Band3 best={proj.finish_h.best} avg={proj.finish_h.avg} worst={proj.finish_h.worst} goal={proj.goal_h} actual={actualFinishH} />
-          {/* PRD §2: the altitude flag buys a caveat, not pacing math. The fit
-              is built from training runs at whatever elevation you train at,
-              and nothing downstream corrects for the race's — so the band
-              above is silently optimistic and the honest move is to say so
-              rather than invent an adjustment nobody validated. */}
-          {features.altitude && (
+          {/* PRD-v2 §2 replaces v1's "altitude is not modeled" caveat with the
+              term itself. The paragraph's job is no longer to warn that the
+              band is optimistic — it is to say how many minutes of the band
+              ARE altitude, what they were measured from, and what would
+              change them, so the number can be argued with instead of
+              believed. Shown only where the model does something: on a course
+              that never reaches the threshold there is nothing to report. */}
+          {alt != null && alt.max_seg_ele_ft > ALTITUDE_THRESHOLD_FT && (
             <p style={{ fontSize: 11.5, color: "var(--lamp)", lineHeight: 1.55, margin: "8px 0 0", maxWidth: "72ch" }}>
-              Altitude is not modeled.{" "}
-              {raceConfig?.elevation?.max_ft != null
-                ? `This course runs as high as ${u.elev(raceConfig.elevation.max_ft)} ${u.elevUnit}, and `
-                : "This race is flagged as run at altitude, and "}
-              none of the paces behind these three numbers know it — every band here is a
-              lowland-equivalent projection. Read it as the optimistic edge, not the middle.
+              {alt.pct <= 0 || alt.max_penalty <= 0 ? (
+                <>
+                  <strong>Altitude is modeled, and you have it switched off.</strong>{" "}
+                  This course spends {u.dist(alt.miles_above_threshold, 0)} {u.distUnit} above{" "}
+                  {u.elev(ALTITUDE_THRESHOLD_FT)} {u.elevUnit} and peaks at a{" "}
+                  {u.elev(alt.max_seg_ele_ft)} {u.elevUnit} segment; at 100% the model would add{" "}
+                  {fmtElapsed(alt.added_h_at_full)} to the expected finish. The three numbers above are a
+                  lowland-equivalent projection until you turn the altitude slider back up.
+                </>
+              ) : (
+                <>
+                  <strong>Altitude adds {fmtElapsed(alt.added_h)}</strong> to the expected finish
+                  — that much of the band above is thin air, not fitness.{" "}
+                  {u.dist(alt.miles_above_threshold, 0)} {u.distUnit} of this course sit above{" "}
+                  {u.elev(ALTITUDE_THRESHOLD_FT)} {u.elevUnit}, and the highest segment averages{" "}
+                  {u.elev(alt.max_seg_ele_ft)} {u.elevUnit}, where the model charges{" "}
+                  +{(alt.max_penalty * 100).toFixed(1)}% on pace.{" "}
+                  {alt.home_assumed
+                    ? <><strong style={{ color: "var(--ember)" }}>Measured from sea level</strong> — nobody has told the
+                        planner where you live, so this is the worst case. Set your home elevation in the coach
+                        settings dialog and the penalty is measured from there instead.</>
+                    : <>Measured from your {u.elev(alt.home_ft)} {u.elevUnit} home elevation
+                        {alt.acclimation_days > 0
+                          ? <>, with {alt.acclimation_days} day{alt.acclimation_days === 1 ? "" : "s"} of acclimation credited ({acclimSource}).</>
+                          : <>, with no acclimation credited ({acclimSource}) — this is the fly-in-and-run case.</>}</>}
+                  {alt.pct !== 100 && <> The altitude slider is at {alt.pct}%, so this is {alt.pct > 100 ? "more" : "less"} than
+                    the published curve asks for.</>}
+                </>
+              )}
             </p>
           )}
         </div>
@@ -292,6 +341,75 @@ export function ModelCheck() {
                        of the {settings.calibration}% set now — your call, the planner will not change it for you.</>
                     : null}</>}
             </p>
+          </div>
+        )}
+
+        {/* ---- does the altitude curve fit THIS athlete? ---- */}
+        {alt != null && alt.max_seg_ele_ft > ALTITUDE_THRESHOLD_FT && (
+          <div style={{ borderTop: "1px solid var(--edge)", paddingTop: 14 }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--mist)" }}>
+                Altitude calibration{" "}
+                <span className="numerals" style={{ color: cal.altitude.status === "calibrated" ? "var(--lamp)" : "var(--mist-mute)" }}>
+                  {cal.altitude.status === "calibrated"
+                    ? `${cal.altitude.suggested_altitude_pct}%`
+                    : "uncalibrated"}
+                </span>
+              </span>
+              <span className="eyebrow numerals" style={{ fontSize: 9, color: cal.altitude.n < cal.altitude.min_n ? "var(--lamp)" : undefined }}>
+                n{cal.altitude.n} of {cal.altitude.min_n}
+                {cal.altitude.threshold_ft != null && <> · above {u.elev(cal.altitude.threshold_ft)} {u.elevUnit}</>}
+              </span>
+            </div>
+            <p style={{ fontSize: 11.5, color: "var(--mist-dim)", lineHeight: 1.6, margin: "6px 0 0", maxWidth: "72ch" }}>
+              {/* The label is written in calibration.ts so the same sentence
+                  is available to anything else that reports this. */}
+              {cal.altitude.label}
+              {cal.altitude.status === "calibrated" && (
+                <>
+                  {" "}The baseline is a pacing fit over your runs <em>below</em> that line only, so each high run is
+                  predicted out of sample. It cannot separate thin air from the rockier, colder ground that usually
+                  comes with it, so read {cal.altitude.suggested_altitude_pct}% as an upper bound — and set it
+                  yourself if you agree; nothing here moves the slider for you.
+                  {cal.altitude.suggestion_clamped && <> (The raw ratio landed outside the slider's range and has been clamped.)</>}
+                </>
+              )}
+              {cal.altitude.status === "no-home" && (
+                <> Until then the projection measures the penalty from sea level, which is the worst case for it.</>
+              )}
+              {cal.altitude.status === "uncalibrated" && cal.altitude.home_ft != null && (
+                <> A run counts once its distance-weighted mean elevation is {u.elev(HIGH_ALTITUDE_MARGIN_FT)} {u.elevUnit} above
+                  your {u.elev(cal.altitude.home_ft)} {u.elevUnit} home — the projection keeps using the published curve at{" "}
+                  {settings.altitude}% meanwhile.</>
+              )}
+            </p>
+            {cal.altitude.runs.length > 0 && (
+              // Horizontal scroll INSIDE this block, not a page-wide overflow:
+              // 74+56+72+100px of fixed columns + 4×8px gaps is 334px before
+              // the title column even gets a character, which blows past a
+              // 320px phone's content width on its own. The "longest efforts"
+              // table below this one already learned that lesson (its own
+              // overflowX: auto wrapper) — this block just never got it
+              // (round 4 finding 7).
+              <div style={{ marginTop: 8, overflowX: "auto" }}>
+                <div style={{ minWidth: 400 }}>
+                  {[...cal.altitude.runs].slice(0, 6).map((r, i) => (
+                    <div key={`${r.date}-${r.title}-${i}`} style={{ display: "grid", gridTemplateColumns: "74px 56px 72px 1fr 100px", gap: 8, alignItems: "baseline", padding: "3px 0", borderBottom: "1px dotted var(--edge)" }}>
+                      <span className="numerals" style={{ fontSize: 10.5, color: "var(--mist-mute)" }}>{r.date}</span>
+                      <span className="numerals" style={{ fontSize: 11.5, color: "var(--mist)" }}>{r.distance_mi.toFixed(1)} {u.distUnit}</span>
+                      <span className="numerals" style={{ fontSize: 10.5, color: "var(--mist-mute)" }}>{u.elev(r.mean_ele_ft)} {u.elevUnit}</span>
+                      <span style={{ fontSize: 11.5, color: "var(--mist-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</span>
+                      <span className="numerals" style={{ fontSize: 11.5, textAlign: "right", color: r.err_pct > 0 ? "var(--ember)" : "var(--creek)" }}>
+                        {r.err_pct >= 0 ? "+" : ""}{r.err_pct.toFixed(1)}% <span style={{ color: "var(--mist-mute)" }}>/ +{r.modeled_pct.toFixed(1)}%</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--mist-mute)", display: "block", marginTop: 4 }}>
+                  observed vs modeled, per run
+                </span>
+              </div>
+            )}
           </div>
         )}
 

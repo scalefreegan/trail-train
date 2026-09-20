@@ -37,12 +37,12 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { writeJsonAtomic } from "./lib.mjs";
+import { projectRoot, writeJsonAtomic } from "./lib.mjs";
 import { haversine, smoothProfile, detectClimbs, gainBetween } from "./climb-lib.mjs";
 import { getActiveRace, listRaces, loadRaceFolder, loadRaceFolderAt } from "./race-config.mjs";
 import { matchAidStations, LOW_CONFIDENCE } from "./aid-match.mjs";
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = projectRoot();
 
 const M_PER_FT = 0.3048;
 const OUT_GRID_MI = 0.05; // profile resolution written to course.json
@@ -476,6 +476,25 @@ export async function buildCourse(root, slug, opts = {}) {
       base.gpx_mi = +measuredDist.toFixed(3);
       base.lat = +end.lat.toFixed(5);
       base.lon = +end.lon.toFixed(5);
+      // A tune-up's single "Finish" station is SYNTHESIZED by
+      // quickCreateRace from the quick form's declared distance_mi — a
+      // pre-upload guess, not a runner's manual's own aid-chart mile
+      // (round 4 confirm, ui1 PARTIAL #1). RacePlanner's distance column
+      // reads a station's total_mi verbatim (pacing.ts's seg_mi does too),
+      // while its climb/pace are already derived from gpx_mi — so once a
+      // real course.gpx exists, leaving total_mi at the pre-upload guess
+      // let a bad upload (e.g. 3x the declared distance) show one row with
+      // the OLD declared distance next to a climb and pace computed from
+      // the wildly different real track. Snapping total_mi to the measured
+      // distance here makes distance, climb and pace agree in that one row.
+      // The declared distance_mi stays untouched on race.json itself — the
+      // banner above still cites it, from `official_distance_mi`.
+      // An A race's aid chart is the manual's own authored miles between
+      // real, physically distinct stations, never synthesized — that path
+      // is untouched (kind !== "b" here, or more than one station).
+      if (race.kind === "b" && lastStationIdx === 0) {
+        base.total_mi = +measuredDist.toFixed(3);
+      }
       log(`  ${a.name.padEnd(16)} official ${a.total_mi.toFixed(1)} → track end ${measuredDist.toFixed(2)} mi (finish)`);
       return base;
     }
@@ -761,7 +780,10 @@ export async function buildCourse(root, slug, opts = {}) {
     gain_ft: Math.round(measuredGain),
     official_distance_mi: officialDist,
     official_gain_ft: officialGain,
-    // TODO(tt-yib.5): recompute via scripts/race-sun.mjs when rebuilding a folder
+    // Copied from race.json rather than recomputed. Still open: a rebuild
+    // that moves the course or the date leaves the old sun times in place —
+    // run scripts/race-sun.mjs afterwards (the race harness's reference
+    // rebuild does, and checks the pair lands within five minutes).
     sun: race.sun,
     profile,
     aid_stations,

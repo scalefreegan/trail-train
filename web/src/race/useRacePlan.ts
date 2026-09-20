@@ -7,9 +7,15 @@ import {
   resolveFeatures, visibleColumns, visiblePanels,
   type ResolvedFeatures, type VisibleColumns, type VisiblePanels,
 } from "./features";
-import type { Course, RaceConfig } from "./types";
+import type { Acclimation, Course, RaceConfig } from "./types";
 import { migrateLegacyKnobs } from "./knobMigration";
 import type { SunTimes } from "./nightWindow";
+import { DEFAULT_ACCLIMATION_DAYS } from "../contracts";
+import { DEFAULT_ALTITUDE_PCT, DEFAULT_CREW_KNOBS, defaultGoalH } from "../crew/crewData";
+import {
+  ACCLIMATION_DAYS_RANGE, ALTITUDE_PCT_RANGE, parsePersistedNullableNumber, parsePersistedNumber,
+  type NumberRange,
+} from "./persistedNumber";
 
 /* ------------------------------------------------------------------ */
 /*  Shared race-plan wiring.                                          */
@@ -47,19 +53,51 @@ import type { SunTimes } from "./nightWindow";
 /*  same paint, where an effect would flash the pre-resolution value.  */
 /* ------------------------------------------------------------------ */
 
-export function usePersistedNumber(key: string | null, initial: number) {
-  const read = (): number => {
-    if (key == null || typeof localStorage === "undefined") return initial;
-    const raw = localStorage.getItem(key);
-    const n = raw == null ? NaN : Number(raw);
-    return Number.isFinite(n) ? n : initial;
-  };
+// The stored-value clamp itself (parsePersistedNumber/parsePersistedNullableNumber,
+// ALTITUDE_PCT_RANGE, ACCLIMATION_DAYS_RANGE) lives in ./persistedNumber,
+// zero-import so scripts/use-race-plan.test.mjs can exercise it directly —
+// see that file's header. Re-exported here so nothing importing them from
+// this module (their original home) has to change.
+export {
+  clampToRange, parsePersistedNumber, parsePersistedNullableNumber,
+  ALTITUDE_PCT_RANGE, ACCLIMATION_DAYS_RANGE, type NumberRange,
+} from "./persistedNumber";
+
+export function usePersistedNumber(key: string | null, initial: number, range?: NumberRange) {
+  const read = (): number =>
+    key == null || typeof localStorage === "undefined"
+      ? initial
+      : parsePersistedNumber(localStorage.getItem(key), initial, range);
   const [state, setState] = useState(() => ({ key, initial, v: read() }));
   if (state.key !== key || state.initial !== initial) setState({ key, initial, v: read() });
   const set = (n: number) => {
     setState({ key, initial, v: n });
     if (key == null) return;
     try { localStorage.setItem(key, String(n)); } catch { /* private mode */ }
+  };
+  return [state.v, set] as const;
+}
+
+/**
+ * The same storage discipline for a knob whose "unset" is meaningful: an
+ * acclimation override of 0 days (lands race morning) is a real answer and
+ * must not read as "no override". Absent in storage — or cleared back to
+ * absent — is null; every number, including 0, is a value.
+ */
+export function usePersistedNullableNumber(key: string | null, range?: NumberRange) {
+  const read = (): number | null =>
+    key == null || typeof localStorage === "undefined"
+      ? null
+      : parsePersistedNullableNumber(localStorage.getItem(key), range);
+  const [state, setState] = useState(() => ({ key, v: read() }));
+  if (state.key !== key) setState({ key, v: read() });
+  const set = (n: number | null) => {
+    setState({ key, v: n });
+    if (key == null) return;
+    try {
+      if (n == null) localStorage.removeItem(key);
+      else localStorage.setItem(key, String(n));
+    } catch { /* private mode */ }
   };
   return [state.v, set] as const;
 }
@@ -150,13 +188,37 @@ export type RacePlan = {
   timeZone: string;
   /** an elapsed race hour on the race's wall clock ("6:00a", "2:14p+1") */
   clock: (elapsedH: number) => string;
+  /** The acclimation the projection actually used, after the per-slug
+      manual override is applied to what the server derived. `source` is what
+      the planner prints: an athlete reading "4 days" is entitled to know
+      whether that came off their calendar, off an assumption, or off their
+      own keyboard. */
+  acclimation: {
+    days: number;
+    source: Acclimation["source"];
+    /** YYYY-MM-DD when one is known (derived, or back-computed from an
+        override against race day) */
+    arrivalDate: string | null;
+    /** the calendar event's title, for source "calendar" */
+    event: string | null;
+    /** what the server derived, ignoring the override — so the planner can
+        say what it is overruling */
+    derived: Acclimation | null;
+  };
   settings: {
     fatigue: number; calibration: number; restraint: number; goalH: number;
+    /** the altitude term's scale, % (100 = the model as published, 0 = off) */
+    altitude: number;
+    /** the athlete's manual acclimation override, days — null = use the
+        server's derivation */
+    acclimationOverride: number | null;
     aidStopMin: number; crewStopMin: number; stopOverrides: Record<string, number>;
   };
   set: {
     fatigue: (n: number) => void; calibration: (n: number) => void;
     restraint: (n: number) => void; goalH: (n: number) => void;
+    altitude: (n: number) => void;
+    acclimationOverride: (n: number | null) => void;
     aidStopMin: (n: number) => void; crewStopMin: (n: number) => void;
     stopOverride: (name: string, min: number | null) => void;
     clearStopOverrides: () => void;
@@ -196,7 +258,7 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
   // The slug ON SCREEN, not the training target: a goal time set while
   // browsing an archived race belongs to THAT race's knobs, and must not
   // leak into the next race the athlete actually trains for.
-  const { viewing: activeSlug, resolved: raceResolved } = useActiveRace();
+  const { viewing: activeSlug, resolved: raceResolved, activeRace } = useActiveRace();
   const { activities } = useStrava();
   const { course, missing, error: courseError } = useCourse();
   const { paceGrade, error: paceGradeError } = usePaceGrade();
@@ -219,21 +281,74 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
 
   // 85 % of the cutoff, to the nearest half hour: a goal that is ambitious but
   // inside the cutoff, for THIS race — the old constant 32 was MM100's answer
-  // and would be an impossible target on a race with a 24 h limit.
+  // and would be an impossible target on a race with a 24 h limit. The rule
+  // and the slider defaults below come from crew/crewData, because a CLI crew
+  // export with no --knobs file has to reproduce the planner the athlete was
+  // looking at; a second copy here is how the two drifted.
   const cutoffH = raceConfig.cutoff_h ?? race.cutoff_h;
-  const goalDefaultH = cutoffH != null && cutoffH > 0 ? Math.round(cutoffH * 0.85 * 2) / 2 : 32;
+  const goalDefaultH = defaultGoalH(cutoffH);
 
-  const [fatigue, setFatigue] = usePersistedNumber(knob("fatigue_pct_v2"), 5);
+  const [fatigue, setFatigue] = usePersistedNumber(knob("fatigue_pct_v2"), DEFAULT_CREW_KNOBS.fatiguePctPer10mi);
   // training runs are stronger efforts than race-sustainable pace — slow every
   // projected pace by this much (athlete-requested honesty correction)
-  const [calibration, setCalibration] = usePersistedNumber(knob("calibration_pct"), 6);
+  const [calibration, setCalibration] = usePersistedNumber(knob("calibration_pct"), DEFAULT_CREW_KNOBS.calibrationPct);
   // deliberate hold-back through mile 50 (taper to 60); restrained miles also
   // age the fatigue clock less — bank energy for the second 50
-  const [restraint, setRestraint] = usePersistedNumber(knob("restraint_pct"), 8);
+  const [restraint, setRestraint] = usePersistedNumber(knob("restraint_pct"), DEFAULT_CREW_KNOBS.restraintPct);
   const [goalH, setGoalH] = usePersistedNumber(knob("goal_h"), goalDefaultH);
-  const [aidStopMin, setAidStopMin] = usePersistedNumber(knob("aid_stop_min"), 5);
-  const [crewStopMin, setCrewStopMin] = usePersistedNumber(knob("crew_stop_min"), 10);
+  // how much of the modeled altitude penalty to apply: 100 = the curve as
+  // published (scripts/altitude.mjs), 0 = off. A knob rather than a constant
+  // because the curve is a population average and bead 02's back-test will
+  // have an opinion about this athlete's own number.
+  const [altitude, setAltitude] = usePersistedNumber(knob("altitude_pct"), DEFAULT_ALTITUDE_PCT, ALTITUDE_PCT_RANGE);
+  // The athlete's own answer to "how long will you have been up there?",
+  // overriding whatever the calendar derivation found. Nullable, not a
+  // sentinel: 0 (fly in and run) is a legitimate override and has to be
+  // distinguishable from "no override set".
+  const [acclimationOverride, setAcclimationOverride] =
+    usePersistedNullableNumber(knob("acclimation_days"), ACCLIMATION_DAYS_RANGE);
+  const [aidStopMin, setAidStopMin] = usePersistedNumber(knob("aid_stop_min"), DEFAULT_CREW_KNOBS.aidStopMin);
+  const [crewStopMin, setCrewStopMin] = usePersistedNumber(knob("crew_stop_min"), DEFAULT_CREW_KNOBS.crewStopMin);
   const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops(knob("stop_overrides"));
+
+  // What the server derived from the calendar (train mode only — a browsed
+  // race carries no acclimation, and neither does a server that predates
+  // this field), and what the projection should actually use once the
+  // athlete's override is applied on top.
+  const derivedAcclimation = activeRace?.acclimation ?? null;
+  const acclimation = useMemo(() => {
+    const override =
+      acclimationOverride != null && Number.isFinite(acclimationOverride) && acclimationOverride >= 0
+        ? Math.floor(acclimationOverride)
+        : null;
+    if (override != null) {
+      // Back-compute the date the override implies so the readout can show
+      // one either way. race.date is the start INSTANT in the race's zone;
+      // its race-local calendar day is what the server counted to, and
+      // toISOString() would hand back the UTC day instead.
+      const raceDay = raceConfig.date ?? null;
+      const arrivalDate = raceDay
+        ? new Date(Date.parse(`${raceDay}T00:00:00Z`) - override * 86_400_000).toISOString().slice(0, 10)
+        : null;
+      return { days: override, source: "override" as const, arrivalDate, event: null, derived: derivedAcclimation };
+    }
+    if (derivedAcclimation && Number.isFinite(derivedAcclimation.days_at_altitude)) {
+      return {
+        days: Math.max(0, derivedAcclimation.days_at_altitude),
+        source: derivedAcclimation.source,
+        arrivalDate: derivedAcclimation.arrival_date,
+        event: derivedAcclimation.matched_event?.summary ?? null,
+        derived: derivedAcclimation,
+      };
+    }
+    return {
+      days: DEFAULT_ACCLIMATION_DAYS,
+      source: "default" as const,
+      arrivalDate: null,
+      event: null,
+      derived: null,
+    };
+  }, [acclimationOverride, derivedAcclimation, raceConfig.date]);
 
   const features = useMemo(() => resolveFeatures(raceConfig), [raceConfig]);
   const panels = useMemo(() => visiblePanels(raceConfig), [raceConfig]);
@@ -253,8 +368,19 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
       fatiguePctPer10mi: fatigue, calibrationPct: calibration, restraintPct: restraint,
       gradeCurve: paceGrade,
       goalH: goalH > 0 ? goalH : null, aidStopMin, crewStopMin, stopOverridesMin: stopOverrides,
+      // A race that declares `features.altitude: false` gets no term at all,
+      // whatever its profile says. The flag is the athlete's answer to "is
+      // this run at altitude?", and a penalty applied where the views hide
+      // the slider that controls it is a silent one.
+      // acclimationDays is the RESOLVED count (calendar derivation, or the
+      // athlete's override, or the day-before default) — see `acclimation`
+      // above, which also carries the provenance the planner prints.
+      altitude: features.altitude
+        ? { pct: altitude, homeElevationFt: physiology.home_elevation_ft, acclimationDays: acclimation.days }
+        : null,
     }) : null),
-    [course, fit, paceGrade, fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides],
+    [course, fit, paceGrade, fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides,
+     altitude, physiology.home_elevation_ft, features.altitude, acclimation.days],
   );
 
   // course.sun is the freshest (it's what the last build actually computed);
@@ -274,11 +400,16 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
     paceGrade, paceGradeError, nutritionError, nutritionSource,
     fit, proj, nutrition, fuelPlan, physiology, physiologyError,
     raceStart: race.date, timeZone: race.timeZone, clock: race.clock,
-    raceConfig, race, features, panels, columns,
-    settings: { fatigue, calibration, restraint, goalH, aidStopMin, crewStopMin, stopOverrides },
+    raceConfig, race, features, panels, columns, acclimation,
+    settings: {
+      fatigue, calibration, restraint, goalH, altitude, acclimationOverride,
+      aidStopMin, crewStopMin, stopOverrides,
+    },
     set: {
       fatigue: setFatigue, calibration: setCalibration, restraint: setRestraint,
-      goalH: setGoalH, aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
+      goalH: setGoalH, altitude: setAltitude,
+      acclimationOverride: setAcclimationOverride,
+      aidStopMin: setAidStopMin, crewStopMin: setCrewStopMin,
       stopOverride: setStopOverride, clearStopOverrides,
     },
   };

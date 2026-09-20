@@ -1,0 +1,63 @@
+{
+  "_comment": [
+    "The canned stage-1 (intake agent) reply for the refresh flow.",
+    "",
+    "TRAIL_FAKE_AGENT points scripts/agent-run.mjs at this file, so every headless",
+    "agent exchange in the test server resolves with these bytes instead of",
+    "spawning `claude`. Everything after the agent — validateAgentDraft,",
+    "buildRaceJson, the course build, the merge and the diff — is the real code.",
+    "",
+    "This is what the agent would say after re-reading the fixture race site",
+    "(web/tests/fixtures/site/dry-wash-50k.html) against races/_fixtures/crewless-50k.",
+    "It agrees with the folder on disk everywhere EXCEPT the two cutoffs the",
+    "fixture site moved, which is what gives the refresh a diff to show:",
+    "  · cutoff_h                 9    -> 9.5   (the site says 9:30)",
+    "  · Broken Fence cutoff_h    5    -> 5.333 (the site says 5:20)",
+    "",
+    "Contract (scripts/race-intake.mjs validateAgentDraft): `name`, `short` and a",
+    "non-empty `aid_stations` are required; `sun` is forbidden (the course build",
+    "computes it); aid stations may not carry lat/lon (the matcher snaps them);",
+    "race_climbs may not carry gain_ft/grade_pct/len_mi; a cutoff_h of 0 is",
+    "rejected (null means no cutoff). Keys beginning with _ are ignored."
+  ],
+  "name": "Dry Wash 50K",
+  "short": "DW50K",
+  "edition_year": 2027,
+  "date": "2027-05-15",
+  "start_time": "06:00",
+  "timezone": "America/Phoenix",
+  "location": "Invented for tests · nowhere real",
+  "format": "loop",
+  "distance_mi": 31.4,
+  "gain_ft": 4200,
+  "elevation": { "min_ft": 2100, "max_ft": 4350, "avg_ft": 3100, "altitude_significant": false },
+  "cutoff_h": 9.5,
+  "features": {
+    "crew": false,
+    "drop_bags": false,
+    "pacers": false,
+    "night": false,
+    "heat": true,
+    "altitude": false,
+    "water_crossings": false
+  },
+  "aid_stations": [
+    { "name": "Start", "total_mi": 0, "seg_mi": 0, "seg_gain_ft": 0, "cutoff_h": null, "crew": false, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": false, "menu": "full", "notes": "" },
+    { "name": "Saguaro Flat", "total_mi": 7.8, "seg_mi": 7.8, "seg_gain_ft": 1100, "cutoff_h": 2.5, "crew": false, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": true, "menu": "backcountry", "notes": "water only — no crew access on this course" },
+    { "name": "Broken Fence", "total_mi": 15.6, "seg_mi": 7.8, "seg_gain_ft": 1400, "cutoff_h": 5.333, "crew": false, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": false, "menu": "basic", "notes": "" },
+    { "name": "Ocotillo Junction", "total_mi": 23.9, "seg_mi": 8.3, "seg_gain_ft": 1300, "cutoff_h": 7.5, "crew": false, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": false, "menu": "basic", "notes": "" },
+    { "name": "Finish", "total_mi": 31.4, "seg_mi": 7.5, "seg_gain_ft": 400, "cutoff_h": 9.5, "crew": false, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": false, "menu": "full", "notes": "" }
+  ],
+  "race_climbs": [
+    { "id": "saguaro", "label": "Saguaro Flat climb", "approx_mi": [2.1, 7.8] },
+    { "id": "fence", "label": "Broken Fence wall", "approx_mi": [11.0, 15.6] }
+  ],
+  "coach_notes": {
+    "terrain": "Dry desert singletrack with two sustained but short climbs; footing is loose decomposed granite on every descent.",
+    "climate": "Hot and dry from mid-morning on; shade is the exception, not the rule.",
+    "altitude": "Nothing on this course is high enough to matter — this note exists so the fixture proves features.altitude hides it even when the prose is written.",
+    "key_demands": "Heat management and a disciplined first climb.",
+    "race_week": "Ordinary taper week; nothing race-specific."
+  },
+  "unresolved": []
+}

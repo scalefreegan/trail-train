@@ -15,7 +15,9 @@ import type { RaceConfig } from "./types";
 /*  lands) — means "show it", so a race folder written before a flag   */
 /*  existed keeps rendering exactly as it did, and the views never     */
 /*  flicker a panel in as the config arrives. The cost is that hiding  */
-/*  something is always an explicit `false`, never an omission.        */
+/*  something is always an explicit `false`, never an omission — with   */
+/*  one exception, a tune-up's crew/drop-bag/pacer/night flags, which   */
+/*  TUNE_UP_DEFAULTS below spells out.                                  */
 /*                                                                    */
 /*  Pure functions over the config, deliberately: they are the one     */
 /*  piece of the gating that is unit-testable without a DOM (see       */
@@ -33,13 +35,43 @@ export type FeatureKey = (typeof FEATURE_KEYS)[number];
 /** Every flag resolved to a boolean — no `undefined` reaches a view. */
 export type ResolvedFeatures = Record<FeatureKey, boolean>;
 
+/* A tune-up (race.json `kind: "b"`, PRD-v2 §3) is the one place the
+   default-visible rule above is wrong. A B folder is five typed fields off
+   the quick form — a name, a date, a distance, a climb and maybe a GPX —
+   written with no intake, no crew plan, no drop-bag list and no runner
+   manual behind it. Defaulting its crew column, drop-bag card and caffeine
+   schedule to VISIBLE would fill a 20-mile Saturday tune-up with the
+   furniture of a hundred: crew ETAs nobody will drive to and a night
+   caffeine curve for a race that is over by lunch.
+
+   So for kind "b" ONLY, and only for the flags below, an ABSENT flag reads
+   as off. Everything else about the rule is unchanged: an explicit `true`
+   in the folder's `features` still wins (a tune-up that really is crewed
+   says so), every other flag still defaults visible, and an A race — or a
+   folder written before v2, which has no `kind` at all — is untouched. */
+const TUNE_UP_DEFAULTS: Partial<Record<FeatureKey, boolean>> = {
+  crew: false,
+  drop_bags: false,
+  pacers: false,
+  night: false,
+};
+
+/** Is this folder a tune-up? Absent `kind` is "a" — the same default
+    scripts/race-config.mjs's raceKind applies server-side. */
+export function isTuneUp(race: RaceConfig | null | undefined): boolean {
+  return race?.kind === "b";
+}
+
 /**
  * One feature flag. True when the race is null (generic mode / still
- * loading) or the flag is absent — see the default-visible rule above.
+ * loading) or the flag is absent — see the default-visible rule above, and
+ * TUNE_UP_DEFAULTS for the one exception.
  */
 export function hasFeature(race: RaceConfig | null | undefined, name: string): boolean {
   const v = race?.features?.[name];
-  return v === undefined ? true : v;
+  if (v !== undefined) return v;
+  if (isTuneUp(race)) return TUNE_UP_DEFAULTS[name as FeatureKey] ?? true;
+  return true;
 }
 
 /** All of them at once, for a view that gates on several. */

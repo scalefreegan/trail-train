@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "slug": "unresolved-draft-50k",
+  "status": "draft",
+  "name": "Nine Mile Flat 50K",
+  "short": "NMF50K",
+  "edition_year": 2027,
+  "date": "2027-06-05",
+  "start_time": "06:30",
+  "timezone": "America/Denver",
+  "location": null,
+  "format": "loop",
+  "distance_mi": 30.8,
+  "gain_ft": 4900,
+  "elevation": { "min_ft": null, "max_ft": 8100, "avg_ft": null, "altitude_significant": true },
+  "cutoff_h": 9,
+  "features": {
+    "crew": true,
+    "drop_bags": false,
+    "pacers": false,
+    "night": false,
+    "heat": true,
+    "altitude": true,
+    "water_crossings": false
+  },
+  "sun": { "sunrise": "05:36", "sunset": "20:27" },
+  "aid_stations": [
+    { "name": "Start", "gpx_wpt": null, "total_mi": 0, "seg_mi": 0, "seg_gain_ft": 0, "cutoff_h": null, "crew": true, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": false, "menu": "full", "notes": "" },
+    { "name": "Stonecrop Saddle", "gpx_wpt": null, "total_mi": 9.4, "seg_mi": 9.4, "seg_gain_ft": 1900, "cutoff_h": 3, "crew": false, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": true, "menu": "backcountry", "notes": "water only" },
+    { "name": "Nine Mile Flat", "gpx_wpt": null, "total_mi": 18.6, "seg_mi": 9.2, "seg_gain_ft": 1700, "cutoff_h": 6, "crew": true, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": false, "menu": "full", "notes": "the one crew point" },
+    { "name": "Finish", "gpx_wpt": null, "total_mi": 30.8, "seg_mi": 12.2, "seg_gain_ft": 1300, "cutoff_h": 9, "crew": true, "crew_only": false, "drop_bag": false, "pacers": false, "water_only": false, "menu": "full", "notes": "" }
+  ],
+  "race_climbs": [
+    { "id": "stonecrop", "label": "Stonecrop Saddle climb", "approx_mi": [3.0, 9.4] }
+  ],
+  "coach_notes": {
+    "terrain": "Doubletrack to the saddle, then a long runnable flat back to the start.",
+    "climate": "Hot on the flat from mid-morning.",
+    "altitude": "High enough to notice on the climb.",
+    "key_demands": "Pacing the climb so the flat is still runnable.",
+    "race_week": "Nothing race-specific."
+  },
+  "links": { "site": "https://example.invalid/nine-mile-flat-50k", "tracking": null },
+  "visual": { "theme_preset": "alpine", "panels": { "climb_comparison": false, "model_check": false, "crew_sheet": false } },
+  "intake_warnings": [
+    "manual-2026.pdf: no PDF renderer on this machine — the PDF is passed as text only"
+  ],
+  "unresolved": [
+    "elevation.avg_ft",
+    "elevation.min_ft",
+    "links.tracking",
+    "location"
+  ],
+  "unresolved_acknowledged": false,
+  "provenance": {
+    "aid_stations": { "by": "agent", "at": "2026-09-19T00:00:00Z", "source": "invented for the test suite" }
+  },
+  "sources": [{ "kind": "url", "ref": "https://example.invalid/nine-mile-flat-50k" }]
+}

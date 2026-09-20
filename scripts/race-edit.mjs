@@ -23,6 +23,7 @@ import path from "node:path";
 import { LOW_CONFIDENCE, matchAidStations, parseGpx } from "./aid-match.mjs";
 import { RACE_STATUSES, applyingPath, listRaces, raceDir, loadRaceFolder, validateRaceJson } from "./race-config.mjs";
 import { collectUnresolved, draftValidationErrors } from "./race-intake.mjs";
+import { EDITABLE_RACE_KEYS, UNFILLABLE_ROOTS } from "./contracts.mjs";
 import { courseMismatches } from "./build-course.mjs";
 import { raceStart, raceLocalParts, isValidTimeZone } from "./clock.mjs";
 
@@ -45,28 +46,32 @@ const COURSE_MISMATCH_KEY = "course.gpx";
     the course build. */
 export const EDITABLE_AID_FIELDS = ["name", "total_mi", "cutoff_h", "crew", "drop_bag", "pacers", "gpx_wpt"];
 
-/** Top-level keys PUT /api/races/:slug accepts. Anything else is refused BY
-    NAME so the client gets told which field it invented rather than having it
-    silently dropped. */
-export const EDITABLE_RACE_KEYS = ["aid_stations", "date", "visual", "unresolved_acknowledged", "block_targets", "unresolved_fills"];
+// The list of writable top-level keys is shared with the review screen, which
+// has to know what it may send — see scripts/contracts.mjs. Re-exported so
+// every existing import site (`from "./race-edit.mjs"`) keeps working.
+export { EDITABLE_RACE_KEYS };
 
-/** Roots `unresolved_fills` will never write, whatever the folder declares.
-    The first four are the folder's identity and the server's own bookkeeping;
-    `aid_stations` is excluded because the table editor above already owns it
-    with per-field validation, and a blanket path write would sneak past that.
-    `sun` is excluded because it isn't a value a human types in — it's
-    `{sunset, sunrise}`, computed by scripts/race-sun.mjs, and the generic
-    fill path only ever writes a string/number/boolean/null, which would
-    silently replace the object with garbage. The only fix is re-running the
-    course build (see loadReview's unresolved_hints), or acknowledging it. */
-const UNFILLABLE_ROOTS = new Set([
-  "schema_version", "slug", "status", "provenance", "sources",
-  "unresolved", "unresolved_acknowledged", "aid_stations", "sun",
-]);
+/** UNFILLABLE_ROOTS (scripts/contracts.mjs) as a membership test — the list
+    itself is shared with the client, which greys out the fill box for a path
+    the server would refuse. */
+const UNFILLABLE = new Set(UNFILLABLE_ROOTS);
 
 /** The only `visual` sub-key the review screen exposes — the preset picker.
     Per-token `overrides` are tt-yib.16's surface, not this one. */
 const EDITABLE_VISUAL_KEYS = ["theme_preset"];
+
+/** `tracking` (PRD v2 §4) in full: the live-tracker URL intake seeds, plus
+    the athlete's bib and name on it, which only a human knows and the review
+    screen therefore edits (bead tt-cv1b0.6). All three are independently
+    absent until they are known, so each is optional and each may be cleared
+    back to null. */
+const EDITABLE_TRACKING_KEYS = ["url", "bib", "name"];
+
+/** A bib is "999" and a tracker name is "Aaron Brooks". Past 40 characters
+    it is a paste accident, and these two strings are sent to a third-party
+    timing site's page as a search key — the same bound MAX_STATION_NAME_LEN
+    exists for, one size down. */
+const MAX_TRACKING_LEN = 40;
 
 /** One row of block.json's `targets`. */
 const BLOCK_TARGET_KEYS = ["wk", "target_dist", "target_elev"];
@@ -259,6 +264,40 @@ export function validateRaceEdit(body, { stationCount = 0, unresolved = [], aidS
     }
   }
 
+  if (body.tracking !== undefined && body.tracking !== null) {
+    if (!isObj(body.tracking)) bad("tracking: object required (url, bib, name)");
+    else {
+      for (const k of Object.keys(body.tracking)) {
+        if (!EDITABLE_TRACKING_KEYS.includes(k)) {
+          bad(`tracking.${k}: not an editable field (editable: ${EDITABLE_TRACKING_KEYS.join(", ")})`);
+        }
+      }
+      // The URL decides which adapter scripts/trackers/ hands the poll to,
+      // and the dev server fetches it server-side — so the scheme is checked
+      // here rather than trusted. http(s) only: a file:// or data: "tracker"
+      // would be read off the machine running the server.
+      const url = body.tracking.url;
+      if (url !== undefined && url !== null && url !== "") {
+        if (typeof url !== "string") bad("tracking.url: string, null or \"\" required");
+        else {
+          let parsed = null;
+          try { parsed = new URL(url.trim()); } catch { parsed = null; }
+          if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+            bad(`tracking.url: an http(s) URL, null or "" required (got ${JSON.stringify(url)})`);
+          }
+        }
+      }
+      for (const k of ["bib", "name"]) {
+        const v = body.tracking[k];
+        if (v === undefined || v === null) continue;
+        if (typeof v !== "string") bad(`tracking.${k}: string, null or "" required`);
+        else if (v.trim().length > MAX_TRACKING_LEN) {
+          bad(`tracking.${k}: at most ${MAX_TRACKING_LEN} characters (got ${v.trim().length})`);
+        }
+      }
+    }
+  }
+
   if (body.unresolved_acknowledged !== undefined) {
     const v = body.unresolved_acknowledged;
     // string[] is the current contract (see race-config.mjs's doc comment on
@@ -292,7 +331,7 @@ export function validateRaceEdit(body, { stationCount = 0, unresolved = [], aidS
         bad(`unresolved_fills["${p}"]: only a field the folder currently lists as unresolved can be filled this way`);
         continue;
       }
-      if (UNFILLABLE_ROOTS.has(p.split(/[.[]/)[0])) {
+      if (UNFILLABLE.has(p.split(/[.[]/)[0])) {
         bad(`unresolved_fills["${p}"]: ${p.split(/[.[]/)[0]} is never filled through this endpoint`);
         continue;
       }
@@ -391,6 +430,36 @@ export function applyRaceEdit(race, body, { at = new Date().toISOString(), curre
       if (next.visual[k] === body.visual[k]) continue;
       next.visual[k] = body.visual[k];
       stamp(`visual.${k}`);
+    }
+  }
+
+  if (isObj(body.tracking)) {
+    next.tracking = isObj(next.tracking) ? { ...next.tracking } : {};
+    for (const k of EDITABLE_TRACKING_KEYS) {
+      if (!(k in body.tracking)) continue;
+      // "" is how a text input says "I cleared this" — stored as null, so a
+      // consumer only ever has to check for absence, never for emptiness
+      // (requireTracking in scripts/trackers/index.mjs reads it that way).
+      const raw = body.tracking[k];
+      const val = typeof raw === "string" ? (raw.trim() || null) : raw ?? null;
+      // round 4 finding 1: `url` always gets written and stamped when the
+      // client names it, even when the EFFECTIVE value doesn't change — a
+      // url that was only ever auto-seeded client-side from links.tracking
+      // (never itself saved) has no `url` KEY on race.tracking at all, so
+      // "clearing" it computes the same absent/null value this
+      // unchanged-value guard was built to skip, and the write never
+      // happens. That silently defeats RaceIntake.tsx's own durable-clear
+      // guard, which checks for the `url` KEY's presence
+      // (`"url" in race.tracking`) rather than its value precisely because
+      // a cleared value and a never-set one are otherwise indistinguishable
+      // — skipping the write here is the one way to still make them
+      // indistinguishable on disk, and the seed resurfaces on the very next
+      // load. `bib`/`name` keep the unchanged-value skip: neither has a
+      // seed/never-set distinction riding on key presence the way `url`
+      // does, so skipping a genuine no-op write for them is still correct.
+      if (k !== "url" && (next.tracking[k] ?? null) === val) continue;
+      next.tracking[k] = val;
+      stamp(`tracking.${k}`);
     }
   }
 
@@ -614,7 +683,7 @@ export function pruneAcknowledgedNulls(race, unresolved = []) {
   const acked = new Set(acknowledgedPaths(race));
   if (acked.size === 0) return { race: next, pruned };
   for (const p of unresolved) {
-    if (typeof p !== "string" || UNFILLABLE_ROOTS.has(p.split(/[.[]/)[0])) continue;
+    if (typeof p !== "string" || UNFILLABLE.has(p.split(/[.[]/)[0])) continue;
     if (!acked.has(p)) continue;
     if (valueAtPath(next, p) !== null) continue;
     if (deleteAtPath(next, p)) pruned.push(p);

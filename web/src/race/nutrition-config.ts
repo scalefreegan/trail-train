@@ -189,29 +189,30 @@ export function normalizeNutrition(d: unknown): NutritionConfig | null {
   // caffeine: every field reaches either mg/kg arithmetic or the dose-placement
   // loop, so a hand-edited string or a zero body mass must not survive. A
   // partial block merges over the defaults rather than falling back wholesale.
+  // Built field-by-field from KNOWN CaffeineConfig keys, same reasoning as
+  // the top-level merge below: a blanket `...rawCaf` spread would let an
+  // unknown key (a coach's `caffeine_comment` dosing rationale, say) ride
+  // straight through into what crew-export.mjs writes into the handout.
   const rawCaf = (raw.caffeine ?? {}) as Partial<CaffeineConfig> & { body_kg?: unknown };
-  const caffeine: CaffeineConfig = { ...DEFAULT_NUTRITION.caffeine, ...rawCaf };
+  const caffeine: CaffeineConfig = { ...DEFAULT_NUTRITION.caffeine };
   // tt-yib.9 moved body mass to config/profile.json's `physiology.body_kg`: a
   // race folder has to be shareable without carrying the athlete's weight, and
   // the mg/kg band must not depend on which race folder happens to be active.
-  // Older files still carry the key — strip it (the spread would otherwise
-  // smuggle it back into the merged config) and say so once per session, not
-  // once per refetch, so the note reads as a migration hint and not as noise.
-  if ("body_kg" in rawCaf) {
-    delete (caffeine as Record<string, unknown>).body_kg;
-    noteLegacyBodyKg();
-  }
+  // Older files still carry the key; it is never copied into `caffeine` now
+  // (nothing to strip), but the note still fires once per session as a
+  // migration hint.
+  if ("body_kg" in rawCaf) noteLegacyBodyKg();
   const cafPositive = [
     "gel_mg", "min_spacing_h", "half_life_h",
     "cola_mg", "band_lo_mg_kg", "band_hi_mg_kg",
   ] as const;
-  for (const k of cafPositive) caffeine[k] = posOr(caffeine[k], DEFAULT_NUTRITION.caffeine[k]);
+  for (const k of cafPositive) caffeine[k] = posOr(rawCaf[k], DEFAULT_NUTRITION.caffeine[k]);
   // these may legitimately be 0 ("no caffeine at all", "no coffee", "dose to
   // the line") but must still be finite and non-negative
   const cafNonNeg = ["gels", "pre_race_mg", "pre_race_before_h", "cola_cups", "tail_h"] as const;
   for (const k of cafNonNeg) {
-    caffeine[k] = Number.isFinite(caffeine[k]) && caffeine[k] >= 0
-      ? caffeine[k] : DEFAULT_NUTRITION.caffeine[k];
+    caffeine[k] = Number.isFinite(rawCaf[k]) && (rawCaf[k] as number) >= 0
+      ? (rawCaf[k] as number) : DEFAULT_NUTRITION.caffeine[k];
   }
   // gels/cups are counts — a fractional 2.5 would render as "2.5 gels"
   caffeine.gels = Math.min(30, Math.round(caffeine.gels));
@@ -232,29 +233,39 @@ export function normalizeNutrition(d: unknown): NutritionConfig | null {
     caffeine.band_hi_mg_kg = DEFAULT_NUTRITION.caffeine.band_hi_mg_kg;
   }
 
+  // Built field-by-field from KNOWN NutritionConfig keys only — never a
+  // blanket `...raw` spread. nutrition.json is coach/planning scratch space
+  // as much as it is config: a free-text `comment` or `caffeine_comment`
+  // (coach rationale, never meant to leave the athlete/coach's hands) must
+  // not survive into `merged`, because `merged` is what scripts/crew-export
+  // .mjs writes verbatim into the printed handout a volunteer crew chief
+  // gets at an aid station. `crewRace()` (crew-export.mjs) whitelists
+  // race.json's fields for the identical reason; this is nutrition.json's
+  // equivalent scoping. Every key below is read out of `raw` directly (not
+  // off a pre-spread `merged`), so an unknown top-level key in the source
+  // file has nowhere to ride along.
   const merged: NutritionConfig = {
     ...DEFAULT_NUTRITION,
-    ...(raw as Partial<NutritionConfig>),
     gel: gelSpec,
     bloks: blokSpec,
     phases, heat_window, drop_bag_gear, caffeine,
   };
   // numeric hygiene: every top-level number that reaches arithmetic must be a
-  // usable number — a hand-edited "2" (string) survives the spread and turns
-  // `flasks + 1` into concatenation; a 0 turns the sodium gap into NaN
+  // usable number — a hand-edited "2" (string) turns `flasks + 1` into
+  // concatenation; a 0 turns the sodium gap into NaN
   const positive = [
     "flask_ml", "flask_carb_g", "flask_sodium_mg",
     "liquid_carb_rate_g_hr", "salt_tab_mg", "sodium_mg_hr",
     "fluid_ml_hr", "fluid_ml_hr_heat", "carb_cap_over_h", "carb_cap_g_hr", "long_carry_h",
     "preload_over_flask_ml",
   ] as const;
-  for (const k of positive) merged[k] = posOr(merged[k], DEFAULT_NUTRITION[k]);
-  merged.tailwind_flasks = Number.isFinite(merged.tailwind_flasks) && merged.tailwind_flasks >= 1
-    ? Math.round(merged.tailwind_flasks) : DEFAULT_NUTRITION.tailwind_flasks;
+  for (const k of positive) merged[k] = posOr(raw[k], DEFAULT_NUTRITION[k]);
+  merged.tailwind_flasks = Number.isFinite(raw.tailwind_flasks) && (raw.tailwind_flasks as number) >= 1
+    ? Math.round(raw.tailwind_flasks as number) : DEFAULT_NUTRITION.tailwind_flasks;
   // spare_flasks: 0 is a legitimate "just the 2 mix flasks"; cap at 8 —
   // nobody carries nine flasks, and the cap bounds planFuel's fill loop
   // against a hostile flask_ml × spare_flasks product (render-path freeze)
-  merged.spare_flasks = Number.isFinite(merged.spare_flasks) && merged.spare_flasks >= 0
-    ? Math.min(8, Math.round(merged.spare_flasks)) : DEFAULT_NUTRITION.spare_flasks;
+  merged.spare_flasks = Number.isFinite(raw.spare_flasks) && (raw.spare_flasks as number) >= 0
+    ? Math.min(8, Math.round(raw.spare_flasks as number)) : DEFAULT_NUTRITION.spare_flasks;
   return merged;
 }

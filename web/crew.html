@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>Crew sheet</title>
+    <!--
+      The crew export's shell (PRD v2 §5). Deliberately BARE:
+
+        · no <link rel="icon">, no font stylesheet, no preconnect — the built
+          file is opened from a phone's Downloads folder with no network, and
+          every external reference is either a hang or a silent 404. The
+          fontless system stack lives in src/crew/crew.css.
+        · the JSON block below is a PLACEHOLDER. scripts/crew-export.mjs
+          replaces its contents with the race's CrewData; opening the shell
+          straight out of web/dist-crew/ shows the "No crew data" state,
+          which is the honest thing for a shell with nothing in it.
+        · vite.crew.config.ts inlines the emitted JS and CSS into this file
+          (inlineSingleFile in vite.config.ts), so the built crew.html is one
+          file with no sibling assets.
+    -->
+    <script id="crew-data" type="application/json">{}</script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/crew/main.ts"></script>
+  </body>
+</html>

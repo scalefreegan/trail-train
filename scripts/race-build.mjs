@@ -39,14 +39,14 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { arg, writeJsonAtomic } from "./lib.mjs";
+import { arg, projectRoot, writeJsonAtomic } from "./lib.mjs";
 import { LOW_CONFIDENCE, matchAidStations, parseGpx } from "./aid-match.mjs";
 import { loadRaceFolderAt, raceDir, validateRaceJson } from "./race-config.mjs";
 import { collectUnresolved, draftValidationErrors, kebab } from "./race-intake.mjs";
 import { buildCourse } from "./build-course.mjs";
 import { computeRaceSun, SUN_SOURCE } from "./race-sun.mjs";
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = projectRoot();
 
 /** A race site that hasn't answered in this long isn't going to. */
 const GPX_TIMEOUT_MS = 25_000;

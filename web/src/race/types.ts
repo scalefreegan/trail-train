@@ -5,6 +5,7 @@
 /* ------------------------------------------------------------------ */
 
 import type { NutritionConfig } from "./nutrition";
+import type { ProvenanceBy, RaceStatus } from "../contracts";
 
 export type CourseProfilePoint = {
   mi: number;
@@ -124,12 +125,26 @@ export type TrainingClimb = {
   strava_url?: string;
 };
 
+/** One run's distance-weighted mean elevation, out of its cached altitude
+    stream. The streams themselves live in a gitignored cache the browser
+    cannot read, so this one number rides along in climbs.json for the
+    altitude back-test (web/src/race/calibration.ts). */
+export type ActivityElevation = {
+  activity_id: string | number;
+  date: string;
+  mean_ele_ft: number;
+};
+
 export type ClimbsSnapshot = {
   fetched_at: string;
   window_days: number;
   activities_scanned: number;
   activities_pending: number;
   climbs: TrainingClimb[];
+  /** Optional: a climbs.json written before PRD-v2 §2 has none, and the
+      back-test then reports "no per-activity elevations yet" rather than
+      treating every run as low. */
+  activity_elevations?: ActivityElevation[];
 };
 
 /* ------------------------------------------------------------------ */
@@ -138,8 +153,10 @@ export type ClimbsSnapshot = {
 /*  Field names follow docs/PRD-modular-races.md §5.1/§5.2 exactly.    */
 /* ------------------------------------------------------------------ */
 
-/** At most one folder is "active"; a draft is never read by the training views. */
-export type RaceStatus = "draft" | "active" | "archived";
+/** At most one folder is "active"; a draft is never read by the training views.
+    The vocabulary itself is RACE_STATUSES in scripts/contracts.mjs, which is
+    what scripts/race-config.mjs validates a folder against. */
+export type { RaceStatus };
 
 /** Which optional panels/cards a race even has. An ABSENT flag means on:
     a folder written before a flag existed keeps rendering as it did, so
@@ -221,7 +238,7 @@ export type RaceVisual = {
  * waypoint match in scripts/race-build.mjs, which also reports how it decided.
  */
 export type RaceProvenanceEntry = {
-  by: "user" | "agent" | "computed" | "matcher";
+  by: ProvenanceBy;
   at: string;
   source?: string;
   /** matcher only: 0..1 — below aid-match's LOW_CONFIDENCE it is never written. */
@@ -232,11 +249,92 @@ export type RaceProvenanceEntry = {
 
 export type RaceSource = { kind: "url" | "pdf" | "gpx"; ref: string; fetched_at?: string };
 
+/** PRD §4 — which live tracker race day polls, and who to look for on it.
+    `url` is seeded by intake from the race site's tracking link; `bib` and
+    `name` are the athlete's and are filled in the review screen, so all
+    three are independently absent until they are known. */
+export type RaceTracking = {
+  /** absolute http(s) URL; scripts/trackers/ picks the adapter by hostname */
+  url?: string | null;
+  bib?: string | null;
+  name?: string | null;
+};
+
+/** GET /api/races/:slug/tracker — one poll of the configured tracker,
+    served from a 60 s per-race cache. `tracker` is null when the runner is
+    not on the tracker's page, or is on it with no checkpoint past the
+    start. Errors come back as `{error}` with a status: 404 no tracker
+    configured / no adapter for the URL, 501 a recognised but unsupported
+    tracker (MAProgress), 502 the tracker was unreachable or unparseable. */
+export type TrackerResponse = {
+  slug: string;
+  /** adapter id, e.g. "opensplittime" */
+  source: string;
+  tracker: TrackerCheckpoint | null;
+  /** why `tracker` is null: a bib/name that matches nobody
+      ("runner_not_found") vs a matched runner with no checkpoint past the
+      start yet ("no_checkpoint"). null whenever `tracker` is not null.
+      Additive — a screen that ignores it still reads exactly as before. */
+  reason: "runner_not_found" | "no_checkpoint" | null;
+  /** true when this answer came from the cache rather than a fresh poll */
+  cached: boolean;
+  /** how old the cached answer is, seconds; 0 on a fresh poll */
+  age_s: number;
+  /** ISO instant the underlying poll happened */
+  polled_at: string;
+};
+
+/** Where the runner was last seen, per the tracker. */
+export type TrackerCheckpoint = {
+  /** the race.json aid station name when the checkpoint mapped onto one,
+      otherwise the tracker's own label */
+  station: string;
+  /** the tracker's own label for the checkpoint, always */
+  checkpoint: string;
+  /** false when `station` is the tracker's label because nothing matched */
+  matched: boolean;
+  /** race-local wall clock the tracker printed, HH:MM */
+  clock: string;
+  /** hours since the runner's own start, per the tracker */
+  elapsed_h: number | null;
+  /** adapter id */
+  source: string;
+  /** ISO instant of the poll that produced this */
+  at: string;
+  bib: string;
+  /** the tracker's status text, e.g. "Finished", "Dropped", "" in progress */
+  runner_status: string;
+};
+
+/** A race folder is either an A race — the goal a training block counts back
+    from — or a B race: a tune-up entered INSIDE somebody else's block
+    (PRD-v2 §3). Absent in every folder written before v2, and absent means
+    "a"; a "b" folder is never status "active". */
+export type RaceKind = "a" | "b";
+
+/** One tune-up as the payload and the coach's facts carry it: enough to draw
+    a marker on the trajectory and to plan a taper around, no more. Built by
+    scripts/race-config.mjs's bRacesFor. */
+export type BRaceSummary = {
+  slug: string;
+  name: string;
+  date: string | null;
+  distance_mi: number | null;
+  gain_ft: number | null;
+  /** whole weeks between this race and the A race, counted in the A race's
+      own zone: positive = before it, 0 = race week, negative = after it */
+  weeks_out: number | null;
+};
+
 /** races/<slug>/race.json */
 export type RaceConfig = {
   schema_version: number;
   slug: string;
   status: RaceStatus;
+  /** "b" = a tune-up inside `parent_slug`'s block; absent = "a" */
+  kind?: RaceKind;
+  /** the A race this tune-up sits inside — only ever set on a kind "b" */
+  parent_slug?: string;
   name: string;
   short: string;
   edition_year?: number;
@@ -267,12 +365,20 @@ export type RaceConfig = {
   };
   coach_notes?: RaceCoachNotes;
   links?: Record<string, string>;
+  tracking?: RaceTracking | null;
   visual?: RaceVisual;
   provenance?: Record<string, RaceProvenanceEntry>;
   sources?: RaceSource[];
   /** What the intake wants a human to double-check before this race is
       trusted — written by scripts/race-intake.mjs, read by the review dialog. */
   review_notes?: string;
+  /** A source that couldn't be read cleanly this run (a PDF with no renderer
+      available, a GPX that failed to parse) — written by
+      scripts/race-intake.mjs (buildRaceJson), diffed through re-intake merges
+      (scripts/race-merge.mjs), and always present as an array (possibly
+      empty) once a race has been through intake at all. Distinct from
+      `unresolved`: these are facts about a SOURCE, not a hole in the schema. */
+  intake_warnings?: string[];
   /** Field paths nothing could establish. Recomputed on every review write
       (scripts/race-edit.mjs) and gated on before activation. */
   unresolved?: string[];
@@ -338,6 +444,23 @@ export type ActiveBlock = (RaceBlock & { mode: "race" }) | RollingBlock;
     in train mode; in view mode `active` is null, `viewing` names an archived
     or draft race being browsed read-only, and `training` carries the
     goals-based window the coach is really working from. */
+/** When the athlete reaches the race's elevation, and where that came from
+    — derived server-side by scripts/acclimation.mjs from the calendar's
+    classified travel events. The planner's manual override is NOT in here:
+    it lives in the browser, per slug, and is applied on top (so `source`
+    arrives as "calendar" or "default" and only ever becomes "override"
+    client-side). */
+export type Acclimation = {
+  /** YYYY-MM-DD, or null when the race has no date to count back from */
+  arrival_date: string | null;
+  /** whole days between arrival and race day, >= 0 */
+  days_at_altitude: number;
+  source: "calendar" | "default" | "override";
+  /** present only for source "calendar" — so the planner can name the event
+      instead of asking the athlete to trust a bare number */
+  matched_event?: { summary: string; start: string; end: string | null; location: string | null };
+};
+
 export type ActiveRaceResponse = {
   active: string | null;
   /** "train" = `viewing` is the training target; "view" = read-only browsing. */
@@ -360,6 +483,15 @@ export type ActiveRaceResponse = {
     block: ActiveBlock | null;
     plan: RacePlan | null;
   } | null;
+  /** The tune-up races entered inside the TRAINING race's block, oldest
+      first (PRD-v2 §3). Always present; empty in view and generic mode,
+      where there is no A-race block for one to belong to. */
+  b_races?: BRaceSummary[];
+  /** Train mode only (PRD-v2 §2): the arrival at altitude behind the
+      projection's acclimation credit. Absent in view and generic mode —
+      the planner then falls back to the same day-before default the server
+      would have derived. */
+  acclimation?: Acclimation;
   /** local config was broken and the server fell back to generic mode */
   warning?: string;
 };

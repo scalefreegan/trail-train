@@ -18,11 +18,16 @@ import { fileURLToPath } from "node:url";
 import { loadRaceFolder } from "./race-config.mjs";
 import {
   COACH_MODEL,
+  RACE_STATE_MAX_BYTES,
+  RACE_STATE_WARN_TOKENS,
   chatSystemPrompt,
   coachFocus,
+  estimateTokens,
   goalsParagraph,
+  parseRaceState,
   raceParagraph,
   raceReadPaths,
+  raceStateBlock,
   readoutSystemPrompt,
 } from "./coach-prompt.mjs";
 import { MODEL_DEFAULT } from "./coach.mjs";
@@ -123,6 +128,50 @@ test("altitude_significant adds the acclimation demand and the projection caveat
   assert.match(p, /ALTITUDE IS A REAL DEMAND HERE — the course spends its time near 13,100 ft/);
   assert.match(p, /acclimation and arrival timing as part of the plan/);
   assert.match(p, /caveat every projected pace, split and finish time as optimistic/);
+});
+
+/* -------- (b2) tune-up races inside the block (PRD-v2 §3) -------- */
+
+test("two tune-up races: the paragraph names both and says to plan around them", async () => {
+  const { race } = await loadRaceFolder(ROOT, "_fixtures/crewless-50k");
+  const p = raceParagraph({
+    ...race,
+    b_races: [
+      { slug: "cinder-cone-25k-2027", name: "Cinder Cone 25K", date: "2027-02-27", distance_mi: 15.5, gain_ft: 2200, weeks_out: 11 },
+      { slug: "jemez-mountain-50k-2027", name: "Jemez Mountain 50K", date: "2027-05-08", distance_mi: 31, gain_ft: 5000, weeks_out: 1 },
+    ],
+  }, { daysUntil: 240 });
+
+  assert.match(
+    p,
+    /Tune-up races already entered inside this block: Cinder Cone 25K on 2027-02-27, 11 weeks out \(15\.5 mi \/ 2,200 ft\); Jemez Mountain 50K on 2027-05-08, 1 week out \(31 mi \/ 5,000 ft\)\./,
+  );
+  assert.match(p, /real race efforts on fixed dates, not sessions you can move/);
+  assert.match(p, /short taper into each one and a recovery week out of it/);
+  assert.match(p, /count its distance and vert inside that week's volume rather than on top of it/);
+  assert.match(p, /facts\.race\.b_races/);
+  // and the race's own sentences are untouched by the addition
+  assert.match(p, /Its 5 aid stations —/);
+});
+
+test("a tune-up on race week, and one stranded after race day, both read correctly", async () => {
+  const { race } = await loadRaceFolder(ROOT, "_fixtures/crewless-50k");
+  const p = raceParagraph({
+    ...race,
+    b_races: [
+      { slug: "shakeout-10k-2027", name: "Shakeout 10K", date: "2027-05-15", distance_mi: 6.2, gain_ft: 400, weeks_out: 0 },
+      { slug: "late-50k-2027", name: "Late 50K", date: "2027-06-12", distance_mi: 31, gain_ft: 3000, weeks_out: -4 },
+    ],
+  });
+  assert.match(p, /Shakeout 10K on 2027-05-15, race week \(6\.2 mi \/ 400 ft\)/);
+  assert.match(p, /Late 50K on 2027-06-12, 4 weeks AFTER race day — it is outside this block/);
+});
+
+test("no tune-ups: the paragraph says nothing about them at all", async () => {
+  const { race } = await loadRaceFolder(ROOT, "_fixtures/crewless-50k");
+  for (const b_races of [undefined, [], null]) {
+    assert.doesNotMatch(raceParagraph({ ...race, b_races }), /Tune-up races/);
+  }
 });
 
 /* -------- (c) generic mode -------- */
@@ -231,4 +280,309 @@ test("raceReadPaths names only files that exist", async (t) => {
   ]);
   // generic mode has no folder to offer
   assert.deepEqual(raceReadPaths(root, null), []);
+});
+
+/* -------- race state: the planner's numbers the client sends (PRD-v2 §6) -------- */
+
+/** A full race_state as the dashboard sends it, with every field populated —
+    the worst case for size, and the snapshot the block is pinned against. */
+const RACE_STATE = {
+  mode: "view",
+  slug: "some-race-2026",
+  name: "Some Race 100",
+  goal: { projected_h: 33.27, target_h: 34, label: "sub-34", start_clock: "05:00", finish_clock: "14:16" },
+  knobs: { pace_factor: 1.05, aid_min: 6, night_slowdown_pct: 12, heat_adjust: true },
+  fuel: { carb_g_h: 70, fluid_ml_h: 600, sodium_mg_h: 700, caffeine_mg_total: 400 },
+  stations: [
+    { name: "Geronimo", mi: 12.4, clock: "08:41", cutoff_clock: "10:30" },
+    { name: "Washington Park", mi: 43.2, clock: "14:02" },
+  ],
+  status: { block_stale: false, unresolved: 2, activated: true },
+  checkpoint: { name: "Washington Park", mi: 43.2, clock: "14:02", delta_min: -12, source: "tracker" },
+};
+
+test("the block renders every part of the planner state, labelled and with units", () => {
+  const { state, error } = parseRaceState(RACE_STATE);
+  assert.equal(error, undefined);
+  const b = raceStateBlock(state);
+
+  assert.match(b, /^RACE STATE \(from the athlete's own planner\) — Some Race 100/);
+  // the preamble that makes the provenance explicit — these numbers are the
+  // athlete's, not something the agent should recompute or look up
+  assert.match(b, /athlete's OWN planner output as of this message/);
+  assert.match(b, /they exist nowhere on disk, so there is no file to check them against/);
+  assert.match(b, /- Finish: the planner projects 33:16 \(33\.27 h\); their target is 34:00 \(34 h\); goal "sub-34"; start 05:00; finishing around 14:16\./);
+  assert.match(b, /- Planner knobs as they have them set: pace_factor 1\.05, aid_min 6, night_slowdown_pct 12, heat_adjust true\./);
+  assert.match(b, /- Fuel plan: 70 g carb\/h, 600 ml fluid\/h, 700 mg sodium\/h, 400 mg caffeine total\./);
+  assert.match(b, /- Expected arrival at each aid station, on their plan: Geronimo \(mi 12\.4\) 08:41, cutoff 10:30; Washington Park \(mi 43\.2\) 14:02\./);
+  assert.match(b, /- Plan status: the training block is up to date with this plan; 2 unresolved review items they have not answered; the plan is activated\./);
+  assert.match(b, /- Last checkpoint \(tracker\): Washington Park, mile 43\.2 at 14:02, 12 min AHEAD of plan\./);
+});
+
+test("view mode says the race is only being looked at; train mode says it is theirs", () => {
+  const view = raceStateBlock(parseRaceState(RACE_STATE).state);
+  const train = raceStateBlock(parseRaceState({ ...RACE_STATE, mode: "train" }).state);
+  assert.match(view, /which they are LOOKING AT in the dashboard right now\. It is not their active race/);
+  assert.match(train, /the race they are training for and have open in the dashboard\./);
+  assert.doesNotMatch(train, /LOOKING AT/);
+});
+
+test("a stale block, unanswered items and an unactivated plan all read as problems", () => {
+  const b = raceStateBlock(parseRaceState({
+    mode: "train",
+    name: "X",
+    status: { block_stale: true, unresolved: 1, activated: false },
+  }).state);
+  assert.match(b, /the training block is STALE against this plan \(a re-plan is pending\)/);
+  assert.match(b, /1 unresolved review item they have not answered/);
+  assert.match(b, /the plan is NOT activated yet/);
+});
+
+test("a checkpoint behind plan, and one exactly on it, are not phrased the same", () => {
+  const behind = raceStateBlock(parseRaceState({ mode: "train", name: "X", checkpoint: { name: "Pinchot", mi: 20, clock: "09:10", delta_min: 18, source: "manual" } }).state);
+  const onPlan = raceStateBlock(parseRaceState({ mode: "train", name: "X", checkpoint: { name: "Pinchot", mi: 20, clock: "09:10", delta_min: 0 } }).state);
+  assert.match(behind, /- Last checkpoint \(manual\): Pinchot, mile 20 at 09:10, 18 min BEHIND plan\./);
+  assert.match(onPlan, /- Last checkpoint: Pinchot, mile 20 at 09:10, exactly on plan\./);
+});
+
+test("a bare mile with no time is a reported position, not a timed checkpoint", () => {
+  // what RaceDay's per-slug `race.<slug>.raceday_mi` actually holds today
+  const b = raceStateBlock(parseRaceState({ mode: "train", name: "X", checkpoint: { mi: 43.2, source: "manual" } }).state);
+  assert.match(b, /- Last reported position \(manual\): mile 43\.2\./);
+  assert.doesNotMatch(b, /checkpoint/i);
+  // and once a time IS attached it becomes a checkpoint again
+  const timed = raceStateBlock(parseRaceState({ mode: "train", name: "X", checkpoint: { mi: 43.2, clock: "14:02", source: "tracker" } }).state);
+  assert.match(timed, /- Last checkpoint \(tracker\): mile 43\.2 at 14:02\./);
+});
+
+test("a delta with no clock or elapsed_h is still a reported position — PRD-v2 §10's distinction turns on observation TIME, not on having a delta", () => {
+  // parseRaceState accepts delta_min as an independent field (line ~454),
+  // so a future producer (a mile-based position with a computed delta) can
+  // hand this shape to the coach even though no current caller does today.
+  const b = raceStateBlock(parseRaceState({
+    mode: "train", name: "X", checkpoint: { mi: 43.2, delta_min: 6, source: "manual" },
+  }).state);
+  assert.match(b, /- Last reported position \(manual\): mile 43\.2/, "a bare delta must not promote this to a checkpoint");
+  assert.doesNotMatch(b, /Last checkpoint/);
+  // the delta text itself still renders — only the LABEL is at stake
+  assert.match(b, /6 min BEHIND plan/);
+});
+
+test("the client's race_state keys are all keys the server keeps", async () => {
+  // The wire shape is declared in two places — web/src/race/raceState.ts's
+  // RaceState and parseRaceState here — and a field the client sends that the
+  // server silently drops is a feature that looks wired up and is not.
+  const client = await fs.readFile(path.join(ROOT, "web", "src", "race", "raceState.ts"), "utf8");
+  // RaceState is PlanSnapshot plus the send-time fields, so the declaration
+  // to read is both of them
+  const sent = client.slice(client.indexOf("export type PlanSnapshot"), client.indexOf("const snapshotKey"));
+  for (const key of ["mode", "slug", "name", "goal", "knobs", "fuel", "stations", "status", "checkpoint"]) {
+    assert.ok(sent.includes(key), `raceState.ts no longer declares ${key} — this guard is stale`);
+  }
+  // every top-level key the client can send survives a round trip
+  const { state } = parseRaceState({ ...RACE_STATE, slug: "s", name: "n" });
+  assert.deepEqual(
+    Object.keys(state).sort(),
+    ["checkpoint", "fuel", "goal", "knobs", "mode", "name", "slug", "stations", "status"],
+  );
+});
+
+test("a race open with no numbers yet says so instead of inviting invention", () => {
+  const b = raceStateBlock(parseRaceState({ mode: "train", name: "Fresh 50K" }).state);
+  assert.match(b, /the planner has produced no numbers for it yet — do not invent any/);
+  assert.doesNotMatch(b, /^- /m);
+});
+
+test("no state at all renders nothing — generic mode has no block", () => {
+  assert.equal(raceStateBlock(null), "");
+  assert.equal(parseRaceState(undefined).state, null);
+  assert.equal(parseRaceState(null).state, null);
+});
+
+/* -------- validation: what the endpoint accepts -------- */
+
+test("mode is required and only train|view — generic mode has no race_state to send", () => {
+  for (const mode of [undefined, null, "", "generic", "Train", 1, {}]) {
+    const r = parseRaceState({ mode, name: "X" });
+    assert.match(r.error ?? "", /mode must be "train" or "view"/, `mode ${JSON.stringify(mode)} was accepted`);
+    assert.equal(r.state, undefined);
+  }
+  for (const mode of ["train", "view"]) {
+    assert.equal(parseRaceState({ mode }).error, undefined);
+  }
+});
+
+test("a race_state that is not an object is rejected outright", () => {
+  for (const raw of ["{}", 7, true, [], [{ mode: "train" }]]) {
+    assert.match(parseRaceState(raw).error ?? "", /must be an object/, `${JSON.stringify(raw)} was accepted`);
+  }
+});
+
+test("over the size cap is rejected, and the message says by how much", () => {
+  const fat = {
+    mode: "train",
+    name: "X",
+    stations: Array.from({ length: 300 }, (_, i) => ({ name: `Aid station number ${i} with a long name`, mi: i, clock: "08:41" })),
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(fat), "utf8");
+  assert.ok(bytes > RACE_STATE_MAX_BYTES, "fixture is not actually oversize");
+  const r = parseRaceState(fat);
+  assert.equal(r.state, undefined);
+  assert.match(r.error, new RegExp(`race_state is ${bytes} bytes, over the ${RACE_STATE_MAX_BYTES}-byte limit`));
+  // and one just under the cap is accepted
+  assert.equal(parseRaceState({ mode: "train", name: "X".repeat(80), stations: fat.stations.slice(0, 20) }).error, undefined);
+});
+
+test("unknown keys are dropped, not rejected — the dashboard may run ahead of this renderer", () => {
+  const { state, error } = parseRaceState({
+    mode: "train",
+    name: "X",
+    weather_model: { wind: 12 },
+    crew: ["someone"],
+    knobs: { pace_factor: 1.05 },
+    fuel: { carb_g_h: 70, unknown_unit: 9 },
+    stations: [{ name: "A", mi: 1, clock: "06:00", surprise: true }],
+    status: { block_stale: false, brand_new_flag: "x" },
+    checkpoint: { name: "A", clock: "06:00", nonsense: 1 },
+  });
+  assert.equal(error, undefined);
+  assert.deepEqual(Object.keys(state).sort(), ["checkpoint", "fuel", "knobs", "mode", "name", "stations", "status"]);
+  assert.deepEqual(state.fuel, { carb_g_h: 70 });
+  assert.deepEqual(state.stations, [{ name: "A", mi: 1, clock: "06:00" }]);
+  assert.deepEqual(state.status, { block_stale: false });
+  assert.deepEqual(state.checkpoint, { name: "A", clock: "06:00" });
+  // the dropped keys never reach the prompt
+  const b = raceStateBlock(state);
+  assert.doesNotMatch(b, /surprise|nonsense|brand_new_flag|unknown_unit|weather_model/);
+});
+
+test("wrong-typed known fields are dropped rather than printed as garbage", () => {
+  const { state } = parseRaceState({
+    mode: "train",
+    name: 42,
+    goal: { target_h: "34", projected_h: Number.NaN, label: "   " },
+    knobs: { pace_factor: {}, aid_min: 6 },
+    stations: [{ mi: 4, clock: "07:00" }, "nope", { name: "B", mi: "far" }],
+    status: { block_stale: "yes", unresolved: Number.POSITIVE_INFINITY },
+    checkpoint: { source: "guess", name: "C" },
+  });
+  assert.equal(state.name, undefined);
+  assert.equal(state.goal, undefined, "a goal whose every field was invalid should not survive as {}");
+  assert.deepEqual(state.knobs, { aid_min: 6 });
+  assert.deepEqual(state.stations, [{ name: "B" }], "a station with no name is not an ETA");
+  assert.equal(state.status, undefined);
+  assert.deepEqual(state.checkpoint, { name: "C" }, "an unrecognized checkpoint source is dropped, not echoed");
+  const b = raceStateBlock(state);
+  assert.doesNotMatch(b, /undefined|NaN|Infinity|\[object Object\]/);
+});
+
+test("strings are truncated rather than trusted, and the station list is capped", () => {
+  const { state } = parseRaceState({
+    mode: "train",
+    name: "N".repeat(400),
+    stations: Array.from({ length: 90 }, (_, i) => ({ name: `S${i}` })),
+  });
+  assert.equal(state.name.length, 120);
+  assert.equal(state.stations.length, 40);
+});
+
+/* -------- the block in the chat prompt, and only there -------- */
+
+const CHAT_OPTS = { factsPath: "/tmp/f.json", coachPath: "/tmp/c.json" };
+const GENERIC_FACTS = { race: null, goals: GOALS, block: { mode: "rolling", total_weeks: 12 } };
+
+test("the chat prompt carries the block verbatim when race_state is sent", () => {
+  const { state } = parseRaceState(RACE_STATE);
+  const sys = chatSystemPrompt(GENERIC_FACTS, { athlete_name: "A" }, { ...CHAT_OPTS, raceState: state });
+  assert.ok(sys.includes(raceStateBlock(state)), "chat prompt does not contain the rendered block");
+  // it sits above the file list, where the reading-budget instructions can
+  // point the agent at what it already has
+  assert.ok(sys.indexOf("RACE STATE") < sys.indexOf("You have full read access to:"));
+});
+
+test("no race_state means no block anywhere in the prompt", () => {
+  for (const opts of [CHAT_OPTS, { ...CHAT_OPTS, raceState: null }, { ...CHAT_OPTS, raceState: undefined }]) {
+    const sys = chatSystemPrompt(GENERIC_FACTS, { athlete_name: "A" }, opts);
+    assert.doesNotMatch(sys, /RACE STATE/);
+    assert.doesNotMatch(sys, /own planner/);
+  }
+});
+
+test("race_state never touches the readout path — coach.mjs sends none", async () => {
+  const { state } = parseRaceState(RACE_STATE);
+  const before = readoutSystemPrompt(GENERIC_FACTS, { athlete_name: "A" }, {});
+  // the readout prompt takes no such option, so passing one changes nothing
+  const after = readoutSystemPrompt(GENERIC_FACTS, { athlete_name: "A" }, { raceState: state });
+  assert.equal(before, after);
+  assert.doesNotMatch(before, /RACE STATE/);
+  // and the readout script does not send one
+  const coachSrc = await fs.readFile(path.join(ROOT, "scripts", "coach.mjs"), "utf8");
+  assert.doesNotMatch(coachSrc, /raceState|race_state/);
+});
+
+test("the block is built from the object alone — it never reads from disk", () => {
+  // Called with a root that does not exist and a cwd that has no races/: a
+  // renderer that fell back to a file would answer about a different race
+  // than the one on the athlete's screen, so prove it cannot.
+  const { state } = parseRaceState({ ...RACE_STATE, name: "Not On Disk 100", slug: "not-on-disk-100" });
+  const b = raceStateBlock(state);
+  assert.match(b, /Not On Disk 100/);
+  const sys = chatSystemPrompt({ race: null, block: { mode: "rolling", total_weeks: 12 } }, {}, {
+    factsPath: "/tmp/f.json", coachPath: "/tmp/c.json", root: "/nonexistent-root", raceState: state,
+  });
+  assert.match(sys, /Not On Disk 100/);
+  // and the section that implements it touches no filesystem API at all
+  const src = fsSync.readFileSync(path.join(ROOT, "scripts", "coach-prompt.mjs"), "utf8");
+  const from = src.indexOf("/* -------- race state: the planner's own numbers, sent by the client -------- */");
+  const to = src.indexOf("/* -------- what the agent may Read -------- */");
+  assert.ok(from > 0 && to > from, "the race-state section moved — this guard needs its new bounds");
+  assert.doesNotMatch(src.slice(from, to), /readFileSync|existsSync|readdir|fs\./);
+});
+
+/* -------- the token cost, measured -------- */
+
+test("estimateTokens is chars/4, rounded up, and zero for nothing", () => {
+  assert.equal(estimateTokens(""), 0);
+  assert.equal(estimateTokens(null), 0);
+  assert.equal(estimateTokens(undefined), 0);
+  assert.equal(estimateTokens("abcd"), 1);
+  assert.equal(estimateTokens("abcde"), 2);
+  assert.equal(estimateTokens("x".repeat(4000)), 1000);
+});
+
+test("a full race_state costs well under the warning threshold", () => {
+  const b = raceStateBlock(parseRaceState(RACE_STATE).state);
+  const tokens = estimateTokens(b);
+  assert.ok(tokens > 0);
+  assert.ok(
+    tokens < RACE_STATE_WARN_TOKENS,
+    `a fully-populated two-station block is ~${tokens} tokens, at or over the ~${RACE_STATE_WARN_TOKENS}-token warning threshold`,
+  );
+});
+
+test("MM100's real aid-station table fits the cap and stays inside the budget", async (t) => {
+  const race = await mm100();
+  if (!race) return t.skip(`races/${MM100}/ not in this checkout`);
+  // The shape the client sends in view mode: one ETA per real aid station.
+  const stations = race.aid_stations.map((a, i) => ({
+    name: a.name,
+    mi: a.mile,
+    clock: `${String(5 + Math.floor(i * 2)).padStart(2, "0")}:15`,
+    cutoff_clock: a.cutoff_h != null ? `${String(Math.floor(a.cutoff_h)).padStart(2, "0")}:00` : undefined,
+  }));
+  const raw = { ...RACE_STATE, mode: "view", slug: MM100, name: race.name, stations };
+  const bytes = Buffer.byteLength(JSON.stringify(raw), "utf8");
+  assert.ok(bytes <= RACE_STATE_MAX_BYTES, `MM100 race_state is ${bytes} bytes, over the ${RACE_STATE_MAX_BYTES}-byte cap`);
+
+  const { state, error } = parseRaceState(raw);
+  assert.equal(error, undefined);
+  assert.equal(state.stations.length, race.aid_stations.length);
+  const tokens = estimateTokens(raceStateBlock(state));
+  assert.ok(
+    tokens < RACE_STATE_WARN_TOKENS,
+    `MM100 in view mode renders ~${tokens} tokens, at or over the ~${RACE_STATE_WARN_TOKENS}-token warning threshold`,
+  );
+  // Recorded so a change in phrasing that doubles the per-turn cost shows up
+  // as a failing number rather than a slightly longer prompt nobody measured.
+  console.log(`[measured] MM100 view-mode race_state: ${bytes} bytes on the wire, block ~${tokens} tokens (${race.aid_stations.length} stations)`);
 });

@@ -215,6 +215,17 @@ a { color: inherit; }
   grid-template-columns: minmax(110px, 1.3fr) 44px 58px 50px 58px minmax(184px, 1.4fr) 70px 62px minmax(124px, 1fr) 96px minmax(90px, 0.9fr);
 }
 
+/* a TUNE-UP with no nutrition.json of its own (PRD-v2 §3) drops the fuel
+   column rather than filling it with the default constants — same two facts
+   the fuel view's chip is gated on (App.tsx fuelViewHidden). Nine columns,
+   ten with "actual". */
+.race-grid.no-fuel {
+  grid-template-columns: minmax(110px, 1.3fr) 44px 58px 50px 58px minmax(184px, 1.4fr) 62px minmax(124px, 1fr) minmax(90px, 0.9fr);
+}
+.race-grid.no-fuel.has-actual {
+  grid-template-columns: minmax(110px, 1.3fr) 44px 58px 50px 58px minmax(184px, 1.4fr) 70px 62px minmax(124px, 1fr) minmax(90px, 0.9fr);
+}
+
 /* station table: when the viewport can't fit the columns' true widths, the
    panel scrolls horizontally — never squeeze, never spill into the rail */
 .race-table { overflow-x: auto; }
@@ -222,6 +233,9 @@ a { color: inherit; }
    header lacks) so all rows share one width while the panel scrolls */
 .race-table > .race-grid { min-width: 1015px; }
 .race-table > .race-grid.has-actual { min-width: 1096px; }
+/* one 96px track and its 11px gap lighter than the rows above */
+.race-table > .race-grid.no-fuel { min-width: 908px; }
+.race-table > .race-grid.no-fuel.has-actual { min-width: 989px; }
 
 .climb-grid {
   display: grid;

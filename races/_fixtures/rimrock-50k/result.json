@@ -1,0 +1,14 @@
+{
+  "status": "finished",
+  "strava_activity_id": null,
+  "finish_h": 6.82,
+  "official_time": "6:49:12",
+  "placement": null,
+  "splits": [
+    { "station": "Lantern Draw", "elapsed_h": 1.78, "source": "manual" },
+    { "station": "Quartz Bench", "elapsed_h": 3.74, "source": "manual" },
+    { "station": "Pinyon Gate", "elapsed_h": 5.46, "source": "manual" },
+    { "station": "Finish", "elapsed_h": 6.82, "source": "manual" }
+  ],
+  "notes": "Invented finish for the test suite — no real run is described here."
+}

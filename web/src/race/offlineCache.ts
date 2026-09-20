@@ -113,8 +113,12 @@ export function pruneActiveRaceCache(keep: (string | null)[]): void {
   } catch { /* private mode / quota */ }
 }
 
-export function cachePut(key: string, value: unknown): void {
-  try { localStorage.setItem(PREFIX + key, JSON.stringify(value)); } catch { /* private mode / quota */ }
+/** @returns whether the write actually landed — false on a private-mode
+    write or a quota overflow, so a caller with a smaller fallback payload
+    (see cachePutBounded) knows to try it. */
+export function cachePut(key: string, value: unknown): boolean {
+  try { localStorage.setItem(PREFIX + key, JSON.stringify(value)); return true; }
+  catch { return false; } // private mode / quota
 }
 
 export function cacheGet<T>(key: string): T | null {
@@ -122,4 +126,22 @@ export function cacheGet<T>(key: string): T | null {
     const raw = localStorage.getItem(PREFIX + key);
     return raw == null ? null : (JSON.parse(raw) as T);
   } catch { return null; } // private mode, or a half-written entry
+}
+
+/**
+ * cachePut, with a smaller fallback for a payload big enough to blow
+ * localStorage's quota by itself (a browser's per-origin cap is typically a
+ * few MB total, shared with every other bc.cache.* entry already written
+ * this session). Every other cached payload here (course/crew-base/
+ * nutrition/race-active) has stayed small enough that plain cachePut has
+ * never needed this; StravaProvider's /strava.json — years of activity
+ * history, one row per training run — is the one exception, so it is the
+ * one caller that passes a `reduced` thunk.
+ *
+ * `reduced` is called only on overflow, not on every put, so it is a
+ * function rather than an eagerly-computed value.
+ */
+export function cachePutBounded(key: string, value: unknown, reduced: () => unknown): boolean {
+  if (cachePut(key, value)) return true;
+  return cachePut(key, reduced());
 }

@@ -3,7 +3,15 @@ node_modules/
 
 # Build output
 web/dist/
+web/dist-crew/
 web/.vite/
+
+# Playwright output — traces, screenshots and the HTML report from `npm run
+# test:ui`. The suite's own fixtures under web/tests/fixtures/ ARE committed.
+web/test-results/
+web/playwright-report/
+web/blob-report/
+web/.playwright/
 
 # Local caches — Strava altitude streams fetched by `npm run sync:streams`.
 .cache/
@@ -38,6 +46,28 @@ races/*/.refresh/
 # race.json, course.gpx, block.json and nutrition.json ARE committed.
 races/*/plan.json
 races/*/result.json
+
+# …except under races/_fixtures/, which is the opposite of personal data: the
+# invented race folders the Playwright suite (web/tests/) copies into a temp
+# root. An archived fixture race is only worth having WITH its result.json, so
+# the folder-shape rules above are lifted for that one tree. Everything under
+# it is synthetic by construction, and scripts/ui-fixtures.test.mjs greps it to
+# keep it that way. (No crew.private.json fixture on purpose: it is the one
+# race file whose schema is an address and phone numbers, and the suite does
+# not need one — the dev server already answers /crew-base.json with {} for a
+# folder that has none.)
+!races/_fixtures/**
+# …but the blanket re-inclusion above is a file-level "not personal data",
+# not a "not generated output" rule — it otherwise overrides races/*/build/
+# with no guard for that case. web/tests/launch.mjs and check-races.mjs both
+# copy fixtures to a temp root before building, so this is currently latent,
+# but a helper that ever builds a fixture IN PLACE must not have its output
+# staged by a routine `git add -A`, unlike every other race folder's build
+# output. sources/ and *.private.json get the same re-exclusion for the same
+# reason, even though no fixture currently has either.
+races/_fixtures/*/*.private.json
+races/_fixtures/*/sources/
+races/_fixtures/*/build/
 # Same for the generic-mode plan the coach writes when no race is active.
 config/generic-plan.json
 # The active-race pointer is a per-machine choice (and may name a draft that

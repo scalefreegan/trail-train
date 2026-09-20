@@ -1,0 +1,335 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
+
+import { test, expect, MM, openDashboard, openRaceTab, setActiveRace } from './basecamp'
+import type { Page } from './basecamp'
+import type { BrowserContext, TestInfo } from '@playwright/test'
+
+/** "9:48p" / "12:11a+1" (fmtRaceClock's own format, day marker and all) →
+    "21:48" / "00:11" — what the checkpoint form's HH:MM input wants. The day
+    marker is dropped: the crew never writes the date, only the clock, and
+    that is exactly what the updater's own day-resolution (bug 5) is for. */
+function to24h(clock: string): string {
+  const m = /^(\d{1,2}):(\d{2})(a|p)/i.exec(clock.trim())
+  if (!m) throw new Error(`unparseable clock "${clock}"`)
+  let hour = Number(m[1])
+  const ap = m[3].toLowerCase()
+  if (ap === 'p' && hour !== 12) hour += 12
+  if (ap === 'a' && hour === 12) hour = 0
+  return `${String(hour).padStart(2, '0')}:${m[2]}`
+}
+
+/** `clock24` ("HH:MM") shifted `hours` (fractional) earlier, wrapping across
+    midnight — used to turn an on-plan checkpoint clock into an early one
+    without knowing the race's own start time (see the extreme-pace test:
+    that floats with wall-clock time at suite run, `launch.mjs`'s
+    `startedHoursAgo`). resolveClockElapsed (checkpoint.ts) re-derives which
+    CALENDAR DAY a bare "HH:MM" belongs to by picking whichever occurrence
+    lands closest to the station's own planned ETA, so wrapping here is safe
+    as long as the shifted clock stays closer to a small elapsed time than to
+    a repeat 24h away — true for any shift that is itself a large fraction of
+    the plan, which is exactly what the extreme-pace test asks for. */
+function subtractHours(clock24: string, hours: number): string {
+  const [h, m] = clock24.split(':').map(Number)
+  const wrapped = (((h * 60 + m - Math.round(hours * 60)) % 1440) + 1440) % 1440
+  return `${String(Math.floor(wrapped / 60)).padStart(2, '0')}:${String(wrapped % 60).padStart(2, '0')}`
+}
+
+/** Export the crew page and open it exactly the way the crew will — from the
+    filesystem, every network request refused — with the checkpoint form
+    ready to drive. Shared by the bug 4/6 flows below and the offline-render
+    flow above. */
+async function exportAndOpenOffline(
+  page: Page,
+  context: BrowserContext,
+  testInfo: TestInfo,
+  label: string,
+): Promise<Page> {
+  await setActiveRace(page.request, MM.slug, 'train')
+  await openDashboard(page)
+  await openRaceTab(page)
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: /export crew page/i }).click(),
+  ])
+  await fs.mkdir(testInfo.outputDir, { recursive: true })
+  const file = path.join(testInfo.outputDir, `${label}-${download.suggestedFilename()}`)
+  await download.saveAs(file)
+
+  const offline = await context.newPage()
+  await offline.route('**/*', (route) => {
+    const url = route.request().url()
+    return /^https?:/.test(url) ? route.abort('failed') : route.continue()
+  })
+  await offline.goto(`file://${file}`)
+  return offline
+}
+
+/**
+ * Flow 11 — "export crew page", and the only thing that actually matters about
+ * it: the file works with no network at all.
+ *
+ * The crew page is AirDropped to somebody who will open it in a trailhead
+ * parking lot with one bar of signal, hours after the laptop that made it went
+ * home. So it is built as a second Vite entry inlined to a single file — no
+ * script tags, no stylesheet links, no fonts, no `/course.json` fetch. That
+ * promise is impossible to check by reading the HTML (an inlined bundle is one
+ * enormous line) and trivial to check by opening the file with every network
+ * request aborted and seeing whether the ETAs are on screen.
+ *
+ * The export also has to agree with the planner it was taken from — the knobs
+ * on screen go in the POST body, because a crew sheet whose ETAs disagree with
+ * the plan the athlete just looked at is worse than no crew sheet, since both
+ * look authoritative. That is asserted through the UI here: the button is
+ * pressed, and the file that comes back is the one that gets opened.
+ */
+
+test('the exported crew page opens with the network gone', async ({ page, context, trouble }, testInfo) => {
+  await setActiveRace(page.request, MM.slug, 'train')
+  await openDashboard(page)
+  await openRaceTab(page)
+
+  // The real button, not a hand-rolled POST: this is the path that decides
+  // which knobs the server renders against.
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: /export crew page/i }).click(),
+  ])
+
+  // Named after the race-local date, which is what makes a second export a
+  // second file rather than a silent overwrite.
+  expect(download.suggestedFilename()).toMatch(/^crew-\d{4}-\d{2}-\d{2}\.html$/)
+
+  const file = path.join(testInfo.outputDir, download.suggestedFilename())
+  await fs.mkdir(testInfo.outputDir, { recursive: true })
+  await download.saveAs(file)
+  const html = await fs.readFile(file, 'utf8')
+
+  // One file, self-contained: no external script, stylesheet, font or image.
+  // (A data: URI is inline, which is the whole point, so it does not count.)
+  const externalRefs = [...html.matchAll(/(?:src|href)\s*=\s*"([^"]+)"/g)]
+    .map((m) => m[1])
+    .filter((ref) => !ref.startsWith('data:') && !ref.startsWith('#'))
+    .filter((ref) => /^(https?:)?\/\//.test(ref) || ref.startsWith('/'))
+  expect(externalRefs, 'the crew page references files it will not have offline').toEqual([])
+
+  // Now open it the way the crew will: from the filesystem, with every network
+  // request refused. Anything the page still tries to fetch shows up in
+  // `attempted` and fails the test by name rather than as a blank page.
+  const attempted: string[] = []
+  const offline = await context.newPage()
+  await offline.route('**/*', (route) => {
+    const url = route.request().url()
+    if (/^https?:/.test(url)) {
+      attempted.push(url)
+      return route.abort('failed')
+    }
+    return route.continue()
+  })
+  const crashes: string[] = []
+  offline.on('pageerror', (e) => crashes.push(e.message))
+
+  await offline.goto(`file://${file}`)
+
+  // The sheet is really rendered — not an empty shell waiting on a fetch.
+  await expect(offline.getByText(new RegExp(MM.name, 'i')).first()).toBeVisible()
+  const text = await offline.locator('body').innerText()
+  for (const station of ['Slabtown', 'Tin Cup', 'Bitterroot Bowl']) {
+    expect(text, `the crew page is missing ${station}`).toContain(station)
+  }
+  // An ETA, in the crew page's own clock format — the numbers the crew drives
+  // to, and the thing that would be blank if it needed the course at run time.
+  expect(text, 'the crew page has no ETAs on it').toMatch(/\d{1,2}:\d{2}[ap]/)
+
+  expect(attempted, 'the crew page tried to reach the network').toEqual([])
+  expect(crashes, 'the crew page threw with no network').toEqual([])
+  await offline.close()
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * Bug 4 — a refused checkpoint submit must leave whatever checkpoint is
+ * already in force completely untouched: table, caption, clear button and
+ * localStorage all keep showing the good one, and only the warning line
+ * changes. The old bug threw the applied checkpoint away on ANY refusal
+ * (station left on "choose a station…", an unparsable clock, "Start" picked)
+ * — this drives the real form in a real browser, because the defect lived in
+ * main.ts's DOM-handling, not in the pure checkpoint.ts logic.
+ */
+test('bug 4: a refused checkpoint submit leaves the applied checkpoint untouched', async ({ page, context, trouble }, testInfo) => {
+  const offline = await exportAndOpenOffline(page, context, testInfo, 'bug4')
+
+  // A real, successful checkpoint first — the exported plan's own ETA for
+  // Slabtown, so it is guaranteed to be accepted.
+  await offline.locator('#cp-station').selectOption('Slabtown')
+  const slabtownEta = await offline.locator('tr[data-station="Slabtown"] .eta .exp').innerText()
+  await offline.locator('#cp-clock').fill(to24h(slabtownEta))
+  await offline.getByRole('button', { name: /update/i }).click()
+
+  await expect(offline.locator('#cp-status')).toContainText('Slabtown')
+  expect(await offline.locator('#cp-status').getAttribute('class')).toContain('applied')
+  await expect(offline.locator('#cp-clear')).toBeEnabled()
+
+  const tableBefore = await offline.locator('#stations tbody').innerHTML()
+  const captionBefore = await offline.locator('#stations caption').innerText()
+  const storageKey = 'basecamp.crew.mm-like-100.checkpoint'
+  const storedBefore = await offline.evaluate((k) => localStorage.getItem(k), storageKey)
+  expect(storedBefore).not.toBeNull()
+
+  // Now refuse: blank the station and submit — the classic "cleared the
+  // dropdown, forgot to re-pick it" mistake.
+  await offline.locator('#cp-station').selectOption('')
+  await offline.getByRole('button', { name: /update/i }).click()
+
+  await expect(offline.locator('#cp-status')).toContainText(/pick the station/i)
+  expect(await offline.locator('#cp-status').getAttribute('class')).not.toContain('applied')
+
+  // Everything that was showing the GOOD checkpoint is exactly as it was —
+  // the warning shows alone, next to a sheet that still works.
+  expect(await offline.locator('#stations tbody').innerHTML()).toEqual(tableBefore)
+  expect(await offline.locator('#stations caption').innerText()).toEqual(captionBefore)
+  await expect(offline.locator('#cp-clear')).toBeEnabled()
+  expect(await offline.evaluate((k) => localStorage.getItem(k), storageKey)).toEqual(storedBefore)
+
+  await offline.close()
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * Bug 6 — a checkpoint upstream of an already-applied later one is refused,
+ * naming the later station, rather than silently discarding the more recent
+ * split. "clear" is the deliberate way to throw a checkpoint away.
+ */
+test('bug 6: an out-of-order checkpoint is refused and names the later station', async ({ page, context, trouble }, testInfo) => {
+  const offline = await exportAndOpenOffline(page, context, testInfo, 'bug6')
+
+  // Tin Cup is well downstream of Slabtown on the aid chart (mi 83.7 vs 44.6).
+  await offline.locator('#cp-station').selectOption('Tin Cup')
+  const tinCupEta = await offline.locator('tr[data-station="Tin Cup"] .eta .exp').innerText()
+  await offline.locator('#cp-clock').fill(to24h(tinCupEta))
+  await offline.getByRole('button', { name: /update/i }).click()
+  await expect(offline.locator('#cp-status')).toContainText('Tin Cup')
+  expect(await offline.locator('#cp-status').getAttribute('class')).toContain('applied')
+
+  // Now try the UPSTREAM station.
+  await offline.locator('#cp-station').selectOption('Slabtown')
+  const slabtownEta = await offline.locator('tr[data-station="Slabtown"] .eta .exp').innerText()
+  await offline.locator('#cp-clock').fill(to24h(slabtownEta))
+  await offline.getByRole('button', { name: /update/i }).click()
+
+  // Refused, naming the later (still-applied) station and pointing at clear.
+  await expect(offline.locator('#cp-status')).toContainText('Tin Cup')
+  await expect(offline.locator('#cp-status')).toContainText(/clear/i)
+  expect(await offline.locator('#cp-status').getAttribute('class')).not.toContain('applied')
+
+  // Tin Cup is still the checkpoint in force — its row is still "at".
+  await expect(offline.locator('tr[data-station="Tin Cup"]')).toHaveClass(/\bat\b/)
+
+  await offline.close()
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * Round 5 confirm, finding 1 — the extreme-pace warning
+ * (`<strong class="extreme">`) rendered in the same orange as an ordinary
+ * "applied" station/clock (`--accent`), not the red (`--bad`) crew.css's own
+ * comment says it must have, because `#cp-status.applied strong` is a direct
+ * rule on the <strong> element and always beats the inherited color from the
+ * ancestor `#cp-status.extreme`, regardless of specificity. Checked on the
+ * exported handout itself (file://, network aborted, exactly how a crew
+ * chief opens it) via computed style, not just the CSS source or the class
+ * list a prior test already covered.
+ */
+test('bug 5 (extreme pace): the warning renders in the refusal red, not the ordinary applied orange', async ({ page, context, trouble }, testInfo) => {
+  const offline = await exportAndOpenOffline(page, context, testInfo, 'extreme')
+
+  // The fixture's own start_time floats with wall-clock time (`startedHoursAgo`
+  // in launch.mjs pins it to "6 hours before whenever the suite runs"), so a
+  // literal clock string like "07:00" is not a fixed number of hours into the
+  // race — it very nearly refused as "at or before the start" against the
+  // suite's own real clock. Applying Slabtown's own plan-agreeing ETA first
+  // gets its planned elapsed hours (parsed off the rendered message, the same
+  // number `applyCheckpoint` compares the ratio against) with no assumption
+  // about the race's start time at all, then a SECOND submit for the same
+  // station at ~1/6 of that elapsed time is unconditionally deep inside
+  // EXTREME_RATIO (0.25) — comfortably past it whatever the exact aid-stop
+  // minutes upstream of Slabtown cost.
+  await offline.locator('#cp-station').selectOption('Slabtown')
+  const slabtownEta = await offline.locator('tr[data-station="Slabtown"] .eta .exp').innerText()
+  const onPlanClock = to24h(slabtownEta)
+  await offline.locator('#cp-clock').fill(onPlanClock)
+  await offline.getByRole('button', { name: /update/i }).click()
+  await expect(offline.locator('#cp-status')).toContainText('Slabtown')
+  expect(await offline.locator('#cp-status').getAttribute('class')).toBe('applied')
+
+  const onPlanMessage = await offline.locator('#cp-status').innerText()
+  const elapsed = /(\d+)h\s+(\d+)m on the clock/.exec(onPlanMessage)
+  if (!elapsed) throw new Error(`could not parse elapsed hours from: ${onPlanMessage}`)
+  const plannedH = Number(elapsed[1]) + Number(elapsed[2]) / 60
+
+  const extremeClock = subtractHours(onPlanClock, plannedH - plannedH / 6)
+  await offline.locator('#cp-clock').fill(extremeClock)
+  await offline.getByRole('button', { name: /update/i }).click()
+
+  await expect(offline.locator('#cp-status')).toContainText(/under a quarter/i)
+  expect(await offline.locator('#cp-status').getAttribute('class')).toBe('applied extreme')
+
+  // Computed color, not the class list or a hardcoded hex — compared against
+  // the page's OWN --bad/--accent custom properties so this does not rot if
+  // either color is ever retuned.
+  const [extremeColor, badColor, accentColor] = await offline.evaluate(() => {
+    const probe = (varName: string) => {
+      const span = document.createElement('span')
+      span.style.color = `var(${varName})`
+      document.body.appendChild(span)
+      const color = getComputedStyle(span).color
+      span.remove()
+      return color
+    }
+    const strong = document.querySelector('#cp-status strong.extreme')
+    return [
+      strong ? getComputedStyle(strong).color : null,
+      probe('--bad'),
+      probe('--accent'),
+    ]
+  })
+  expect(extremeColor, 'no <strong class="extreme"> found on the exported page').not.toBeNull()
+  expect(extremeColor).toBe(badColor)
+  expect(extremeColor).not.toBe(accentColor)
+
+  await offline.close()
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * Bug 7 (review round 3, ui3-resilience.md) — with the dev server down, the
+ * "⇩ export crew page" button showed the raw browser exception ("Failed to
+ * fetch") in its status line instead of a sentence an athlete would
+ * understand. ExportButton.tsx now runs the same friendlyFetchError()
+ * translation the intake dialogs and the race switcher already use for the
+ * identical failure.
+ */
+test('bug 7: a dead server on export shows a friendly message, not the raw fetch exception', async ({ page, trouble }) => {
+  await setActiveRace(page.request, MM.slug, 'train')
+  await openDashboard(page)
+  await openRaceTab(page)
+
+  // Only the export POST goes down — everything else about the page (which
+  // is already loaded) keeps working, matching what a crashed/killed dev
+  // server actually looks like mid-session rather than a first load.
+  await page.route('**/crew-export', (route) => route.abort('failed'))
+
+  const button = page.getByRole('button', { name: /export crew page/i })
+  await button.click()
+
+  await expect(page.getByText(/server unreachable — is basecamp running\?/i)).toBeVisible()
+  await expect(page.getByText(/failed to fetch/i)).toHaveCount(0)
+
+  // The button already returns to idle/pressable on any error — still true,
+  // and worth pinning so a future regression here is caught too.
+  await expect(button).toBeEnabled()
+  await expect(button).toHaveText(/⇩ export crew page/i)
+
+  expect(trouble.pageErrors).toEqual([])
+})

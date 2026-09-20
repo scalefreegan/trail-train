@@ -16,29 +16,19 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-/** Fallback body mass, kg. Deliberately a round, IMPERSONAL number: the
-    committed example profile must never carry the owner's real weight, and a
-    plan built on this default is announced (see normalizePhysiology's
-    warnings) rather than quietly wrong. Roughly a median adult male runner —
-    close enough that the mg/kg caffeine band lands in the right ballpark,
-    far enough from anyone in particular that nobody mistakes it for theirs. */
-export const DEFAULT_BODY_KG = 75;
+import {
+  DEFAULT_BODY_KG,
+  DEFAULT_LONG_RUN_REF_MI,
+  PHYSIOLOGY_FIELDS,
+  PHYSIOLOGY_KEYS,
+} from "./contracts.mjs";
 
-/** Fallback long-run reference distance, mi — the old pacing.ts `D_REF`. The
-    projection evaluates its fitted fitness pace at this one distance and lets
-    the fatigue curve carry everything past it, so it should sit in the middle
-    of the athlete's actual long-run regime. */
-export const DEFAULT_LONG_RUN_REF_MI = 20;
-
-/** The editable physiology fields, with the bounds the settings PUT enforces.
-    `dflt` is what a missing/invalid value falls back to. KEEP IN SYNC with
-    the physiology block in config/profile.example.json. */
-export const PHYSIOLOGY_FIELDS = {
-  body_kg: { lo: 30, hi: 200, dflt: DEFAULT_BODY_KG, label: "body mass (kg)" },
-  long_run_ref_mi: { lo: 5, hi: 50, dflt: DEFAULT_LONG_RUN_REF_MI, label: "long-run reference (mi)" },
-};
-
-export const PHYSIOLOGY_KEYS = /** @type {const} */ (Object.keys(PHYSIOLOGY_FIELDS));
+// The fields, their bounds and their impersonal defaults live in
+// scripts/contracts.mjs, because the settings PUT in web/vite.config.ts and
+// the dialog in web/src/CoachSettings.tsx enforce and render the same
+// numbers. Re-exported so every existing import site (`from "./profile.mjs"`)
+// keeps working.
+export { DEFAULT_BODY_KG, DEFAULT_LONG_RUN_REF_MI, PHYSIOLOGY_FIELDS, PHYSIOLOGY_KEYS };
 
 /**
  * Coerce a raw `physiology` block into a complete, in-range one.
@@ -49,8 +39,12 @@ export const PHYSIOLOGY_KEYS = /** @type {const} */ (Object.keys(PHYSIOLOGY_FIEL
  * comes back in `warnings`, because a caffeine band computed against a
  * stand-in body mass looks exactly like one computed against the athlete's.
  *
+ * The one exception is an `optional` field (home_elevation_ft): it has no
+ * honest stand-in, so it normalizes to null in silence and the views that
+ * read it ask for it themselves.
+ *
  * @param {unknown} raw the profile's `physiology` value (may be undefined)
- * @returns {{ physiology: { body_kg: number, long_run_ref_mi: number }, warnings: string[] }}
+ * @returns {{ physiology: { body_kg: number, long_run_ref_mi: number, home_elevation_ft: number|null }, warnings: string[] }}
  */
 export function normalizePhysiology(raw) {
   const warnings = [];
@@ -63,10 +57,14 @@ export function normalizePhysiology(raw) {
     const v = block?.[key];
     if (v == null) {
       physiology[key] = spec.dflt;
-      warnings.push(
-        `config/profile.json: physiology.${key} is not set — falling back to ${spec.dflt} ` +
-          `(${spec.label}). Set it in the coach settings dialog so the plan is yours.`,
-      );
+      // an optional field's absence is not a substitution — nothing was
+      // stood in for, so there is nothing to announce
+      if (!spec.optional) {
+        warnings.push(
+          `config/profile.json: physiology.${key} is not set — falling back to ${spec.dflt} ` +
+            `(${spec.label}). Set it in the coach settings dialog so the plan is yours.`,
+        );
+      }
       continue;
     }
     if (typeof v !== "number" || !Number.isFinite(v) || v < spec.lo || v > spec.hi) {

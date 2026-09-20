@@ -487,6 +487,87 @@ test("the course.gpx mismatch is persisted onto race.json's unresolved list, and
   );
 });
 
+/* -------- tune-up synthesized finish: distance/climb/pace must agree ------- */
+
+/** A tune-up's race.json, shaped exactly as scripts/race-intake.mjs's
+    quickCreateRace writes it: kind "b", one synthesized "Finish" station at
+    the quick form's declared distance_mi (round 4 confirm, ui1 PARTIAL #1). */
+function tuneUpRace(slug, { distance_mi = 30, gain_ft = 399 } = {}) {
+  return {
+    schema_version: 1,
+    slug,
+    kind: "b",
+    parent_slug: "some-hundred-2027",
+    status: "draft",
+    name: "Ridgeline GPX 50k",
+    short: "RG50K",
+    edition_year: 2027,
+    date: "2027-06-12",
+    start_time: "06:00",
+    timezone: "America/Denver",
+    distance_mi,
+    gain_ft,
+    cutoff_h: null,
+    aid_stations: [
+      { name: "Finish", total_mi: distance_mi, cutoff_h: null, crew: false, drop_bag: false },
+    ],
+    race_climbs: [],
+    links: {},
+  };
+}
+
+test("a tune-up's synthesized Finish station takes its distance from the built course, not the pre-upload declared distance_mi", async () => {
+  const slug = "ridgeline-gpx-50k-2027";
+  // distance_mi (30) is a near miss for the ~29.9 mi synthetic track — the
+  // interesting case is the mismatch below, but this one first proves the
+  // station's total_mi tracks the MEASURED distance even when they're close,
+  // not "only correct when they already roughly agreed".
+  const { root, dir } = await makeRoot(slug, { race: tuneUpRace(slug) });
+
+  const course = await buildCourse(root, slug);
+  const written = await readJson(path.join(dir, "build", "course.json"));
+  assert.equal(written.aid_stations.length, 1);
+  const finish = written.aid_stations[0];
+  // total_mi (what RacePlanner's distance column reads) now equals gpx_mi
+  // (what its climb/pace are already derived from) and course.json's own
+  // top-level, GPX-measured distance_mi — one row, one number.
+  assert.equal(finish.total_mi, finish.gpx_mi);
+  assert.equal(finish.total_mi, written.distance_mi);
+  assert.equal(written.distance_mi, course.measured_mi);
+  // The declared distance is still on record for the banner to cite —
+  // this fix only changes what the STATION carries, never race.json.
+  assert.equal(written.official_distance_mi, 30);
+});
+
+test("a wildly mismatched tune-up GPX (3x the declared distance) still lands the Finish row on the real measured distance", async () => {
+  const slug = "ridgeline-mismatch-2027";
+  // declared 10 mi against a track that measures ~29.9 mi — same shape as
+  // the browser-observed repro (a 31 mi declared tune-up against a 102 mi
+  // GPX): loud mismatch warning AND a self-consistent station row either way.
+  const { root, dir } = await makeRoot(slug, { race: tuneUpRace(slug, { distance_mi: 10, gain_ft: 400 }) });
+
+  const warnings = [];
+  await buildCourse(root, slug, { warn: (m) => warnings.push(m) });
+  assert.ok(warnings.some((w) => /course\.gpx measures 29\.9 mi vs race\.json's 10 mi/.test(w)), warnings.join(" | "));
+  const written = await readJson(path.join(dir, "build", "course.json"));
+  const finish = written.aid_stations[0];
+  assert.equal(finish.total_mi, finish.gpx_mi, "distance and the climb/pace basis must agree in the row");
+  assert.equal(finish.total_mi, written.distance_mi);
+  assert.notEqual(finish.total_mi, 10, "must not still be the pre-upload declared distance");
+  assert.equal(written.official_distance_mi, 10, "race.json's declared figure is untouched, for the banner");
+});
+
+test("an A race's own aid chart keeps the manual's authored miles — only a tune-up's synthesized finish is replaced", async () => {
+  // Same synthetic ~29.9 mi track, but the ordinary multi-station A-race
+  // fixture (kind unset ⇒ "a", four authored stations) used throughout this
+  // file. Its Finish station's total_mi (29.9, the manual's own chart figure)
+  // must NOT be overwritten to the measured distance the way a tune-up's is.
+  assert.equal(raceAfter.kind, undefined);
+  const courseAfterA = await readJson(path.join(base.dir, "build", "course.json"));
+  const aFinish = courseAfterA.aid_stations[courseAfterA.aid_stations.length - 1];
+  assert.equal(aFinish.total_mi, 29.9, "the A race's authored finish mile is untouched");
+});
+
 /* --------------- concurrent archive/edit during a build -------------------- */
 
 test("a concurrent archive/edit that finishes mid-build survives buildRace's later writes — patched on, not overwritten by the stale snapshot", async () => {

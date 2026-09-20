@@ -4,8 +4,14 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "contracts": "node ../scripts/gen-contracts.mjs",
+    "predev": "npm run contracts",
+    "prebuild": "npm run contracts",
+    "pretest": "npm run contracts",
+    "pretest:ui": "npm run contracts",
     "dev": "vite",
     "test": "node --test ../scripts/*.test.mjs",
+    "test:ui": "playwright test -c tests/playwright.config.ts",
     "build": "tsc -b && eslint . && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -30,6 +36,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.63.0",
     "@types/node": "^24.12.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -41,6 +48,9 @@
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
     "vite": "^8.0.12"
+  },
+  "engines": {
+    "node": ">=22.18"
   },
   "allowScripts": {
     "fsevents@2.3.3": true

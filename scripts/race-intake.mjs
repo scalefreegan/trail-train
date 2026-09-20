@@ -24,10 +24,11 @@ import os from "node:os";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import { promisify } from "node:util";
-import { RACE_SCHEMA_VERSION, raceDir, validateRaceJson } from "./race-config.mjs";
+import { RACE_SCHEMA_VERSION, listRaces, raceDir, raceKind, validateRaceJson } from "./race-config.mjs";
+import { raceStart, isValidTimeZone } from "./clock.mjs";
 import { runClaudeJson, extractJson, agentModel } from "./agent-run.mjs";
 import { parseGpx } from "./aid-match.mjs";
-import { arg, writeJsonAtomic } from "./lib.mjs";
+import { arg, projectRoot, writeJsonAtomic } from "./lib.mjs";
 
 const exec = promisify(execFile);
 
@@ -110,6 +111,15 @@ async function slugExists(root, slug) {
     below — a caller sees the same message whichever path produced it. */
 function slugTakenMessage(slug) {
   return `races/${slug}/race.json already exists — pass refresh: true to re-intake it (hand edits are NOT merged by this stage)`;
+}
+
+/** The same collision, but for quickCreateRace (round 3, resilience finding
+    8): the quick form has no `refresh` flag at all — a real intake's own
+    re-read-from-sources escape hatch means nothing to an athlete looking at
+    five typed fields, so the duplicate-name refusal says what to actually do
+    instead: rename it. */
+function quickCreateTakenMessage(name, year) {
+  return `a tune-up named "${name}" already exists for ${year} — pick another name`;
 }
 
 /** Where a not-yet-written race folder's exclusive claim lives while an
@@ -758,10 +768,13 @@ function errorFieldPath(message) {
  * with a malformed date is a bug, a draft with no date is a known unknown.
  * @param {object} race the assembled race.json
  * @param {string[]} unresolved
+ * @param {{races?: {slug: string, race: object|null}[]}} [opts] folders on
+ *   disk, when the caller has read them — lets a B-race draft's parent_slug
+ *   be resolved too (see validateRaceJson)
  * @returns {{errors: string[], excused: string[]}}
  */
-export function draftValidationErrors(race, unresolved) {
-  const { errors } = validateRaceJson(race);
+export function draftValidationErrors(race, unresolved, opts = {}) {
+  const { errors } = validateRaceJson(race, opts);
   const known = new Set(unresolved);
   const out = { errors: [], excused: [] };
   for (const message of errors) {
@@ -832,6 +845,41 @@ export function buildRaceJson(draft, { slug, year, manifest = [], warnings = [],
     };
   }
   provenance.edition_year = { by: PROVENANCE_BY, at, source: "intake request" };
+  // PRD §4: `tracking.url` is the one tracking field intake can know — the
+  // race site's live-tracking link, which the agent already reports as
+  // links.tracking. bib and name are the athlete's, months away from being
+  // issued, so they are seeded null for the review screen to fill rather
+  // than guessed. Only written when the site actually linked a tracker: an
+  // empty `tracking: {}` on every race would be a field that says nothing
+  // and a `tracking.url` entry in `unresolved` for races that have no
+  // tracker at all.
+  const trackingUrl = typeof draft.links?.tracking === "string" ? draft.links.tracking.trim() : "";
+  if (trackingUrl) {
+    // Same http(s)-only gate race-edit.mjs applies to a hand-typed
+    // tracking.url (279-286): the URL decides which adapter the dev server
+    // fetches server-side, so a file:// or data: "tracker" the agent copied
+    // out of a page's markup verbatim would be read off the machine running
+    // the server. An agent-derived value is untrusted the same way a
+    // hand-typed one is — it just failed differently (a bad scheme, not a
+    // malicious one), so it goes into intake_warnings, same as any other
+    // hole the agent could not fill, rather than silently landing on
+    // race.json.
+    let validTrackingUrl = false;
+    try {
+      const parsed = new URL(trackingUrl);
+      validTrackingUrl = parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch { /* not a URL at all */ }
+    if (validTrackingUrl) {
+      race.tracking = { url: trackingUrl, bib: null, name: null };
+      provenance.tracking = {
+        by: PROVENANCE_BY,
+        at,
+        source: typeof draft.field_sources?.links === "string" ? draft.field_sources.links : "race-intake",
+      };
+    } else {
+      warnings.push(`links.tracking: ${JSON.stringify(trackingUrl)} is not an http(s) URL — dropped, not saved as the race's tracker`);
+    }
+  }
   race.provenance = provenance;
   // A source that this run tried and failed to (re)fetch is kept, marked with
   // `error`, rather than dropped outright — but ONLY on a PARTIAL failure.
@@ -884,6 +932,227 @@ export function buildRaceJson(draft, { slug, year, manifest = [], warnings = [],
   // moment the file is written — this is the one place that can happen.
   race.unresolved = collectUnresolved(race, draft.unresolved ?? []);
   return race;
+}
+
+/* -------------------- the quick form: a tune-up race -------------------- */
+
+/**
+ * A short code for a race the athlete typed into the quick form, since the
+ * schema needs one and nobody wants to invent it twice. Word initials plus
+ * the first distance-looking token: "Jemez Mountain 50K" → "JM50K",
+ * "San Juan Softie 100" → "SJS100". Falls back to the kebab name uppercased
+ * when the name has no initials to take (a purely numeric name).
+ * @param {string} name
+ * @returns {string}
+ */
+export function shortFromName(name) {
+  const words = String(name ?? "").split(/\s+/).filter(Boolean);
+  const initials = words
+    .filter((w) => /^[a-z]/i.test(w))
+    .map((w) => w[0].toUpperCase())
+    .join("");
+  const distance = words.map((w) => /^(\d+(?:\.\d+)?)(k|km|mi|m|h)?$/i.exec(w)).find(Boolean);
+  const tail = distance ? `${distance[1]}${(distance[2] ?? "").toUpperCase()}` : "";
+  const out = `${initials}${tail}`.slice(0, 12);
+  return out || kebab(name).replace(/-/g, "").toUpperCase().slice(0, 12) || "RACE";
+}
+
+/** Thrown refusals carry a `code` the dev-server endpoint maps to a status —
+    the same convention scripts/race-result.mjs's archiveRace uses. */
+function refuse(code, message) {
+  return Object.assign(new Error(message), { code });
+}
+
+/**
+ * Create a B-race (tune-up) folder from the quick form — PRD-v2 §3's
+ * "lightweight B-race folders linked to the A-race block by date".
+ *
+ * This is intake WITHOUT the agent: five typed fields, no sources to fetch,
+ * no `claude -p` turn and therefore no spend. Everything it writes is the
+ * athlete's own answer, so every field it can attribute is provenance "user"
+ * — the two it DERIVES (a timezone inherited from the parent, the finish
+ * station derived from the distance) are "computed" on purpose: "user" is
+ * the flag scripts/race-merge.mjs refuses to overwrite, and a later real
+ * intake of this same folder must be free to replace a guessed zone and a
+ * one-line station list with the race's actual ones.
+ *
+ * The folder starts "draft" before its date and "archived" after it, never
+ * "active" — see RACE_KINDS in scripts/race-config.mjs: the A race it hangs
+ * off stays the training target.
+ *
+ * Writes races/<slug>/race.json (and course.gpx when `gpxPath` is given).
+ * Running the course build over that GPX is the CALLER's job — it is slow and
+ * streams progress, and the folder is already valid without it.
+ *
+ * @param {{root: string, name: string, date: string, distance_mi: number,
+ *          gain_ft: number, parent_slug: string, timezone?: string|null,
+ *          gpxPath?: string|null, now?: number, at?: string}} opts
+ * @returns {Promise<{slug: string, dir: string, race: object, gpx: boolean, parent: object}>}
+ */
+export async function quickCreateRace({
+  root,
+  name,
+  date,
+  distance_mi,
+  gain_ft,
+  parent_slug,
+  timezone = null,
+  gpxPath = null,
+  now = Date.now(),
+  at = new Date().toISOString(),
+}) {
+  if (!root) throw refuse("bad_request", "quickCreateRace: root is required");
+  const raceName = String(name ?? "").trim();
+  if (!raceName) throw refuse("bad_request", "name: the race's name is required");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date)) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
+    throw refuse("bad_request", `date must be a YYYY-MM-DD calendar date (got ${JSON.stringify(date)})`);
+  }
+
+  // The parent is what makes this a B race at all: without a readable A
+  // folder to hang off there is no block to sit inside and no date to count
+  // weeks_out from.
+  const races = await listRaces(root);
+  const parentRow = races.find((r) => r.slug === parent_slug);
+  if (!parentRow) throw refuse("not_found", `parent_slug: no race folder races/${parent_slug}/`);
+  if (!parentRow.race) {
+    throw refuse("bad_request", `parent_slug: races/${parent_slug}/race.json is unreadable${parentRow.error ? ` (${parentRow.error})` : ""}`);
+  }
+  if (raceKind(parentRow.race) !== "a") {
+    throw refuse("bad_request", `parent_slug: races/${parent_slug}/ is itself a tune-up — a B race hangs off an A race`);
+  }
+
+  // Server-side sanity ceilings (round 3, resilience finding 10): the quick
+  // form's own live warning ("N weeks after <race> — it falls outside the
+  // block") is only a note, and a fat-fingered 999999 mi or a date decades
+  // off sailed straight through to disk with no refusal at all. Distance and
+  // gain get fixed ceilings — nothing on foot needs either number this
+  // large. The date ceiling is relative, not absolute: 3 years either side of
+  // the parent race's own date, or of today when the parent has none (an A
+  // race's schema requires one, but a hand-broken race.json could still lack
+  // it, and this must not crash on that).
+  if (typeof distance_mi !== "number" || !Number.isFinite(distance_mi) || distance_mi <= 0) {
+    throw refuse("bad_request", "distance_mi: positive number required");
+  }
+  if (distance_mi > 500) {
+    throw refuse("bad_request", `distance_mi: ${distance_mi} is over the 500 mi ceiling — check the number`);
+  }
+  if (typeof gain_ft !== "number" || !Number.isFinite(gain_ft) || gain_ft < 0) {
+    throw refuse("bad_request", "gain_ft: non-negative number required");
+  }
+  if (gain_ft > 100_000) {
+    throw refuse("bad_request", `gain_ft: ${gain_ft} is over the 100,000 ft ceiling — check the number`);
+  }
+  const parentDate = /^\d{4}-\d{2}-\d{2}$/.test(String(parentRow.race.date)) ? parentRow.race.date : null;
+  const anchor = parentDate ?? new Date(now).toISOString().slice(0, 10);
+  const anchorMs = Date.parse(`${anchor}T00:00:00Z`);
+  const dateMs = Date.parse(`${date}T00:00:00Z`);
+  const THREE_YEARS_MS = 3 * 365.25 * 86_400_000;
+  if (Math.abs(dateMs - anchorMs) > THREE_YEARS_MS) {
+    throw refuse(
+      "bad_request",
+      `date: ${date} is more than 3 years from ${parentDate ? `${parent_slug}'s date (${anchor})` : `today (${anchor})`} — check the year`,
+    );
+  }
+
+  const zone = typeof timezone === "string" && timezone.trim() ? timezone.trim() : null;
+  const tz = zone ?? parentRow.race.timezone ?? null;
+  const slug = deriveSlug(raceName, date.slice(0, 4));
+  if (await slugExists(root, slug)) throw refuse("conflict", quickCreateTakenMessage(raceName, date.slice(0, 4)));
+
+  const race = {
+    schema_version: RACE_SCHEMA_VERSION,
+    slug,
+    kind: "b",
+    parent_slug,
+    // Before its date it is a plan; after it, it is history. Never "active".
+    status: bRaceStatus(date, tz, now),
+    name: raceName,
+    short: shortFromName(raceName),
+    edition_year: Number(date.slice(0, 4)),
+    date,
+    // The quick form asks for five things and a start time is not one of
+    // them; 06:00 is the ultra default and the review screen can move it.
+    start_time: "06:00",
+    timezone: tz,
+    distance_mi,
+    gain_ft,
+    // Unknown, and honestly so — it lands in `unresolved` below.
+    cutoff_h: null,
+    // No `features`: absent reads as every feature off, which is exactly the
+    // reduced planner PRD-v2 §3 asks for (no crew / drop-bag / caffeine
+    // cards until somebody says this tune-up has them).
+    aid_stations: [
+      { name: "Finish", total_mi: distance_mi, cutoff_h: null, crew: false, drop_bag: false },
+    ],
+    provenance: {
+      name: { by: "user", at, source: "quick form" },
+      date: { by: "user", at, source: "quick form" },
+      distance_mi: { by: "user", at, source: "quick form" },
+      gain_ft: { by: "user", at, source: "quick form" },
+      short: { by: "user", at, source: "quick form" },
+      kind: { by: "user", at, source: "quick form" },
+      parent_slug: { by: "user", at, source: "quick form" },
+      timezone: zone
+        ? { by: "user", at, source: "quick form" }
+        : { by: "computed", at, source: `inherited from races/${parent_slug}/` },
+      aid_stations: { by: "computed", at, source: "quick form finish line from distance_mi" },
+    },
+    ...(gpxPath ? { sources: [{ kind: "gpx", ref: path.basename(gpxPath), fetched_at: at }] } : {}),
+  };
+  race.unresolved = collectUnresolved(race);
+
+  const { ok, errors } = validateRaceJson(race, { races });
+  if (!ok) throw refuse("bad_request", errors.join("; "));
+
+  const dir = raceDir(root, slug);
+  await fs.mkdir(dir, { recursive: true });
+  // Last line of defence against two quick-creates racing on the same name:
+  // the claim file is a single O_EXCL create, the same guard a full intake
+  // takes (assertSlugAvailable). Released as soon as race.json — the durable
+  // guard — is on disk.
+  // A concurrent create that derived the same slug loses the O_EXCL race
+  // here rather than half-writing a second folder; re-tagged so it is the
+  // same 409 the plain existence check above produces — quickCreateRace's OWN
+  // wording (round 3, resilience finding 8), never assertSlugAvailable's
+  // `refresh: true` message, which names a flag this form does not have.
+  // Only the actual "somebody else claimed it first" outcome (EEXIST, via
+  // slugTakenMessage) gets that reassuring 409 — anything else (EACCES,
+  // ENOSPC, EMFILE, a read-only races/) is a real filesystem problem and must
+  // say so: rewriting it would send whoever's debugging it looking for a
+  // duplicate POST instead of the disk. The caller (raceCreateApi in
+  // web/vite.config.ts) already `console.error`s anything that lands on the
+  // 500 branch, which is exactly where an unrecognised code falls through to.
+  await assertSlugAvailable(root, slug).catch((e) => {
+    if (e.message === slugTakenMessage(slug)) throw refuse("conflict", quickCreateTakenMessage(raceName, date.slice(0, 4)));
+    throw e;
+  });
+  try {
+    if (gpxPath) await fs.copyFile(gpxPath, path.join(dir, "course.gpx"));
+    await writeJsonAtomic(path.join(dir, "race.json"), race);
+  } finally {
+    await releaseSlugClaim(root, slug);
+  }
+  return { slug, dir, race, gpx: Boolean(gpxPath), parent: parentRow.race };
+}
+
+/**
+ * A tune-up's status from its date: "draft" while it is still ahead,
+ * "archived" once its day is over — in the RACE's own zone, so a race that
+ * finished this evening in Colorado is not already history at 17:00 in
+ * Denver because the machine is set to Tokyo.
+ * @param {string} date YYYY-MM-DD
+ * @param {string|null} timezone
+ * @param {number} now ms
+ * @returns {"draft"|"archived"}
+ */
+function bRaceStatus(date, timezone, now) {
+  const tz = isValidTimeZone(timezone) ? timezone : "UTC";
+  try {
+    const dayEnd = raceStart(date, "00:00", tz).getTime() + 86400000;
+    return now >= dayEnd ? "archived" : "draft";
+  } catch {
+    return "draft";
+  }
 }
 
 /* ------------------------------ the run -------------------------------- */
@@ -1256,7 +1525,7 @@ async function saveRawOutput({ root, slug, outDir = null, staging, sourcesDir, r
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname);
 if (isMain) {
-  const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+  const ROOT = projectRoot();
   const collect = (flag) => process.argv.reduce((acc, a, i) => (a === `--${flag}` && process.argv[i + 1] ? [...acc, process.argv[i + 1]] : acc), []);
   const site = arg("site", null);
   const year = arg("year", null);

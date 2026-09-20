@@ -477,3 +477,33 @@ test("archiveRace: a manual-only result (no track at all) is not a 'never arrive
   const { warning } = await archiveRace({ root, slug: "test-race-2026", status: "dns" });
   assert.equal(warning, undefined);
 });
+
+/**
+ * PR #24 review round 3, LOW finding: web/src/race/useRaceData.ts declared
+ * `splits[].source` as `"track" | "official" | "manual"`, but "manual" was
+ * never produced anywhere — ArchiveRace.tsx's free-text "official splits" box
+ * (the one hand-entry path this module has) is a plain `official.splits`
+ * write and comes back tagged "official", same as a scraped result would.
+ * There is no second, distinguishable hand-entry path, so the type was
+ * narrowed to match reality (PRD-modular-races.md §15) rather than the code
+ * being changed to manufacture a third value nothing can tell apart from
+ * "official". This locks the invariant the narrowed type now asserts.
+ */
+test("archiveRace: every split source is 'track' or 'official' — 'manual' is not a real value", async (t) => {
+  const root = await tempRace(t);
+  const withTrack = await archiveRace({
+    root, slug: "test-race-2026",
+    activityId: "20165079124",
+    activity: raceDayActivity(),
+    streams: streams(),
+  });
+  const root2 = await tempRace(t);
+  const withHandEntry = await archiveRace({
+    root: root2, slug: "test-race-2026",
+    official: { official_time: "33:16:12", splits: [{ station: "Finish", elapsed_h: 33.27 }] },
+  });
+  const sources = new Set([...withTrack.result.splits, ...withHandEntry.result.splits].map((s) => s.source));
+  for (const s of sources) assert.ok(s === "track" || s === "official", `unexpected split source ${JSON.stringify(s)}`);
+  assert.ok(sources.has("track"));
+  assert.ok(sources.has("official"));
+});

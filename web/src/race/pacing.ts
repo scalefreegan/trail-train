@@ -1,4 +1,5 @@
 import { raceLocalParts } from "./clock";
+import { ALTITUDE_THRESHOLD_FT, altitudeSlowdown } from "./altitude";
 import type { Course, CourseAidStation, CourseProfilePoint } from "./types";
 
 /* ------------------------------------------------------------------ */
@@ -159,6 +160,13 @@ export type StationProjection = {
   /** cutoff_h − avg arrival; null when no cutoff posted */
   cutoff_margin_h: number | null;
   cutoff_margin_worst_h: number | null;
+  /** distance-weighted mean elevation of the segment INTO this station, ft
+      (from the course profile) — what the altitude term was priced off */
+  seg_mean_ele_ft: number;
+  /** the altitude penalty actually applied over this segment, as a fraction
+      of pace AFTER the altitude_pct knob (0 when the knob is off or the
+      segment never gets above the threshold) */
+  alt_penalty: number;
 };
 
 /** One point of a pace-vs-grade multiplier curve (F(0) = 1). */
@@ -195,6 +203,51 @@ export type ProjectOptions = {
   /** per-station stop overrides by station name, minutes — taken literally
       (no fatigue scaling) and winning over the defaults */
   stopOverridesMin?: Record<string, number>;
+  /** the altitude term's inputs. ABSENT/null means the projection carries no
+      altitude penalty at all and reports `altitude: null` — the pre-v2
+      behaviour, kept so a caller that has no idea what elevation the athlete
+      lives at cannot silently get a penalty measured from sea level. */
+  altitude?: AltitudeOptions | null;
+};
+
+/** What the altitude term needs to know. `pct` is the per-slug knob
+    (100 = the model as published, 0 = off but still reported). */
+export type AltitudeOptions = {
+  pct: number;
+  /** the athlete's acclimated elevation, ft — null means nobody has set one,
+      which the model treats as sea level and the views say out loud */
+  homeElevationFt: number | null;
+  /** days at the race's elevation before the start (bead 02 derives this
+      from the calendar; 0 = fly in and run) */
+  acclimationDays?: number;
+};
+
+/** The altitude term as it landed on THIS projection — everything the model
+    check and the planner footer need to describe it without recomputing it. */
+export type AltitudeSummary = {
+  /** the knob, % (100 = model as published, 0 = off) */
+  pct: number;
+  /** the acclimated elevation the penalty was measured from, ft */
+  home_ft: number;
+  /** true when no home elevation was configured and sea level was assumed */
+  home_assumed: boolean;
+  acclimation_days: number;
+  /** hours the term adds to the EXPECTED finish — the whole cost of altitude
+      in this plan, measured as (this projection − the same projection with
+      the term off). Stops don't move, so it is all moving time. */
+  added_h: number;
+  /** what the term WOULD add at the published curve (pct 100), whatever the
+      knob is set to. Equals added_h at 100 %; at 0 % it is the sentence
+      "this is what you have switched off". */
+  added_h_at_full: number;
+  /** distance-weighted mean elevation of the whole course, ft */
+  mean_ele_ft: number;
+  /** the highest segment mean elevation on the course, ft */
+  max_seg_ele_ft: number;
+  /** the largest per-segment penalty applied, as a fraction of pace */
+  max_penalty: number;
+  /** how much of the course sits above the model's threshold, miles */
+  miles_above_threshold: number;
 };
 
 export type RaceProjection = {
@@ -211,6 +264,8 @@ export type RaceProjection = {
   paceAtMile: (mi: number) => number;
   /** which grade-response curve drove the projection (for the model footer) */
   grade_basis: string;
+  /** the altitude term, or null when the caller passed no altitude options */
+  altitude: AltitudeSummary | null;
 };
 
 /* ------------------- grade-response curve ------------------- */
@@ -284,6 +339,39 @@ function gainBetween(profile: CourseProfilePoint[], fromMi: number, toMi: number
     else if (d < -10) { anchor = p.ele_ft; }
   }
   return gain;
+}
+
+/** Distance-weighted mean elevation over a span of the profile, ft — what
+    the altitude term prices a segment off.
+
+    Weighted by distance, not a plain average of the points in range: the
+    profile is resampled but not perfectly uniform, and a segment that ends
+    mid-step would otherwise let a handful of closely spaced points at one
+    end pull the mean. `fromMi`/`toMi` are MEASURED gpx miles, the profile's
+    own space (the same space techSegs is built in).
+
+    A span that covers no profile distance at all (a zero-length segment, or
+    a station beyond the end of the profile) falls back to the elevation of
+    the nearest point rather than 0 — sea level is a claim, and an absent
+    profile shouldn't make a 10,000 ft segment look free. */
+function meanEleBetween(profile: CourseProfilePoint[], fromMi: number, toMi: number): number {
+  let num = 0, den = 0;
+  for (let k = 1; k < profile.length; k++) {
+    const a = profile[k - 1], b = profile[k];
+    if (b.mi <= fromMi || a.mi >= toMi) continue;
+    const w = Math.min(b.mi, toMi) - Math.max(a.mi, fromMi);
+    if (!(w > 0)) continue;
+    num += ((a.ele_ft + b.ele_ft) / 2) * w;
+    den += w;
+  }
+  if (den > 0) return num / den;
+  if (profile.length === 0) return 0;
+  const target = (fromMi + toMi) / 2;
+  let best = profile[0];
+  for (const p of profile) {
+    if (Math.abs(p.mi - target) < Math.abs(best.mi - target)) best = p;
+  }
+  return best.ele_ft;
 }
 
 /** DEFAULT reference distance (mi) at which the fitted fitness pace is
@@ -382,6 +470,14 @@ function restraintWeightIntegral(mi: number, w: { fullMi: number; endMi: number 
  *   the race): banking energy for a relatively stronger second half.
  * - Station stops scale with the same fatigue curve (you linger longer at
  *   mile 80 than mile 20), capped at 2× the fresh stop.
+ * - ALTITUDE multiplies the segment pace exactly the way tech_pct does: each
+ *   segment is priced at its own mean elevation through altitude.ts's curve,
+ *   scaled by the altitude_pct knob. It is a SEGMENT factor rather than a
+ *   per-point one on purpose — the curve is about the athlete's acclimated
+ *   state over a stretch of course, not about 300 ft of relief between two
+ *   profile samples, and a per-point version would swing the pace through
+ *   every dip. A course entirely below the threshold gets factor 1 on every
+ *   segment and is bit-identical to a projection with the term switched off.
  */
 export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions): RaceProjection {
   const f = opts.fatiguePctPer10mi / 100;
@@ -476,31 +572,67 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
   const techAt = (mi: number) => techSegs.find((t) => mi >= t.x0 && mi < t.x1)?.factor
     ?? techSegs[techSegs.length - 1]?.factor ?? 1;
 
+  // altitude per gpx-space segment, same shape as technicality above. The
+  // knob is clamped at 0 (a negative altitude_pct out of hand-edited
+  // localStorage would make thin air a tailwind).
+  const altOpt = opts.altitude ?? null;
+  const altPct = altOpt ? Math.max(0, altOpt.pct) : 0;
+  const altHomeFt = altOpt?.homeElevationFt ?? null;
+  const altDays = Math.max(0, altOpt?.acclimationDays ?? 0);
+  const altSegs = segs.map(({ st }, i) => {
+    const x0 = i === 0 ? 0 : segs[i - 1].st.gpx_mi;
+    const ele_ft = meanEleBetween(course.profile, x0, st.gpx_mi);
+    // `raw` is the published curve; `penalty` is what the knob asks for.
+    // Both are integrated below so the summary can report what the term is
+    // costing AND what it would cost at 100% — the difference is the whole
+    // content of "you have altitude switched off".
+    const raw = altOpt
+      ? altitudeSlowdown({ elevationFt: ele_ft, homeElevationFt: altHomeFt, acclimationDays: altDays })
+      : 0;
+    const penalty = raw * (altPct / 100);
+    return { x0, x1: st.gpx_mi, ele_ft, raw, penalty, factor: 1 + penalty, fullFactor: 1 + raw };
+  });
+  const altSegAt = (mi: number) => altSegs.find((t) => mi >= t.x0 && mi < t.x1) ?? altSegs[altSegs.length - 1];
+  const altAt = (mi: number) => altSegAt(mi)?.factor ?? 1;
+  const altFullAt = (mi: number) => altSegAt(mi)?.fullFactor ?? 1;
+
   const pts = course.profile;
   const nPts = pts.length;
   const cum: Record<Scenario, Float64Array> = {
     best: new Float64Array(nPts), avg: new Float64Array(nPts), worst: new Float64Array(nPts),
   };
   const pacePoint = new Float64Array(nPts); // avg-scenario pace used from pt k → k+1 (s/mi)
+  // The same avg integral with the altitude factor removed — the counterfactual
+  // the summary's `added_h` is measured against. Carrying it here (rather than
+  // projecting the race twice) keeps the two runs identical in every other
+  // respect, including the grade-curve anchoring above.
+  const cumNoAlt = new Float64Array(nPts);
+  // …and the same integral at the FULL published curve, whatever the knob
+  // says, so the summary can price the term the athlete has turned down.
+  const cumFullAlt = new Float64Array(nPts);
   for (let k = 1; k < nPts; k++) {
     const step = Math.max(0, pts[k].mi - pts[k - 1].mi);
     const midMi = (pts[k].mi + pts[k - 1].mi) / 2;
     // a NaN grade would otherwise price as the steepest bin (interp
     // fall-through) and a null as flat — treat both as flat, explicitly
     const gF = gradeF(Number.isFinite(pts[k - 1].grade_pct) ? pts[k - 1].grade_pct : 0);
-    // fatigue/restraint/technicality scale the floored fresh grade pace
-    const lateMult = mult(midMi) * effort(midMi) * techAt(midMi);
+    // fatigue/restraint/technicality/altitude scale the floored fresh grade pace
+    const groundMult = mult(midMi) * effort(midMi) * techAt(midMi);
+    const lateMult = groundMult * altAt(midMi);
     for (const sc of ["best", "avg", "worst"] as Scenario[]) {
       const freshGradePace = Math.max(300, (pFlat + paceShift[sc]) * cal * gF);
       cum[sc][k] = cum[sc][k - 1] + step * freshGradePace * lateMult;
+      if (sc === "avg") {
+        cumNoAlt[k] = cumNoAlt[k - 1] + step * freshGradePace * groundMult;
+        cumFullAlt[k] = cumFullAlt[k - 1] + step * freshGradePace * groundMult * altFullAt(midMi);
+      }
     }
     pacePoint[k - 1] = step > 0 ? (cum.avg[k] - cum.avg[k - 1]) / step : pacePoint[Math.max(0, k - 2)];
   }
   if (nPts > 1) pacePoint[nPts - 1] = pacePoint[nPts - 2];
 
   // cumulative moving seconds at an arbitrary course mile (binary search + lerp)
-  const cumAt = (sc: Scenario, mi: number) => {
-    const arr = cum[sc];
+  const cumArrAt = (arr: Float64Array, mi: number) => {
     if (mi <= pts[0].mi) return 0;
     if (mi >= pts[nPts - 1].mi) return arr[nPts - 1];
     let lo = 0, hi = nPts - 1;
@@ -512,6 +644,7 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
     const t = span > 0 ? (mi - pts[lo].mi) / span : 1;
     return arr[lo] + t * (arr[hi] - arr[lo]);
   };
+  const cumAt = (sc: Scenario, mi: number) => cumArrAt(cum[sc], mi);
 
   // moving time per segment per scenario (before stops) — integrated
   const segTimes = segs.map(({ st }, i) => {
@@ -583,6 +716,8 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
       goal_eta_h: goalArrive ? goalArrive[i] / 3600 : null,
       cutoff_margin_h: st.cutoff_h != null ? st.cutoff_h - avgH : null,
       cutoff_margin_worst_h: st.cutoff_h != null ? st.cutoff_h - worstH : null,
+      seg_mean_ele_ft: altSegs[i].ele_ft,
+      alt_penalty: altSegs[i].penalty,
     };
   });
 
@@ -654,11 +789,41 @@ export function projectRace(course: Course, fit: PacingFit, opts: ProjectOptions
     return pacePoint[lo];
   };
 
+  // ── the altitude term, described ─────────────────────────────────────
+  // Reported whenever the caller asked for the term AT ALL, including at
+  // altitude_pct 0: "the model would cost you 41 minutes and you have it
+  // switched off" is a different statement from "this race is not high", and
+  // the planner has to be able to tell them apart.
+  let altitude: AltitudeSummary | null = null;
+  if (altOpt) {
+    const finishMi = segs.length > 0 ? segs[segs.length - 1].st.gpx_mi : 0;
+    let eleNum = 0, eleDen = 0, aboveMi = 0;
+    for (let k = 1; k < nPts; k++) {
+      const step = Math.max(0, pts[k].mi - pts[k - 1].mi);
+      const ele = (pts[k].ele_ft + pts[k - 1].ele_ft) / 2;
+      eleNum += ele * step;
+      eleDen += step;
+      if (ele > ALTITUDE_THRESHOLD_FT) aboveMi += step;
+    }
+    altitude = {
+      pct: altPct,
+      home_ft: altHomeFt ?? 0,
+      home_assumed: altHomeFt == null,
+      acclimation_days: altDays,
+      added_h: Math.max(0, cumAt("avg", finishMi) - cumArrAt(cumNoAlt, finishMi)) / 3600,
+      added_h_at_full: Math.max(0, cumArrAt(cumFullAlt, finishMi) - cumArrAt(cumNoAlt, finishMi)) / 3600,
+      mean_ele_ft: eleDen > 0 ? eleNum / eleDen : 0,
+      max_seg_ele_ft: altSegs.reduce((m, s) => Math.max(m, s.ele_ft), 0),
+      max_penalty: altSegs.reduce((m, s) => Math.max(m, s.penalty), 0),
+      miles_above_threshold: aboveMi,
+    };
+  }
+
   return {
     // an infeasible goal (≤ total stop time) reports as "no goal" everywhere
     stations: projections, finish_h, stopped_h: totalStopS / 3600,
     goal_h: goalScale != null ? opts.goalH : null,
-    elapsedAtMile, mileAtElapsed, paceAtMile, grade_basis,
+    elapsedAtMile, mileAtElapsed, paceAtMile, grade_basis, altitude,
   };
 }
 
@@ -700,7 +865,12 @@ export function elapsedToDate(raceStart: Date, elapsedH: number): Date {
  * Albuquerque for a race in Arizona has to read in Arizona time, and a
  * browser an hour off would otherwise shift every ETA on the page.
  */
-export function fmtRaceClock(raceStart: Date, elapsedH: number, timeZone: string): string {
+export function fmtRaceClock(
+  raceStart: Date,
+  elapsedH: number,
+  timeZone: string,
+  opts: { flagPreStart?: boolean; dayMarker?: boolean } = {},
+): string {
   const at = raceLocalParts(elapsedToDate(raceStart, elapsedH), timeZone);
   const start = raceLocalParts(raceStart, timeZone);
   // Whole civil days between the start's race-local date and this one. Done
@@ -713,16 +883,37 @@ export function fmtRaceClock(raceStart: Date, elapsedH: number, timeZone: string
   const mm = String(at.minute).padStart(2, "0");
   const ampm = at.hour >= 12 ? "p" : "a";
   const h12 = at.hour % 12 === 0 ? 12 : at.hour % 12;
-  return `${h12}:${mm}${ampm}${days > 0 ? `+${days}` : ""}`;
+  // A negative elapsed hour is an ordinary instant on the race-day page
+  // before the gun (the header clock counts down through it), but in a
+  // station ETA table it is a bug — a clamped checkpoint once produced one.
+  // So the marker is opt-in: ETA renderers pass flagPreStart, the wall clock
+  // does not. It catches same-day pre-start instants too (elapsedH < 0 but
+  // days === 0, where the +N/-N day marker alone says nothing is wrong).
+  const pre = opts.flagPreStart && elapsedH < 0 ? "pre-start " : "";
+  // The +N/-N day marker is itself only meaningful once there IS a race
+  // elapsed count worth offsetting — an ETA, a cutoff, a crew sheet time.
+  // Before the gun the race-day header calls this with the CURRENT instant
+  // (a negative elapsedH standing in for "now"), and `days` there is just how
+  // far off the calendar the gun happens to be — 327 days out once read
+  // "5:47p-328", a glitchy-looking number about today, not about the race
+  // (v2 review ui2 #7). Opt out with `dayMarker: false`; default stays on for
+  // every existing ETA/cutoff caller.
+  const dayMarker = opts.dayMarker !== false && days !== 0 ? `${days > 0 ? "+" : ""}${days}` : "";
+  return `${pre}${h12}:${mm}${ampm}${dayMarker}`;
 }
 
-/** Format elapsed hours as "31h 24m". */
+/** Format elapsed hours as "31h 24m", or "−0h 30m" for a negative input —
+    sign, then the magnitude, the same shape fmtSigned already prints. A
+    plain floor/mod split is only correct for h >= 0; used naively on a
+    negative value (reachable via a clamped checkpoint shift) it reads as
+    double the true magnitude, e.g. -0.499 → "-1h 30m" instead of "-0h 30m". */
 export function fmtElapsed(h: number): string {
+  const sign = h < 0 ? "-" : "";
   // round to whole minutes FIRST — independent floor/round yields "1h 60m"
-  const total = Math.round(h * 60);
+  const total = Math.round(Math.abs(h) * 60);
   const hh = Math.floor(total / 60);
   const mm = total - hh * 60;
-  return `${hh}h ${String(mm).padStart(2, "0")}m`;
+  return `${sign}${hh}h ${String(mm).padStart(2, "0")}m`;
 }
 
 /**

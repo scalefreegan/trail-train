@@ -1,0 +1,10 @@
+{
+  "event_class": "100 mi mountain race",
+  "horizon": "next A-race, roughly a year out",
+  "phase": "build",
+  "weekly_volume_band": {
+    "dist_mi": [35, 60],
+    "vert_ft": [5000, 10000]
+  },
+  "notes": "Fixture goals for the Playwright suite. Nothing here describes a real athlete."
+}

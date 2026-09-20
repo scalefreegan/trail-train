@@ -3,11 +3,14 @@ import { useActiveRace, useBlockConfig, useRefresh, useUnits } from "../data";
 import { raceLocalParts } from "./clock";
 import { clearHash } from "./hashRoute";
 import { fmtCarry, type DropBag, type FuelPlan, type FuelSegment } from "./nutrition";
-import { fmtElapsed, type StationProjection } from "./pacing";
+import { fmtElapsed, fmtRaceClock, type StationProjection } from "./pacing";
+import { checkpointHold, type CheckpointHold } from "./checkpointHold";
+import { pickHold } from "./holdPrecedence";
 import { resolveHold } from "./raceDayHold";
+import { parseWhereAmI } from "./whereAmI";
 import { RacePlanProvider } from "./RacePlanProvider";
 import { RaceErrorBoundary } from "./RaceErrorBoundary";
-import { useCrewBase, useRaceResult } from "./useRaceData";
+import { useCrewBase, useRaceResult, useTracker } from "./useRaceData";
 import { useRacePlan, type RacePlan } from "./useRacePlan";
 import { useRunCourseAgain } from "./runCourseAgain";
 
@@ -49,14 +52,30 @@ function useNow(): number {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Manual position override                                           */
+/*  Where the runner actually is — three answers, one hold             */
 /*                                                                    */
 /*  The clock alone answers "where am I" only if the projection is     */
-/*  right, and by mile 60 it usually is not. So the runner can say so: */
-/*  "I'm at mile X", or "I just left <station>" (which is the same     */
-/*  statement with the mile filled in). Persisted per slug — an        */
-/*  override is a fact about one race, and a phone that sleeps mid-    */
-/*  climb must come back knowing it.                                   */
+/*  right, and by mile 60 it usually is not. So three things can say   */
+/*  otherwise, in the order they became possible:                      */
+/*                                                                    */
+/*    1. the runner, by mile or by station: "I'm at mile X" / "I just  */
+/*       left <station>" (the SET control);                            */
+/*    2. the runner, by checkpoint: "passed <station> at HH:MM" — the  */
+/*       same statement with a TIME on it, which is what makes it      */
+/*       comparable to the tracker's;                                  */
+/*    3. the race's own timing site, polled every 60 s (PRD v2 §4).    */
+/*                                                                    */
+/*  Both manual forms are persisted per slug — an override is a fact   */
+/*  about one race, and a phone that sleeps mid-climb must come back   */
+/*  knowing it. The tracker is not persisted: it re-polls.             */
+/*                                                                    */
+/*  WHO WINS. Not "whichever was entered most recently" — the tracker  */
+/*  re-polls every minute, so its poll timestamp is always the newest  */
+/*  thing on the page and it would bulldoze a manual entry a minute    */
+/*  after it was made. What is compared is when each one says the      */
+/*  runner was SEEN: a checkpoint at 21:40 typed by hand beats the     */
+/*  tracker's last sighting at 21:22, and stops beating it the moment  */
+/*  the tracker catches up at 22:10. Manual wins a tie.                */
 /*                                                                    */
 /*  The override moves WHICH station is next. It does NOT re-project:  */
 /*  the ETAs stay the shared plan's, so they still match the printed   */
@@ -64,29 +83,103 @@ function useNow(): number {
 /*  you'd be is shown as its own line instead of being silently        */
 /*  absorbed.                                                          */
 /* ------------------------------------------------------------------ */
-function usePosition(slug: string | null) {
-  const key = slug ? `race.${slug}.raceday_mi` : null;
-  const read = (): number | null => {
+
+/** What the runner said, as it is stored. Exactly one of `mi` (a mile off
+    the chart or typed) and `station` (+ optional `clock`) is set. */
+type ManualHold = {
+  mi: number | null;
+  station: string | null;
+  /** race-local HH:MM the station was passed at, when one was given */
+  clock: string | null;
+  /** ISO instant the entry was MADE — the fallback "when was this true?"
+      for a bare mile, which carries no clock of its own */
+  at: string;
+};
+
+/** What a hold written by the pre-tracker build (a bare number under
+    `raceday_mi`) is dated. Deliberately the epoch: it is a real hold and
+    still applies, but nothing is known about when it was made, so the
+    first tracker checkpoint of the race outranks it. */
+const LEGACY_HOLD_AT = new Date(0).toISOString();
+
+/**
+ * Per-slug localStorage state, re-read in the RENDER phase when the slug
+ * changes rather than in an effect — the slug arrives a fetch late, and an
+ * effect would flash the un-overridden station first (the same pattern
+ * useRacePlan's knobs use).
+ */
+function useSlugStored<T>(
+  slug: string | null,
+  name: string,
+  decode: (raw: string) => T | null,
+  encode: (v: T) => string,
+) {
+  const key = slug ? `race.${slug}.${name}` : null;
+  const read = (): T | null => {
     if (key == null || typeof localStorage === "undefined") return null;
     try {
       const raw = localStorage.getItem(key);
-      const n = raw == null ? NaN : Number(raw);
-      return Number.isFinite(n) ? n : null;
+      return raw == null ? null : decode(raw);
     } catch { return null; }
   };
-  // same render-phase re-read as useRacePlan's knobs: the slug arrives a
-  // fetch late, and an effect would flash the un-overridden station first
   const [state, setState] = useState(() => ({ key, v: read() }));
   if (state.key !== key) setState({ key, v: read() });
-  const set = (mi: number | null) => {
-    setState({ key, v: mi });
+  const set = (v: T | null) => {
+    setState({ key, v });
     if (key == null) return;
     try {
-      if (mi == null) localStorage.removeItem(key);
-      else localStorage.setItem(key, String(mi));
+      if (v == null) localStorage.removeItem(key);
+      else localStorage.setItem(key, encode(v));
     } catch { /* private mode */ }
   };
   return [state.v, set] as const;
+}
+
+function decodeManualHold(raw: string): ManualHold | null {
+  try {
+    const d = JSON.parse(raw) as Partial<ManualHold>;
+    const mi = typeof d?.mi === "number" && Number.isFinite(d.mi) ? d.mi : null;
+    const station = typeof d?.station === "string" && d.station.trim() ? d.station : null;
+    if (mi == null && station == null) return null;
+    return {
+      mi,
+      station,
+      clock: typeof d?.clock === "string" && d.clock.trim() ? d.clock : null,
+      at: typeof d?.at === "string" && !Number.isNaN(Date.parse(d.at)) ? d.at : LEGACY_HOLD_AT,
+    };
+  } catch { return null; } // a half-written entry
+}
+
+const decodeNumber = (raw: string): number | null => {
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+};
+
+/** The runner's own hold, whichever form it was entered in. */
+function useManualHold(slug: string | null) {
+  const [stored, setStored] = useSlugStored<ManualHold>(slug, "raceday_hold", decodeManualHold, JSON.stringify);
+  // Written by every build before this one: a bare mile, no timestamp.
+  const [legacyMi, setLegacyMi] = useSlugStored<number>(slug, "raceday_mi", decodeNumber, String);
+  const hold: ManualHold | null = stored
+    ?? (legacyMi != null ? { mi: legacyMi, station: null, clock: null, at: LEGACY_HOLD_AT } : null);
+  const set = (next: ManualHold | null) => {
+    setStored(next);
+    // Migrate on the first write of the session: leaving the old key behind
+    // would resurrect the old mile the next time AUTO cleared the new one.
+    if (legacyMi != null) setLegacyMi(null);
+  };
+  return [hold, set] as const;
+}
+
+/**
+ * Elapsed hours at or below which a tracker checkpoint is ignored, set by
+ * AUTO. The tracker keeps polling and will keep reporting the checkpoint
+ * that was just dismissed, so "AUTO clears the tracker hold" has to mean
+ * "and stays cleared until the tracker sees something NEW" — which it does,
+ * at the next aid station, and then the hold comes back on its own.
+ */
+function useTrackerMute(slug: string | null) {
+  return useSlugStored<number>(slug, "raceday_tracker_muted_h", decodeNumber, String);
 }
 
 /**
@@ -252,12 +345,30 @@ export function RaceDay() {
   const { crewBase } = useCrewBase();
   const { reload } = useRefresh();
   const now = useNow();
-  const [posMi, setPosMi] = usePosition(viewing);
+  const [manual, setManual] = useManualHold(viewing);
+  const [mutedH, setMutedH] = useTrackerMute(viewing);
   const [miDraft, setMiDraft] = useState("");
   const [stationDraft, setStationDraft] = useState("");
+  // Set only when the free-text box held something SET could not place —
+  // "mile 50", "50 mi", "80 km", a station name typed instead of picked —
+  // so the box can say so instead of looking broken (v2 review ui1 #3).
+  // Cleared on the next keystroke or a successful commit, never carried
+  // across an unrelated field.
+  const [whereAmIError, setWhereAmIError] = useState<string | null>(null);
+  // the "passed <station> at HH:MM" form's two controls
+  const [cpStation, setCpStation] = useState("");
+  const [cpClock, setCpClock] = useState<string | null>(null);
   // D8: the same free, deterministic build the switcher's "Run course
   // again…" row and the fuel view's empty state call.
-  const courseBuild = useRunCourseAgain(missing ? viewing : null, reload);
+  //
+  // Round 3 sweep, second pass: slug passed unconditionally, matching
+  // RacePlanner.tsx's/NutritionPlan.tsx's own copies of this line — this
+  // call site was never remounted by its own reload() (RaceDayRoute has no
+  // App.tsx-style `key={pulse}` wrapping it), but leaving a real slug
+  // sitting here regardless means runCourseAgain.ts's resultStore-recovery
+  // effect still helps across whatever DOES unmount this component, such as
+  // navigating away from #/race-day and back.
+  const courseBuild = useRunCourseAgain(viewing, reload);
 
   const elapsedH = (now - raceStart.getTime()) / 3_600_000;
   const started = elapsedH >= 0;
@@ -275,6 +386,67 @@ export function RaceDay() {
   // left to act on.
   const alreadyArchived = plan.raceConfig.status === "archived";
   const stations = proj?.stations ?? [];
+
+  /* ---- live tracker (PRD v2 §4) ---- */
+  // Polled only when the folder actually names a tracker: useTracker(null)
+  // fetches nothing at all, so a race with no `tracking.url` costs one
+  // conditional rather than a 404 a minute.
+  const trackerUrl = plan.raceConfig.tracking?.url?.trim() ?? "";
+  const { tracker, notice: trackerNotice } = useTracker(trackerUrl && !racePast ? viewing : null);
+  // The aid chart, in the shape checkpointHold reads. The projection's own
+  // stations, so a hold and an ETA can never be about different charts.
+  const chart = stations.map((sp) => sp.station);
+  const startMs = raceStart.getTime();
+  /** Race hours at an ISO instant — how a hold with no clock of its own is
+      dated, so it can still be compared against one that has a clock. */
+  const atElapsed = (iso: string | null | undefined): number | null => {
+    const ms = iso ? Date.parse(iso) : NaN;
+    return Number.isFinite(ms) ? (ms - startMs) / 3_600_000 : null;
+  };
+
+  // PR #24 review round 3: a manual hold is resolved for a past race too
+  // (only tracker polling is gated on !racePast below), so it must not be
+  // allowed to land past the race's own window just because `now` is days
+  // or weeks after the fact — passed through so checkpointHold can clamp to
+  // [start, start + cutoff_h + slack] instead of its MAX_SPAN_DAYS fallback.
+  const cutoffH = race.cutoff_h ?? undefined;
+
+  const manualHold: CheckpointHold | null = manual == null ? null
+    : manual.station != null
+      ? checkpointHold(
+          { station: manual.station, clock: manual.clock, source: "manual" },
+          chart, raceStart, plan.timeZone, { now, cutoffH },
+        )
+      // A bare mile carries no station and no clock, so it is not something
+      // checkpointHold can resolve — it IS the answer already.
+      : manual.mi != null
+        ? { mile: manual.mi, elapsed_h: null, source: "manual", label: "held by hand" }
+        : null;
+  const manualObsH = manualHold ? manualHold.elapsed_h ?? atElapsed(manual?.at) : null;
+
+  const trackerHold = tracker ? checkpointHold(tracker, chart, raceStart, plan.timeZone, { now, cutoffH }) : null;
+  const trackerObsH = trackerHold ? trackerHold.elapsed_h ?? atElapsed(tracker?.at) : null;
+  // Dismissed by AUTO, and still dismissed until the tracker sees the runner
+  // somewhere NEW (see useTrackerMute).
+  const trackerMuted = mutedH != null && (trackerObsH == null || trackerObsH <= mutedH);
+  const liveHold = trackerMuted ? null : trackerHold;
+
+  // Whichever says the runner was seen LATER — not whichever was recorded
+  // most recently, which the tracker always would be. Manual wins a tie, and
+  // an off-chart live reading (no course mile — see pickHold) never outranks
+  // a manual hold on recency, since it has no position to compare in the
+  // first place (v2 review ui3 #2).
+  const hold = pickHold(manualHold, manualObsH, liveHold, trackerObsH);
+  // A checkpoint whose name is not on the aid chart is a real sighting with
+  // no mile attached (a timing mat, a renamed station). It is reported, but
+  // it must not move the runner to a mile nobody worked out.
+  const posMi = hold?.mile ?? null;
+  const holdOffChart = hold != null && hold.mile == null;
+  // The checkpoint form's default time. RACE-local: the runner may be in a
+  // different zone from the race (a phone that never left home time), and
+  // every other clock on this page is the race's.
+  const nowLocal = raceLocalParts(now, plan.timeZone);
+  const nowHHMM = `${String(nowLocal.hour).padStart(2, "0")}:${String(nowLocal.minute).padStart(2, "0")}`;
   // Where to measure "to go" from: the stated mile if the runner gave one,
   // otherwise the mile the plan has them at right now. Both are honest —
   // one is observed, the other is the projection's own answer — and the
@@ -309,7 +481,17 @@ export function RaceDay() {
               on a screen that has just said there is nothing left to show.
               The recorded finish, once archived, is worth the same space;
               until then it's a dash, not a stale countdown. */}
-          {racePast ? (pastResult?.finish_h != null ? race.clock(pastResult.finish_h) : "—") : race.clock(elapsedH)}
+          {racePast
+            ? (pastResult?.finish_h != null ? race.clock(pastResult.finish_h) : "—")
+            : started
+            ? race.clock(elapsedH)
+            /* Before the gun, elapsedH is negative and stands in for "right
+               now", not a race-relative ETA — a +/-N day marker on it is a
+               number about the calendar, not about the race, and glitchy to
+               read at that (v2 review ui2 #7: "5:47p-328" 327 days out). The
+               line right under this already says "starts in 327d 12h · gun
+               6:00a"; this one just wants the current race-local wall clock. */
+            : fmtRaceClock(raceStart, elapsedH, plan.timeZone, { dayMarker: false })}
         </div>
         <div className="numerals" style={{ fontSize: 15, color: "var(--mist-dim)", marginTop: 6 }}>
           {racePast
@@ -356,6 +538,23 @@ export function RaceDay() {
                     </button>
                     <div style={{ marginTop: 6 }}>Parses the stored GPX — free, no agent turn.</div>
                     {courseBuild.error && <div style={{ color: "var(--ember)", marginTop: 6 }}>{courseBuild.error}</div>}
+                    {/* Round 3 sweep extension: a course DID build (this
+                        whole block is about to disappear once `missing`
+                        flips false) but the hook's own `warnings` says it's
+                        degraded — worth a beat before the real course view
+                        takes over. Unlike RacePlanner.tsx's/NutritionPlan.tsx's
+                        own copies of this same block, this one actually
+                        reaches the screen: RaceDayRoute (#/race-day) mounts
+                        RacePlanProvider directly, with none of App.tsx's
+                        `key={`race-${key}`}`/`key={`fuel-${key}`}` remount-
+                        on-every-reload wrapping the RACE/FUEL tabpanels do —
+                        so courseBuild.run()'s onDone()/reload() re-fetches
+                        course.json in place here rather than tearing this
+                        component down first. Pinned in
+                        web/tests/switcher.spec.ts's RaceDay test. */}
+                    {courseBuild.warnings.length > 0 && (
+                      <div style={{ color: "var(--lamp)", marginTop: 6 }}>⚠ {courseBuild.warnings.join(" · ")}</div>
+                    )}
                   </div>
                 </>
               ) : (
@@ -417,18 +616,52 @@ export function RaceDay() {
                 // Nothing valid to commit (both drafts empty, or an
                 // unparseable/negative mile) is a no-op — SET must never
                 // fall back to mile 0 (D1/D2).
-                if (resolved == null) return;
-                setPosMi(resolved);
-                setStationDraft("");
-                setMiDraft("");
+                if (resolved != null) {
+                  setManual({ mi: resolved, station: null, clock: null, at: new Date(now).toISOString() });
+                  setStationDraft("");
+                  setMiDraft("");
+                  setWhereAmIError(null);
+                  return;
+                }
+                // resolveHold only reads the station <select> or a bare
+                // number — everything else typed into the free-text box
+                // (the select itself is untouched here, since it's exact by
+                // construction) falls through to the wider parser: "mile
+                // 50", "50 mi", "80 km", a station name (v2 review ui1 #3).
+                if (stationDraft === "" && miDraft.trim() !== "") {
+                  const parsed = parseWhereAmI(miDraft, stations.map((sp) => sp.station.name), u.system);
+                  const mi = parsed.kind === "mile"
+                    ? parsed.mi
+                    : parsed.kind === "station"
+                    ? stations.find((sp) => sp.station.name === parsed.name)?.station.total_mi ?? null
+                    : null;
+                  if (mi != null) {
+                    setManual({ mi, station: null, clock: null, at: new Date(now).toISOString() });
+                    setStationDraft("");
+                    setMiDraft("");
+                    setWhereAmIError(null);
+                    return;
+                  }
+                  // Unparsable: leave the text so the runner can fix it,
+                  // rather than clearing a box that never took the entry.
+                  setWhereAmIError(
+                    // v2 review confirm-ui1 NEW #3: a bare number is read in
+                    // whatever unit the toggle currently shows (u.distUnit,
+                    // matching parseWhereAmI/resolveHold's own rule) — in
+                    // KM·M mode "try a mile number" told the runner the
+                    // wrong thing about the box she was staring at.
+                    `can't read "${miDraft.trim()}" — try a bare ${u.distUnit} number, "mile 50", "50 mi", "80 km", or a station name`,
+                  );
+                }
               }}
               style={{ display: "flex", gap: 6, flex: "1 1 150px", minWidth: 0 }}
             >
               <input
                 value={miDraft}
-                onChange={(e) => { setMiDraft(e.target.value); setStationDraft(""); }}
-                /* decimal, not numeric: mile 42.3 needs the point on iOS */
-                inputMode="decimal"
+                onChange={(e) => { setMiDraft(e.target.value); setStationDraft(""); setWhereAmIError(null); }}
+                /* decimal, not numeric: mile 42.3 needs the point on iOS, and
+                   "mile 50"/"50 mi"/"80 km"/a station name all need letters */
+                inputMode="text"
                 placeholder={`mile (${u.distUnit})`}
                 aria-label={`current mile (${u.distUnit})`}
                 className="numerals"
@@ -439,16 +672,32 @@ export function RaceDay() {
               />
               <button type="submit" className="chip" style={{ minHeight: 44, padding: "0 14px" }}>set</button>
             </form>
-            {posMi != null && (
+            {hold != null && (
               <button
                 className="chip"
-                onClick={() => { setPosMi(null); setStationDraft(""); setMiDraft(""); }}
+                onClick={() => {
+                  // BOTH holds. Dropping only the manual one would leave the
+                  // tracker's still in force and AUTO would look broken; the
+                  // mute lifts by itself at the next new checkpoint.
+                  setManual(null);
+                  setMutedH(trackerHold ? trackerObsH ?? elapsedH : null);
+                  setStationDraft("");
+                  setMiDraft("");
+                  setWhereAmIError(null);
+                  setCpStation("");
+                  setCpClock(null);
+                }}
                 style={{ minHeight: 44, padding: "0 14px" }}
               >
                 auto
               </button>
             )}
           </div>
+          {whereAmIError && (
+            <div className="numerals" style={{ fontSize: 11, color: "var(--ember)", marginTop: 6, lineHeight: 1.5 }}>
+              {whereAmIError}
+            </div>
+          )}
           {/* Controlled by stationDraft, not committed until SET: picking a
               station used to move the hold on *change*, and then SET — read
               as "confirm what I just picked" — actually submitted the (now
@@ -459,7 +708,7 @@ export function RaceDay() {
               placeholder. */}
           <select
             value={stationDraft}
-            onChange={(e) => { setStationDraft(e.target.value); setMiDraft(""); }}
+            onChange={(e) => { setStationDraft(e.target.value); setMiDraft(""); setWhereAmIError(null); }}
             aria-label="just left a station"
             style={{
               width: "100%", minHeight: 44, marginTop: 8, padding: "0 10px", fontSize: 15,
@@ -479,15 +728,94 @@ export function RaceDay() {
               picked — press SET to hold here
             </div>
           )}
-          {posMi == null ? (
+
+          {/* ---------- passed <station> at HH:MM ---------- */}
+          {/* The same fact as a station pick, WITH A TIME on it. That time is
+              what makes a hand entry comparable to the tracker's last
+              sighting (see the header comment): without it, the tracker
+              would reclaim the hold on its very next poll. */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (cpStation === "") return;
+              setManual({
+                mi: null,
+                station: cpStation,
+                clock: cpClock ?? nowHHMM,
+                at: new Date(now).toISOString(),
+              });
+              setCpStation("");
+              setCpClock(null);
+              setStationDraft("");
+              setMiDraft("");
+              // Round 3 finding 3: this form commits a hold exactly like the
+              // "where am i" one above and clears the same two drafts, but
+              // used to leave whereAmIError on screen — a stale complaint
+              // about a mile/station typo the runner never even used this
+              // form to retype, sitting under a hold that just succeeded.
+              setWhereAmIError(null);
+            }}
+            style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}
+          >
+            <select
+              value={cpStation}
+              onChange={(e) => setCpStation(e.target.value)}
+              aria-label="passed a station"
+              style={{
+                flex: "2 1 150px", minWidth: 0, minHeight: 44, padding: "0 10px", fontSize: 15,
+                background: "var(--night-deep)", border: "1px solid var(--edge-bright)",
+                color: "var(--mist)", fontFamily: "var(--font-body)",
+              }}
+            >
+              <option value="">passed…</option>
+              {stations.map((sp) => (
+                <option key={sp.station.name} value={sp.station.name}>
+                  {sp.station.name}
+                </option>
+              ))}
+            </select>
+            <input
+              type="time"
+              value={cpClock ?? nowHHMM}
+              onChange={(e) => setCpClock(e.target.value)}
+              aria-label="time passed (race time)"
+              className="numerals"
+              style={{
+                flex: "1 1 96px", minWidth: 0, minHeight: 44, padding: "0 8px", fontSize: 15,
+                background: "var(--night-deep)", border: "1px solid var(--edge-bright)", color: "var(--mist)",
+              }}
+            />
+            <button
+              type="submit"
+              className="chip"
+              disabled={cpStation === ""}
+              style={{ minHeight: 44, padding: "0 14px", opacity: cpStation === "" ? 0.5 : 1 }}
+            >
+              at
+            </button>
+          </form>
+
+          {hold == null ? (
             <div className="numerals" style={{ fontSize: 12, color: "var(--mist-mute)", marginTop: 8, lineHeight: 1.6 }}>
               auto — position and “to go” come from the projection against the clock.
               Say where you actually are if it has drifted.
+              {trackerUrl && !trackerNotice && (
+                <div>Watching the race tracker — it will take over as soon as it sees you.</div>
+              )}
+            </div>
+          ) : holdOffChart ? (
+            // A sighting with no mile: reported, never guessed at. The
+            // projection keeps the position.
+            <div className="numerals" style={{ fontSize: 12, color: "var(--mist-dim)", marginTop: 8, lineHeight: 1.6 }}>
+              seen at <b style={{ color: "var(--mist)" }}>{hold === manualHold ? manual?.station : tracker?.station}</b>
+              {" "}({hold.label}) — that checkpoint is not on this race's aid chart, so the position
+              below is still the projection's.
             </div>
           ) : (
             <div className="numerals" style={{ fontSize: 12, color: "var(--mist-dim)", marginTop: 8, lineHeight: 1.6 }}>
-              held at <b style={{ color: "var(--mist)" }}>{u.dist(posMi)} {u.distUnit}</b>
-              {proj && started && (() => {
+              held at <b style={{ color: "var(--mist)" }}>{u.dist(posMi ?? 0)} {u.distUnit}</b>
+              {" · "}<span style={{ color: hold.source === "manual" ? "var(--mist-mute)" : "var(--creek)" }}>{hold.label}</span>
+              {proj && started && posMi != null && (() => {
                 const planMi = proj.mileAtElapsed(elapsedH);
                 const d = posMi - planMi;
                 if (Math.abs(d) < 0.15) return <> · on plan</>;
@@ -500,6 +828,8 @@ export function RaceDay() {
               </div>
             </div>
           )}
+
+          {trackerNotice && <Notice tone="mute">{trackerNotice}</Notice>}
         </>
       )}
     </Shell>

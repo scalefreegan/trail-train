@@ -28,7 +28,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { arg, writeJsonAtomic } from "./lib.mjs";
+import { arg, projectRoot, writeJsonAtomic } from "./lib.mjs";
 import { loadRaceFolder, raceDir, readActivePointer, setActivePointer } from "./race-config.mjs";
 import { raceLocalParts } from "./clock.mjs";
 import { fetchActivityStreams } from "./sync-streams.mjs";
@@ -351,7 +351,7 @@ export async function archiveRace(o) {
 }
 
 async function main() {
-  const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+  const root = projectRoot();
   const slug = arg("race", null);
   const activityId = arg("activity", null);
   if (typeof slug !== "string" || typeof activityId !== "string") {

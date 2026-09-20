@@ -142,6 +142,16 @@ export function useDialog({ onClose, locked, label }: {
     (first ?? el).focus();
   }, []);
 
+  // Lock the page behind the overlay from scrolling while this dialog is
+  // open (round 3, resilience finding 12) — restored to whatever it was
+  // (never assumed empty) on unmount, so two dialogs stacking one at a time
+  // still leaves the body scrollable exactly when the last one closes.
+  useEffect(() => {
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prevOverflow; };
+  }, []);
+
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
       if (!locked) onClose();
@@ -181,6 +191,19 @@ export function useDialog({ onClose, locked, label }: {
 export function friendlyFetchError(e: unknown): string {
   if (e instanceof TypeError) return "server unreachable — is Basecamp running?";
   return e instanceof Error ? e.message : String(e);
+}
+
+/** Just the network-vs-everything-else classification friendlyFetchError
+    already makes, factored out for a caller that builds its OWN fallback
+    message around it rather than wanting the whole formatted string — a bare
+    `.catch(() => …)` (data.ts's offline-cache paths, and the equivalent ones
+    in useRaceData.ts / nutrition.ts) used to throw the error away entirely
+    and print a fixed "…corrupt or unreadable" even when the real cause was
+    the dev server being unreachable (ui3-resilience BUG 6). Returns "" for
+    anything that is not a network failure, so a caller reads
+    `netMessage(e) || "some other, more specific fallback"`. */
+export function netMessage(e: unknown): string {
+  return e instanceof TypeError ? "server unreachable — is Basecamp running?" : "";
 }
 
 export const inputStyle: CSSProperties = {
