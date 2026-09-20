@@ -358,6 +358,62 @@ test.describe('view tablist', () => {
 
     expect(trouble.pageErrors).toEqual([])
   })
+
+  /**
+   * Round 6 confirm, finding 2 — the finding-3 fix above tracked "the last
+   * tab that was EVER focused," not "the tab CURRENTLY focused": `onFocus`
+   * set `focusedTabRef` but nothing ever cleared it, so once a tab was
+   * focused even once, the recovery effect would keep firing for it forever
+   * — including long after the user tabbed away to something else entirely.
+   * A keyboard user who focuses FUEL, then deliberately Tabs off the
+   * tablist into unrelated chrome (here, the "coach" rail-toggle button),
+   * must not have focus yanked back to the tablist when a later,
+   * unconnected event (the same corrupt-payload + resync pulse the test
+   * above uses) shrinks `views` out from under the tab they left behind.
+   */
+  test('tabbing away from a tab first means a later shrink does not steal focus back', async ({ page, trouble }) => {
+    let corrupt = false
+    await page.route('**/api/race/active*', async (route) => {
+      const response = await route.fetch()
+      const data = await response.json()
+      if (corrupt && data?.race) {
+        data.race = { ...data.race, kind: 'b' }
+        data.nutrition = null
+      }
+      await route.fulfill({ response, json: data })
+    })
+    await page.route('**/api/refresh', (route) => route.abort('failed'))
+
+    await openDashboard(page)
+    const fuel = page.getByRole('tab', { name: /^fuel$/i })
+    await fuel.click()
+    await expect(fuel).toBeFocused()
+
+    // A real, deliberate keyboard move OFF the tablist entirely — not the
+    // roving-tabindex ArrowRight/Left the other test in this file drives.
+    await page.keyboard.press('Tab')
+    const coachRail = page.getByRole('button', { name: 'coach', exact: true })
+    await expect(coachRail).toBeFocused()
+
+    // Same trigger as the test above: flips the payload, then fires the
+    // refresh pulse via a programmatic click (no DOM focus side effect of
+    // its own) so the only thing that could move focus is the shrink.
+    corrupt = true
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('button')].find((b) => /resync|syncing/i.test(b.textContent ?? ''))
+      btn?.click()
+    })
+
+    await expect(fuel).toHaveCount(0)
+    // Focus is exactly where the user left it — not on the now-selected
+    // training tab, and not dropped to <body> either.
+    await expect(coachRail).toBeFocused()
+    const training = page.getByRole('tab', { name: /^training$/i })
+    await expect(training).toHaveAttribute('aria-selected', 'true')
+    await expect(training).not.toBeFocused()
+
+    expect(trouble.pageErrors).toEqual([])
+  })
 })
 
 /**
