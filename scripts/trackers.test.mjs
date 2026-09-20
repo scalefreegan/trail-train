@@ -7,7 +7,7 @@
 // was removed). A test that forgets to inject one would hit a volunteer-run
 // timing site from CI, so `noNetwork` below is the default and fails loudly.
 
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -359,6 +359,45 @@ test("opensplittime: a redirect chain longer than the cap is refused, not follow
     (e) => e.code === "bad_gateway" && /redirected more than/.test(e.message),
   );
   assert.ok(n <= 5, `expected the hop cap to stop the loop quickly, got ${n} fetches`);
+});
+
+/** PR #24 review round 4, LOW finding: the redirect chase gave each hop its
+    own fresh `AbortSignal.timeout(TIMEOUT_MS)` instead of bounding the WHOLE
+    chain by one deadline — so a chain using every `MAX_REDIRECTS` hop could
+    take up to (MAX_REDIRECTS + 1) * TIMEOUT_MS before failing, contradicting
+    TIMEOUT_MS's own stated rationale ("a stuck request must not stack up").
+    Fixed with one deadline computed once before the loop; a hop that starts
+    with no budget left times out immediately instead of getting a fresh
+    window.
+
+    `Date` (not real timers) is mocked so each fake-fetch call can advance
+    the virtual clock by a fixed "hop cost" synchronously and
+    deterministically — no real waiting, and no race against
+    AbortSignal.timeout's own internal timer, which stays on the real clock
+    and is irrelevant here: the fix's own `Date.now()` deadline check is what
+    this test exercises. */
+test("opensplittime: the redirect chase is bounded by ONE deadline across all hops, not a fresh one per hop", async () => {
+  mock.timers.enable({ apis: ["Date"] });
+  try {
+    let n = 0;
+    // Each hop "costs" 5s of (virtual) wall time — comfortably under
+    // TIMEOUT_MS (12s) for any single hop, but three of them (15s) blow the
+    // one shared budget. A fresh per-hop timeout would never catch this.
+    const impl = async () => {
+      n++;
+      mock.timers.tick(5000);
+      return { status: 302, headers: headerMap({ location: `${SPREAD_URL}?hop=${n}` }) };
+    };
+    await assert.rejects(
+      () => ost.fetchLastCheckpoint({ url: SPREAD_URL, bib: "999" }, impl),
+      (e) => e.code === "bad_gateway" && /did not answer within 12s/.test(e.message),
+    );
+    // it must fail partway through the chain (deadline exhausted before a
+    // 4th fetch), not after exhausting every redirect the hop cap allows
+    assert.ok(n < 4, `expected the shared deadline to cut the chase short, got ${n} fetches`);
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 /** PR #24 review round 3, LOW finding: the 8 MB cap used to be enforced by
