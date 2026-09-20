@@ -113,6 +113,15 @@ function slugTakenMessage(slug) {
   return `races/${slug}/race.json already exists — pass refresh: true to re-intake it (hand edits are NOT merged by this stage)`;
 }
 
+/** The same collision, but for quickCreateRace (round 3, resilience finding
+    8): the quick form has no `refresh` flag at all — a real intake's own
+    re-read-from-sources escape hatch means nothing to an athlete looking at
+    five typed fields, so the duplicate-name refusal says what to actually do
+    instead: rename it. */
+function quickCreateTakenMessage(name, year) {
+  return `a tune-up named "${name}" already exists for ${year} — pick another name`;
+}
+
 /** Where a not-yet-written race folder's exclusive claim lives while an
     intake run derives, validates and writes it. Cleaned up by
     releaseSlugClaim in runIntake's `finally`, whatever the outcome — once
@@ -994,10 +1003,43 @@ export async function quickCreateRace({
     throw refuse("bad_request", `parent_slug: races/${parent_slug}/ is itself a tune-up — a B race hangs off an A race`);
   }
 
+  // Server-side sanity ceilings (round 3, resilience finding 10): the quick
+  // form's own live warning ("N weeks after <race> — it falls outside the
+  // block") is only a note, and a fat-fingered 999999 mi or a date decades
+  // off sailed straight through to disk with no refusal at all. Distance and
+  // gain get fixed ceilings — nothing on foot needs either number this
+  // large. The date ceiling is relative, not absolute: 3 years either side of
+  // the parent race's own date, or of today when the parent has none (an A
+  // race's schema requires one, but a hand-broken race.json could still lack
+  // it, and this must not crash on that).
+  if (typeof distance_mi !== "number" || !Number.isFinite(distance_mi) || distance_mi <= 0) {
+    throw refuse("bad_request", "distance_mi: positive number required");
+  }
+  if (distance_mi > 500) {
+    throw refuse("bad_request", `distance_mi: ${distance_mi} is over the 500 mi ceiling — check the number`);
+  }
+  if (typeof gain_ft !== "number" || !Number.isFinite(gain_ft) || gain_ft < 0) {
+    throw refuse("bad_request", "gain_ft: non-negative number required");
+  }
+  if (gain_ft > 100_000) {
+    throw refuse("bad_request", `gain_ft: ${gain_ft} is over the 100,000 ft ceiling — check the number`);
+  }
+  const parentDate = /^\d{4}-\d{2}-\d{2}$/.test(String(parentRow.race.date)) ? parentRow.race.date : null;
+  const anchor = parentDate ?? new Date(now).toISOString().slice(0, 10);
+  const anchorMs = Date.parse(`${anchor}T00:00:00Z`);
+  const dateMs = Date.parse(`${date}T00:00:00Z`);
+  const THREE_YEARS_MS = 3 * 365.25 * 86_400_000;
+  if (Math.abs(dateMs - anchorMs) > THREE_YEARS_MS) {
+    throw refuse(
+      "bad_request",
+      `date: ${date} is more than 3 years from ${parentDate ? `${parent_slug}'s date (${anchor})` : `today (${anchor})`} — check the year`,
+    );
+  }
+
   const zone = typeof timezone === "string" && timezone.trim() ? timezone.trim() : null;
   const tz = zone ?? parentRow.race.timezone ?? null;
   const slug = deriveSlug(raceName, date.slice(0, 4));
-  if (await slugExists(root, slug)) throw refuse("conflict", `races/${slug}/race.json already exists`);
+  if (await slugExists(root, slug)) throw refuse("conflict", quickCreateTakenMessage(raceName, date.slice(0, 4)));
 
   const race = {
     schema_version: RACE_SCHEMA_VERSION,
@@ -1052,16 +1094,18 @@ export async function quickCreateRace({
   // guard — is on disk.
   // A concurrent create that derived the same slug loses the O_EXCL race
   // here rather than half-writing a second folder; re-tagged so it is the
-  // same 409 the plain existence check above produces. Only the actual
-  // "somebody else claimed it first" outcome (EEXIST, via slugTakenMessage)
-  // gets that reassuring 409 — anything else (EACCES, ENOSPC, EMFILE, a
-  // read-only races/) is a real filesystem problem and must say so: a
-  // rewritten "another request" message would send whoever's debugging it
-  // looking for a duplicate POST instead of the disk. The caller (raceCreateApi
-  // in web/vite.config.ts) already `console.error`s anything that lands on the
+  // same 409 the plain existence check above produces — quickCreateRace's OWN
+  // wording (round 3, resilience finding 8), never assertSlugAvailable's
+  // `refresh: true` message, which names a flag this form does not have.
+  // Only the actual "somebody else claimed it first" outcome (EEXIST, via
+  // slugTakenMessage) gets that reassuring 409 — anything else (EACCES,
+  // ENOSPC, EMFILE, a read-only races/) is a real filesystem problem and must
+  // say so: rewriting it would send whoever's debugging it looking for a
+  // duplicate POST instead of the disk. The caller (raceCreateApi in
+  // web/vite.config.ts) already `console.error`s anything that lands on the
   // 500 branch, which is exactly where an unrecognised code falls through to.
   await assertSlugAvailable(root, slug).catch((e) => {
-    if (e.message === slugTakenMessage(slug)) throw refuse("conflict", e.message);
+    if (e.message === slugTakenMessage(slug)) throw refuse("conflict", quickCreateTakenMessage(raceName, date.slice(0, 4)));
     throw e;
   });
   try {
