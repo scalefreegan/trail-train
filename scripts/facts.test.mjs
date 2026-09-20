@@ -219,6 +219,82 @@ test("loadFactsFromRoot with no race at all: goals bootstrapped, race null", asy
   assert.equal(onDisk.phase, "maintain");
 });
 
+/**
+ * PR #24 review round 3, LOW finding: strava.json/oura.json/google-cal.json
+ * were read with a bare `.catch(() => null)`, unlike the adjacent
+ * cross-train.json read a few lines below (and profile.mjs's own corrupt-vs-
+ * missing handling) — a corrupt file was silently treated exactly like a
+ * file that simply doesn't exist yet (pre-first-sync), with no trace of
+ * which case actually happened. Fixed to mirror cross-train.json's
+ * ENOENT-vs-other distinction on all three.
+ */
+test("loadFactsFromRoot: a corrupt strava.json is warned about by path, not silently treated as absent", async (t) => {
+  const root = await tempRoot(t);
+  await fs.mkdir(path.join(root, "web", "public"), { recursive: true });
+  await fs.mkdir(path.join(root, "config"), { recursive: true });
+  const stravaPath = path.join(root, "web", "public", "strava.json");
+  await fs.writeFile(stravaPath, "{ not json");
+
+  const lines = [];
+  const orig = console.warn;
+  console.warn = (...args) => lines.push(args.join(" "));
+  try {
+    // strava.json is required — corrupt still ends in the same "missing" throw
+    // as truly absent, but must not do so silently.
+    await assert.rejects(() => loadFactsFromRoot(root), /strava\.json missing/);
+  } finally {
+    console.warn = orig;
+  }
+  const warning = lines.find((l) => l.includes(stravaPath));
+  assert.ok(warning, `expected a warning naming ${stravaPath}, got: ${JSON.stringify(lines)}`);
+  assert.match(warning, /unreadable/);
+});
+
+test("loadFactsFromRoot: corrupt oura.json / google-cal.json degrade to absent, warned by path, and don't crash the digest", async (t) => {
+  const root = await tempRoot(t);
+  await fs.mkdir(path.join(root, "web", "public"), { recursive: true });
+  await fs.mkdir(path.join(root, "config"), { recursive: true });
+  await fs.writeFile(path.join(root, "web", "public", "strava.json"), JSON.stringify({ activities: [] }));
+  const ouraPath = path.join(root, "web", "public", "oura.json");
+  const calPath = path.join(root, "web", "public", "google-cal.json");
+  await fs.writeFile(ouraPath, "{ not json");
+  await fs.writeFile(calPath, "not json either");
+
+  const lines = [];
+  const orig = console.warn;
+  console.warn = (...args) => lines.push(args.join(" "));
+  let f;
+  try {
+    f = await loadFactsFromRoot(root);
+  } finally {
+    console.warn = orig;
+  }
+  assert.ok(f, "a corrupt (optional) oura/calendar file must degrade, not throw");
+
+  assert.ok(lines.some((l) => l.includes(ouraPath)), `expected a warning naming ${ouraPath}, got: ${JSON.stringify(lines)}`);
+  assert.ok(lines.some((l) => l.includes(calPath)), `expected a warning naming ${calPath}, got: ${JSON.stringify(lines)}`);
+});
+
+test("loadFactsFromRoot: oura.json/google-cal.json simply not existing yet is silent — ENOENT is not a warning", async (t) => {
+  const root = await tempRoot(t);
+  await fs.mkdir(path.join(root, "web", "public"), { recursive: true });
+  await fs.mkdir(path.join(root, "config"), { recursive: true });
+  await fs.writeFile(path.join(root, "web", "public", "strava.json"), JSON.stringify({ activities: [] }));
+  // oura.json / google-cal.json intentionally not written — pre-first-sync
+
+  const lines = [];
+  const orig = console.warn;
+  console.warn = (...args) => lines.push(args.join(" "));
+  let f;
+  try {
+    f = await loadFactsFromRoot(root);
+  } finally {
+    console.warn = orig;
+  }
+  assert.ok(f);
+  assert.deepEqual(lines, [], `absence alone must not warn, got: ${JSON.stringify(lines)}`);
+});
+
 test("loadFactsFromRoot ignores an archived race — archived is not active", async (t) => {
   const root = await tempRoot(t);
   await fs.mkdir(path.join(root, "web", "public"), { recursive: true });

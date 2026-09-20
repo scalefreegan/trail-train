@@ -317,6 +317,15 @@ are left as written; this is the amendment list.
   `gpx_wpt` out of the GPX, and it carries `confidence` and `method` — a
   machine's guess at a waypoint is not the same claim as a computed sun time,
   and re-intake has to treat them differently.
+- §10's `splits[].source` narrowed to `track | official` — **`manual` was
+  never a distinct value and does not exist**. `scripts/race-result.mjs`
+  produces exactly two: `splitsFromStream` tags the GPS-derived rows `track`,
+  and `mergeOfficialSplits` tags everything that overrides them `official` —
+  which is also what the archive dialog's free-text "official splits" box
+  writes (`ArchiveRace.tsx`, one line per `"station h:mm"`). There is no
+  second, separately-tracked hand-entry path a `manual` tag could mean
+  instead of `official`; the type at `web/src/race/useRaceData.ts` is now
+  `"track" | "official"` to match what the server actually writes.
 - Drafts carry `unresolved[]` (every field the agent could not establish, made
   complete by `collectUnresolved`, not just what the agent admitted to) and
   `unresolved_acknowledged`, the boolean the review dialog's Activate gate

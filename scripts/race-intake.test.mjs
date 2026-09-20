@@ -210,6 +210,39 @@ test("buildRaceJson seeds tracking.url from links.tracking, and nothing when the
   assert.equal(validateRaceJson(tracked).errors.filter((e) => e.startsWith("tracking")).length, 0);
 });
 
+/**
+ * PR #24 review round 3, LOW finding: race-edit.mjs's PUT handler validates a
+ * hand-typed tracking.url as an absolute http(s) URL before it ever reaches
+ * disk (279-286) — the dev server fetches whatever this holds, server-side,
+ * so a file:// or data: "tracker" would be read off the machine running it.
+ * The agent-derived value here is untrusted the same way, and was landing on
+ * race.json with no such check.
+ */
+test("buildRaceJson refuses a non-http(s) links.tracking — warned, not saved as the race's tracker", async () => {
+  const draft = await loadDraft();
+  for (const bad of ["file:///etc/passwd", "javascript:alert(1)", "not a url at all"]) {
+    const race = buildRaceJson(
+      { ...draft, links: { ...draft.links, tracking: bad } },
+      { slug: "cinder-cone-50k-2027", year: 2027, manifest: MANIFEST },
+    );
+    assert.equal("tracking" in race, false, `${bad}: must not become race.tracking`);
+    assert.equal("tracking" in race.provenance, false, `${bad}: must not get a provenance entry either`);
+    assert.ok(
+      race.intake_warnings.some((w) => w.includes("links.tracking") && w.includes(bad)),
+      `${bad}: expected an intake_warnings entry, got ${JSON.stringify(race.intake_warnings)}`,
+    );
+  }
+
+  // a valid http(s) URL is unaffected by the new check
+  const url = "https://www.opensplittime.org/events/2026-san-juan-softie-100/spread";
+  const ok = buildRaceJson(
+    { ...draft, links: { ...draft.links, tracking: url } },
+    { slug: "cinder-cone-50k-2027", year: 2027, manifest: MANIFEST },
+  );
+  assert.deepEqual(ok.tracking, { url, bib: null, name: null });
+  assert.deepEqual(ok.intake_warnings, []);
+});
+
 test("buildRaceJson keeps a source whose refetch failed, marked with an error, instead of dropping it", async () => {
   const draft = await loadDraft();
   const manifest = [
