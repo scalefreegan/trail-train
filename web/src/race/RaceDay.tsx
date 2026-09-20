@@ -5,6 +5,7 @@ import { clearHash } from "./hashRoute";
 import { fmtCarry, type DropBag, type FuelPlan, type FuelSegment } from "./nutrition";
 import { fmtElapsed, fmtRaceClock, type StationProjection } from "./pacing";
 import { checkpointHold, type CheckpointHold } from "./checkpointHold";
+import { pickHold } from "./holdPrecedence";
 import { resolveHold } from "./raceDayHold";
 import { parseWhereAmI } from "./whereAmI";
 import { RacePlanProvider } from "./RacePlanProvider";
@@ -416,10 +417,11 @@ export function RaceDay() {
   const liveHold = trackerMuted ? null : trackerHold;
 
   // Whichever says the runner was seen LATER — not whichever was recorded
-  // most recently, which the tracker always would be. Manual wins a tie.
-  const manualWins = manualHold != null
-    && (liveHold == null || (manualObsH ?? -Infinity) >= (trackerObsH ?? -Infinity));
-  const hold = manualWins ? manualHold : liveHold;
+  // most recently, which the tracker always would be. Manual wins a tie, and
+  // an off-chart live reading (no course mile — see pickHold) never outranks
+  // a manual hold on recency, since it has no position to compare in the
+  // first place (v2 review ui3 #2).
+  const hold = pickHold(manualHold, manualObsH, liveHold, trackerObsH);
   // A checkpoint whose name is not on the aid chart is a real sighting with
   // no mile attached (a timing mat, a renamed station). It is reported, but
   // it must not move the runner to a mile nobody worked out.
@@ -762,7 +764,7 @@ export function RaceDay() {
             // A sighting with no mile: reported, never guessed at. The
             // projection keeps the position.
             <div className="numerals" style={{ fontSize: 12, color: "var(--mist-dim)", marginTop: 8, lineHeight: 1.6 }}>
-              seen at <b style={{ color: "var(--mist)" }}>{manualWins ? manual?.station : tracker?.station}</b>
+              seen at <b style={{ color: "var(--mist)" }}>{hold === manualHold ? manual?.station : tracker?.station}</b>
               {" "}({hold.label}) — that checkpoint is not on this race's aid chart, so the position
               below is still the projection's.
             </div>
