@@ -23,7 +23,7 @@ registerHooks({
 
 const { projectRace } = await import("../web/src/race/pacing.ts");
 const { applyCheckpoint } = await import("../web/src/crew/checkpoint.ts");
-const { renderCrewPage, checkpointMessage } = await import("../web/src/crew/render.ts");
+const { mapSvg, renderCrewPage, checkpointMessage } = await import("../web/src/crew/render.ts");
 
 /* ----------------------------- the fixture ----------------------------- */
 
@@ -217,4 +217,91 @@ test("bug 6: a downstream station after an earlier one is applied normally (not 
     { current: first.result },
   );
   assert.equal(downstream.ok, true, downstream.ok ? "" : downstream.reason);
+});
+
+/* ============================== BUG 9 =============================== */
+
+function makeSunData(overrides = {}) {
+  return makeData({
+    race: {
+      slug: "repro", name: "Repro", short: "R", date: "2026-06-01", start_time: "06:00",
+      timezone: "America/Denver", distance_mi: 100, gain_ft: 2500, location: null,
+      cutoff_h: null, sun: { sunrise: "06:02", sunset: "20:14" }, links: {}, crew_info: null,
+      features: {}, sources: [],
+    },
+    course: { ...COURSE, sun: { sunrise: "06:02", sunset: "20:14" } },
+    ...overrides,
+  });
+}
+
+test("bug 9: the drop-bag night copy is not shown on a sheet with no drop bags and no crew pickups", () => {
+  const data = makeSunData({ crew_pickups: [] }); // makeCourse()'s stations are all drop_bag: false
+  const html = renderCrewPage(data, LIVE, null, "");
+  assert.doesNotMatch(html, /ride in the bags above/, "no drop-bag content exists for this to point at");
+  assert.match(html, /bring her lights and warm layers yourself/i);
+});
+
+test("bug 9: the original copy still shows once the sheet actually has drop-bag/pickup content", () => {
+  // crewNotesHtml reads drop-bag flags off the EMBEDDED projection rows
+  // (data.projection.stations), not the raw course — that is what a crew
+  // chief actually sees rendered in the table above.
+  const data = makeSunData();
+  data.projection.stations = data.projection.stations.map((s) =>
+    s.name === "Ryman" ? { ...s, drop_bag: true } : s,
+  );
+  const html = renderCrewPage(data, LIVE, null, "");
+  assert.match(html, /ride in the bags above/);
+});
+
+/* ============================== BUG 8 =============================== */
+
+/** A minimal CrewData whose course loops — start and finish at the same
+    lat/lon, both crew-flagged, the way a real loop course's aid chart would
+    have "Start" and "Finish" as two rows sharing one trailhead. */
+function makeLoopData() {
+  const track = [[38.0, -107.0], [38.05, -107.02], [38.02, -107.01], [38.0, -107.0]];
+  const course = {
+    ...COURSE,
+    map_track: track,
+    aid_stations: [
+      { name: "Start", total_mi: 0, gpx_mi: 0, seg_mi: null, seg_gain_ft: null, cutoff_h: null,
+        crew: true, crew_only: false, drop_bag: false, pacers: false, water_only: false, notes: "",
+        lat: 38.0, lon: -107.0 },
+      { name: "Cascade", total_mi: 8.3, gpx_mi: 8.3, seg_mi: null, seg_gain_ft: null, cutoff_h: null,
+        crew: true, crew_only: false, drop_bag: false, pacers: false, water_only: false, notes: "",
+        lat: 38.05, lon: -107.02 },
+      { name: "Finish", total_mi: 100, gpx_mi: 100, seg_mi: null, seg_gain_ft: null, cutoff_h: null,
+        crew: true, crew_only: false, drop_bag: false, pacers: false, water_only: false, notes: "",
+        lat: 38.0, lon: -107.0 },
+    ],
+  };
+  return makeData({ course });
+}
+
+test("bug 8: Start and Finish sharing a point on a loop course are merged into one label, not three overlapping ones", () => {
+  const svg = mapSvg(makeLoopData());
+  assert.match(svg, /class="start-label">Start \/ Finish</, "expected a single merged 'Start / Finish' label");
+  // The old failure mode: a separate "Finish · N mi" crew-label text sitting
+  // on the same point as the bold START marker.
+  assert.doesNotMatch(svg, /class="crew-label">Finish/, "Finish must not ALSO get its own overlapping crew label");
+  assert.doesNotMatch(svg, />START</, "the bare START marker must not survive next to a coincident Finish");
+});
+
+test("bug 8: a normal (non-loop) course keeps the plain START marker and Finish keeps its own label", () => {
+  const track = [[38.0, -107.0], [38.5, -107.5]];
+  const course = {
+    ...COURSE,
+    map_track: track,
+    aid_stations: [
+      { name: "Cascade", total_mi: 8.3, gpx_mi: 8.3, seg_mi: null, seg_gain_ft: null, cutoff_h: null,
+        crew: true, crew_only: false, drop_bag: false, pacers: false, water_only: false, notes: "",
+        lat: 38.1, lon: -107.1 },
+      { name: "Finish", total_mi: 100, gpx_mi: 100, seg_mi: null, seg_gain_ft: null, cutoff_h: null,
+        crew: true, crew_only: false, drop_bag: false, pacers: false, water_only: false, notes: "",
+        lat: 38.5, lon: -107.5 },
+    ],
+  };
+  const svg = mapSvg(makeData({ course }));
+  assert.match(svg, /class="start-label">START</);
+  assert.match(svg, /class="crew-label">Finish/);
 });
