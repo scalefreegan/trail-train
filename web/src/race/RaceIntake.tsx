@@ -166,7 +166,10 @@ export default function RaceIntake({ slug: openAt = null, parentSlug = null, onC
   const { reload } = useRefresh();
   const [slug, setSlug] = useState<string | null>(openAt);
   const [screen, setScreen] = useState<"form" | "review">(openAt ? "review" : "form");
-  const header = screen === "review" ? "review · draft race" : "new race";
+  // Not "review · draft race": the review screen is reachable for an active
+  // race too now (v2 review ui2 #2), and this label is set here, before the
+  // fetch inside ReviewScreen below has even told us the folder's status.
+  const header = screen === "review" ? "review · race" : "new race";
 
   // Restore a form abandoned by ESC/backdrop (round 1, bug D8) — read once,
   // synchronously, during the first render, so the fields never flash empty
