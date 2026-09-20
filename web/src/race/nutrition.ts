@@ -6,6 +6,7 @@ import type { NutritionConfig } from "./nutrition-config";
 import { raceClockH } from "./pacing";
 import type { projectRace } from "./pacing";
 import { dailyOverlap, nightOverlapH, type SunTimes } from "./nightWindow";
+import { friendlyFetchError } from "./dialogChrome";
 
 // The config shape, its defaults and its validator live next door — re-exported
 // here so every existing `from "./nutrition"` import keeps working.
@@ -74,7 +75,11 @@ export function useNutrition() {
         setError(null);
         setSource("file");
       })
-      .catch(() => fallback("nutrition.json corrupt or unreadable"));
+      // A killed/unreachable dev server throws a bare TypeError (round 3,
+      // resilience finding 6) — the same distinction friendlyFetchError makes
+      // for the switcher — and must not be reported as a corrupt file: the
+      // file is fine, the server just is not there to serve it.
+      .catch((e) => fallback(e instanceof TypeError ? friendlyFetchError(e) : "nutrition.json corrupt or unreadable"));
     return () => { stale = true; };
   }, [refreshKey, resolved, slug]);
   return { nutrition: cfg, error, source };
