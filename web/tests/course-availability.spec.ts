@@ -24,7 +24,7 @@ import { test, expect, MM, openDashboard, setActiveRace } from './basecamp'
 test('viewing a course-less tune-up makes no /course.json request and logs no console errors', async ({ page, request, trouble }) => {
   const created = await request.post('/api/races', {
     data: {
-      name: 'No Course Yet 10K',
+      name: 'Courseless Probe 10K',
       date: new Date().toISOString().slice(0, 10),
       distance_mi: 6.2,
       gain_ft: 400,
@@ -41,7 +41,7 @@ test('viewing a course-less tune-up makes no /course.json request and logs no co
 
   await setActiveRace(request, slug, 'view')
   await openDashboard(page)
-  await page.getByRole('button', { name: /^race$/i }).click()
+  await page.getByRole('tab', { name: /^race$/i }).click()
 
   // The empty state still renders — from the derived `missing` flag now,
   // not from a 404 response — proving the fix doesn't just hide a real
