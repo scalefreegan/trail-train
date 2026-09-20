@@ -154,6 +154,50 @@ test("applyRaceEdit stores a cleared tracking field as null, and does not re-sta
   assert.deepEqual(applyRaceEdit(next, { tracking: { bib: "" } }, { at: AT }).written, []);
 });
 
+// Round 4 finding 1: `bib`'s unchanged-value skip above is right for a
+// field with nothing riding on key PRESENCE — but `url` does. RaceIntake.tsx
+// seeds the review screen's url field from links.tracking client-side
+// whenever `race.tracking` has no `url` KEY at all (never distinguishing
+// "never saved" from "saved and cleared" any other way), so a race that has
+// never had a real tracking.url saved reads `next.tracking` as `{}` or
+// absent — no `url` key — even though the athlete sees a value on screen.
+// Clearing that seeded value computes the exact same "absent" effective
+// value the skip-if-unchanged guard was built to short-circuit on, so
+// without this fix the write (and the KEY) never lands, and the seed comes
+// right back on the athlete's very next visit.
+test("applyRaceEdit writes tracking.url even when the effective value doesn't change (round 4 finding 1)", () => {
+  // No `tracking` object at all: the value the athlete saw and cleared was
+  // purely RaceIntake.tsx's own client-side seed, never itself saved.
+  const before = race();
+  const { race: next, written } = applyRaceEdit(before, { tracking: { url: "" } }, { at: AT });
+  // The KEY must exist on disk, not just read falsy — RaceIntake.tsx's own
+  // durable-clear guard checks `"url" in race.tracking`, not truthiness.
+  assert.equal("url" in next.tracking, true, JSON.stringify(next.tracking));
+  assert.equal(next.tracking.url, null);
+  assert.deepEqual(written, ["tracking.url"]);
+  assert.deepEqual(next.provenance["tracking.url"], { by: "user", at: AT });
+});
+
+test("applyRaceEdit re-stamps tracking.url even when re-saving the identical value", () => {
+  const before = race({ tracking: { url: "https://www.opensplittime.org/events/softie/spread" } });
+  const { written } = applyRaceEdit(
+    before,
+    { tracking: { url: "https://www.opensplittime.org/events/softie/spread" } },
+    { at: AT },
+  );
+  assert.deepEqual(written, ["tracking.url"]);
+});
+
+test("applyRaceEdit's forced tracking.url write does not disturb bib/name in the same patch", () => {
+  const before = race();
+  const { race: next, written } = applyRaceEdit(before, { tracking: { url: "", bib: "" } }, { at: AT });
+  // bib was never set either — genuinely unchanged, so (unlike url) it is
+  // correctly skipped, same as the "does not re-stamp it" test above.
+  assert.equal("url" in next.tracking, true);
+  assert.equal("bib" in next.tracking, false);
+  assert.deepEqual(written, ["tracking.url"]);
+});
+
 test("applyRaceEdit trims a pasted bib rather than storing the whitespace", () => {
   const { race: next } = applyRaceEdit(race(), { tracking: { name: " Test Runner " } }, { at: AT });
   assert.equal(next.tracking.name, "Test Runner");
