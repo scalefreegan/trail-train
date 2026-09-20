@@ -83,9 +83,13 @@ function mount(): void {
 
   let checkpoint: CheckpointResult | null = null;
   let message = "";
+  // Bug 4: a refused submit leaves `checkpoint` exactly as it was, so its
+  // non-null-ness can no longer tell the status line "this message is a
+  // success" — this says so explicitly.
+  let warn = false;
 
   function render(): void {
-    root!.innerHTML = renderCrewPage(data!, live, checkpoint, message);
+    root!.innerHTML = renderCrewPage(data!, live, checkpoint, message, warn);
     if (!live && !checkpoint) {
       const note = document.createElement("p");
       note.className = "warn";
@@ -99,19 +103,27 @@ function mount(): void {
     if (clock && !clock.value) clock.value = nowInRaceZone(data!.race.timezone);
   }
 
-  /** Apply an entry, remember it, and say what happened. Persistence is the
-      LAST step: a split the page could not use must not come back on reload. */
+  /** Apply an entry, remember it, and say what happened.
+   *
+   * Bug 4: a REFUSED submit must leave whatever checkpoint is already in
+   * force completely untouched — the table, the caption, the clear button
+   * and localStorage all keep showing the one that worked. Only the warning
+   * line changes. Discarding a good split because the NEXT thing the crew
+   * typed was a mistake (wrong station picked, a fat-fingered clock) is
+   * worse than showing a warning next to a still-correct sheet. Persistence
+   * on success is still the LAST step: a split the page could not use must
+   * not come back on reload. */
   function commit(entry: CheckpointEntry, persist: boolean): void {
-    const outcome = applyCheckpoint(data!, live, entry);
+    const outcome = applyCheckpoint(data!, live, entry, { current: checkpoint });
     if (!outcome.ok) {
-      checkpoint = null;
       message = escapeText(outcome.reason);
-      if (persist) clearCheckpoint(data!.slug);
+      warn = true;
       render();
       return;
     }
     checkpoint = outcome.result;
     message = checkpointMessage(outcome.result);
+    warn = false;
     if (persist) saveCheckpoint(data!.slug, { station: entry.station, clock: outcome.result.clock });
     render();
   }
@@ -150,6 +162,7 @@ function mount(): void {
     ev.preventDefault();
     checkpoint = null;
     message = "";
+    warn = false;
     clearCheckpoint(data.slug);
     render();
   });

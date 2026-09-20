@@ -2,6 +2,52 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 
 import { test, expect, MM, openDashboard, openRaceTab, setActiveRace } from './basecamp'
+import type { Page } from './basecamp'
+import type { BrowserContext, TestInfo } from '@playwright/test'
+
+/** "9:48p" / "12:11a+1" (fmtRaceClock's own format, day marker and all) →
+    "21:48" / "00:11" — what the checkpoint form's HH:MM input wants. The day
+    marker is dropped: the crew never writes the date, only the clock, and
+    that is exactly what the updater's own day-resolution (bug 5) is for. */
+function to24h(clock: string): string {
+  const m = /^(\d{1,2}):(\d{2})(a|p)/i.exec(clock.trim())
+  if (!m) throw new Error(`unparseable clock "${clock}"`)
+  let hour = Number(m[1])
+  const ap = m[3].toLowerCase()
+  if (ap === 'p' && hour !== 12) hour += 12
+  if (ap === 'a' && hour === 12) hour = 0
+  return `${String(hour).padStart(2, '0')}:${m[2]}`
+}
+
+/** Export the crew page and open it exactly the way the crew will — from the
+    filesystem, every network request refused — with the checkpoint form
+    ready to drive. Shared by the bug 4/6 flows below and the offline-render
+    flow above. */
+async function exportAndOpenOffline(
+  page: Page,
+  context: BrowserContext,
+  testInfo: TestInfo,
+  label: string,
+): Promise<Page> {
+  await setActiveRace(page.request, MM.slug, 'train')
+  await openDashboard(page)
+  await openRaceTab(page)
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: /export crew page/i }).click(),
+  ])
+  await fs.mkdir(testInfo.outputDir, { recursive: true })
+  const file = path.join(testInfo.outputDir, `${label}-${download.suggestedFilename()}`)
+  await download.saveAs(file)
+
+  const offline = await context.newPage()
+  await offline.route('**/*', (route) => {
+    const url = route.request().url()
+    return /^https?:/.test(url) ? route.abort('failed') : route.continue()
+  })
+  await offline.goto(`file://${file}`)
+  return offline
+}
 
 /**
  * Flow 11 — "export crew page", and the only thing that actually matters about
@@ -83,5 +129,87 @@ test('the exported crew page opens with the network gone', async ({ page, contex
   expect(crashes, 'the crew page threw with no network').toEqual([])
   await offline.close()
 
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * Bug 4 — a refused checkpoint submit must leave whatever checkpoint is
+ * already in force completely untouched: table, caption, clear button and
+ * localStorage all keep showing the good one, and only the warning line
+ * changes. The old bug threw the applied checkpoint away on ANY refusal
+ * (station left on "choose a station…", an unparsable clock, "Start" picked)
+ * — this drives the real form in a real browser, because the defect lived in
+ * main.ts's DOM-handling, not in the pure checkpoint.ts logic.
+ */
+test('bug 4: a refused checkpoint submit leaves the applied checkpoint untouched', async ({ page, context, trouble }, testInfo) => {
+  const offline = await exportAndOpenOffline(page, context, testInfo, 'bug4')
+
+  // A real, successful checkpoint first — the exported plan's own ETA for
+  // Slabtown, so it is guaranteed to be accepted.
+  await offline.locator('#cp-station').selectOption('Slabtown')
+  const slabtownEta = await offline.locator('tr[data-station="Slabtown"] .eta .exp').innerText()
+  await offline.locator('#cp-clock').fill(to24h(slabtownEta))
+  await offline.getByRole('button', { name: /update/i }).click()
+
+  await expect(offline.locator('#cp-status')).toContainText('Slabtown')
+  expect(await offline.locator('#cp-status').getAttribute('class')).toContain('applied')
+  await expect(offline.locator('#cp-clear')).toBeEnabled()
+
+  const tableBefore = await offline.locator('#stations tbody').innerHTML()
+  const captionBefore = await offline.locator('#stations caption').innerText()
+  const storageKey = 'basecamp.crew.mm-like-100.checkpoint'
+  const storedBefore = await offline.evaluate((k) => localStorage.getItem(k), storageKey)
+  expect(storedBefore).not.toBeNull()
+
+  // Now refuse: blank the station and submit — the classic "cleared the
+  // dropdown, forgot to re-pick it" mistake.
+  await offline.locator('#cp-station').selectOption('')
+  await offline.getByRole('button', { name: /update/i }).click()
+
+  await expect(offline.locator('#cp-status')).toContainText(/pick the station/i)
+  expect(await offline.locator('#cp-status').getAttribute('class')).not.toContain('applied')
+
+  // Everything that was showing the GOOD checkpoint is exactly as it was —
+  // the warning shows alone, next to a sheet that still works.
+  expect(await offline.locator('#stations tbody').innerHTML()).toEqual(tableBefore)
+  expect(await offline.locator('#stations caption').innerText()).toEqual(captionBefore)
+  await expect(offline.locator('#cp-clear')).toBeEnabled()
+  expect(await offline.evaluate((k) => localStorage.getItem(k), storageKey)).toEqual(storedBefore)
+
+  await offline.close()
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * Bug 6 — a checkpoint upstream of an already-applied later one is refused,
+ * naming the later station, rather than silently discarding the more recent
+ * split. "clear" is the deliberate way to throw a checkpoint away.
+ */
+test('bug 6: an out-of-order checkpoint is refused and names the later station', async ({ page, context, trouble }, testInfo) => {
+  const offline = await exportAndOpenOffline(page, context, testInfo, 'bug6')
+
+  // Tin Cup is well downstream of Slabtown on the aid chart (mi 83.7 vs 44.6).
+  await offline.locator('#cp-station').selectOption('Tin Cup')
+  const tinCupEta = await offline.locator('tr[data-station="Tin Cup"] .eta .exp').innerText()
+  await offline.locator('#cp-clock').fill(to24h(tinCupEta))
+  await offline.getByRole('button', { name: /update/i }).click()
+  await expect(offline.locator('#cp-status')).toContainText('Tin Cup')
+  expect(await offline.locator('#cp-status').getAttribute('class')).toContain('applied')
+
+  // Now try the UPSTREAM station.
+  await offline.locator('#cp-station').selectOption('Slabtown')
+  const slabtownEta = await offline.locator('tr[data-station="Slabtown"] .eta .exp').innerText()
+  await offline.locator('#cp-clock').fill(to24h(slabtownEta))
+  await offline.getByRole('button', { name: /update/i }).click()
+
+  // Refused, naming the later (still-applied) station and pointing at clear.
+  await expect(offline.locator('#cp-status')).toContainText('Tin Cup')
+  await expect(offline.locator('#cp-status')).toContainText(/clear/i)
+  expect(await offline.locator('#cp-status').getAttribute('class')).not.toContain('applied')
+
+  // Tin Cup is still the checkpoint in force — its row is still "at".
+  await expect(offline.locator('tr[data-station="Tin Cup"]')).toHaveClass(/\bat\b/)
+
+  await offline.close()
   expect(trouble.pageErrors).toEqual([])
 })

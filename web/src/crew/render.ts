@@ -232,8 +232,12 @@ function emergencyHtml(data: CrewData): string {
 }
 
 /** The updater's chrome. The status line is written by main.ts, which owns
-    the applied checkpoint; everything here is the same on every render. */
-function updaterHtml(data: CrewData, cp: CheckpointResult | null, message: string): string {
+    the applied checkpoint; everything here is the same on every render.
+    @param warn true when `message` is a REFUSAL — bug 4 means a refused
+      submit leaves `cp` exactly as it was (the good checkpoint stays in
+      force), so `cp` being non-null can no longer be read as "the current
+      message is a success". main.ts says explicitly which one this is. */
+function updaterHtml(data: CrewData, cp: CheckpointResult | null, message: string, warn: boolean): string {
   const options = data.projection.stations
     .map(
       (s) =>
@@ -253,7 +257,8 @@ function updaterHtml(data: CrewData, cp: CheckpointResult | null, message: strin
     `<button id="cp-apply" type="submit">update</button>` +
     `<button id="cp-clear" type="button"${cp ? "" : " disabled"}>clear</button>` +
     `</form>` +
-    `<p id="cp-status" class="${cp ? "applied" : message ? "warn" : "idle"}">${message}</p>` +
+    `<p id="cp-status" class="${warn ? "warn" : cp ? (cp.extremePace ? "applied extreme" : "applied") : message ? "warn" : "idle"}">` +
+    `${message}</p>` +
     `</section>`
   );
 }
@@ -265,13 +270,23 @@ export function checkpointMessage(cp: CheckpointResult): string {
       ? "exactly on plan"
       : `${esc(fmtSigned(cp.delta_h))} ${cp.delta_h > 0 ? "behind" : "ahead of"} plan` +
         ` · pace ×${esc(cp.ratio.toFixed(2))}`;
+  // A split under a quarter of the plan's moving time (bug 5) gets the loud
+  // treatment — a bare "capped" footnote is easy to skim past on a phone at
+  // 2 a.m., and this is far likelier a mistyped clock than a real split.
+  // extremePace implies clamped (0.25 is well inside the 0.6 floor), so the
+  // two notes are mutually exclusive rather than stacked.
+  const paceNote = cp.extremePace
+    ? ` <strong class="extreme">⚠ that has her covering the leg into ${esc(cp.station)} in under a quarter of` +
+      ` the model's planned moving time — check the clock before trusting this split. The pace carried forward` +
+      ` is capped; the times below are held to the checkpoint, not extrapolated from it.</strong>`
+    : cp.clamped
+      ? ` <em>· that split is far enough off the model that the pace carried forward is capped —` +
+        ` the times below are held to the checkpoint, not extrapolated from it</em>`
+      : "";
   return (
     `updated from <strong>${esc(cp.station)}</strong> at <strong>${esc(cp.clock)}</strong>` +
     ` (mi ${esc(round(cp.mile, 1))}, ${esc(fmtElapsed(cp.observed_h))} on the clock) — ${pace}` +
-    (cp.clamped
-      ? ` <em>· that split is far enough off the model that the pace carried forward is capped —` +
-        ` the times below are held to the checkpoint, not extrapolated from it</em>`
-      : "") +
+    paceNote +
     `. Everything below is re-projected; “clear” puts the exported plan back.`
   );
 }
@@ -739,12 +754,17 @@ function footerHtml(data: CrewData): string {
  * @param live the page's own re-projection, or null when it could not be run
  * @param cp the applied checkpoint, or null
  * @param message the updater's status line (already HTML)
+ * @param warn true when `message` is a refusal (bug 4: `cp` may still be
+ *   non-null on a refusal — the checkpoint already in force stays applied —
+ *   so this is the only way the status line knows to read as a warning
+ *   rather than as that checkpoint's own success message)
  */
 export function renderCrewPage(
   data: CrewData,
   live: RaceProjection | null,
   cp: CheckpointResult | null = null,
   message = "",
+  warn = false,
 ): string {
   const rows = stationRows(data, live, cp);
   const finish = finishTimes(data, live, cp);
@@ -752,7 +772,7 @@ export function renderCrewPage(
   return (
     headerHtml(data, finish, goalH) +
     emergencyHtml(data) +
-    updaterHtml(data, cp, message) +
+    updaterHtml(data, cp, message, warn) +
     stationsHtml(data, rows, cp) +
     pickupsHtml(data) +
     crewNotesHtml(data) +
