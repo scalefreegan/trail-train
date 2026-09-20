@@ -219,6 +219,15 @@ const SLUG_OP_LABEL: Record<string, string> = {
 // usual key) would let them race each other exactly like before.
 const ACTIVATE_LOCK_KEY = '__active-race-pointer__'
 
+// Same reasoning as ACTIVATE_LOCK_KEY, for PUT /api/settings (PR #24 review
+// round 3): config/state.json, config/profile.json and config/goals.json are
+// each single shared files, not per-race, so two concurrent PUTs (settings
+// dialog open in two tabs, or a double-submit) must serialize on ONE key
+// regardless of what sections either body touches — a per-section lock would
+// let a preferences-only PUT and a physiology-only PUT race each other's
+// read-modify-write on state.json exactly like before.
+const SETTINGS_LOCK_KEY = '__settings__'
+
 function slugLockKey(slug: string): string {
   return `slug:${slug}`
 }
@@ -1187,112 +1196,126 @@ function settingsApi(): Plugin {
           }
           if (req.method !== 'PUT') { res.statusCode = 405; res.end('GET or PUT required'); return }
           if (crossSiteBlocked(req, res)) return
-          const chunks: Buffer[] = []
-          for await (const c of req) chunks.push(c as Buffer)
-          let body: Record<string, unknown>
-          try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
-          catch { json(400, { error: 'bad json' }); return }
-
-          const { error, prefs, context, calendar, physiology, goals } = validate(body)
-          if (error) { json(400, { error }); return }
-
-          // refuse the whole write BEFORE touching anything if a profile.json
-          // edit (calendar or physiology) would be based on a corrupt file
-          if ((calendar || physiology) && readProfile().corrupt) {
-            json(409, { error: 'config/profile.json exists but could not be parsed — fix it by hand first; refusing to overwrite it' })
+          // PR #24 review round 3: config/state.json, config/profile.json and
+          // config/goals.json are each read-modify-written here; without a
+          // lock two concurrent PUTs (two tabs, or a double-submit) both read
+          // the same pre-write state and the second's merge silently drops
+          // the first's edit. Same acquire/409/finally-release shape as
+          // ACTIVATE_LOCK_KEY above.
+          if (!acquireSlugLock(SETTINGS_LOCK_KEY, 'settings')) {
+            json(409, { error: 'another settings save is already in progress — try again' })
             return
           }
+          try {
+            const chunks: Buffer[] = []
+            for await (const c of req) chunks.push(c as Buffer)
+            let body: Record<string, unknown>
+            try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
+            catch { json(400, { error: 'bad json' }); return }
 
-          const fresh = await stateMod.loadState(projectRoot)
-          const freshPrefs = (fresh.preferences ?? {}) as Record<string, unknown>
-          let nextContext = freshPrefs.context
-          if (context) {
-            const freshCtx = (freshPrefs.context ?? {}) as { sections?: Record<string, string>; temporary?: { id: string }[] }
-            // Merge, don't replace: the coach/chat may have appended items
-            // while the dialog was open. The client's list wins for every id
-            // it KNEW about (edits and deletions); ids it never saw are
-            // preserved. known_ids is the snapshot from the dialog's GET;
-            // absent (curl), fall back to the sent ids — then nothing can be
-            // deleted implicitly, only via an explicit known_ids.
-            const knownIds = new Set(context.knownIds ?? context.temporary.map((t) => t.id as string))
-            const clientIds = new Set(context.temporary.map((t) => t.id as string))
-            const preserved = (freshCtx.temporary ?? []).filter((t) => !knownIds.has(t.id) && !clientIds.has(t.id))
-            // Sections: the client's text wins, but an agent append that
-            // landed AFTER the dialog's GET (fresh = baseline + tail) is
-            // re-applied on top so it isn't silently clobbered. Without a
-            // baseline (curl), the client's text simply wins.
-            const mergedSections: Record<string, string> = { ...(freshCtx.sections ?? {}) }
-            for (const [key, clientText] of Object.entries(context.sections)) {
-              const freshText = mergedSections[key] ?? ''
-              const base = context.sectionsBaseline?.[key]
-              if (typeof base === 'string' && freshText !== base && freshText.startsWith(base)) {
-                mergedSections[key] = clientText + freshText.slice(base.length)
-              } else {
-                mergedSections[key] = clientText
-              }
-            }
-            nextContext = {
-              sections: mergedSections,
-              temporary: [...context.temporary, ...preserved],
-            }
-          }
-          fresh.preferences = { ...freshPrefs, ...prefs, ...(nextContext !== undefined ? { context: nextContext } : {}) }
-          const saved = await stateMod.saveState(projectRoot, fresh)
+            const { error, prefs, context, calendar, physiology, goals } = validate(body)
+            if (error) { json(400, { error }); return }
 
-          // both profile-owned sections go out in ONE write: two sequential
-          // writeJsonAtomic calls would each be built from a stale read, and
-          // the second would silently drop the first's edit
-          let savedCalendar = null
-          let savedPhysiology = null
-          if (calendar || physiology) {
-            try {
-              const { writeJsonAtomic } = await import(path.join(projectRoot, 'scripts/lib.mjs')) as {
-                writeJsonAtomic: (p: string, v: unknown) => Promise<void>
-              }
-              // gitignored — creating it from the example content is safe
-              const current = readProfile().profile
-              const nextProfile: Record<string, unknown> = { ...current, ...(calendar ?? {}) }
-              let mergedPhysiology: Record<string, number> | null = null
-              if (physiology) {
-                // merge, don't replace: a PUT that only carries body_kg must
-                // not blank long_run_ref_mi
-                const prev = (current.physiology ?? {}) as Record<string, number>
-                mergedPhysiology = { ...prev, ...physiology }
-                nextProfile.physiology = mergedPhysiology
-              }
-              await writeJsonAtomic(profilePath, nextProfile)
-              savedCalendar = calendar ?? null
-              savedPhysiology = mergedPhysiology
-            } catch (e) {
-              // state.json already committed — report the partial write
-              // honestly instead of a blanket failure
-              console.warn(`[settings] profile.json write failed: ${(e as Error).message}`)
-              json(500, {
-                error: `preferences were saved, but writing config/profile.json failed: ${(e as Error).message}`,
-                preferences: saved.preferences,
-              })
+            // refuse the whole write BEFORE touching anything if a profile.json
+            // edit (calendar or physiology) would be based on a corrupt file
+            if ((calendar || physiology) && readProfile().corrupt) {
+              json(409, { error: 'config/profile.json exists but could not be parsed — fix it by hand first; refusing to overwrite it' })
               return
             }
-          }
-          // goals last: it is a standalone file, so a failure here leaves
-          // state.json and profile.json correctly saved and says so
-          let savedGoals = null
-          if (goals) {
-            try {
-              await goalsMod.saveGoals(projectRoot, goals)
-              savedGoals = goals
-            } catch (e) {
-              console.warn(`[settings] goals.json write failed: ${(e as Error).message}`)
-              json(500, {
-                error: `preferences were saved, but writing config/goals.json failed: ${(e as Error).message}`,
-                preferences: saved.preferences,
-                calendar: savedCalendar,
-                physiology: savedPhysiology,
-              })
-              return
+
+            const fresh = await stateMod.loadState(projectRoot)
+            const freshPrefs = (fresh.preferences ?? {}) as Record<string, unknown>
+            let nextContext = freshPrefs.context
+            if (context) {
+              const freshCtx = (freshPrefs.context ?? {}) as { sections?: Record<string, string>; temporary?: { id: string }[] }
+              // Merge, don't replace: the coach/chat may have appended items
+              // while the dialog was open. The client's list wins for every id
+              // it KNEW about (edits and deletions); ids it never saw are
+              // preserved. known_ids is the snapshot from the dialog's GET;
+              // absent (curl), fall back to the sent ids — then nothing can be
+              // deleted implicitly, only via an explicit known_ids.
+              const knownIds = new Set(context.knownIds ?? context.temporary.map((t) => t.id as string))
+              const clientIds = new Set(context.temporary.map((t) => t.id as string))
+              const preserved = (freshCtx.temporary ?? []).filter((t) => !knownIds.has(t.id) && !clientIds.has(t.id))
+              // Sections: the client's text wins, but an agent append that
+              // landed AFTER the dialog's GET (fresh = baseline + tail) is
+              // re-applied on top so it isn't silently clobbered. Without a
+              // baseline (curl), the client's text simply wins.
+              const mergedSections: Record<string, string> = { ...(freshCtx.sections ?? {}) }
+              for (const [key, clientText] of Object.entries(context.sections)) {
+                const freshText = mergedSections[key] ?? ''
+                const base = context.sectionsBaseline?.[key]
+                if (typeof base === 'string' && freshText !== base && freshText.startsWith(base)) {
+                  mergedSections[key] = clientText + freshText.slice(base.length)
+                } else {
+                  mergedSections[key] = clientText
+                }
+              }
+              nextContext = {
+                sections: mergedSections,
+                temporary: [...context.temporary, ...preserved],
+              }
             }
+            fresh.preferences = { ...freshPrefs, ...prefs, ...(nextContext !== undefined ? { context: nextContext } : {}) }
+            const saved = await stateMod.saveState(projectRoot, fresh)
+
+            // both profile-owned sections go out in ONE write: two sequential
+            // writeJsonAtomic calls would each be built from a stale read, and
+            // the second would silently drop the first's edit
+            let savedCalendar = null
+            let savedPhysiology = null
+            if (calendar || physiology) {
+              try {
+                const { writeJsonAtomic } = await import(path.join(projectRoot, 'scripts/lib.mjs')) as {
+                  writeJsonAtomic: (p: string, v: unknown) => Promise<void>
+                }
+                // gitignored — creating it from the example content is safe
+                const current = readProfile().profile
+                const nextProfile: Record<string, unknown> = { ...current, ...(calendar ?? {}) }
+                let mergedPhysiology: Record<string, number> | null = null
+                if (physiology) {
+                  // merge, don't replace: a PUT that only carries body_kg must
+                  // not blank long_run_ref_mi
+                  const prev = (current.physiology ?? {}) as Record<string, number>
+                  mergedPhysiology = { ...prev, ...physiology }
+                  nextProfile.physiology = mergedPhysiology
+                }
+                await writeJsonAtomic(profilePath, nextProfile)
+                savedCalendar = calendar ?? null
+                savedPhysiology = mergedPhysiology
+              } catch (e) {
+                // state.json already committed — report the partial write
+                // honestly instead of a blanket failure
+                console.warn(`[settings] profile.json write failed: ${(e as Error).message}`)
+                json(500, {
+                  error: `preferences were saved, but writing config/profile.json failed: ${(e as Error).message}`,
+                  preferences: saved.preferences,
+                })
+                return
+              }
+            }
+            // goals last: it is a standalone file, so a failure here leaves
+            // state.json and profile.json correctly saved and says so
+            let savedGoals = null
+            if (goals) {
+              try {
+                await goalsMod.saveGoals(projectRoot, goals)
+                savedGoals = goals
+              } catch (e) {
+                console.warn(`[settings] goals.json write failed: ${(e as Error).message}`)
+                json(500, {
+                  error: `preferences were saved, but writing config/goals.json failed: ${(e as Error).message}`,
+                  preferences: saved.preferences,
+                  calendar: savedCalendar,
+                  physiology: savedPhysiology,
+                })
+                return
+              }
+            }
+            json(200, { preferences: saved.preferences, calendar: savedCalendar, physiology: savedPhysiology, goals: savedGoals })
+          } finally {
+            releaseSlugLock(SETTINGS_LOCK_KEY)
           }
-          json(200, { preferences: saved.preferences, calendar: savedCalendar, physiology: savedPhysiology, goals: savedGoals })
         } catch (e) {
           json(500, { error: (e as Error).message })
         }
