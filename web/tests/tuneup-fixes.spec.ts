@@ -189,9 +189,18 @@ test.describe('tune-up fixes (round 4)', () => {
     await dialog.getByLabel('date').fill(weeksBeforeToday(3))
     await expect(dialog.getByText(/distance mi must be/i)).toBeVisible()
 
-    // A blank gain ft is a valid 0 (a flat course is not an error), so
-    // distance is the last thing standing between here and enabled.
     await dialog.getByLabel('distance mi').fill('6.2')
+    // Round 4 confirm, NEW #2: a blank gain ft used to sail straight through
+    // this gate (`Number("") === 0` against a `gainNum >= 0` check) and get
+    // written as `gain_ft: 0` with `provenance.gain_ft.by: "user"` — a
+    // flat-course claim the athlete never typed. It must disable submit with
+    // its own hint, same as every other required field on this form.
+    await expect(dialog.getByText(/gain ft must be/i)).toBeVisible()
+    await expect(submit).toBeDisabled()
+
+    // 0 typed EXPLICITLY is a legitimate flat-course claim, not a blank —
+    // and enables submit.
+    await dialog.getByLabel('gain ft').fill('0')
     await expect(submit).toBeEnabled()
 
     // Gain still has its own floor — typed negative, it disables again with
@@ -201,6 +210,12 @@ test.describe('tune-up fixes (round 4)', () => {
     await expect(submit).toBeDisabled()
     await dialog.getByLabel('gain ft').fill('300')
     await expect(submit).toBeEnabled()
+
+    // Blanking a previously-valid gain re-disables it — the guard holds
+    // after a valid value too, not just on the field's first render.
+    await dialog.getByLabel('gain ft').fill('')
+    await expect(dialog.getByText(/gain ft must be/i)).toBeVisible()
+    await expect(submit).toBeDisabled()
 
     await dialog.getByRole('button', { name: /close esc/i }).click()
     expect(trouble.pageErrors).toEqual([])
