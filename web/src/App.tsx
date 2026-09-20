@@ -255,7 +255,14 @@ const isRerunnable = (r: RaceListEntry) => r.status === "archived" && !r.error;
     athlete is actually counting down to). A tune-up cannot itself hold one,
     and an unreadable folder has no slug to hang one off. */
 const canAddTuneUp = (r: RaceGroupEntry, trainingSlug: string | null) =>
-  r.slug === trainingSlug && r.kind !== "b" && !r.error;
+  // `trainingSlug` (useActiveRace().slug) is null in BOTH generic mode and
+  // view mode — so browsing any folder (the active race's own tune-up, a
+  // draft, an archive) used to blank this row for the one race it is always
+  // valid on. `r.status === "active"` is the fact this row actually depends
+  // on (only one folder may hold that status, and it IS the training
+  // target — PRD-v2 §3), so it alone is checked whatever is on screen;
+  // `r.slug === trainingSlug` stays as a redundant fast-path in train mode.
+  (r.status === "active" || r.slug === trainingSlug) && r.kind !== "b" && !r.error;
 
 /** How many menu rows a race contributes: itself, plus its "Review…",
     "Refresh from sources…" and "Run course again…" rows, plus one indented
@@ -1767,7 +1774,10 @@ function Trajectory() {
       x: wx(idx),
       // the native SVG tooltip: what it is, when it is, how far out
       tip: `${b.name}${b.date ? ` · ${b.date}` : ""} · ${b.weeks_out === 0 ? "race week" : `${b.weeks_out} wk out`}`
-        + (b.distance_mi != null ? ` · ${b.distance_mi} mi` : ""),
+        // round 4 finding 9: this used to print a bare "mi" regardless of the
+        // km/m toggle — every other distance on this chart (axis, stats row)
+        // already goes through u.dist/u.distUnit.
+        + (b.distance_mi != null ? ` · ${u.dist(b.distance_mi, 0)} ${u.distUnit}` : ""),
     }));
 
   const WEEK_LABEL_W = 34; // px — "WK NN" at fontSize 9 / letterSpacing 1
