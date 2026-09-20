@@ -437,7 +437,19 @@ export function RacePlanner() {
   // command — the empty state now offers the same free, deterministic
   // build the switcher's "Run course again…" row and the fuel view's own
   // empty state (NutritionPlan.tsx) call.
-  const courseBuild = useRunCourseAgain(missing ? raceConfig.slug : null, reload);
+  //
+  // Round 3 sweep, second pass: the slug is passed unconditionally now, not
+  // `missing ? raceConfig.slug : null` — `run` can still only ever be
+  // triggered from the button inside the `missing` empty state below, so
+  // this changes nothing about when a build can start. What it enables is
+  // runCourseAgain.ts's resultStore-recovery effect: that effect keys off
+  // `slug` actually being there, and once a build succeeds, `missing` (and
+  // with it, the OLD `slug` this hook used to be handed) flips false — this
+  // is a genuinely different course now, not "still building," so a null
+  // slug here would have permanently locked the hook out of ever reading
+  // its own just-written store entry back on the fresh mount App.tsx's
+  // `key={`race-${key}`}` produces for it.
+  const courseBuild = useRunCourseAgain(raceConfig.slug, reload);
   // An archived race has a result: what actually happened, station by station
   // (PRD §10). Only then does the table grow an "actual" column — a race that
   // has not been run has nothing to put in it.
@@ -530,25 +542,19 @@ export function RacePlanner() {
                 <div style={{ fontSize: 11, color: "var(--ember)", marginTop: 6 }}>{courseBuild.error}</div>
               )}
               {/* Round 3 sweep extension (render-only edit, per the fixer who
-                  owns the rest of this file): a course DID build, but the
-                  hook's own `warnings` says it's degraded. In practice this
-                  never paints — courseBuild.run()'s onDone() IS reload(),
-                  and App.tsx wraps this whole tabpanel in
-                  `key={`race-${key}`}` (that same pulse), which remounts
-                  this component — and every hook's state in it, this one
-                  included — the instant the build succeeds, before this
-                  render ever reaches the screen (traced with a
-                  temporary console.log rather than assumed: warnings gets
-                  set, then the very next commit is a fresh mount with it
-                  back at []). Kept anyway, since it costs nothing and is
-                  correct for whatever future onDone() doesn't immediately
-                  remount its own caller — but the mismatch itself is not
-                  lost to the athlete either way: the persisted banner below
-                  (raceConfig.unresolved, re-derived off the RELOADED
-                  race.json) says the same thing the instant the reload
-                  lands. See web/tests/switcher.spec.ts's "RACE tab" test
-                  for the reproduction and the test that covers the real,
-                  observable outcome instead of this line. */}
+                  owns the rest of this file): mainly useful for a course.gpx
+                  that STILL doesn't build (courseBuild.error, above) — the
+                  reason survives a plain tab-away-and-back (which unmounts
+                  this component just as completely as the reload-remount
+                  below does) via runCourseAgain.ts's `resultStore`, since
+                  that path never calls onDone()/reload() and `missing` stays
+                  true the whole time regardless. A course that DID build
+                  with `warnings` behaves differently: `missing` (and the
+                  `slug` this hook is handed) flips to `false` for good the
+                  moment it succeeds — correctly, a course now exists — so
+                  this particular block never renders again for that case.
+                  See the note near the persisted mismatch banner below for
+                  where that one actually shows. */}
               {courseBuild.warnings.length > 0 && (
                 <div style={{ fontSize: 11, color: "var(--lamp)", marginTop: 6 }}>⚠ {courseBuild.warnings.join(" · ")}</div>
               )}
@@ -696,6 +702,25 @@ export function RacePlanner() {
         {tuneUp ? "tune-up planner" : "race planner"} — {race.short} · {u.dist(course.distance_mi, 0)} {u.distUnit} · {u.elev(course.gain_ft)} {u.elevUnit}↑
         {tuneUp && raceConfig.parent_slug ? ` · inside ${raceConfig.parent_slug}` : ""}
       </SectionTag>
+
+      {/* Round 3 sweep extension (render-only edit, per the fixer who owns
+          the rest of this file) — the other half of the note above: a
+          course that just built successfully but with `warnings` (the
+          hook's own resultStore-recovered outcome, since a reload-triggered
+          remount wiped the render that would otherwise have shown this)
+          gets its say here, in the view that now actually renders instead
+          of the empty state. Distinct from the persisted banner below —
+          `warnings` can carry things that never touch race.json's
+          `unresolved` (an unhonored user waypoint override, for one) — so
+          this is not simply the same fact twice. */}
+      {courseBuild.warnings.length > 0 && (
+        <div className="panel notch" style={{
+          padding: "10px 16px", marginBottom: 10, borderColor: "var(--lamp)",
+          color: "var(--lamp)", fontSize: 11.5, lineHeight: 1.5,
+        }}>
+          ⚠ the last course build had this to say: {courseBuild.warnings.join(" · ")}
+        </div>
+      )}
 
       {/* course.gpx measured far enough off race.json's declared distance/gain
           that scripts/build-course.mjs's courseMismatches flagged it and

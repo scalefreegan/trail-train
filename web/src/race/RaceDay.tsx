@@ -360,7 +360,15 @@ export function RaceDay() {
   const [cpClock, setCpClock] = useState<string | null>(null);
   // D8: the same free, deterministic build the switcher's "Run course
   // again…" row and the fuel view's empty state call.
-  const courseBuild = useRunCourseAgain(missing ? viewing : null, reload);
+  //
+  // Round 3 sweep, second pass: slug passed unconditionally, matching
+  // RacePlanner.tsx's/NutritionPlan.tsx's own copies of this line — this
+  // call site was never remounted by its own reload() (RaceDayRoute has no
+  // App.tsx-style `key={pulse}` wrapping it), but leaving a real slug
+  // sitting here regardless means runCourseAgain.ts's resultStore-recovery
+  // effect still helps across whatever DOES unmount this component, such as
+  // navigating away from #/race-day and back.
+  const courseBuild = useRunCourseAgain(viewing, reload);
 
   const elapsedH = (now - raceStart.getTime()) / 3_600_000;
   const started = elapsedH >= 0;
