@@ -266,7 +266,7 @@ export function calibrateAltitude(input: {
   if (home == null) {
     return {
       ...empty, status: "no-home", threshold_ft: null, home_ft: null,
-      label: "uncalibrated — set your home elevation in the coach settings and this back-test can run",
+      label: "uncalibrated — set your home elevation in the coach settings and this back-test can run.",
     };
   }
   const threshold = home + HIGH_ALTITUDE_MARGIN_FT;
@@ -282,7 +282,7 @@ export function calibrateAltitude(input: {
   if (!placed.length) {
     return {
       ...empty, status: "no-elevations", threshold_ft: threshold, home_ft: home,
-      label: "uncalibrated — no per-activity elevations yet; run `npm run sync:streams`",
+      label: "uncalibrated — no per-activity elevations yet; run `npm run sync:streams`.",
     };
   }
 
@@ -293,9 +293,14 @@ export function calibrateAltitude(input: {
   if (!baseline) {
     return {
       ...empty, status: "uncalibrated", n: high.length, threshold_ft: threshold, home_ft: home,
+      // The threshold itself is printed once, in the athlete's chosen unit,
+      // by the eyebrow line above (ModelCheck.tsx) — this sentence used to
+      // repeat it hard-coded in feet, so a metric athlete read the same
+      // number twice in two different units one line apart (round-4 finding
+      // 9). "your near-home line" points at that eyebrow instead.
       label:
-        `uncalibrated — not enough runs below ${Math.round(threshold).toLocaleString()} ft to build a near-home ` +
-        `baseline to compare the ${high.length} high one${high.length === 1 ? "" : "s"} against`,
+        `uncalibrated — not enough runs below your near-home line to build a baseline ` +
+        `to compare the ${high.length} high one${high.length === 1 ? "" : "s"} against.`,
     };
   }
 
@@ -335,7 +340,7 @@ export function calibrateAltitude(input: {
       modeled_pct,
       label:
         `uncalibrated (${runs.length} high-altitude run${runs.length === 1 ? "" : "s"}, need ${MIN_ALTITUDE_COHORT}) — ` +
-        `nothing above ${Math.round(threshold).toLocaleString()} ft in enough quantity to check the curve against you`,
+        `nothing above your near-home line in enough quantity to check the curve against you.`,
     };
   }
 
@@ -345,7 +350,7 @@ export function calibrateAltitude(input: {
     return {
       ...empty, status: "uncalibrated", n: runs.length, threshold_ft: threshold, home_ft: home,
       runs, observed_pct, modeled_pct,
-      label: `uncalibrated — the curve charges nothing at these elevations, so there is no scale to fit`,
+      label: `uncalibrated — the curve charges nothing at these elevations, so there is no scale to fit.`,
     };
   }
 
@@ -366,11 +371,12 @@ export function calibrateAltitude(input: {
     suggested_altitude_pct: suggestion,
     suggestion_clamped: Math.abs(clamped - rawSuggestion) > 0.5,
     label:
-      `${runs.length} runs above ${Math.round(threshold).toLocaleString()} ft ran ` +
+      `${runs.length} runs above your near-home line ran ` +
       `${Math.abs(observed_pct as number).toFixed(1)}% ` +
       `${(observed_pct as number) >= 0 ? "slower" : "faster"} than your near-home baseline; the curve charges ` +
       `${modeled_pct.toFixed(1)}% there — altitude ${suggestion}%` +
-      (current != null ? ` (you are at ${Math.round(current)}%)` : ""),
+      (current != null ? ` (you are at ${Math.round(current)}%)` : "") +
+      ".",
   };
 }
 

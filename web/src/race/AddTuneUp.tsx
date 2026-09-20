@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { friendlyFetchError, inputStyle, useDialog } from "./dialogChrome";
 
@@ -34,6 +34,44 @@ type CreateResult = {
   build: { ok: boolean; unresolved?: string[]; warnings?: string[]; error?: string } | null;
 };
 
+/* Round 4, finding 6: everything typed here used to be discarded the moment
+   "run the full intake instead" opened the New-race dialog on top of it (the
+   dialog un-mounts this component) — Escape out of THAT and reopening
+   "↳ Add tune-up…" gave back six empty fields, even though the intake dialog
+   right next to it survives exactly this with its own localStorage draft
+   (RaceIntake.tsx's NEW_RACE_DRAFT_KEY). Same medicine here, one draft per
+   parent race — a dashboard training two blocks at once (a tune-up on each)
+   must not have one block's half-typed form bleed into the other's. */
+const tuneUpDraftKey = (parentSlug: string) => `bc.tuneUpDraft.${parentSlug}`;
+type TuneUpDraft = {
+  name: string; date: string; distance: string; gain: string; timezone: string;
+  gpx: { name: string; path: string; bytes: number } | null;
+};
+const tuneUpDraftHasContent = (d: TuneUpDraft): boolean =>
+  Boolean(d.name.trim() || d.date.trim() || d.distance.trim() || d.gain.trim() || d.timezone.trim() || d.gpx);
+/** Read-only and synchronous — safe to call from a `useState(() => …)` lazy
+    initializer, same reasoning as RaceIntake.tsx's readNewRaceDraft. */
+const readTuneUpDraft = (parentSlug: string): TuneUpDraft | null => {
+  try {
+    const raw = localStorage.getItem(tuneUpDraftKey(parentSlug));
+    if (!raw) return null;
+    const d = JSON.parse(raw) as Partial<TuneUpDraft>;
+    const normalized: TuneUpDraft = {
+      name: d.name ?? "", date: d.date ?? "", distance: d.distance ?? "", gain: d.gain ?? "",
+      timezone: d.timezone ?? "", gpx: d.gpx ?? null,
+    };
+    return tuneUpDraftHasContent(normalized) ? normalized : null;
+  } catch {
+    return null; // a corrupt draft is no worse than no draft
+  }
+};
+
+/** Round 4, finding 13: a date this far from the parent race is not a tune-up
+    inside its block, it is a typo (a stray "1999", the wrong year typed after
+    the form's own year rolled over) — 3 years comfortably covers a "next
+    year" off-by-one while still catching every observed case. */
+const SANE_YEARS_FROM_PARENT = 3;
+
 export function AddTuneUp({ parentSlug, parentName, parentTimezone, parentDate, onClose, onCreated, onRunIntake }: {
   /** the A race this tune-up hangs off — the switcher only offers this row
       on the race being trained for */
@@ -52,12 +90,12 @@ export function AddTuneUp({ parentSlug, parentName, parentTimezone, parentDate, 
   /** the paid escape hatch — open the New race dialog on this parent */
   onRunIntake: () => void;
 }) {
-  const [name, setName] = useState("");
-  const [date, setDate] = useState("");
-  const [distance, setDistance] = useState("");
-  const [gain, setGain] = useState("");
-  const [timezone, setTimezone] = useState("");
-  const [gpx, setGpx] = useState<{ name: string; path: string; bytes: number } | null>(null);
+  const [name, setName] = useState(() => readTuneUpDraft(parentSlug)?.name ?? "");
+  const [date, setDate] = useState(() => readTuneUpDraft(parentSlug)?.date ?? "");
+  const [distance, setDistance] = useState(() => readTuneUpDraft(parentSlug)?.distance ?? "");
+  const [gain, setGain] = useState(() => readTuneUpDraft(parentSlug)?.gain ?? "");
+  const [timezone, setTimezone] = useState(() => readTuneUpDraft(parentSlug)?.timezone ?? "");
+  const [gpx, setGpx] = useState<{ name: string; path: string; bytes: number } | null>(() => readTuneUpDraft(parentSlug)?.gpx ?? null);
   const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,13 +112,21 @@ export function AddTuneUp({ parentSlug, parentName, parentTimezone, parentDate, 
   const title = buildWarning ? "tune-up added — one thing to check" : "add tune-up";
   const { dialogProps, titleId } = useDialog({ onClose: finish, locked: busy || uploading });
 
+  // Persist on every change, the same "ESC never loses it" rule
+  // RaceIntake.tsx's own draft takes — cleared only once the folder is
+  // actually written (see submit(), below).
+  useEffect(() => {
+    try {
+      const draft: TuneUpDraft = { name, date, distance, gain, timezone, gpx };
+      const key = tuneUpDraftKey(parentSlug);
+      if (tuneUpDraftHasContent(draft)) localStorage.setItem(key, JSON.stringify(draft));
+      else localStorage.removeItem(key);
+    } catch { /* private browsing / storage disabled — best-effort only */ }
+  }, [parentSlug, name, date, distance, gain, timezone, gpx]);
+
   const distanceNum = Number(distance);
   const gainNum = Number(gain);
   const dateOk = /^\d{4}-\d{2}-\d{2}$/.test(date.trim());
-  const canSubmit = !busy && !uploading &&
-    name.trim().length > 0 && dateOk &&
-    Number.isFinite(distanceNum) && distanceNum > 0 &&
-    Number.isFinite(gainNum) && gainNum >= 0;
 
   /* Whole weeks between this date and the A race's, counted the way
      scripts/race-config.mjs's weeksOut does (calendar days / 7, rounded):
@@ -94,6 +140,37 @@ export function AddTuneUp({ parentSlug, parentName, parentTimezone, parentDate, 
     if (Number.isNaN(a) || Number.isNaN(b)) return null;
     return Math.round((a - b) / (7 * 86400000));
   })();
+
+  // Round 4, finding 13: `1999-01-01` used to sail through as "1493 weeks
+  // out" with the submit button happily enabled. A tune-up this far from its
+  // parent's block is not a known-gap the server should have to catch —
+  // it's a typo the form can see coming from the same date field it already
+  // reads for weeksOut above.
+  const yearsFromParent = (() => {
+    if (!dateOk || !parentDate) return null;
+    const b = Date.parse(`${date.trim()}T00:00:00Z`);
+    const a = Date.parse(`${parentDate}T00:00:00Z`);
+    if (Number.isNaN(a) || Number.isNaN(b)) return null;
+    return Math.abs(a - b) / (365.25 * 86400000);
+  })();
+  const dateTooFar = yearsFromParent != null && yearsFromParent > SANE_YEARS_FROM_PARENT;
+
+  const canSubmit = !busy && !uploading &&
+    name.trim().length > 0 && dateOk && !dateTooFar &&
+    Number.isFinite(distanceNum) && distanceNum > 0 &&
+    Number.isFinite(gainNum) && gainNum >= 0;
+
+  // Round 4, finding 10: the button just went from grey to grey with no
+  // explanation of which of the five fields it was still waiting on. Checked
+  // in the same order the fields appear, so the message always names the
+  // FIRST thing to fix rather than whichever happens to be typed last.
+  const disabledReason = canSubmit || busy || uploading ? null :
+    !name.trim() ? "name a race"
+    : !dateOk ? "pick a date"
+    : dateTooFar ? `that date is ${Math.round(yearsFromParent!)} years from ${parentName} — check the year`
+    : !(Number.isFinite(distanceNum) && distanceNum > 0) ? "distance mi must be greater than 0"
+    : !(Number.isFinite(gainNum) && gainNum >= 0) ? "gain ft must be 0 or more"
+    : null;
 
   const upload = async (files: FileList | null) => {
     const file = files?.[0];
@@ -151,11 +228,32 @@ export function AddTuneUp({ parentSlug, parentName, parentTimezone, parentDate, 
       const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
       if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
       const created = body as CreateResult;
+      // The folder is on disk from here on, whatever the course build says —
+      // the draft's job (surviving an accidental close before this point) is
+      // done, so it does not outlive the race it was drafting.
+      try { localStorage.removeItem(tuneUpDraftKey(parentSlug)); } catch { /* best-effort */ }
       if (created.build && created.build.ok === false) {
         setBuildWarning({
           slug: created.slug,
           message: `The folder is written, but the course build failed: ${created.build.error ?? "no reason given"}. `
             + "The tune-up is on the trajectory either way — rebuild it from the switcher's “Run course again…” row once the GPX is fixed.",
+        });
+        return;
+      }
+      // ok: true is not "nothing to say" — a course.gpx measuring far off
+      // race.json's declared distance/gain (an easy mistake: the wrong file,
+      // or a truncated download) still builds and still answers `ok: true`,
+      // with the mismatch named in `warnings` (scripts/build-course.mjs's
+      // courseMismatches). This channel used to fire only on build.ok ===
+      // false, so a 3× distance mismatch reached the planner in total
+      // silence (round 4 finding 1) — the same second beat as an outright
+      // failure, worded for "check this" rather than "this broke".
+      if (created.build?.ok && created.build.warnings && created.build.warnings.length > 0) {
+        setBuildWarning({
+          slug: created.slug,
+          message: `${name.trim()} is added and its course built, but the build had this to say: `
+            + `${created.build.warnings.join(" · ")} `
+            + "Check that the right GPX was uploaded before trusting the pace and climb numbers below.",
         });
         return;
       }
@@ -261,7 +359,11 @@ export function AddTuneUp({ parentSlug, parentName, parentTimezone, parentDate, 
                   </label>
                 </div>
 
-                {weeksOut != null && (
+                {dateTooFar ? (
+                  <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--ember)" }}>
+                    {Math.round(yearsFromParent!)} years from {parentName} — nowhere near its block
+                  </span>
+                ) : weeksOut != null && (
                   <span className="eyebrow" style={{ fontSize: 8.5, color: weeksOut < 0 ? "var(--lamp)" : "var(--mist-mute)" }}>
                     {weeksOut > 0
                       ? `${weeksOut} week${weeksOut === 1 ? "" : "s"} out from ${parentName}`
@@ -324,19 +426,25 @@ export function AddTuneUp({ parentSlug, parentName, parentTimezone, parentDate, 
               >
                 run the full intake instead · paid
               </button>
-              <button
-                className="chip"
-                onClick={submit}
-                disabled={!canSubmit}
-                style={{
-                  fontSize: 9,
-                  background: canSubmit ? "var(--lamp)" : undefined,
-                  color: canSubmit ? "var(--night)" : undefined,
-                  borderColor: canSubmit ? "var(--lamp)" : undefined,
-                }}
-              >
-                {busy ? "adding…" : "add tune-up"}
-              </button>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+                {disabledReason && (
+                  <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--mist-mute)" }}>{disabledReason}</span>
+                )}
+                <button
+                  className="chip"
+                  onClick={submit}
+                  disabled={!canSubmit}
+                  title={disabledReason ?? undefined}
+                  style={{
+                    fontSize: 9,
+                    background: canSubmit ? "var(--lamp)" : undefined,
+                    color: canSubmit ? "var(--night)" : undefined,
+                    borderColor: canSubmit ? "var(--lamp)" : undefined,
+                  }}
+                >
+                  {busy ? "adding…" : "add tune-up"}
+                </button>
+              </span>
             </div>
           </>
         )}

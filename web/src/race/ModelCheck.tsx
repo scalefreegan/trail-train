@@ -384,18 +384,27 @@ export function ModelCheck() {
               )}
             </p>
             {cal.altitude.runs.length > 0 && (
-              <div style={{ marginTop: 8 }}>
-                {[...cal.altitude.runs].slice(0, 6).map((r, i) => (
-                  <div key={`${r.date}-${r.title}-${i}`} style={{ display: "grid", gridTemplateColumns: "74px 56px 72px 1fr 100px", gap: 8, alignItems: "baseline", padding: "3px 0", borderBottom: "1px dotted var(--edge)" }}>
-                    <span className="numerals" style={{ fontSize: 10.5, color: "var(--mist-mute)" }}>{r.date}</span>
-                    <span className="numerals" style={{ fontSize: 11.5, color: "var(--mist)" }}>{r.distance_mi.toFixed(1)} {u.distUnit}</span>
-                    <span className="numerals" style={{ fontSize: 10.5, color: "var(--mist-mute)" }}>{u.elev(r.mean_ele_ft)} {u.elevUnit}</span>
-                    <span style={{ fontSize: 11.5, color: "var(--mist-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</span>
-                    <span className="numerals" style={{ fontSize: 11.5, textAlign: "right", color: r.err_pct > 0 ? "var(--ember)" : "var(--creek)" }}>
-                      {r.err_pct >= 0 ? "+" : ""}{r.err_pct.toFixed(1)}% <span style={{ color: "var(--mist-mute)" }}>/ +{r.modeled_pct.toFixed(1)}%</span>
-                    </span>
-                  </div>
-                ))}
+              // Horizontal scroll INSIDE this block, not a page-wide overflow:
+              // 74+56+72+100px of fixed columns + 4×8px gaps is 334px before
+              // the title column even gets a character, which blows past a
+              // 320px phone's content width on its own. The "longest efforts"
+              // table below this one already learned that lesson (its own
+              // overflowX: auto wrapper) — this block just never got it
+              // (round 4 finding 7).
+              <div style={{ marginTop: 8, overflowX: "auto" }}>
+                <div style={{ minWidth: 400 }}>
+                  {[...cal.altitude.runs].slice(0, 6).map((r, i) => (
+                    <div key={`${r.date}-${r.title}-${i}`} style={{ display: "grid", gridTemplateColumns: "74px 56px 72px 1fr 100px", gap: 8, alignItems: "baseline", padding: "3px 0", borderBottom: "1px dotted var(--edge)" }}>
+                      <span className="numerals" style={{ fontSize: 10.5, color: "var(--mist-mute)" }}>{r.date}</span>
+                      <span className="numerals" style={{ fontSize: 11.5, color: "var(--mist)" }}>{r.distance_mi.toFixed(1)} {u.distUnit}</span>
+                      <span className="numerals" style={{ fontSize: 10.5, color: "var(--mist-mute)" }}>{u.elev(r.mean_ele_ft)} {u.elevUnit}</span>
+                      <span style={{ fontSize: 11.5, color: "var(--mist-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</span>
+                      <span className="numerals" style={{ fontSize: 11.5, textAlign: "right", color: r.err_pct > 0 ? "var(--ember)" : "var(--creek)" }}>
+                        {r.err_pct >= 0 ? "+" : ""}{r.err_pct.toFixed(1)}% <span style={{ color: "var(--mist-mute)" }}>/ +{r.modeled_pct.toFixed(1)}%</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
                 <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--mist-mute)", display: "block", marginTop: 4 }}>
                   observed vs modeled, per run
                 </span>

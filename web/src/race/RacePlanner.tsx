@@ -499,6 +499,12 @@ export function RacePlanner() {
   // the two views don't share a component. A plain expression (not
   // useMemo): it has to run unconditionally above the early return below,
   // and a scan of a handful of `sources` entries needs no memoizing.
+  // A quick-form tune-up writes cutoff_h: null on every station and no
+  // `sources` entry of its own (race-intake.mjs's quickCreateRace) — there
+  // never was a runner manual to name, so the fallback below must not be
+  // reached for one. Checked before the source lookup: no cutoff anywhere on
+  // the course means nothing to attribute (round 4 finding 12).
+  const hasCutoffs = course?.aid_stations?.some((s) => s.cutoff_h != null) ?? false;
   const cutoffSource = (() => {
     const sources = course?.sources ?? [];
     const manual = sources.find((s) => /manual|guide|handbook/i.test(s.ref));
@@ -522,7 +528,7 @@ export function RacePlanner() {
   if (missing || !course) {
     return (
       <section>
-        <SectionTag>race planner</SectionTag>
+        <SectionTag>{tuneUp ? "tune-up planner" : "race planner"}</SectionTag>
         <div className="panel notch" style={{ padding: "28px 26px" }}>
           <span className="eyebrow" style={{ color: missing || error ? "var(--ember)" : "var(--mist-mute)" }}>
             {missing ? "no course data yet" : error ? error : "loading course…"}
@@ -600,7 +606,7 @@ export function RacePlanner() {
             </label>
             {showAltitude && (
               <label className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-                title={`how much of the modeled altitude penalty to apply — 100% is the published curve (nothing below ${u.elev(ALTITUDE_THRESHOLD_FT)} ${u.elevUnit}, then a per-1,000 ft cost above your acclimated elevation), 0% switches the term off. This course peaks at a ${u.elev(alt.max_seg_ele_ft)} ${u.elevUnit} segment; at ${altitude}% the model adds ${fmtElapsed(alt.added_h)} to the expected finish.`}>
+                title={`how much of the modeled altitude penalty to apply — 100% is the published curve (nothing below ${u.elev(ALTITUDE_THRESHOLD_FT)} ${u.elevUnit}, then a per-${u.system === "metric" ? "300 m" : "1,000 ft"} cost above your acclimated elevation), 0% switches the term off. This course peaks at a ${u.elev(alt.max_seg_ele_ft)} ${u.elevUnit} segment; at ${altitude}% the model adds ${fmtElapsed(alt.added_h)} to the expected finish.`}>
                 altitude {altitude.toFixed(0)}%
                 <input
                   type="range" min={0} max={150} step={5} value={altitude}
@@ -687,6 +693,28 @@ export function RacePlanner() {
         {tuneUp ? "tune-up planner" : "race planner"} — {race.short} · {u.dist(course.distance_mi, 0)} {u.distUnit} · {u.elev(course.gain_ft)} {u.elevUnit}↑
         {tuneUp && raceConfig.parent_slug ? ` · inside ${raceConfig.parent_slug}` : ""}
       </SectionTag>
+
+      {/* course.gpx measured far enough off race.json's declared distance/gain
+          that scripts/build-course.mjs's courseMismatches flagged it and
+          race-build.mjs persisted "course.gpx" onto race.json's own
+          unresolved[] (the same signal the review screen shows) — surfaced
+          here too because a station table with no crew/drop-bag columns to
+          fill the panel makes a bad GPX easy to miss otherwise: the header
+          above and every "seg" cell in the table below are the MEASURED gpx
+          numbers, but each row's own mile column is race.json's DECLARED
+          chart mile (pacing.ts projectRace) — two spaces that normally
+          nearly coincide but visibly don't here (round 4 finding 1). */}
+      {raceConfig.unresolved?.includes("course.gpx") && (
+        <div className="panel notch" style={{
+          padding: "10px 16px", marginBottom: 10, borderColor: "var(--ember)",
+          color: "var(--ember)", fontSize: 11.5, lineHeight: 1.5,
+        }}>
+          ⚠ course.gpx measures {u.dist(course.distance_mi, 1)} {u.distUnit} of the declared {u.dist(course.official_distance_mi, 1)} {u.distUnit}
+          {" "}— far enough off to not be normal GPX drift. The chart above and the "seg" column below are read off
+          this GPX; the station miles are still the declared chart miles, so a pace or climb number that looks wrong
+          may just be the wrong file uploaded. Re-check the GPX before trusting either.
+        </div>
+      )}
 
       <div className="panel notch" style={{ overflow: "hidden" }}>
         <Contours seed={7} opacity={0.07} />
@@ -1037,7 +1065,8 @@ export function RacePlanner() {
               )}
               <span className="eyebrow" style={{ fontSize: 8, color: "var(--mist-mute)" }}>race</span>
               <span className="eyebrow" style={{ fontSize: 8.5, lineHeight: 1.9 }}>
-                cutoffs from {cutoffSource} · start {race.clock(0)} ·{" "}
+                {hasCutoffs ? <>cutoffs from {cutoffSource} · </> : "no cutoffs on this course · "}
+                start {race.clock(0)} ·{" "}
                 {sun
                   ? `sunset ${sun.sunset} · sunrise ${sun.sunrise}`
                   : "sun unknown — run the course build after setting the date"}
@@ -1056,13 +1085,21 @@ export function RacePlanner() {
               >
                 ⎙ runner card 3×5
               </button>
-              <button
-                className="chip"
-                style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
-                onClick={() => setOpenDoc("fuel")}
-              >
-                ⎙ fuel card 3×5
-              </button>
+              {/* Gated the same as the fuel COLUMN above (showFuel): a tune-up
+                  with no nutrition.json has nothing but DEFAULT_NUTRITION
+                  behind this button, which is exactly the "impersonal
+                  defaults" the column's own comment says must not reach the
+                  athlete (round 4 finding 4 — the print button was the one
+                  place that gate was missing). */}
+              {showFuel && (
+                <button
+                  className="chip"
+                  style={{ borderColor: "var(--lamp)", color: "var(--lamp)", whiteSpace: "nowrap" }}
+                  onClick={() => setOpenDoc("fuel")}
+                >
+                  ⎙ fuel card 3×5
+                </button>
+              )}
               {panels.drop_bag_card && (
                 <button
                   className="chip"
