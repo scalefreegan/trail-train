@@ -19,6 +19,22 @@ function to24h(clock: string): string {
   return `${String(hour).padStart(2, '0')}:${m[2]}`
 }
 
+/** `clock24` ("HH:MM") shifted `hours` (fractional) earlier, wrapping across
+    midnight — used to turn an on-plan checkpoint clock into an early one
+    without knowing the race's own start time (see the extreme-pace test:
+    that floats with wall-clock time at suite run, `launch.mjs`'s
+    `startedHoursAgo`). resolveClockElapsed (checkpoint.ts) re-derives which
+    CALENDAR DAY a bare "HH:MM" belongs to by picking whichever occurrence
+    lands closest to the station's own planned ETA, so wrapping here is safe
+    as long as the shifted clock stays closer to a small elapsed time than to
+    a repeat 24h away — true for any shift that is itself a large fraction of
+    the plan, which is exactly what the extreme-pace test asks for. */
+function subtractHours(clock24: string, hours: number): string {
+  const [h, m] = clock24.split(':').map(Number)
+  const wrapped = (((h * 60 + m - Math.round(hours * 60)) % 1440) + 1440) % 1440
+  return `${String(Math.floor(wrapped / 60)).padStart(2, '0')}:${String(wrapped % 60).padStart(2, '0')}`
+}
+
 /** Export the crew page and open it exactly the way the crew will — from the
     filesystem, every network request refused — with the checkpoint form
     ready to drive. Shared by the bug 4/6 flows below and the offline-render
@@ -209,6 +225,78 @@ test('bug 6: an out-of-order checkpoint is refused and names the later station',
 
   // Tin Cup is still the checkpoint in force — its row is still "at".
   await expect(offline.locator('tr[data-station="Tin Cup"]')).toHaveClass(/\bat\b/)
+
+  await offline.close()
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * Round 5 confirm, finding 1 — the extreme-pace warning
+ * (`<strong class="extreme">`) rendered in the same orange as an ordinary
+ * "applied" station/clock (`--accent`), not the red (`--bad`) crew.css's own
+ * comment says it must have, because `#cp-status.applied strong` is a direct
+ * rule on the <strong> element and always beats the inherited color from the
+ * ancestor `#cp-status.extreme`, regardless of specificity. Checked on the
+ * exported handout itself (file://, network aborted, exactly how a crew
+ * chief opens it) via computed style, not just the CSS source or the class
+ * list a prior test already covered.
+ */
+test('bug 5 (extreme pace): the warning renders in the refusal red, not the ordinary applied orange', async ({ page, context, trouble }, testInfo) => {
+  const offline = await exportAndOpenOffline(page, context, testInfo, 'extreme')
+
+  // The fixture's own start_time floats with wall-clock time (`startedHoursAgo`
+  // in launch.mjs pins it to "6 hours before whenever the suite runs"), so a
+  // literal clock string like "07:00" is not a fixed number of hours into the
+  // race — it very nearly refused as "at or before the start" against the
+  // suite's own real clock. Applying Slabtown's own plan-agreeing ETA first
+  // gets its planned elapsed hours (parsed off the rendered message, the same
+  // number `applyCheckpoint` compares the ratio against) with no assumption
+  // about the race's start time at all, then a SECOND submit for the same
+  // station at ~1/6 of that elapsed time is unconditionally deep inside
+  // EXTREME_RATIO (0.25) — comfortably past it whatever the exact aid-stop
+  // minutes upstream of Slabtown cost.
+  await offline.locator('#cp-station').selectOption('Slabtown')
+  const slabtownEta = await offline.locator('tr[data-station="Slabtown"] .eta .exp').innerText()
+  const onPlanClock = to24h(slabtownEta)
+  await offline.locator('#cp-clock').fill(onPlanClock)
+  await offline.getByRole('button', { name: /update/i }).click()
+  await expect(offline.locator('#cp-status')).toContainText('Slabtown')
+  expect(await offline.locator('#cp-status').getAttribute('class')).toBe('applied')
+
+  const onPlanMessage = await offline.locator('#cp-status').innerText()
+  const elapsed = /(\d+)h\s+(\d+)m on the clock/.exec(onPlanMessage)
+  if (!elapsed) throw new Error(`could not parse elapsed hours from: ${onPlanMessage}`)
+  const plannedH = Number(elapsed[1]) + Number(elapsed[2]) / 60
+
+  const extremeClock = subtractHours(onPlanClock, plannedH - plannedH / 6)
+  await offline.locator('#cp-clock').fill(extremeClock)
+  await offline.getByRole('button', { name: /update/i }).click()
+
+  await expect(offline.locator('#cp-status')).toContainText(/under a quarter/i)
+  expect(await offline.locator('#cp-status').getAttribute('class')).toBe('applied extreme')
+
+  // Computed color, not the class list or a hardcoded hex — compared against
+  // the page's OWN --bad/--accent custom properties so this does not rot if
+  // either color is ever retuned.
+  const [extremeColor, badColor, accentColor] = await offline.evaluate(() => {
+    const probe = (varName: string) => {
+      const span = document.createElement('span')
+      span.style.color = `var(${varName})`
+      document.body.appendChild(span)
+      const color = getComputedStyle(span).color
+      span.remove()
+      return color
+    }
+    const strong = document.querySelector('#cp-status strong.extreme')
+    return [
+      strong ? getComputedStyle(strong).color : null,
+      probe('--bad'),
+      probe('--accent'),
+    ]
+  })
+  expect(extremeColor, 'no <strong class="extreme"> found on the exported page').not.toBeNull()
+  expect(extremeColor).toBe(badColor)
+  expect(extremeColor).not.toBe(accentColor)
 
   await offline.close()
   expect(trouble.pageErrors).toEqual([])
