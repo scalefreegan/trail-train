@@ -442,7 +442,22 @@ export function applyRaceEdit(race, body, { at = new Date().toISOString(), curre
       // (requireTracking in scripts/trackers/index.mjs reads it that way).
       const raw = body.tracking[k];
       const val = typeof raw === "string" ? (raw.trim() || null) : raw ?? null;
-      if ((next.tracking[k] ?? null) === val) continue;
+      // round 4 finding 1: `url` always gets written and stamped when the
+      // client names it, even when the EFFECTIVE value doesn't change — a
+      // url that was only ever auto-seeded client-side from links.tracking
+      // (never itself saved) has no `url` KEY on race.tracking at all, so
+      // "clearing" it computes the same absent/null value this
+      // unchanged-value guard was built to skip, and the write never
+      // happens. That silently defeats RaceIntake.tsx's own durable-clear
+      // guard, which checks for the `url` KEY's presence
+      // (`"url" in race.tracking`) rather than its value precisely because
+      // a cleared value and a never-set one are otherwise indistinguishable
+      // — skipping the write here is the one way to still make them
+      // indistinguishable on disk, and the seed resurfaces on the very next
+      // load. `bib`/`name` keep the unchanged-value skip: neither has a
+      // seed/never-set distinction riding on key presence the way `url`
+      // does, so skipping a genuine no-op write for them is still correct.
+      if (k !== "url" && (next.tracking[k] ?? null) === val) continue;
       next.tracking[k] = val;
       stamp(`tracking.${k}`);
     }

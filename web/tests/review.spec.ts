@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { test, expect, DRAFT, MM, openDashboard, openReviewFor, openSwitcher, setActiveRace } from './basecamp'
 
 /**
@@ -270,6 +272,108 @@ test('a durable intake warning (race.intake_warnings) is shown on the review scr
   const dialog = await openReviewFor(page, DRAFT.name)
 
   await expect(dialog.getByText(/no pdf renderer on this machine/i)).toBeVisible()
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * Round 4 finding 1 (r4-client.md) — the earlier durable-clear test above
+ * ("clearing the tracker url is durable…") pre-seeds a REAL tracker.url via
+ * a raw PUT first, so `race.tracking` already has a `url` KEY (even though
+ * null) before the test's own clear-and-save even runs. That is not the
+ * common case: most drafts have never had tracking.url saved at all — the
+ * review screen shows RaceIntake.tsx's own client-side seed
+ * (`linksTrackingSeed`, sourced from `links.tracking`) and nothing has ever
+ * been written to `race.tracking.url`. Clearing THAT seed used to compute
+ * the exact same "absent" effective value scripts/race-edit.mjs's
+ * unchanged-value skip was built to short-circuit on, so the write (and the
+ * `url` KEY RaceIntake.tsx's own durable-clear guard checks for) never
+ * landed — the seed came right back on the very next visit. A dedicated
+ * fixture (not MM, whose tracking object other tests in this file already
+ * touch, and not DRAFT, which the serial tests above this one mutate) with
+ * `links.tracking` set and no `tracking` object at all reproduces the
+ * TRUE never-saved starting point this needs.
+ */
+const SEED_ONLY_TRACKING = { slug: 'r4-seed-only-tracking-50k', name: 'R4 Seed Only Tracking 50K' }
+const SEED_ONLY_TRACKING_URL = 'https://example.invalid/r4-seed-only-tracker'
+
+async function writeSeedOnlyTrackingFixture(): Promise<void> {
+  const root = process.env.TRAIL_TEST_PROJECT_ROOT
+  if (!root) throw new Error('writeSeedOnlyTrackingFixture: TRAIL_TEST_PROJECT_ROOT is unset — global setup did not run')
+  const dir = path.join(root, 'races', SEED_ONLY_TRACKING.slug)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(path.join(dir, 'race.json'), JSON.stringify({
+    schema_version: 1,
+    slug: SEED_ONLY_TRACKING.slug,
+    status: 'draft',
+    name: SEED_ONLY_TRACKING.name,
+    short: 'R4SOT',
+    edition_year: 2027,
+    date: '2027-06-12',
+    start_time: '06:00',
+    timezone: 'America/Denver',
+    distance_mi: 30,
+    gain_ft: 1200,
+    cutoff_h: null,
+    aid_stations: [
+      { name: 'Finish', total_mi: 30, cutoff_h: null, crew: false, drop_bag: false },
+    ],
+    race_climbs: [],
+    // No `tracking` object at all — a race whose tracker url has NEVER been
+    // saved, only ever offered as a seed from links.tracking.
+    links: { tracking: SEED_ONLY_TRACKING_URL },
+  }, null, 2))
+}
+
+test('round 4 finding 1: clearing an auto-seeded (never-saved) tracker url stays cleared', async ({ page, request, trouble }) => {
+  await writeSeedOnlyTrackingFixture()
+  await setActiveRace(request, SEED_ONLY_TRACKING.slug, 'view')
+  await openDashboard(page)
+  await openSwitcher(page)
+  let dialog = await openReviewFor(page, SEED_ONLY_TRACKING.name)
+
+  // The seed is showing — nothing has ever been saved for this field.
+  await expect(dialog.getByText(/seeded below from this folder's own tracking link/i)).toBeVisible()
+  await expect(dialog.getByLabel('tracker url')).toHaveValue(SEED_ONLY_TRACKING_URL)
+
+  // Clear it — the athlete's deliberate call to stop tracking here.
+  await dialog.getByLabel('tracker url').fill('')
+  await dialog.getByRole('button', { name: /^save edits$/i }).click()
+  await expect(dialog.getByRole('button', { name: /^save edits$/i })).toBeDisabled()
+
+  let review = await (await request.get(`/api/races/${SEED_ONLY_TRACKING.slug}?t=1`)).json()
+  expect(review.race.tracking?.url).toBeFalsy()
+
+  // Full reload — a fresh mount, trackingEdit starts null again.
+  await page.reload()
+  await openSwitcher(page)
+  dialog = await openReviewFor(page, SEED_ONLY_TRACKING.name)
+
+  // The seed must not be back, in either the copy or the field itself.
+  await expect(dialog.getByText(/seeded below from this folder's own tracking link/i)).toBeHidden()
+  await expect(dialog.getByLabel('tracker url')).toHaveValue('')
+
+  // Touch ONLY the bib.
+  const putBodies: string[] = []
+  page.on('request', (req) => {
+    if (req.method() === 'PUT' && new URL(req.url()).pathname === `/api/races/${SEED_ONLY_TRACKING.slug}`) {
+      putBodies.push(req.postData() ?? '')
+    }
+  })
+  await dialog.getByLabel('tracker bib').fill('7')
+  await dialog.getByRole('button', { name: /^save edits$/i }).click()
+  await expect(dialog.getByRole('button', { name: /^save edits$/i })).toBeDisabled()
+
+  expect(putBodies, 'the bib save did not PUT /api/races/r4-seed-only-tracking-50k').toHaveLength(1)
+  const body = JSON.parse(putBodies[0]) as { tracking?: { url?: string | null; bib?: string } }
+  // The regression: this used to carry `url: '…/r4-seed-only-tracker'` (the
+  // seed) even though the athlete only edited the bib.
+  expect(body.tracking?.url).toBeUndefined()
+  expect(body.tracking?.bib).toBe('7')
+
+  review = await (await request.get(`/api/races/${SEED_ONLY_TRACKING.slug}?t=2`)).json()
+  expect(review.race.tracking?.url).toBeFalsy()
+  expect(review.race.tracking?.bib).toBe('7')
 
   expect(trouble.pageErrors).toEqual([])
 })
