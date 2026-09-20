@@ -18,7 +18,30 @@ import { runStage } from "./dialogChrome";
 /*  ok:true checks below (null course, a built-but-warned course) since */
 /*  its own busy/hint state is keyed per-row across N races, not one    */
 /*  fixed slug the way this hook's callers are.                        */
+/*                                                                       */
+/*  Round 3 sweep, second pass: on the RACE/FUEL tabs, `onDone()` IS     */
+/*  `reload()`, and App.tsx wraps those tabpanels in                    */
+/*  `key={`race-${key}`}`/`key={`fuel-${key}`}` — the SAME pulse — so a  */
+/*  successful build remounts the whole subtree (this hook's own state  */
+/*  included) the instant it succeeds, before a caller ever gets to     */
+/*  paint `warnings`. `resultStore` below is what survives that: the    */
+/*  hook writes its own outcome into it (keyed by slug) right before    */
+/*  handing back control, and re-reads it once `slug` next comes back   */
+/*  non-null — which on a remount is not the same render `slug` was     */
+/*  first non-null on (see the mount-time comment below), so this has   */
+/*  to be an effect keyed on `slug`, not a `useState` lazy initializer.  */
 /* ------------------------------------------------------------------ */
+
+/** One hook instance's last outcome for one race, kept outside React so a
+    remount (or a plain tab-away-and-back, which unmounts this component
+    just as completely) can recover it. Module-level, not sessionStorage:
+    nothing here needs to survive an actual page reload — a real reload
+    re-fetches for real, and a stale "the build had this to say" from a
+    browser session two days ago would be actively misleading. Cleared the
+    moment a fresh `run()` starts for that slug (never mid-flight: only
+    the store, not the component's own live `busy`/`warnings` state, which
+    a genuine remount destroys regardless of what this map holds). */
+const resultStore = new Map<string, { error: string | null; warnings: string[]; done: boolean }>();
 
 export type RunCourseAgainState = {
   busy: boolean;
@@ -49,11 +72,44 @@ export function useRunCourseAgain(slug: string | null, onDone: () => void): RunC
   const [done, setDone] = useState(false);
   const [warnings, setWarnings] = useState<string[]>([]);
 
+  // Recovers `resultStore`'s entry for THIS slug whenever `slug` next comes
+  // back non-null — not a `useState` lazy initializer, which only runs once,
+  // at this component's OWN first render. On the RACE/FUEL tabs that first
+  // render happens with `slug` still null: the remount's `missing` starts at
+  // its default `false` (see the file-header comment), so the caller passes
+  // `null` here for a render or two until its OWN 404 lands and flips
+  // `missing` true — THAT transition, not the mount, is when this hook needs
+  // to notice a stored result is waiting.
+  //
+  // Adjusted during RENDER, not in a `useEffect` — React's own documented
+  // alternative for "state that depends on a prop changing"
+  // (react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes):
+  // an effect that unconditionally calls setState on every dependency change
+  // commits the stale render first and only THEN queues the corrected one
+  // (react-hooks/set-state-in-effect flags exactly this as a needless
+  // cascading render); doing it here bails out of the stale render before it
+  // ever commits. `recoveredFor` is what makes this run at most once per
+  // distinct `slug` rather than looping.
+  const [recoveredFor, setRecoveredFor] = useState<string | null>(null);
+  if (slug && slug !== recoveredFor) {
+    setRecoveredFor(slug);
+    const stored = resultStore.get(slug);
+    if (stored) {
+      setError(stored.error);
+      setWarnings(stored.warnings);
+      setDone(stored.done);
+    }
+  }
+
   const run = useCallback(() => {
     if (!slug || busy) return;
     setBusy(true);
     setError(null);
     setWarnings([]);
+    // A fresh click is a fresh question — nothing stale should be waiting to
+    // be recovered by the effect above if THIS run also gets torn down by a
+    // remount before it can render its own answer.
+    resultStore.delete(slug);
     runStage("/api/race-intake/build", { slug }, () => {}, new AbortController().signal)
       .then((result) => {
         // `ok: true` is not "there is now a course to show" — a folder with
@@ -66,7 +122,14 @@ export function useRunCourseAgain(slug: string | null, onDone: () => void): RunC
         // instead, the same way an actual exception already does below.
         if (result.course == null) {
           const w = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
-          setError(w[0] ?? "the build finished without a course to show");
+          const message = w[0] ?? "the build finished without a course to show";
+          // Written even though THIS branch never calls onDone()/reload() (so
+          // never remounts on its own account): a plain tab-away-and-back
+          // unmounts this component just as completely, and this is the only
+          // one of the two branches whose message would otherwise be lost to
+          // that too.
+          resultStore.set(slug, { error: message, warnings: [], done: false });
+          setError(message);
           return;
         }
         // Round 3 sweep extension: a course DID build, but `warnings` can
@@ -77,6 +140,12 @@ export function useRunCourseAgain(slug: string | null, onDone: () => void): RunC
         // "built, with a catch" instead of rendering this identically to a
         // clean build.
         const w = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
+        // Written BEFORE onDone(): onDone() is reload() on the three panel
+        // call sites, and reload() is exactly the pulse that remounts the
+        // RACE/FUEL tabpanels (App.tsx's `key={`race-${key}`}` /
+        // `key={`fuel-${key}`}`) — this has to already be in the store by the
+        // time that remount's fresh mount goes looking for it.
+        resultStore.set(slug, { error: null, warnings: w, done: true });
         setWarnings(w);
         setDone(true);
         onDone();

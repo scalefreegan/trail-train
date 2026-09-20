@@ -350,30 +350,22 @@ test('Run course again on a mismatched build shows a warning, not the tick', asy
 /*  RACE tab, whose planner (RacePlanner.tsx) is the same "no course    */
 /*  data yet" empty state, button and all, as the other two.            */
 /*                                                                       */
-/*  NOTE on what this test does NOT assert, and why: App.tsx wraps the   */
-/*  whole "race" tabpanel in `<div key={`race-${key}`}>` (`key` is the   */
-/*  SAME refresh pulse `reload()` bumps), specifically so every reload   */
-/*  starts each view's subtree clean (App.tsx's own comment: "each view  */
-/*  already unmounts/remounts its own subtree via `key`"). courseBuild's */
-/*  onDone() IS that same `reload()`, so the instant a build with        */
-/*  warnings succeeds, the very state carrying `courseBuild.warnings`    */
-/*  is unmounted — in the same render pass it was just set in, well      */
-/*  before any network delay a test could hook even matters (confirmed   */
-/*  by instrumenting both the hook and RacePlanner's render directly:    */
-/*  the note's render and its own subtree's remount are back-to-back,    */
-/*  synchronous, and unrelated to how long the resulting /course.json    */
-/*  re-fetch takes). So the note this round's fix adds to RacePlanner/   */
-/*  NutritionPlan/RaceDay is real and correctly wired, but — on these    */
-/*  three call sites specifically, unlike the switcher's own separate    */
-/*  implementation in App.tsx, which is NOT wrapped in this key — it is  */
-/*  not something a human or this suite can ever actually observe on    */
-/*  screen. Fixing THAT is App.tsx's tab-remount design, out of this     */
-/*  lane; flagged in the round's report instead of routed around here    */
-/*  with new cross-remount persistence nobody asked for. What IS true    */
-/*  and testable: the athlete is not left in the dark about the mismatch */
-/*  — RacePlanner's own persisted banner (raceConfig.unresolved, read    */
-/*  fresh off the RELOADED race.json) says the same thing the instant    */
-/*  the reload lands.                                                    */
+/*  App.tsx wraps the whole "race" tabpanel in `<div key={`race-${key}`}>` */
+/*  (`key` is the SAME refresh pulse `reload()` bumps), so a build's own */
+/*  `onDone()` (= `reload()`) remounts this component the instant it     */
+/*  succeeds — before a render carrying `courseBuild.warnings` would     */
+/*  otherwise reach the screen (confirmed by instrumenting the hook and  */
+/*  RacePlanner's render directly: React collapses the "warnings just    */
+/*  set" update and the remount into one commit, so the pre-remount tree */
+/*  with the new warnings is never painted at all). runCourseAgain.ts's  */
+/*  `resultStore` is what survives that: the hook writes its outcome     */
+/*  there before handing back control, and the fresh mount re-reads it   */
+/*  once `missing` (hence `slug`) comes back true — which needs the      */
+/*  fresh mount's OWN /course.json re-fetch to still be pending when     */
+/*  that happens, hence the route delay below (the build already         */
+/*  succeeded by then; without the delay this fetch would return 200 on  */
+/*  its first try and `missing` would never read true again for the      */
+/*  hook to have anything to hydrate INTO).                              */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -421,7 +413,7 @@ function writeMismatchUnbuiltFixture(slug: string, name: string): Promise<void> 
 
 const MISMATCH_UNBUILT_RACETAB = { slug: 'r3rd-mismatch-unbuilt-racetab-100', name: 'R3RD Mismatch Unbuilt RaceTab 100' }
 
-test('the RACE tab\'s "run course build" on a mismatched, unbuilt race ends up showing the mismatch', async ({ page, request, trouble }) => {
+test('the RACE tab\'s "run course build" shows the hook\'s warning note across the reload-triggered remount', async ({ page, request, trouble }) => {
   await writeMismatchUnbuiltFixture(MISMATCH_UNBUILT_RACETAB.slug, MISMATCH_UNBUILT_RACETAB.name)
   await setActiveRace(request, MISMATCH_UNBUILT_RACETAB.slug, 'view')
 
@@ -429,12 +421,20 @@ test('the RACE tab\'s "run course build" on a mismatched, unbuilt race ends up s
   await page.getByRole('tab', { name: /^race$/i }).click()
   await expect(page.getByText(/no course data yet/i)).toBeVisible()
 
+  // Registered only now (the initial 404 above is real and already landed):
+  // see the file-header note above this block for why the fresh mount's own
+  // /course.json re-fetch has to still be pending for this test to see
+  // anything other than the fully-loaded planner.
+  await page.route('**/course.json*', async (route) => {
+    await new Promise((r) => setTimeout(r, 800))
+    await route.fallback()
+  })
+
   await page.getByRole('button', { name: /run course build/i }).click()
 
-  // See the file-header note above this block for why this checks the
-  // PERSISTED mismatch banner (survives the reload) rather than
-  // courseBuild.warnings' own transient note (does not).
-  await expect(page.getByText(/course\.gpx measures/i)).toBeVisible()
+  // The warning note — recovered from runCourseAgain.ts's resultStore across
+  // the reload-triggered remount, not lost to it.
+  await expect(page.getByText(/⚠.*course\.gpx measures 29\.9 mi vs race\.json's 100 mi/i)).toBeVisible()
 
   expect(trouble.pageErrors).toEqual([])
 })

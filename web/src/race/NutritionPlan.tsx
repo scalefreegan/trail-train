@@ -334,7 +334,15 @@ export function NutritionPlan() {
   // D8: "no course data" used to just tell the athlete to run a shell
   // command — the empty state now offers the same free, deterministic
   // build the switcher's "Run course again…" row calls.
-  const courseBuild = useRunCourseAgain(missing ? raceConfig.slug : null, reload);
+  //
+  // Round 3 sweep, second pass: slug passed unconditionally (not
+  // `missing ? raceConfig.slug : null`) — see the matching comment on
+  // RacePlanner.tsx's own copy of this line for why. Once a build with
+  // warnings succeeds, `missing` here flips false for good and this hook
+  // would otherwise be locked out of ever reading back what it just wrote
+  // to runCourseAgain.ts's resultStore on the fresh mount App.tsx's
+  // `key={`fuel-${key}`}` produces for it.
+  const courseBuild = useRunCourseAgain(raceConfig.slug, reload);
   const cfg = nutrition.caffeine;
   // body mass comes from the athlete profile, not the race folder (tt-yib.9)
   const bodyKg = physiology.body_kg;
@@ -393,17 +401,14 @@ export function NutritionPlan() {
                 <div style={{ fontSize: 11, color: "var(--ember)", marginTop: 6 }}>{courseBuild.error}</div>
               )}
               {/* Round 3 sweep extension (render-only edit, per the fixer who
-                  owns the rest of this file): a course DID build, but the
-                  hook's own `warnings` says it's degraded. In practice this
-                  never paints on THIS view either — see the matching comment
-                  in RacePlanner.tsx's own copy of this block for the full
-                  explanation (App.tsx's `key={`fuel-${key}`}` remounts this
-                  whole tabpanel the instant courseBuild.run()'s onDone()
-                  fires, which is the same reload() that just set this).
-                  Kept for the same reason: correct, costs nothing, and this
-                  view has no persisted mismatch banner of its own the way
-                  RacePlanner does, so it is strictly better than nothing on
-                  the rare render this DOES survive to paint. */}
+                  owns the rest of this file): mainly useful for a course.gpx
+                  that STILL doesn't build (courseBuild.error, above) — see
+                  the matching comment on RacePlanner.tsx's own copy of this
+                  block for why a course that DID build with `warnings`
+                  never re-enters this particular `missing` branch after
+                  App.tsx's `key={`fuel-${key}`}` remounts this tabpanel; that
+                  case is handled below instead, in the view this component
+                  actually renders once the course exists. */}
               {courseBuild.warnings.length > 0 && (
                 <div style={{ fontSize: 11, color: "var(--lamp)", marginTop: 6 }}>⚠ {courseBuild.warnings.join(" · ")}</div>
               )}
@@ -451,6 +456,24 @@ export function NutritionPlan() {
       }>
         nutrition plan
       </SectionTag>
+
+      {/* Round 3 sweep extension (render-only edit, per the fixer who owns
+          the rest of this file) — a course that just built successfully but
+          with `warnings` (the hook's own resultStore-recovered outcome,
+          since a reload-triggered remount wiped the render that would
+          otherwise have shown this) gets its say here, in the view that now
+          actually renders instead of the empty state. This view has no
+          persisted mismatch banner of its own the way RacePlanner.tsx does
+          (raceConfig.unresolved), so this is the only place a fuel-view
+          visitor ever sees it. */}
+      {courseBuild.warnings.length > 0 && (
+        <div className="panel notch" style={{
+          padding: "10px 16px", marginBottom: 10, borderColor: "var(--lamp)",
+          color: "var(--lamp)", fontSize: 11.5, lineHeight: 1.5,
+        }}>
+          ⚠ the last course build had this to say: {courseBuild.warnings.join(" · ")}
+        </div>
+      )}
 
       <div className="panel notch" style={{ padding: "18px 20px 16px" }}>
         <div style={{ fontSize: 13, color: "var(--mist-dim)", lineHeight: 1.6, maxWidth: "68ch" }}>
