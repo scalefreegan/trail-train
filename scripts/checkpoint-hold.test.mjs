@@ -174,6 +174,68 @@ both("a clock across the autumn DST fold still lands on the right instant", (m) 
   assert.equal(hold.elapsed_h, 6);
 });
 
+/* --------------------- the race's own window (cutoffH) ----------------- */
+//
+// PR #24 review round 3, MEDIUM finding: PRD-v2.md §10 attributed the
+// cutoff+slack window clamp to THIS function, but it lived only in
+// web/src/crew/checkpoint.ts's resolveClockElapsed/applyCheckpoint —
+// checkpointHold itself still resolved a bare HH:MM to "latest occurrence
+// before now," capped only at MAX_SPAN_DAYS (14 days). RaceDay.tsx:399-412
+// calls checkpointHold for a manual hold even when the race is long past
+// (only tracker polling is gated on !racePast), with a live `now` — so
+// reopening an old race's page could resolve a typed HH:MM to an occurrence
+// up to 14 days off. opts.cutoffH gives checkpointHold the same
+// [start, start + cutoff_h + RACE_WINDOW_SLACK_H] clamp applyCheckpoint
+// already had, with MAX_SPAN_DAYS kept as the fallback when no cutoff is
+// known (unchanged behavior for that case — see the next test).
+
+both("a manual hold on a long-past race clamps to the race's own window, not to `now`", (m) => {
+  // "14:05" is ambiguous across every day of a 30-day-old race; without a
+  // cutoff the horizon is `now` itself (30 days out). With cutoffH: 30 (a
+  // ~33h window incl. the 3h slack), the only in-window occurrences are day
+  // 0 (8h05 in) and day 1 (32h05 in) — day 2 (56h05) is already past the
+  // close, so day 1 must win, not some day-14+ occurrence `now` would pick.
+  const hold = m.checkpointHold({ station: "Burnett", clock: "14:05" }, COURSE, START, TZ, {
+    now: new Date("2027-09-12T20:10:00Z"), // 30 days after the gun
+    cutoffH: 30,
+  });
+  assert.equal(hold.elapsed_h, 32 + 5 / 60);
+});
+
+both("without a cutoff, MAX_SPAN_DAYS stays the only ceiling — unchanged fallback behavior", (m) => {
+  // Same ambiguous clock, same far-future `now`, no cutoffH: this is the
+  // pre-existing, acknowledged limitation (PRD's "manual + revisited past
+  // race" gap) that MAX_SPAN_DAYS bounds rather than fixes. Locked here so a
+  // future change to the cutoffH path can't silently also change this one.
+  const hold = m.checkpointHold({ station: "Burnett", clock: "14:05" }, COURSE, START, TZ, {
+    now: new Date("2027-09-12T20:10:00Z"), // 30 days after the gun
+  });
+  assert.equal(hold.elapsed_h, 14 * 24 + 8 + 5 / 60);
+});
+
+both("a cutoff far enough out that `now` is still the tighter bound is a no-op", (m) => {
+  // During a live race, `now` is well inside [start, start+cutoff+slack] —
+  // cutoffH must not change the answer for the ordinary, non-stale case.
+  const hold = m.checkpointHold({ station: "Burnett", clock: "14:05" }, COURSE, START, TZ, {
+    now: new Date("2027-08-14T20:10:00Z"), // Sat 14:10 MDT, ~32h in
+    cutoffH: 40,
+  });
+  assert.equal(hold.elapsed_h, 32 + 5 / 60);
+});
+
+both("a non-finite or absent cutoffH is treated exactly like no cutoffH at all", (m) => {
+  const withoutOpt = m.checkpointHold({ station: "Burnett", clock: "14:05" }, COURSE, START, TZ, {
+    now: new Date("2027-09-12T20:10:00Z"),
+  });
+  for (const bad of [null, undefined, NaN, "30"]) {
+    const hold = m.checkpointHold({ station: "Burnett", clock: "14:05" }, COURSE, START, TZ, {
+      now: new Date("2027-09-12T20:10:00Z"),
+      cutoffH: bad,
+    });
+    assert.equal(hold.elapsed_h, withoutOpt.elapsed_h, `cutoffH: ${JSON.stringify(bad)}`);
+  }
+});
+
 /* ------------------------------- labels ------------------------------- */
 
 both("a tracker checkpoint is labelled tracker · HH:MM", (m) => {
@@ -217,6 +279,22 @@ test("both twins answer every case identically", () => {
       mjs.checkpointHold(cp, COURSE, START, TZ, { now }),
       ts.checkpointHold(cp, COURSE, START, TZ, { now }),
       `twins disagree on ${JSON.stringify(cp)}`,
+    );
+  }
+});
+
+test("both twins answer every cutoffH case identically", () => {
+  const cases = [
+    [{ station: "Burnett", clock: "14:05" }, new Date("2027-09-12T20:10:00Z"), 30],
+    [{ station: "Burnett", clock: "14:05" }, new Date("2027-09-12T20:10:00Z"), null],
+    [{ station: "Burnett", clock: "14:05" }, new Date("2027-08-14T20:10:00Z"), 40],
+    [{ station: "Burnett", clock: "14:05" }, new Date("2027-09-12T20:10:00Z"), NaN],
+  ];
+  for (const [cp, now, cutoffH] of cases) {
+    assert.deepEqual(
+      mjs.checkpointHold(cp, COURSE, START, TZ, { now, cutoffH }),
+      ts.checkpointHold(cp, COURSE, START, TZ, { now, cutoffH }),
+      `twins disagree on ${JSON.stringify(cp)} cutoffH=${JSON.stringify(cutoffH)}`,
     );
   }
 });
