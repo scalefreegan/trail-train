@@ -28,14 +28,14 @@ const VIEWS: ViewCheck[] = [
   {
     name: 'training',
     open: async (page) => {
-      await page.getByRole('button', { name: /^training$/i }).click()
+      await page.getByRole('tab', { name: /^training$/i }).click()
       await expect(page.getByText(/vitals — load × recovery/i)).toBeVisible()
     },
   },
   {
     name: 'race',
     open: async (page) => {
-      await page.getByRole('button', { name: /^race$/i }).click()
+      await page.getByRole('tab', { name: /^race$/i }).click()
       await expect(page.getByText(/climb readiness — you vs/i)).toBeVisible()
     },
   },
@@ -44,7 +44,7 @@ const VIEWS: ViewCheck[] = [
     open: async (page) => {
       // The tab is labelled "fuel"; the view behind it is the nutrition plan
       // (App.tsx's VIEW_LABEL maps "nutrition" → "fuel").
-      await page.getByRole('button', { name: /^fuel$/i }).click()
+      await page.getByRole('tab', { name: /^fuel$/i }).click()
       await expect(page.getByText(/^nutrition plan$/i).first()).toBeVisible()
     },
   },
