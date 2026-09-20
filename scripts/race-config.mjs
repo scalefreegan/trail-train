@@ -384,6 +384,35 @@ export function validateActivation(req, races) {
       `${slug} has status "${found.race.status}" — only an "active" race can be trained for; open it in view mode instead`,
     );
   }
+  if (mode === "train" && raceKind(found.race) === "b") {
+    // validateKind refuses a B race being WRITTEN as "active" (RACE_KINDS'
+    // own doc comment: a tune-up never steals the block from the A race it
+    // hangs off), but a hand-edited race.json bypasses every writer — this is
+    // the same invariant enforced again at the one other place a folder
+    // becomes the training target. `kind` gates this, not `status`: an
+    // orphaned tune-up (its parent folder gone) is refused exactly the same
+    // way as one whose parent is still there.
+    return fail(
+      "bad_request",
+      `${slug} is a tune-up (kind "b") — a tune-up is never the training target; activate ${found.race.parent_slug ? `its parent race (${found.race.parent_slug})` : "its parent race"} instead`,
+    );
+  }
+  if (mode === "train") {
+    // At most one A folder may read "active" on disk (validateSingleActive,
+    // restricted to kind "a" — a B folder that is ALSO wrongly "active" is
+    // already refused above by the kind gate, whichever slug this request
+    // named, and must not additionally block re-selecting the legitimate A
+    // race just because a stray tune-up is sitting there corrupted). A
+    // hand-edit that leaves two A folders active must not be papered over by
+    // silently training toward whichever one this request named while the
+    // other still claims the status too — consistent with
+    // scripts/race-edit.mjs's own draft-to-active transition, which REFUSES
+    // when another folder is already active rather than demoting it; the
+    // pointer does the same rather than picking a winner behind the
+    // athlete's back.
+    const single = validateSingleActive(races.filter((r) => raceKind(r.race) !== "b"));
+    if (!single.ok) return fail("bad_request", single.errors.join("; "));
+  }
   return { ok: true, errors: [], code: null, pointer: { slug, mode } };
 }
 
@@ -766,10 +795,13 @@ export function bRacesFor(races, parent) {
  * An orphan B — one whose parent_slug names a folder that is not in this list
  * at all — is kept at the TOP level rather than dropped. A race that has
  * fallen out of its block still exists on disk, and a menu that silently
- * omits it looks exactly like a deleted folder.
+ * omits it looks exactly like a deleted folder. It is still a tune-up,
+ * though — flagged `parent_missing: true` so a consumer (the switcher) can
+ * keep its TUNE-UP marker and reduced action set instead of rendering it as
+ * an ordinary A race with Review/Activate/Refresh rows it never earned.
  * @template {{slug: string, kind?: string, parent_slug?: string|null}} T
  * @param {T[]} rows
- * @returns {(T & {b_races: T[]})[]}
+ * @returns {(T & {b_races: T[], parent_missing?: true})[]}
  */
 export function groupRaces(rows) {
   const list = Array.isArray(rows) ? rows : [];
@@ -779,7 +811,7 @@ export function groupRaces(rows) {
   const byParent = new Map();
   for (const row of list) {
     if (isB(row) && parents.has(row.parent_slug)) continue;
-    const entry = { ...row, b_races: [] };
+    const entry = isB(row) ? { ...row, b_races: [], parent_missing: true } : { ...row, b_races: [] };
     out.push(entry);
     byParent.set(row.slug, entry);
   }

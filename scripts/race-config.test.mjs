@@ -344,6 +344,53 @@ test("validateActivation: train needs an active folder, view does not", async (t
   assert.equal(validateActivation([], races).code, "bad_request");
 });
 
+test("validateActivation refuses a tune-up hand-edited to active, and a corrupted double-active", async (t) => {
+  const root = await tempRoot(t);
+  // A quick-form tune-up whose status was hand-edited to "active" (bug: the
+  // PRD invariant "a tune-up is never active" was only enforced at write
+  // time — validateKind — never again here, at the one other place a folder
+  // becomes the training target).
+  await writeRaceFolder(root, "san-juan-softie-100-2027", { "race.json": validRace({ status: "active" }) });
+  await writeRaceFolder(root, "jemez-mountain-50k-2027", { "race.json": validBRace({ status: "active" }) });
+  // ...and the same for an ORPHANED tune-up — no parent folder on disk at all.
+  await writeRaceFolder(root, "orphan-tuneup-2027", {
+    "race.json": validBRace({ slug: "orphan-tuneup-2027", parent_slug: "no-such-race-2099", status: "active" }),
+  });
+  const races = await listRaces(root);
+
+  for (const slug of ["jemez-mountain-50k-2027", "orphan-tuneup-2027"]) {
+    const bad = validateActivation({ slug, mode: "train" }, races);
+    assert.equal(bad.ok, false);
+    assert.equal(bad.code, "bad_request");
+    assert.match(bad.errors[0], /is a tune-up \(kind "b"\)/);
+    // view mode still works — a tune-up can be browsed, just never trained for
+    assert.equal(validateActivation({ slug, mode: "view" }, races).ok, true);
+  }
+
+  // The A race is unaffected by its tune-ups also (wrongly) reading "active".
+  assert.equal(validateActivation({ slug: "san-juan-softie-100-2027", mode: "train" }, races).ok, true);
+});
+
+test("validateActivation refuses train mode while two A folders both read active on disk", async (t) => {
+  const root = await tempRoot(t);
+  await writeRaceFolder(root, "one-100-2026", { "race.json": validRace({ slug: "one-100-2026", status: "active" }) });
+  await writeRaceFolder(root, "two-100-2027", { "race.json": validRace({ slug: "two-100-2027", status: "active" }) });
+  const races = await listRaces(root);
+
+  // Neither can be trained for while the disk disagrees with itself — the
+  // pointer must not silently pick a winner (race-edit.mjs's own
+  // draft-to-active transition refuses the same way rather than demoting the
+  // other folder).
+  for (const slug of ["one-100-2026", "two-100-2027"]) {
+    const bad = validateActivation({ slug, mode: "train" }, races);
+    assert.equal(bad.ok, false);
+    assert.equal(bad.code, "bad_request");
+    assert.match(bad.errors[0], /more than one active race/);
+    // view mode is unaffected — browsing either folder is still fine
+    assert.equal(validateActivation({ slug, mode: "view" }, races).ok, true);
+  }
+});
+
 test("setActivePointer writes only what validateActivation allows", async (t) => {
   const root = await tempRoot(t);
   await writeRaceFolder(root, "one-100-2026", { "race.json": validRace({ slug: "one-100-2026", status: "archived" }) });
@@ -566,6 +613,22 @@ test("groupRaces nests tune-ups under their A race and never loses an orphan", (
   assert.deepEqual(grouped[0].b_races.map((b) => b.slug), ["cinder-cone-25k-2027", "jemez-mountain-50k-2027"]);
   assert.deepEqual(grouped[1].b_races, []);
   assert.deepEqual(groupRaces([]), []);
+});
+
+test("groupRaces flags an orphan tune-up as parent_missing rather than an ordinary A race", () => {
+  const list = [
+    { slug: "san-juan-softie-100-2027", kind: "a", parent_slug: null, date: "2027-08-13" },
+    { slug: "cinder-cone-25k-2027", kind: "b", parent_slug: "san-juan-softie-100-2027", date: "2027-04-10" },
+    { slug: "stray-50k-2027", kind: "b", parent_slug: "deleted-race-2026", date: "2027-03-01" },
+  ];
+  const grouped = groupRaces(list);
+  const [parent, orphan] = grouped;
+  assert.equal(parent.slug, "san-juan-softie-100-2027");
+  assert.equal("parent_missing" in parent, false, "a real A race must not be flagged");
+  assert.equal(orphan.slug, "stray-50k-2027");
+  assert.equal(orphan.kind, "b");
+  assert.equal(orphan.parent_missing, true);
+  assert.deepEqual(orphan.b_races, []);
 });
 
 test("validateSingleActive is unaffected by tune-ups", async (t) => {
