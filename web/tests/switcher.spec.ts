@@ -359,6 +359,42 @@ test('Run course again on a clean build still shows the tick', async ({ page, re
 })
 
 /**
+ * Browser check BUG 2 — the synchronous re-entrancy guard the switcher row
+ * had, and the hook did not.
+ *
+ * `useRunCourseAgain`'s `run()` guarded on React state (`busy`), whose
+ * `disabled` cannot take effect until React re-renders — which never happens
+ * mid-script for a burst of clicks in one tick. Three synchronous clicks all
+ * passed and all POSTed; the server 409s the 2nd and 3rd, and since one
+ * `error` slot holds whatever lands last, the run that actually SUCCEEDED
+ * reported `a build for "…" is already running`, permanently.
+ *
+ * Three native clicks in one page-side script is the only way to reproduce
+ * it — a real double-click, or a held Enter, re-renders in between and was
+ * always safe (confirmed in the browser check). Same shape as
+ * add-tuneup-reentry.spec.ts, which pins the identical guard on AddTuneUp.
+ */
+test('three synchronous clicks on "Run course again…" produce one build, and the tick', async ({ page, request, trouble }) => {
+  await writeCleanArchivedFixture()
+  const button = await runCourseAgainButton(page, CLEAN_ARCHIVED.slug, request)
+
+  const posts: string[] = []
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/race-intake/build') posts.push(r.url())
+  })
+
+  await button.evaluate((el: HTMLElement) => { el.click(); el.click(); el.click() })
+
+  await expect(raceActionNote(page)).toContainText(/course rebuilt ✓/i)
+  expect(posts, 'a synchronous triple-click should still produce exactly one build').toHaveLength(1)
+  // the 409 text from a duplicate run must never be what the athlete is left
+  // looking at
+  await expect(raceActionNote(page)).not.toContainText(/already running/i)
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
  * Round 3 sweep extension (r3-sweep.md, first HIGH) — the switcher row's
  * SECOND check: `ok: true` with a real course but non-empty `warnings` (a
  * course.gpx measuring far off the declared distance) must show a ⚠ hint,

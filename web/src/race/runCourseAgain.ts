@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { runStage } from "./dialogChrome";
 
 /* ------------------------------------------------------------------ */
@@ -101,8 +101,27 @@ export function useRunCourseAgain(slug: string | null, onDone: () => void): RunC
     }
   }
 
+  /**
+   * Synchronous re-entrancy guard. `busy` is React state, so the `disabled`
+   * it drives cannot take effect until React re-renders — which does not
+   * happen mid-script for a burst of clicks fired in the same tick. Three
+   * synchronous clicks therefore all passed the `busy` check and all POSTed;
+   * the server 409s the 2nd and 3rd, and because a single `error` slot holds
+   * whatever landed last, the run that actually SUCCEEDED was reported as
+   * `a build for "…" is already running` — permanently, until the race was
+   * switched away and back.
+   *
+   * This is the guard App.tsx's switcher row carried for exactly this reason
+   * (round 2, generic finding 2) and that `RaceTopline` still carries for
+   * Activate; routing the rebuild through this hook is what dropped it. Fixed
+   * here rather than at the call site so the other three callers
+   * (RaceDay/RacePlanner/NutritionPlan) get it too.
+   */
+  const runningRef = useRef(false);
+
   const run = useCallback(() => {
-    if (!slug || busy) return;
+    if (!slug || busy || runningRef.current) return;
+    runningRef.current = true;
     setBusy(true);
     setError(null);
     setWarnings([]);
@@ -151,7 +170,7 @@ export function useRunCourseAgain(slug: string | null, onDone: () => void): RunC
         onDone();
       })
       .catch((e: Error) => setError(e.message))
-      .finally(() => setBusy(false));
+      .finally(() => { runningRef.current = false; setBusy(false); });
   }, [slug, busy, onDone]);
 
   return { busy, error, done, warnings, run };
