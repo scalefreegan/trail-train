@@ -451,6 +451,16 @@ const RETRY_NUDGE = '\n\nIMPORTANT: a previous attempt at this exact question ra
 
 function chatApi(): Plugin {
   const projectRoot = PROJECT_ROOT
+  // PR #24 review round 3: every sibling POST route (raceCreateApi,
+  // raceSwitchApi, raceResultApi, raceEditApi, raceBuildApi, racePlanApi,
+  // raceRefreshApi, crewExportApi) tracks a running total while reading the
+  // body and rejects 413 past a cap; this route buffered without one. The
+  // nested race_state field is already capped server-side
+  // (scripts/coach-prompt.mjs, 8192 bytes), but messages[].content — the
+  // chat transcript itself — was not. 1 MB is generous for even a long
+  // back-and-forth (transcript + the latest turn), matching raceRefreshApi's
+  // own cap, the largest among the siblings.
+  const BODY_MAX_BYTES = 1024 * 1024
   return {
     name: 'trail-train-chat-api',
     apply: 'serve',
@@ -461,7 +471,12 @@ function chatApi(): Plugin {
 
         // Read JSON body
         const chunks: Buffer[] = []
-        for await (const c of req) chunks.push(c as Buffer)
+        let total = 0
+        for await (const c of req) {
+          total += (c as Buffer).byteLength
+          if (total > BODY_MAX_BYTES) { res.statusCode = 413; res.end('request body too large'); return }
+          chunks.push(c as Buffer)
+        }
         let body: { messages?: Array<{ role: string; content: string }>; units?: string; race_state?: unknown }
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
         catch { res.statusCode = 400; res.end('bad json'); return }

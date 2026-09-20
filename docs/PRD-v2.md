@@ -109,12 +109,23 @@ record of what survived contact with the app.
   14:20"; the first carries no observation time, and the coach is told so
   rather than being allowed to treat it as a split.
 - **A bare `HH:MM` is resolved inside the race's own window** (§4, §5).
-  `checkpointHold` resolved a clock time to its latest occurrence before
-  *now*, so a crew sheet opened the week after race day read "01:14" as a
-  163-hour split. The horizon is clamped to the race's window (cutoff plus
-  slack), so a split lands inside the race whenever the file is opened —
-  which matters most for the one artefact that is read long after it was
-  made.
+  A clock time resolved to its latest occurrence before *now* with no upper
+  bound but `MAX_SPAN_DAYS` (14 days), so a crew sheet — or a race-day page —
+  opened long after the fact could read a stale HH:MM as a split days off.
+  `web/src/crew/checkpoint.ts`'s `resolveClockElapsed`/`applyCheckpoint` had
+  this fixed from the start: the horizon is clamped to the race's own window
+  (cutoff plus `RACE_WINDOW_SLACK_H`), so a crew split always lands inside
+  the race regardless of when the file is opened. **This entry originally
+  misattributed that clamp to `checkpointHold`** (the tracker/race-day twin,
+  `scripts/checkpoint-hold.mjs` / `web/src/race/checkpointHold.ts`), which
+  had no such bound of its own — round 3 review caught the gap:
+  `RaceDay.tsx` calls `checkpointHold` for a *manual* hold even when the
+  race is past (only tracker polling is gated on it), so reopening an old
+  race's page could resolve a typed HH:MM up to 14 days off. `checkpointHold`
+  now takes the race's `cutoff_h` (`opts.cutoffH`) and applies the same
+  `[start, start + cutoff_h + RACE_WINDOW_SLACK_H]` clamp when it is known,
+  falling back to the 14-day ceiling only when it isn't — so this deviation
+  is now true of both functions, not just the crew export's.
 
 ### Trackers
 

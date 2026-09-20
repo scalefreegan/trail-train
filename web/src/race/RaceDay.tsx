@@ -396,11 +396,18 @@ export function RaceDay() {
     return Number.isFinite(ms) ? (ms - startMs) / 3_600_000 : null;
   };
 
+  // PR #24 review round 3: a manual hold is resolved for a past race too
+  // (only tracker polling is gated on !racePast below), so it must not be
+  // allowed to land past the race's own window just because `now` is days
+  // or weeks after the fact — passed through so checkpointHold can clamp to
+  // [start, start + cutoff_h + slack] instead of its MAX_SPAN_DAYS fallback.
+  const cutoffH = race.cutoff_h ?? undefined;
+
   const manualHold: CheckpointHold | null = manual == null ? null
     : manual.station != null
       ? checkpointHold(
           { station: manual.station, clock: manual.clock, source: "manual" },
-          chart, raceStart, plan.timeZone, { now },
+          chart, raceStart, plan.timeZone, { now, cutoffH },
         )
       // A bare mile carries no station and no clock, so it is not something
       // checkpointHold can resolve — it IS the answer already.
@@ -409,7 +416,7 @@ export function RaceDay() {
         : null;
   const manualObsH = manualHold ? manualHold.elapsed_h ?? atElapsed(manual?.at) : null;
 
-  const trackerHold = tracker ? checkpointHold(tracker, chart, raceStart, plan.timeZone, { now }) : null;
+  const trackerHold = tracker ? checkpointHold(tracker, chart, raceStart, plan.timeZone, { now, cutoffH }) : null;
   const trackerObsH = trackerHold ? trackerHold.elapsed_h ?? atElapsed(tracker?.at) : null;
   // Dismissed by AUTO, and still dismissed until the tracker sees the runner
   // somewhere NEW (see useTrackerMute).

@@ -14,8 +14,18 @@
 // The zone arithmetic is clock.mjs's two-pass offset inversion, re-stated
 // rather than imported for exactly that reason.
 
-/** How far past the gun a bare HH:MM is allowed to be resolved. */
+/** How far past the gun a bare HH:MM is allowed to be resolved, when the
+    race's own cutoff isn't known (see RACE_WINDOW_SLACK_H below for when it
+    is). */
 const MAX_SPAN_DAYS = 14;
+
+/** Slack past the posted cutoff that still counts as "during the race" — a
+    sweeper walking the last runner in, a finish line that stays up. Same
+    name, value and meaning as web/src/crew/checkpoint.ts's own
+    RACE_WINDOW_SLACK_H, duplicated rather than imported for the same
+    zero-dependency reason this whole file exists (see the file banner):
+    that module pulls in the projection/pacing graph this one must not. */
+const RACE_WINDOW_SLACK_H = 3;
 
 /** A checkpoint may read a minute before the gun without being pushed to
     the NEXT day (clock skew at the start line, a tracker rounding down). */
@@ -137,8 +147,15 @@ export function stationMile(station, course) {
  * @param {object|Array|null|undefined} course course.json, or its aid_stations
  * @param {Date|number|string} raceStart the gun, as an instant
  * @param {string} timeZone the race's IANA zone
- * @param {{now?: Date|number|string}} [opts] `now` is the instant a bare
- *   HH:MM is read against; defaults to the wall clock
+ * @param {{now?: Date|number|string, cutoffH?: number|null}} [opts] `now` is
+ *   the instant a bare HH:MM is read against; defaults to the wall clock.
+ *   `cutoffH` is the race's own `cutoff_h` — when given (a finite number), a
+ *   bare HH:MM can never resolve to an occurrence after the course closes
+ *   (plus RACE_WINDOW_SLACK_H), no matter how far past that point `now`
+ *   actually is (PR #24 review round 3: RaceDay.tsx calls this for a manual
+ *   hold even when the race is long past, and an unclamped `now` used to let
+ *   the answer land up to MAX_SPAN_DAYS out). Without it, MAX_SPAN_DAYS is
+ *   the only ceiling, same as before this option existed.
  * @returns {{mile: number|null, elapsed_h: number|null, source: string,
  *   label: string}|null} null when there was nothing usable to hold on to
  */
@@ -169,7 +186,14 @@ export function checkpointHold(cp, course, raceStart, timeZone, opts = {}) {
     //      already happened.
     const start = civil(startMs, timeZone);
     const nowMs = opts.now !== undefined ? toMs(opts.now) : Date.now();
-    const horizon = Number.isFinite(nowMs) ? nowMs : startMs;
+    const rawHorizon = Number.isFinite(nowMs) ? nowMs : startMs;
+    // Clamp to the race's own window when its cutoff is known (see the opts
+    // doc above and RACE_WINDOW_SLACK_H) — this is what keeps a manual hold
+    // on a long-finished race from resolving to an occurrence days after it
+    // actually ended just because `now` is that far past the gun.
+    const cutoffH = typeof opts.cutoffH === "number" && Number.isFinite(opts.cutoffH) ? opts.cutoffH : null;
+    const windowEndMs = cutoffH != null ? startMs + (cutoffH + RACE_WINDOW_SLACK_H) * 3_600_000 : null;
+    const horizon = windowEndMs != null ? Math.min(rawHorizon, windowEndMs) : rawHorizon;
     const spanDays = Math.min(
       MAX_SPAN_DAYS,
       Math.max(1, Math.ceil((horizon - startMs) / 86_400_000) + 1),
