@@ -1,3 +1,6 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
+
 import {
   test, expect, CREWLESS, DRAFT, MM,
   openDashboard, openPrintable, openRaceTab, openRefreshFor, openReviewFor, openSwitcher, setActiveRace,
@@ -355,4 +358,55 @@ test.describe('view tablist', () => {
 
     expect(trouble.pageErrors).toEqual([])
   })
+})
+
+/**
+ * Round 5 follow-up (harness) — the finding-3 exposure above must be
+ * structurally impossible, not just avoided by every test remembering to
+ * intercept `/api/refresh`. `web/tests/launch.mjs` now sets
+ * `TRAIL_FAKE_SYNC=1` unconditionally for every server this suite starts
+ * (with a fail-loud assertion if it somehow didn't get set), and
+ * `vite.config.ts`'s refresh route reads it the same way it already reads
+ * `TRAIL_FAKE_AGENT` for the coach step: the four sync steps become a no-op
+ * that still emits the same SSE `step` start/done events, while `coach`
+ * keeps running for real (staying safe via its own, pre-existing
+ * `TRAIL_FAKE_AGENT` check inside `scripts/agent-run.mjs`).
+ *
+ * This is the one test in the suite that deliberately does NOT intercept
+ * `/api/refresh` — that is the point: it hits the real endpoint, for real,
+ * and checks both halves of the guarantee — the SSE stream shows the fake
+ * path (never a real script's own output), and the sync scripts' actual
+ * output file is byte-for-byte untouched.
+ */
+test('the real resync endpoint never spawns real syncs under the test harness', async ({ page, trouble }) => {
+  await openDashboard(page)
+
+  const root = process.env.TRAIL_TEST_PROJECT_ROOT
+  if (!root) throw new Error('TRAIL_TEST_PROJECT_ROOT is unset — global setup did not run')
+  const stravaPath = path.join(root, 'web', 'public', 'strava.json')
+  const before = await fs.readFile(stravaPath, 'utf8')
+
+  const [resp] = await Promise.all([
+    page.waitForResponse((r) => r.url().includes('/api/refresh') && r.request().method() === 'POST'),
+    page.getByRole('button', { name: /resync/i }).click(),
+  ])
+  const body = await resp.text()
+
+  // Every faked step's own SSE log line says so, in the same event shape a
+  // real script's stdout line would have used — never left silently blank.
+  for (const id of ['strava', 'streams', 'oura', 'gcal']) {
+    expect(body, `step "${id}" did not report TRAIL_FAKE_SYNC on the SSE stream`).toMatch(
+      new RegExp(`"id":"${id}"[^}]*"line":"\\[refresh\\] TRAIL_FAKE_SYNC`),
+    )
+  }
+  // coach is NOT faked here — it ran (safely, via its own TRAIL_FAKE_AGENT
+  // seam) rather than being silently dropped from the step sequence.
+  expect(body).toContain('"id":"coach"')
+
+  await expect(page.getByRole('button', { name: /resync/i })).not.toHaveText(/syncing/i)
+
+  const after = await fs.readFile(stravaPath, 'utf8')
+  expect(after, 'a real sync script touched its output file — TRAIL_FAKE_SYNC did not hold').toEqual(before)
+
+  expect(trouble.pageErrors).toEqual([])
 })
