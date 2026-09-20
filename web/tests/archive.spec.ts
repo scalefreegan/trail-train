@@ -105,11 +105,22 @@ test('a DNS needs no activity at all, and a malformed finish time blocks the sub
   expect(trouble.pageErrors).toEqual([])
 })
 
-test('an already-archived race carries its result and offers no second archive', async ({ page, request, trouble }) => {
+test('an already-archived, fully-linked race offers no "Link result…" for itself — but the still-active race is still offered its own archive row', async ({ page, request, trouble }) => {
   // rimrock-50k came out of races/_fixtures already archived, with a
-  // result.json beside its race.json. Browsing it must not offer to archive it
-  // again — App.tsx's `archiveTarget` is the race being TRAINED for, and
-  // browsing an archive in view mode does not move that pointer.
+  // result.json beside its race.json. Browsing it must not offer to LINK a
+  // result it already has.
+  //
+  // It also must not make the "Archive with result…" row for the race
+  // actually being trained for (MM, still `status: "active"` on disk —
+  // `beforeEach` never moves it, and this test's own `setActiveRace` call
+  // only changes the pointer's MODE/slug, never any folder's own status)
+  // disappear. `archiveTarget` used to key its first branch on
+  // `useActiveRace().slug`, documented null in BOTH generic mode and this
+  // one (view mode) — the exact cause `canAddTuneUp` had — so it went null,
+  // and the row vanished, the instant anything but MM's own train-mode
+  // screen was on screen (round 4 finding 5, same fix shape as
+  // canAddTuneUp: the race's own `status === "active"`, not the
+  // view-mode-null training slug).
   await setActiveRace(request, ARCHIVED.slug, 'view')
   await page.reload()
   await expect(page.getByText(/vitals — load × recovery/i)).toBeVisible()
@@ -119,10 +130,10 @@ test('an already-archived race carries its result and offers no second archive',
   expect(result.result.finish_h).toBeGreaterThan(0)
 
   const menu = await openSwitcher(page)
-  // Nothing is in training, so the row — if it is offered at all — is the
-  // "Link result…" one, and it is about the archived race, never a second
-  // archive of it.
-  await expect(menu.getByRole('menuitem', { name: archiveRow })).toHaveCount(0)
+  // MM's own row, naming MM specifically — not a "Link result…" for the
+  // browsed archive, which already has what it needs.
+  await expect(menu.getByRole('menuitem', { name: archiveRow })).toBeVisible()
+  await expect(menu.getByRole('menuitem', { name: /Link result…/ })).toHaveCount(0)
 
   expect(trouble.pageErrors).toEqual([])
 })

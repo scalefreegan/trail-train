@@ -86,6 +86,10 @@ test.describe('tune-up fixes (round 4)', () => {
     menu = await openSwitcher(page)
     await expect(menu.getByRole('menuitem', { name: /Add tune-up…/ }), 'the row should survive browsing a tune-up in view mode')
       .toBeVisible()
+    // Same root cause, same fix, in `archiveTarget` — it also went null the
+    // instant anything but the active race's own screen was on-screen.
+    await expect(menu.getByRole('menuitem', { name: /Archive with result…/ }), 'the archive row should survive browsing a tune-up in view mode too')
+      .toBeVisible()
 
     expect(child.slug).toBeTruthy()
     expect(trouble.pageErrors).toEqual([])

@@ -377,15 +377,25 @@ function RaceSwitcher() {
    * the archived race on screen that never got its activity linked.
    * Null while the menu has not loaded the list yet: the row needs the
    * folder's name and date, not just its slug.
+   *
+   * Same root cause and fix as canAddTuneUp above: `trainingSlug`
+   * (useActiveRace().slug) is null in BOTH generic mode and view mode, so
+   * gating the first branch on it hid this row the instant anything but the
+   * active race's own train-mode screen was on screen — even though nothing
+   * about the training target changed (round 4 finding 5, the row this bug
+   * shares with "Add tune-up…"). Each race already carries its own `status`
+   * from GET /api/races, and "active" IS "the training target" (only one
+   * folder may hold it), so it is checked directly instead.
    */
   const archiveTarget = useMemo(() => {
     const list = races ?? [];
-    if (trainingSlug) return list.find((r) => r.slug === trainingSlug) ?? null;
+    const active = list.find((r) => r.status === "active");
+    if (active) return active;
     if (viewing?.status === "archived" && viewedResult?.strava_activity_id == null) {
       return list.find((r) => r.slug === viewing.slug) ?? null;
     }
     return null;
-  }, [races, trainingSlug, viewing, viewedResult]);
+  }, [races, viewing, viewedResult]);
 
   /** menu length: "No race", every race with its own extra rows, maybe
       "Archive with result…", then "New race…" */
@@ -744,8 +754,12 @@ function RaceSwitcher() {
               {archiveTarget && (
                 <SwitcherRow
                   {...itemProps("archive")}
-                  label={trainingSlug ? "Archive with result…" : "Link result…"}
-                  hint={trainingSlug
+                  // Which case archiveTarget matched — the active race
+                  // (ending it), or an already-archived one merely missing
+                  // its activity link — not `trainingSlug`, which reads null
+                  // in view mode even while the active-race case applies.
+                  label={archiveTarget.status === "active" ? "Archive with result…" : "Link result…"}
+                  hint={archiveTarget.status === "active"
                     ? `${archiveTarget.short} · link the Strava run`
                     : `${archiveTarget.short} · no activity linked`}
                   disabled={busy != null || !!error}
