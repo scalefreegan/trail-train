@@ -869,7 +869,7 @@ export function fmtRaceClock(
   raceStart: Date,
   elapsedH: number,
   timeZone: string,
-  opts: { flagPreStart?: boolean } = {},
+  opts: { flagPreStart?: boolean; dayMarker?: boolean } = {},
 ): string {
   const at = raceLocalParts(elapsedToDate(raceStart, elapsedH), timeZone);
   const start = raceLocalParts(raceStart, timeZone);
@@ -890,7 +890,15 @@ export function fmtRaceClock(
   // does not. It catches same-day pre-start instants too (elapsedH < 0 but
   // days === 0, where the +N/-N day marker alone says nothing is wrong).
   const pre = opts.flagPreStart && elapsedH < 0 ? "pre-start " : "";
-  const dayMarker = days !== 0 ? `${days > 0 ? "+" : ""}${days}` : "";
+  // The +N/-N day marker is itself only meaningful once there IS a race
+  // elapsed count worth offsetting — an ETA, a cutoff, a crew sheet time.
+  // Before the gun the race-day header calls this with the CURRENT instant
+  // (a negative elapsedH standing in for "now"), and `days` there is just how
+  // far off the calendar the gun happens to be — 327 days out once read
+  // "5:47p-328", a glitchy-looking number about today, not about the race
+  // (v2 review ui2 #7). Opt out with `dayMarker: false`; default stays on for
+  // every existing ETA/cutoff caller.
+  const dayMarker = opts.dayMarker !== false && days !== 0 ? `${days > 0 ? "+" : ""}${days}` : "";
   return `${pre}${h12}:${mm}${ampm}${dayMarker}`;
 }
 

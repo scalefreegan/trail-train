@@ -226,11 +226,18 @@ function orderedRaces(list: RaceGroupEntry[]): RaceGroupEntry[] {
   return [...known, ...list.filter((r) => !RACE_GROUPS.some((g) => g.status === r.status))];
 }
 
-/** A draft gets a second row under it — "Review…" reopens the intake dialog's
-    review screen on a folder that is already on disk, which is the only way
-    back into it once the dialog has been closed (PRD §8). A folder whose
-    race.json will not parse has nothing to review. */
-const isReviewable = (r: RaceListEntry) => r.status === "draft" && !r.error;
+/** A draft or an active race gets a second row under it — "Review…" reopens
+    the intake dialog's review screen on a folder that is already on disk,
+    which is the only way back into it once the dialog has been closed
+    (PRD §8). A folder whose race.json will not parse has nothing to review.
+    Archived races stay without it: their aid chart/tracker are done being
+    edited, and "Refresh from sources…" already covers a re-read of them.
+    Used to be drafts-only (v2 review ui2 #2) — an active race's bib/name/
+    tracker URL and unresolved fields still need a way back in, and race-day
+    mode's own tracker notices ("set your bib on the review screen") send the
+    runner to a screen that did not exist for the one race that most needs
+    it: the one already running. */
+const isReviewable = (r: RaceListEntry) => (r.status === "draft" || r.status === "active") && !r.error;
 
 /** Any race whose race.json parses can be re-read from its own sources —
     draft, active or archived. An archived one is the interesting case: the
@@ -669,7 +676,9 @@ function RaceSwitcher() {
                       <SwitcherRow
                         {...itemProps("review", entry.slug)}
                         label="↳ Review…"
-                        hint="aid chart, profile, unresolved · activate"
+                        hint={entry.status === "active"
+                          ? "aid chart, profile, tracker bib/url"
+                          : "aid chart, profile, unresolved · activate"}
                         disabled={busy != null || !!error}
                         onSelect={() => { setOpen(false); setIntake({ slug: entry.slug }); }}
                       />

@@ -87,3 +87,20 @@ test("fmtRaceClock: without the opt-in flag a pre-start instant is an ordinary c
   assert.doesNotMatch(s, /pre-start/, `expected no marker, got ${JSON.stringify(s)}`);
   assert.match(s, /^\d{1,2}:\d{2}[ap]/);
 });
+
+test("fmtRaceClock: dayMarker defaults on, unchanged for every existing caller", () => {
+  assert.equal(fmtRaceClock(START, 25, TZ), "7:00a+1");
+  assert.equal(fmtRaceClock(START, -24.5, TZ), "5:30a-1");
+});
+
+test("fmtRaceClock: dayMarker:false drops the day offset, keeping the clock-of-day (v2 review ui2 #7 — the race-day header before the gun read \"5:47p-328\" 327 days out)", () => {
+  assert.equal(fmtRaceClock(START, -24.5, TZ, { dayMarker: false }), "5:30a");
+  // a huge pre-start offset (327 days) — the exact repro shape
+  assert.equal(fmtRaceClock(START, -24 * 327 + 11.75, TZ, { dayMarker: false }), "5:45p");
+});
+
+test("fmtRaceClock: dayMarker:false composes with flagPreStart — each opt is independent", () => {
+  const s = fmtRaceClock(START, -0.5, TZ, { flagPreStart: true, dayMarker: false });
+  assert.match(s, /pre-start/);
+  assert.doesNotMatch(s, /[+-]\d+$/);
+});

@@ -1,4 +1,4 @@
-import { test, expect, DRAFT, openDashboard, openReviewFor, openSwitcher, setActiveRace } from './basecamp'
+import { test, expect, DRAFT, MM, openDashboard, openReviewFor, openSwitcher, setActiveRace } from './basecamp'
 
 /**
  * Flow 3 — the review screen: fill a field, acknowledge another, save.
@@ -98,5 +98,64 @@ test('acknowledging every hole clears the unresolved gate on activate', async ({
 
   // Deliberately never clicked even when it could be: activating this draft
   // would archive the 100-miler every other spec runs against.
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * v2 review ui2 #2/#3 — once a race is ACTIVE, its review screen used to be
+ * unreachable at all (isReviewable was drafts-only), and even when it was
+ * reachable nothing in the UI could set `tracking.url` — the one field the
+ * live tracker actually polls. Both are exercised here against the
+ * already-active 100-miler fixture rather than by pressing ACTIVATE on a
+ * fresh draft: that button is deliberately never pressed anywhere in this
+ * suite (see the comment above), since it would archive mm-like-100 out from
+ * under every other spec.
+ *
+ * The tracking fields this leaves on mm-like-100's temp race.json are
+ * restored to null at the end — a later spec that opens its race-day view
+ * would otherwise have this test's fake tracker URL polled against it.
+ */
+test('an active race offers Review, and its tracker URL/bib save as tracking.url/bib', async ({ page, request, trouble }) => {
+  await setActiveRace(request, MM.slug, 'train')
+  await openDashboard(page)
+  await openSwitcher(page)
+
+  // The regression itself: this used to throw (no "↳ Review…" row exists
+  // for an active race at all).
+  const dialog = await openReviewFor(page, MM.name)
+
+  // No ACTIVATE for a race that already is one — the button still exists
+  // (drafts and actives share this screen), it just says why it can't be
+  // pressed.
+  const activate = dialog.getByRole('button', { name: /^activate$/i })
+  await expect(activate).toBeDisabled()
+  await expect(activate).toHaveAttribute('title', /only a draft activates here/i)
+
+  const TRACKER_URL = 'https://example.invalid/mesa-monster-100/tracker-test'
+  const putBodies: string[] = []
+  page.on('request', (req) => {
+    if (req.method() === 'PUT' && new URL(req.url()).pathname === `/api/races/${MM.slug}`) {
+      putBodies.push(req.postData() ?? '')
+    }
+  })
+
+  await dialog.getByLabel('tracker url').fill(TRACKER_URL)
+  await dialog.getByLabel('tracker bib').fill('42')
+  await dialog.getByRole('button', { name: /^save edits$/i }).click()
+  await expect(dialog.getByRole('button', { name: /^save edits$/i })).toBeDisabled()
+
+  expect(putBodies, 'the save did not PUT /api/races/mm-like-100').toHaveLength(1)
+  const body = JSON.parse(putBodies[0]) as { tracking?: { url?: string; bib?: string } }
+  expect(body.tracking?.url).toBe(TRACKER_URL)
+  expect(body.tracking?.bib).toBe('42')
+
+  // The server's own answer, read fresh — not just what left the page.
+  const review = await (await request.get(`/api/races/${MM.slug}?t=1`)).json()
+  expect(review.race.tracking?.url).toBe(TRACKER_URL)
+  expect(review.race.tracking?.bib).toBe('42')
+
+  // Cleanup: see the file-header comment above this test.
+  await request.put(`/api/races/${MM.slug}`, { data: { tracking: { url: null, bib: null, name: null } } })
+
   expect(trouble.pageErrors).toEqual([])
 })

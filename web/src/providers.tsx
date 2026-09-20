@@ -12,6 +12,7 @@ import {
   PersistentStateContext, type PersistentState,
   useBlockConfig,
 } from "./data";
+import { cacheGet, cachePutBounded } from "./race/offlineCache";
 
 /* ------------------------------------------------------------------ */
 /*  Refresh — drives the "resync everything" pulse                     */
@@ -242,6 +243,26 @@ function weekIndex(date: string, blockStart: string) {
 
 type StravaFetch = { loading: boolean; error: string | null; data: StravaRaw | null };
 
+/** Not namespaced by slug (unlike offlineCache.ts's course/crew-base/
+    nutrition/race-active keys): /strava.json is the athlete's own training
+    history, the same file regardless of which race is on screen. */
+const STRAVA_CACHE_KEY = "strava";
+
+/** cachePutBounded's fallback for /strava.json (v2 review ui2 #1): the raw
+    snapshot is the one payload here big enough to blow localStorage's quota
+    on its own — years of activities, each carrying a title, a Strava URL and
+    an optional weather object. The offline race-day projection only ever
+    reads distance/elevation/moving-time/heart-rate/date off each activity
+    (fitPacing, in pacing.ts) — everything else exists for the dashboard's
+    training log and weekly chart, which this offline path does not render.
+    So the fallback drops each activity's `weather` (its bulkiest optional
+    field) rather than dropping activities themselves: every consumer of
+    useStrava() still gets every run offline, just without the temperature
+    chip on the oldest ones. */
+function reduceStravaForOffline(raw: StravaRaw): StravaRaw {
+  return { ...raw, activities: raw.activities.map((a) => ({ ...a, weather: null })) };
+}
+
 export function StravaProvider({ children }: { children: React.ReactNode }) {
   const { key: refreshKey } = useRefresh();
   const { blockStart, totalWeeks } = useBlockConfig();
@@ -257,9 +278,25 @@ export function StravaProvider({ children }: { children: React.ReactNode }) {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<StravaRaw>;
       })
-      .then((d) => { if (!cancelled) setFetchState({ loading: false, error: null, data: d }); })
+      .then((d) => {
+        if (cancelled) return;
+        cachePutBounded(STRAVA_CACHE_KEY, d, () => reduceStravaForOffline(d));
+        setFetchState({ loading: false, error: null, data: d });
+      })
       .catch((e) => {
-        if (!cancelled) setFetchState((s) => ({ loading: false, error: String(e.message || e), data: s.data }));
+        if (cancelled) return;
+        setFetchState((s) => {
+          // A failure mid-session (a real error, not the first load) keeps
+          // whatever is already showing — same rule as every other snapshot
+          // hook. Only a NEVER-loaded state (s.data null: the first fetch of
+          // this session, which is exactly what a reload with the laptop
+          // gone produces) falls back to the offline cache.
+          if (s.data) return { loading: false, error: String(e.message || e), data: s.data };
+          const cached = cacheGet<StravaRaw>(STRAVA_CACHE_KEY);
+          return cached
+            ? { loading: false, error: `${String(e.message || e)} — showing the last saved copy`, data: cached }
+            : { loading: false, error: String(e.message || e), data: null };
+        });
       });
     // optional snapshot — absent until the next sync:strava writes it. Only a
     // 404 is the soft "not synced yet" path; anything else (5xx, network,
