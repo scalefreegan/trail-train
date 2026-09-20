@@ -40,6 +40,28 @@ function fetchStub(body, { ok = true, status = 200 } = {}) {
   return impl;
 }
 
+/** A minimal case-insensitive Headers-alike, for response stubs below. */
+function headerMap(h) {
+  const lower = new Map(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
+  return { get: (k) => lower.get(String(k).toLowerCase()) ?? null };
+}
+
+/** A response whose body streams `totalBytes` of zero-filled chunks, for
+    exercising opensplittime's mid-stream byte cap without actually holding
+    an 8 MB+ JS string in the test. */
+function streamResponse({ status = 200, headers = {}, totalBytes, chunkBytes = 1024 * 1024 }) {
+  let sent = 0;
+  const body = new ReadableStream({
+    pull(controller) {
+      if (sent >= totalBytes) { controller.close(); return; }
+      const size = Math.min(chunkBytes, totalBytes - sent);
+      controller.enqueue(new Uint8Array(size));
+      sent += size;
+    },
+  });
+  return { ok: status >= 200 && status < 300, status, headers: headerMap(headers), body, text: async () => "" };
+}
+
 /** The guard: any adapter that reaches for the real network fails the test. */
 const noNetwork = async () => {
   throw new Error("a test tried to make a real network request");
@@ -288,6 +310,83 @@ test("opensplittime: HTTP failures and transport errors surface as bad_gateway",
   await assert.rejects(
     () => ost.fetchLastCheckpoint({ url: SPREAD_URL, bib: "999" }, timeout),
     (e) => e.code === "bad_gateway" && /did not answer/.test(e.message),
+  );
+});
+
+/** PR #24 review round 3, LOW finding: `matches()` only restricts the
+    INITIAL url — `tracking.url` is separately validated as absolute http(s)
+    at write time (race-edit.mjs, race-config.mjs), so it is not directly
+    attacker-steerable, but a `redirect: "follow"` fetch would blindly follow
+    a 3xx from the trusted host to anywhere. Fixed with `redirect: "manual"`
+    plus a per-hop matches() re-check and a MAX_REDIRECTS cap. */
+test("opensplittime: a redirect to an off-host Location is refused, not followed", async () => {
+  const calls = [];
+  const impl = async (url) => {
+    calls.push(String(url));
+    return { status: 302, headers: headerMap({ location: "http://169.254.169.254/latest/meta-data" }) };
+  };
+  await assert.rejects(
+    () => ost.fetchLastCheckpoint({ url: SPREAD_URL, bib: "999" }, impl),
+    (e) => e.code === "bad_gateway" && /redirected off-host/.test(e.message) && /169\.254\.169\.254/.test(e.message),
+  );
+  // the untrusted target was never fetched
+  assert.deepEqual(calls, [SPREAD_URL]);
+});
+
+test("opensplittime: a same-host redirect (bare domain to www.) is followed, each hop re-checked", async () => {
+  const calls = [];
+  const impl = async (url) => {
+    calls.push(String(url));
+    if (calls.length === 1) return { status: 301, headers: headerMap({ location: SPREAD_URL }) };
+    return { ok: true, status: 200, headers: headerMap({}), text: async () => SPREAD };
+  };
+  const hit = await ost.fetchLastCheckpoint(
+    { url: "https://opensplittime.org/events/2026-san-juan-softie-100/spread", bib: "999", stations: SOFTIE_STATIONS },
+    impl,
+  );
+  assert.equal(hit.station, "Burnett #7");
+  assert.deepEqual(calls, ["https://opensplittime.org/events/2026-san-juan-softie-100/spread", SPREAD_URL]);
+});
+
+test("opensplittime: a redirect chain longer than the cap is refused, not followed forever", async () => {
+  let n = 0;
+  const impl = async () => {
+    n++;
+    return { status: 302, headers: headerMap({ location: `${SPREAD_URL}?hop=${n}` }) };
+  };
+  await assert.rejects(
+    () => ost.fetchLastCheckpoint({ url: SPREAD_URL, bib: "999" }, impl),
+    (e) => e.code === "bad_gateway" && /redirected more than/.test(e.message),
+  );
+  assert.ok(n <= 5, `expected the hop cap to stop the loop quickly, got ${n} fetches`);
+});
+
+/** PR #24 review round 3, LOW finding: the 8 MB cap used to be enforced by
+    checking `html.length` AFTER `res.text()` had already buffered the whole
+    body in memory. Fixed to check Content-Length first, then stream-count
+    bytes and abort past the cap without finishing the read. */
+test("opensplittime: a Content-Length over the cap is refused before any bytes are read", async () => {
+  // getReader()/text() would throw if the implementation reached them — the
+  // Content-Length check must refuse before either is ever called.
+  const body = { getReader: () => { throw new Error("must not read the body stream"); } };
+  const impl = async () => ({
+    ok: true,
+    status: 200,
+    headers: headerMap({ "content-length": String(9 * 1024 * 1024) }),
+    body,
+    text: async () => { throw new Error("must not call text() either"); },
+  });
+  await assert.rejects(
+    () => ost.fetchLastCheckpoint({ url: SPREAD_URL, bib: "999" }, impl),
+    (e) => e.code === "bad_gateway" && /declared 9437184 bytes/.test(e.message),
+  );
+});
+
+test("opensplittime: a response over the byte cap with no Content-Length is aborted mid-stream", async () => {
+  const impl = async () => streamResponse({ totalBytes: 9 * 1024 * 1024 });
+  await assert.rejects(
+    () => ost.fetchLastCheckpoint({ url: SPREAD_URL, bib: "999" }, impl),
+    (e) => e.code === "bad_gateway" && /more than 8388608 bytes/.test(e.message),
   );
 });
 

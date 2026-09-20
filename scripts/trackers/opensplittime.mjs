@@ -53,6 +53,18 @@ const MAX_BYTES = 8 * 1024 * 1024;
     on a repeating timer and a stuck request must not stack up. */
 const TIMEOUT_MS = 12_000;
 
+/** Redirect hops the initial fetch is allowed to follow. `matches()` only
+    restricts the FIRST url (and `tracking.url` is separately validated as
+    absolute http(s) at write time — race-edit.mjs, race-config.mjs) — a 3xx
+    from the trusted host itself is not otherwise re-checked. If
+    opensplittime.org is ever compromised or grows an open redirect, an
+    unvalidated `redirect: "follow"` could land the fetch on 127.0.0.1,
+    169.254.169.254 or a private range. Each hop's Location is re-run through
+    `matches()` before it is followed; a small cap keeps a redirect loop from
+    hanging the poll for the full timeout on every hop. */
+const MAX_REDIRECTS = 3;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
 /**
  * Minimum aid-match score before a tracker's checkpoint label is considered
  * the same place as a race.json aid station. Deliberately high: mapping
@@ -382,25 +394,79 @@ export async function fetchLastCheckpoint(req, fetchImpl = fetch) {
   const target = spreadUrl(url);
 
   let res;
+  let current = target;
   try {
-    res = await fetchImpl(target, {
-      redirect: "follow",
-      headers: { accept: "text/html", "user-agent": "trail-train/basecamp tracker" },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
+    for (let hop = 0; ; hop++) {
+      res = await fetchImpl(current, {
+        redirect: "manual",
+        headers: { accept: "text/html", "user-agent": "trail-train/basecamp tracker" },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      if (!REDIRECT_STATUSES.has(res?.status)) break;
+      if (hop >= MAX_REDIRECTS) {
+        throw tagged("bad_gateway", `${label}: ${target} redirected more than ${MAX_REDIRECTS} times`);
+      }
+      const location = res.headers?.get?.("location");
+      if (!location) {
+        throw tagged("bad_gateway", `${label}: ${current} returned HTTP ${res.status} with no Location header`);
+      }
+      let next;
+      try {
+        next = new URL(location, current).href;
+      } catch {
+        throw tagged("bad_gateway", `${label}: ${current} redirected to an unparseable URL (${location})`);
+      }
+      if (!matches(next)) {
+        throw tagged("bad_gateway", `${label}: ${current} redirected off-host to ${next} — refused`);
+      }
+      current = next;
+    }
   } catch (e) {
+    if (e?.code) throw e; // one of our own tagged refusals just above
     throw tagged(
       "bad_gateway",
       e?.name === "TimeoutError"
-        ? `${label}: ${target} did not answer within ${TIMEOUT_MS / 1000}s`
-        : `${label}: ${target} could not be reached (${e?.message ?? e})`,
+        ? `${label}: ${current} did not answer within ${TIMEOUT_MS / 1000}s`
+        : `${label}: ${current} could not be reached (${e?.message ?? e})`,
     );
   }
-  if (!res?.ok) throw tagged("bad_gateway", `${label}: ${target} returned HTTP ${res?.status ?? "?"}`);
+  if (!res?.ok) throw tagged("bad_gateway", `${label}: ${current} returned HTTP ${res?.status ?? "?"}`);
 
-  const html = await res.text();
-  if (html.length > MAX_BYTES) {
-    throw tagged("bad_gateway", `${label}: ${target} returned more than ${MAX_BYTES} bytes`);
+  // Content-Length is a declaration, not a guarantee — checked first so an
+  // honest oversize response is refused before any bytes are read — but the
+  // real enforcement is the streamed count below, since a chunked response
+  // (or a lying header) never sets it.
+  const declaredLen = Number(res.headers?.get?.("content-length"));
+  if (Number.isFinite(declaredLen) && declaredLen > MAX_BYTES) {
+    throw tagged(
+      "bad_gateway",
+      `${label}: ${current} declared ${declaredLen} bytes (Content-Length), more than the ${MAX_BYTES} cap`,
+    );
+  }
+
+  let html;
+  if (typeof res.body?.getReader === "function") {
+    const reader = res.body.getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > MAX_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw tagged("bad_gateway", `${label}: ${current} returned more than ${MAX_BYTES} bytes`);
+      }
+      chunks.push(value);
+    }
+    html = Buffer.concat(chunks).toString("utf8");
+  } else {
+    // test doubles that only implement text() (no real body stream): same
+    // cap, checked after the fact rather than mid-stream.
+    html = await res.text();
+    if (html.length > MAX_BYTES) {
+      throw tagged("bad_gateway", `${label}: ${current} returned more than ${MAX_BYTES} bytes`);
+    }
   }
 
   // A page that parses to no columns and no rows is not "this runner is not
@@ -412,7 +478,7 @@ export async function fetchLastCheckpoint(req, fetchImpl = fetch) {
   if (!headers.length || !rows.length) {
     throw tagged(
       "bad_gateway",
-      `${label}: ${target} has no readable spread table (${headers.length} station columns, ${rows.length} entrant rows) — the page may have changed or the event may not be public`,
+      `${label}: ${current} has no readable spread table (${headers.length} station columns, ${rows.length} entrant rows) — the page may have changed or the event may not be public`,
     );
   }
 
