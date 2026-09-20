@@ -529,6 +529,29 @@ export function RacePlanner() {
               {courseBuild.error && (
                 <div style={{ fontSize: 11, color: "var(--ember)", marginTop: 6 }}>{courseBuild.error}</div>
               )}
+              {/* Round 3 sweep extension (render-only edit, per the fixer who
+                  owns the rest of this file): a course DID build, but the
+                  hook's own `warnings` says it's degraded. In practice this
+                  never paints — courseBuild.run()'s onDone() IS reload(),
+                  and App.tsx wraps this whole tabpanel in
+                  `key={`race-${key}`}` (that same pulse), which remounts
+                  this component — and every hook's state in it, this one
+                  included — the instant the build succeeds, before this
+                  render ever reaches the screen (traced with a
+                  temporary console.log rather than assumed: warnings gets
+                  set, then the very next commit is a fresh mount with it
+                  back at []). Kept anyway, since it costs nothing and is
+                  correct for whatever future onDone() doesn't immediately
+                  remount its own caller — but the mismatch itself is not
+                  lost to the athlete either way: the persisted banner below
+                  (raceConfig.unresolved, re-derived off the RELOADED
+                  race.json) says the same thing the instant the reload
+                  lands. See web/tests/switcher.spec.ts's "RACE tab" test
+                  for the reproduction and the test that covers the real,
+                  observable outcome instead of this line. */}
+              {courseBuild.warnings.length > 0 && (
+                <div style={{ fontSize: 11, color: "var(--lamp)", marginTop: 6 }}>⚠ {courseBuild.warnings.join(" · ")}</div>
+              )}
             </div>
           )}
         </div>

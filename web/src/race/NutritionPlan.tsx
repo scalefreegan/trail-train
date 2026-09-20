@@ -392,6 +392,21 @@ export function NutritionPlan() {
               {courseBuild.error && (
                 <div style={{ fontSize: 11, color: "var(--ember)", marginTop: 6 }}>{courseBuild.error}</div>
               )}
+              {/* Round 3 sweep extension (render-only edit, per the fixer who
+                  owns the rest of this file): a course DID build, but the
+                  hook's own `warnings` says it's degraded. In practice this
+                  never paints on THIS view either — see the matching comment
+                  in RacePlanner.tsx's own copy of this block for the full
+                  explanation (App.tsx's `key={`fuel-${key}`}` remounts this
+                  whole tabpanel the instant courseBuild.run()'s onDone()
+                  fires, which is the same reload() that just set this).
+                  Kept for the same reason: correct, costs nothing, and this
+                  view has no persisted mismatch banner of its own the way
+                  RacePlanner does, so it is strictly better than nothing on
+                  the rare render this DOES survive to paint. */}
+              {courseBuild.warnings.length > 0 && (
+                <div style={{ fontSize: 11, color: "var(--lamp)", marginTop: 6 }}>⚠ {courseBuild.warnings.join(" · ")}</div>
+              )}
             </div>
           )}
         </div>

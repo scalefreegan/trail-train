@@ -523,6 +523,23 @@ export function RaceDay() {
                     </button>
                     <div style={{ marginTop: 6 }}>Parses the stored GPX — free, no agent turn.</div>
                     {courseBuild.error && <div style={{ color: "var(--ember)", marginTop: 6 }}>{courseBuild.error}</div>}
+                    {/* Round 3 sweep extension: a course DID build (this
+                        whole block is about to disappear once `missing`
+                        flips false) but the hook's own `warnings` says it's
+                        degraded — worth a beat before the real course view
+                        takes over. Unlike RacePlanner.tsx's/NutritionPlan.tsx's
+                        own copies of this same block, this one actually
+                        reaches the screen: RaceDayRoute (#/race-day) mounts
+                        RacePlanProvider directly, with none of App.tsx's
+                        `key={`race-${key}`}`/`key={`fuel-${key}`}` remount-
+                        on-every-reload wrapping the RACE/FUEL tabpanels do —
+                        so courseBuild.run()'s onDone()/reload() re-fetches
+                        course.json in place here rather than tearing this
+                        component down first. Pinned in
+                        web/tests/switcher.spec.ts's RaceDay test. */}
+                    {courseBuild.warnings.length > 0 && (
+                      <div style={{ color: "var(--lamp)", marginTop: 6 }}>⚠ {courseBuild.warnings.join(" · ")}</div>
+                    )}
                   </div>
                 </>
               ) : (

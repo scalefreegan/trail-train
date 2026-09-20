@@ -220,6 +220,45 @@ async function writeCleanArchivedFixture(): Promise<void> {
 }
 
 /**
+ * Same shared temp root, same synthetic ~29.9 mi track as CLEAN_ARCHIVED
+ * above, but declared at 100 mi — comfortably past build-course.mjs's 15%
+ * MISMATCH_THRESHOLD, with no `format` set so isLegOrLapDistance's
+ * out_and_back/loop excuse never applies regardless of the resulting ratio.
+ * The build still answers `ok: true` (a real course, gain_ft pinned to the
+ * ~399 ft the track actually measures so ONLY the distance mismatches) —
+ * the second half of finding 1's fix (round 3 sweep extension): a built
+ * course with `warnings` must show a ⚠ hint, never the plain tick.
+ */
+const MISMATCH_ARCHIVED = { slug: 'r3rd-mismatch-archived-50k', name: 'R3RD Mismatch Archived 50K' }
+
+async function writeMismatchArchivedFixture(): Promise<void> {
+  const root = process.env.TRAIL_TEST_PROJECT_ROOT
+  if (!root) throw new Error('writeMismatchArchivedFixture: TRAIL_TEST_PROJECT_ROOT is unset — global setup did not run')
+  const dir = path.join(root, 'races', MISMATCH_ARCHIVED.slug)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(path.join(dir, 'course.gpx'), syntheticCourseGpx())
+  await fs.writeFile(path.join(dir, 'race.json'), JSON.stringify({
+    schema_version: 1,
+    slug: MISMATCH_ARCHIVED.slug,
+    status: 'archived',
+    name: MISMATCH_ARCHIVED.name,
+    short: 'R3RDMA',
+    edition_year: 2027,
+    date: '2027-06-12',
+    start_time: '06:00',
+    timezone: 'America/Denver',
+    distance_mi: 100,
+    gain_ft: 399,
+    cutoff_h: null,
+    aid_stations: [
+      { name: 'Finish', total_mi: 100, cutoff_h: null, crew: false, drop_bag: false },
+    ],
+    race_climbs: [],
+    links: {},
+  }, null, 2))
+}
+
+/**
  * Find the "↳ Run course again…" row that belongs to one race, the same way
  * basecamp.ts's own (unexported) clickSubRowFor locates a Review/Refresh row
  * — by finding the race's own row first and taking the next matching sub-row
@@ -279,6 +318,153 @@ test('Run course again on a clean build still shows the tick', async ({ page, tr
 
   await row.click()
   await expect(row).toContainText(/course rebuilt ✓/i)
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * Round 3 sweep extension (r3-sweep.md, first HIGH) — the switcher row's
+ * SECOND check: `ok: true` with a real course but non-empty `warnings` (a
+ * course.gpx measuring far off the declared distance) must show a ⚠ hint,
+ * not the plain success tick.
+ */
+test('Run course again on a mismatched build shows a warning, not the tick', async ({ page, trouble }) => {
+  await writeMismatchArchivedFixture()
+  await openDashboard(page)
+  await openSwitcher(page)
+  const row = await runCourseAgainRowFor(page, MISMATCH_ARCHIVED.name)
+
+  await row.click()
+  await expect(row).toContainText(/⚠.*course\.gpx measures 29\.9 mi vs race\.json's 100 mi/i)
+  await expect(row).not.toContainText(/rebuilt ✓/i)
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/* ------------------------------------------------------------------ */
+/*  Round 3 sweep extension — the shared useRunCourseAgain hook         */
+/*  (runCourseAgain.ts) dropped `warnings` too, on all three of its own */
+/*  real call sites (RaceDay.tsx, RacePlanner.tsx, NutritionPlan.tsx).  */
+/*  Covered here (rather than a hook unit test — the project has no     */
+/*  jsdom/testing-library, so a React hook isn't node-testable) via the */
+/*  RACE tab, whose planner (RacePlanner.tsx) is the same "no course    */
+/*  data yet" empty state, button and all, as the other two.            */
+/*                                                                       */
+/*  NOTE on what this test does NOT assert, and why: App.tsx wraps the   */
+/*  whole "race" tabpanel in `<div key={`race-${key}`}>` (`key` is the   */
+/*  SAME refresh pulse `reload()` bumps), specifically so every reload   */
+/*  starts each view's subtree clean (App.tsx's own comment: "each view  */
+/*  already unmounts/remounts its own subtree via `key`"). courseBuild's */
+/*  onDone() IS that same `reload()`, so the instant a build with        */
+/*  warnings succeeds, the very state carrying `courseBuild.warnings`    */
+/*  is unmounted — in the same render pass it was just set in, well      */
+/*  before any network delay a test could hook even matters (confirmed   */
+/*  by instrumenting both the hook and RacePlanner's render directly:    */
+/*  the note's render and its own subtree's remount are back-to-back,    */
+/*  synchronous, and unrelated to how long the resulting /course.json    */
+/*  re-fetch takes). So the note this round's fix adds to RacePlanner/   */
+/*  NutritionPlan/RaceDay is real and correctly wired, but — on these    */
+/*  three call sites specifically, unlike the switcher's own separate    */
+/*  implementation in App.tsx, which is NOT wrapped in this key — it is  */
+/*  not something a human or this suite can ever actually observe on    */
+/*  screen. Fixing THAT is App.tsx's tab-remount design, out of this     */
+/*  lane; flagged in the round's report instead of routed around here    */
+/*  with new cross-remount persistence nobody asked for. What IS true    */
+/*  and testable: the athlete is not left in the dark about the mismatch */
+/*  — RacePlanner's own persisted banner (raceConfig.unresolved, read    */
+/*  fresh off the RELOADED race.json) says the same thing the instant    */
+/*  the reload lands.                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A race with a mismatched course.gpx that has NEVER been built — no
+ * build/course.json at all, so useCourse() 404s and the empty state ("no
+ * course data yet" / "run course build") is what's on screen, the same as
+ * any of the three courseBuild.run() call sites. Status draft (never
+ * active — MM already holds that), kind "a": a top-level race like the
+ * mismatch test above, not a tune-up, since nothing about this scenario is
+ * tune-up-specific.
+ *
+ * Takes its own slug/name (rather than one shared constant): the RACE-tab
+ * test below and the RaceDay test after it each BUILD their own copy, and a
+ * shared slug would mean the second test's "never been built" premise is
+ * already false by the time it runs — the first test's own build having
+ * left a real build/course.json behind for the SAME folder.
+ */
+function writeMismatchUnbuiltFixture(slug: string, name: string): Promise<void> {
+  const root = process.env.TRAIL_TEST_PROJECT_ROOT
+  if (!root) throw new Error('writeMismatchUnbuiltFixture: TRAIL_TEST_PROJECT_ROOT is unset — global setup did not run')
+  const dir = path.join(root, 'races', slug)
+  return fs.mkdir(dir, { recursive: true }).then(async () => {
+    await fs.writeFile(path.join(dir, 'course.gpx'), syntheticCourseGpx())
+    await fs.writeFile(path.join(dir, 'race.json'), JSON.stringify({
+      schema_version: 1,
+      slug,
+      status: 'draft',
+      name,
+      short: 'R3RDMU',
+      edition_year: 2027,
+      date: '2027-06-12',
+      start_time: '06:00',
+      timezone: 'America/Denver',
+      distance_mi: 100,
+      gain_ft: 399,
+      cutoff_h: null,
+      aid_stations: [
+        { name: 'Finish', total_mi: 100, cutoff_h: null, crew: false, drop_bag: false },
+      ],
+      race_climbs: [],
+      links: {},
+    }, null, 2))
+  })
+}
+
+const MISMATCH_UNBUILT_RACETAB = { slug: 'r3rd-mismatch-unbuilt-racetab-100', name: 'R3RD Mismatch Unbuilt RaceTab 100' }
+
+test('the RACE tab\'s "run course build" on a mismatched, unbuilt race ends up showing the mismatch', async ({ page, request, trouble }) => {
+  await writeMismatchUnbuiltFixture(MISMATCH_UNBUILT_RACETAB.slug, MISMATCH_UNBUILT_RACETAB.name)
+  await setActiveRace(request, MISMATCH_UNBUILT_RACETAB.slug, 'view')
+
+  await openDashboard(page)
+  await page.getByRole('tab', { name: /^race$/i }).click()
+  await expect(page.getByText(/no course data yet/i)).toBeVisible()
+
+  await page.getByRole('button', { name: /run course build/i }).click()
+
+  // See the file-header note above this block for why this checks the
+  // PERSISTED mismatch banner (survives the reload) rather than
+  // courseBuild.warnings' own transient note (does not).
+  await expect(page.getByText(/course\.gpx measures/i)).toBeVisible()
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * RaceDay.tsx's OWN copy of the same empty state/button (#/race-day, PLAIN
+ * URL route — not App.tsx's tabbed shell) is NOT wrapped in a `key={pulse}`
+ * remount the way the RACE/FUEL tabpanels above are (RaceDayRoute mounts
+ * RacePlanProvider directly, with no such key anywhere above it) — so this
+ * is the one of the three real call sites where courseBuild.warnings' own
+ * note has an actual chance to reach the screen, and does, once the
+ * /course.json re-fetch its onDone()/reload() triggers is slowed down
+ * enough to observe the render that has it.
+ */
+const MISMATCH_UNBUILT_RACEDAY = { slug: 'r3rd-mismatch-unbuilt-raceday-100', name: 'R3RD Mismatch Unbuilt RaceDay 100' }
+
+test('RaceDay\'s "run course build" shows the hook\'s own warning note (this call site does not get remounted by reload)', async ({ page, request, trouble }) => {
+  await writeMismatchUnbuiltFixture(MISMATCH_UNBUILT_RACEDAY.slug, MISMATCH_UNBUILT_RACEDAY.name)
+  await setActiveRace(request, MISMATCH_UNBUILT_RACEDAY.slug, 'view')
+
+  await page.goto('/#/race-day')
+  await expect(page.getByText(/no course\.json for this race yet/i)).toBeVisible()
+
+  await page.route('**/course.json*', async (route) => {
+    await new Promise((r) => setTimeout(r, 800))
+    await route.fallback()
+  })
+
+  await page.getByRole('button', { name: /run course build/i }).click()
+  await expect(page.getByText(/⚠.*course\.gpx measures 29\.9 mi vs race\.json's 100 mi/i)).toBeVisible()
 
   expect(trouble.pageErrors).toEqual([])
 })

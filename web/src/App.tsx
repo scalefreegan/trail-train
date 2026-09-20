@@ -582,11 +582,14 @@ function RaceSwitcher() {
       // Second check: a course DID build, but measures far enough off the
       // declared distance/gain to be worth a second look (still `ok: true`,
       // still `warnings`) — a real result, not a failure, so it gets the
-      // row's hint rather than the top-level error banner, worded like
-      // AddTuneUp.tsx's own build-warning banner for the same payload shape.
+      // row's hint rather than the top-level error banner. All of them,
+      // joined, not just the first — AddTuneUp.tsx's own build-warning
+      // banner for the same payload shape (`created.build.warnings.join("
+      // · ")`) does the same, since a distance AND a gain mismatch are two
+      // separate things to check, not a pick-one.
       const warnings = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
       if (warnings.length > 0) {
-        setBuiltWarning({ slug, message: warnings[0] });
+        setBuiltWarning({ slug, message: warnings.join(" · ") });
         window.setTimeout(() => setBuiltWarning((cur) => (cur?.slug === slug ? null : cur)), 4000);
       } else {
         setBuiltNotice(slug);
