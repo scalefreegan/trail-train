@@ -950,6 +950,13 @@ function RaceTopline() {
      menu row got none. A nested tune-up has no `entry` at all, for the same
      reason. */
   const actionable = entry != null && !entry.parent_missing;
+  /* Every question the button set depends on has an answer: the race list has
+     loaded, and — when the race on screen is an archived one — so has its
+     result. Until then the strip is still deciding what to offer, and a
+     reader (or a test) sampling the buttons gets a subset that is not wrong,
+     just early. Published as `data-resolved` on the group below so that is
+     observable from outside rather than guessed at with a wait. */
+  const resolved = grouped != null && (viewing?.status !== "archived" || resultResolved);
   const rerunSlug = actionable && isRerunnable(entry) ? entry.slug : null;
   const onBuilt = useCallback(() => reload(), [reload]);
   // The same hook RaceDay/RacePlanner/NutritionPlan drive their own "run
@@ -1077,6 +1084,7 @@ function RaceTopline() {
       <div
         role="group"
         aria-label="race actions"
+        data-resolved={resolved ? "true" : "false"}
         style={{ display: "flex", flexWrap: "wrap", gap: 6, marginLeft: "auto", minWidth: 0 }}
       >
         {actionable && isReviewable(entry) && (

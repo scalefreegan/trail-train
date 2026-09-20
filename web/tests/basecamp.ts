@@ -176,9 +176,14 @@ export const raceActionNote = (page: Page) => page.getByRole('status')
  * shouting.
  */
 export async function raceActionLabels(page: Page): Promise<string[]> {
-  // Waits for the strip itself rather than for any one button: a state with
-  // no actions at all (a tune-up, an orphan) is a legitimate answer here.
-  await expect(page.getByText(/^(active|draft|archived) · /i).first()).toBeVisible()
+  // Waits for the strip to have DECIDED, not merely to exist. The button set
+  // depends on two fetches (GET /api/races, and an archived race's own
+  // /result), and a null result means "still asking" as much as "none
+  // linked" — so sampling on first paint returns a subset that is not wrong,
+  // just early. `data-resolved` is RaceTopline's own statement that both have
+  // answered; waiting for a state with no actions at all (a tune-up, an
+  // orphan) is a legitimate outcome, so this cannot wait for a button.
+  await expect(raceActions(page)).toHaveAttribute('data-resolved', 'true')
   return (await raceActions(page).getByRole('button').allInnerTexts()).map((t) => t.trim())
 }
 
