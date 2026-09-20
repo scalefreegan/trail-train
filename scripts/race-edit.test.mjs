@@ -599,6 +599,25 @@ test("a clean draft with no unresolved fields activates", () => {
   assert.equal(r.status, "active");
 });
 
+test("the unresolved-fields refusal agrees with itself about the count", () => {
+  // Browser check BUG 4: the count was singularised while the instruction
+  // stayed plural — "1 unresolved field — fill THEM in or acknowledge EACH
+  // ONE" — which is the sentence the strip now shows an athlete verbatim.
+  const one = validateStatusTransition(race(), { status: "active" }, { unresolved: ["links.tracking"] });
+  assert.equal(one.ok, false);
+  assert.equal(
+    one.errors[0],
+    "1 unresolved field — fill it in or acknowledge it before activating:",
+  );
+  assert.deepEqual(one.errors.slice(1), ["links.tracking"]);
+
+  const two = validateStatusTransition(race(), { status: "active" }, { unresolved: ["links.tracking", "elevation.min_ft"] });
+  assert.equal(
+    two.errors[0],
+    "2 unresolved fields — fill them in or acknowledge each one before activating:",
+  );
+});
+
 test("unresolved fields block activation until they are acknowledged", () => {
   const blocked = validateStatusTransition(race(), { status: "active" }, { unresolved: ["elevation.min_ft", "links.tracking"] });
   assert.equal(blocked.ok, false);

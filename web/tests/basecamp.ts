@@ -148,7 +148,13 @@ export async function chooseRace(page: Page, name: string | RegExp) {
  * helper below loads the race first and then acts on it, where it used to
  * find the race's row and take the next sub-row after it.
  */
-export const raceActions = (page: Page) => page.getByRole('group', { name: 'race actions' })
+export const raceActions = (page: Page) =>
+  // Named after the race it acts on ("actions for Mesa Monster 100") — in
+  // train mode the strip's only other text is "active · training target", so
+  // a generic "race actions" was the group's whole accessible name and never
+  // said which race. Matched by prefix here so the specs do not each have to
+  // know the race's name.
+  page.getByRole('group', { name: /^actions for / })
 
 /** One action button on the strip, by (partial) label. */
 export const raceAction = (page: Page, name: string | RegExp) =>

@@ -4,7 +4,7 @@ import path from 'node:path'
 import {
   test, expect, CREWLESS, DRAFT, MM,
   openDashboard, openPrintable, openRaceTab, openRefreshFor, openReviewFor, openSwitcher,
-  raceAction, setActiveRace,
+  raceAction, raceActions, setActiveRace,
   type Page,
 } from './basecamp'
 
@@ -254,6 +254,56 @@ test.describe('dialog accessibility', () => {
  * choice of automatic activation — Home/End too), and aria-controls naming
  * a real, currently-rendered tabpanel.
  */
+/**
+ * Browser check BUG 5 — the strip's action hints were `title`-only.
+ *
+ * In the switcher these same strings were VISIBLE, as each row's second line.
+ * `title` shows on mouse hover and nowhere else: not on the phone the change
+ * is partly justified by ("twenty rows to scroll past"), and not to a screen
+ * reader. It matters most for the cost signal — "· paid" is in a label, but
+ * the reassurance that the others are "free, no agent turn" had no other way
+ * to reach anyone.
+ */
+test.describe('topline action hints', () => {
+  test.beforeEach(async ({ request }) => {
+    await setActiveRace(request, MM.slug, 'train')
+  })
+
+  test('every action button carries its hint as a description, not just a title', async ({ page, trouble }) => {
+    await openDashboard(page)
+    const buttons = raceActions(page).getByRole('button')
+    await expect(buttons.first()).toBeVisible()
+
+    const n = await buttons.count()
+    expect(n, 'the active race should offer actions to describe').toBeGreaterThan(0)
+    for (let i = 0; i < n; i++) {
+      const button = buttons.nth(i)
+      const label = (await button.innerText()).trim()
+      const title = await button.getAttribute('title')
+      expect(title, `"${label}" lost its title`).toBeTruthy()
+
+      // The description a screen reader actually announces, resolved through
+      // aria-describedby to a real element with the same text.
+      const describedBy = await button.getAttribute('aria-describedby')
+      expect(describedBy, `"${label}" has no aria-describedby`).toBeTruthy()
+      // `CSS.escape` is a browser global, not a Node one, and useId's ids
+      // contain colons — so resolve the reference in the page, the way the
+      // accessibility tree does.
+      const describedText = await page.evaluate(
+        (id) => document.getElementById(id)?.textContent ?? null,
+        describedBy!,
+      )
+      expect(describedText, `"${label}"'s aria-describedby points at nothing`).not.toBeNull()
+      expect(describedText!.trim(), `"${label}"'s description does not match its title`).toBe(title!.trim())
+    }
+
+    // The free/paid distinction specifically — the thing title-only hid.
+    await expect(raceAction(page, /Add tune-up…/)).toHaveAttribute('title', /free, no agent turn/i)
+
+    expect(trouble.pageErrors).toEqual([])
+  })
+})
+
 test.describe('view tablist', () => {
   test.beforeEach(async ({ request }) => {
     // A race active throughout: "race" and "fuel" only exist with one.

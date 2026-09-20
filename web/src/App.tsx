@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   useRefresh, REFRESH_STEPS,
@@ -819,25 +819,48 @@ function useRaceGroups(): RaceGroupEntry[] | null {
   return groups;
 }
 
-/** One action on the strip. A real <button> with a visible focus ring (the
-    switcher rows fake theirs inline; these are ordinary buttons in the page's
-    own tab order), its hint in `title` so the long explanation the menu row
-    carried on its second line is not lost. */
-const ActionButton = ({ label, hint, onClick, disabled, busy, busyLabel }: {
+/**
+ * One action on the strip. A real <button> with a visible focus ring (the
+ * switcher rows fake theirs inline; these are ordinary buttons in the page's
+ * own tab order).
+ *
+ * The hint is the explanation the menu row used to carry VISIBLY on its
+ * second line. `title` alone put it back behind a mouse hover — unreachable
+ * on the phone the change is partly justified by, and never announced by a
+ * screen reader (browser check BUG 5). It matters here more than most: "free,
+ * no agent turn" is the reassurance that distinguishes these buttons from the
+ * one labelled "· paid". So it is also a visually-hidden span that the button
+ * points at with `aria-describedby`; `title` stays for the mouse.
+ *
+ * `secondary` draws the one consequential action (retiring the race) a step
+ * quieter than the everyday ones it now sits beside on every page load.
+ */
+const ActionButton = ({ label, hint, onClick, disabled, busy, busyLabel, secondary }: {
   label: string; hint: string; onClick: () => void;
-  disabled?: boolean; busy?: boolean; busyLabel?: string;
-}) => (
-  <button
-    type="button"
-    className="chip race-action"
-    title={hint}
-    onClick={onClick}
-    disabled={disabled || busy}
-    style={{ fontSize: 9, letterSpacing: "0.1em", padding: "4px 8px", whiteSpace: "normal", textAlign: "left" }}
-  >
-    {busy ? busyLabel ?? "working…" : label}
-  </button>
-);
+  disabled?: boolean; busy?: boolean; busyLabel?: string; secondary?: boolean;
+}) => {
+  const hintId = useId();
+  return (
+    <span style={{ display: "contents" }}>
+      <button
+        type="button"
+        className="chip race-action"
+        title={hint}
+        aria-describedby={hintId}
+        onClick={onClick}
+        disabled={disabled || busy}
+        style={{
+          fontSize: 9, letterSpacing: "0.1em", padding: "4px 8px",
+          whiteSpace: "normal", textAlign: "left",
+          ...(secondary ? { borderColor: "var(--edge)", color: "var(--mist-dim)", opacity: 0.85 } : null),
+        }}
+      >
+        {busy ? busyLabel ?? "working…" : label}
+      </button>
+      <span id={hintId} className="visually-hidden">{hint}</span>
+    </span>
+  );
+};
 
 /**
  * The status strip under the command bar: what the race on screen is, and
@@ -862,7 +885,7 @@ const ActionButton = ({ label, hint, onClick, disabled, busy, busyLabel }: {
  */
 function RaceTopline() {
   const { race, viewing } = useBlockConfig();
-  const { slug: trainingSlug, viewing: onScreenSlug } = useActiveRace();
+  const { slug: trainingSlug, viewing: onScreenSlug, activeRace } = useActiveRace();
   const { reload } = useRefresh();
   const grouped = useRaceGroups();
 
@@ -957,6 +980,18 @@ function RaceTopline() {
      just early. Published as `data-resolved` on the group below so that is
      observable from outside rather than guessed at with a wait. */
   const resolved = grouped != null && (viewing?.status !== "archived" || resultResolved);
+
+  /* Is the race on screen a tune-up, and if so whose? A nested B race is not
+     a top-level `entry` at all (that is what leaves it action-less), so its
+     own kind comes from the payload and its parent is found by looking for
+     the A race whose block holds it. An ORPHAN tune-up is top-level and
+     carries `parent_missing`, so it answers here too — its parent is simply
+     not on disk, which its own menu row already says. */
+  const onScreenIsTuneUp = isTuneUp(activeRace?.race ?? null);
+  const tuneUpParent = useMemo(() => {
+    if (!onScreenIsTuneUp || !onScreenSlug) return null;
+    return (grouped ?? []).find((r) => r.b_races.some((b) => b.slug === onScreenSlug)) ?? null;
+  }, [onScreenIsTuneUp, onScreenSlug, grouped]);
   const rerunSlug = actionable && isRerunnable(entry) ? entry.slug : null;
   const onBuilt = useCallback(() => reload(), [reload]);
   // The same hook RaceDay/RacePlanner/NutritionPlan drive their own "run
@@ -969,6 +1004,16 @@ function RaceTopline() {
   const courseBuild = useRunCourseAgain(rerunSlug, onBuilt);
 
   const anyBusy = activating || courseBuild.busy;
+
+  /* The eligibility answers, named rather than inlined — the render needs
+     each one AND needs to know whether there is anything at all, so the
+     group can be skipped instead of announced empty (browser check BUG 3). */
+  const showReview = actionable && isReviewable(entry);
+  const showActivate = actionable && entry.status === "draft" && !entry.error;
+  const showRefresh = actionable && isRefreshable(entry);
+  const showAddTuneUp = actionable && canAddTuneUp(entry, trainingSlug);
+  const actionCount = [showReview, showActivate, showRefresh, rerunSlug != null, showAddTuneUp, archiveTarget != null]
+    .filter(Boolean).length;
 
   const activate = useCallback(async (slug: string) => {
     if (busyRef.current) return;
@@ -996,7 +1041,15 @@ function RaceTopline() {
         // unresolved-fields gate, the single-active invariant, the missing-
         // sun block. Each is answered somewhere else (the review screen, the
         // archive dialog), so the strip states it and stops.
-        setActivateError((body.errors ?? [body.error ?? `HTTP ${res.status}`]).join(" · "));
+        //
+        // Its shape is [sentence, ...offending field paths] when there is a
+        // list and a lone sentence otherwise. Joining the whole array with
+        // " · " put a bullet immediately after the colon that introduces the
+        // list ("…before activating: · links.tracking"), so the head keeps
+        // its own punctuation and the paths are a plain comma list behind it
+        // (browser check BUG 4).
+        const [head, ...paths] = body.errors ?? [body.error ?? `HTTP ${res.status}`];
+        setActivateError(paths.length > 0 ? `${head} ${paths.join(", ")}` : head);
         return;
       }
       promoted = true;
@@ -1037,7 +1090,13 @@ function RaceTopline() {
     timeZone: race.timeZone, year: "numeric", month: "short", day: "numeric",
   }).toLowerCase();
   const status = viewing
-    ? viewing.status === "archived" ? `archived · ${when} · read-only`
+    // A tune-up is never activated — `kind: "b"` is refused the status by the
+    // schema and by validateActivation both (PRD-v2 §3), which is the same
+    // fact that leaves it no actions here. "draft · not activated" announced
+    // an activation being withheld that was never on offer; it is a race
+    // inside a block, and that is what the line says now.
+    ? onScreenIsTuneUp ? "tune-up · viewing read-only"
+      : viewing.status === "archived" ? `archived · ${when} · read-only`
       // An active race opened in view mode (only reachable by hand-editing
       // config/active-race.json today, per round 3, resilience finding 9)
       // still IS the training target — "draft · not activated" told the
@@ -1072,8 +1131,10 @@ function RaceTopline() {
       </span>
       {viewing && (
         <span style={{ fontSize: 11.5, color: "var(--mist-mute)", lineHeight: 1.45, flex: "1 1 220px", minWidth: 0 }}>
-          viewing {race.name}. Training, the trajectory and the coach still work from your current
-          goals — nothing here is being trained for.
+          {onScreenIsTuneUp
+            ? `${race.name} is a tune-up${tuneUpParent ? ` inside ${tuneUpParent.name}` : ""} — trained through, not trained for.`
+            : <>viewing {race.name}. Training, the trajectory and the coach still work from your current
+              goals — nothing here is being trained for.</>}
         </span>
       )}
       {/* The actions, right-aligned where the strip fits on one line and
@@ -1081,13 +1142,22 @@ function RaceTopline() {
           rather than a toolbar: these are ordinary buttons in the page's tab
           order, not a roving-focus widget — the switcher menu is the app's
           one of those. */}
+      {/* Named after the race it acts on: in train mode the strip says only
+          "active · training target", so "race actions" was the group's only
+          accessible name and did not say WHICH race. Skipped entirely when
+          there is nothing in it — a tune-up and an orphan have no actions at
+          all, and an empty labelled group is announced as a group with
+          nothing in it. `data-resolved` is still published while the strip is
+          deciding (see `resolved`), so an empty group is only ever absent
+          because the answer is genuinely "none". */}
+      {(!resolved || actionCount > 0) && (
       <div
         role="group"
-        aria-label="race actions"
+        aria-label={`actions for ${race.name}`}
         data-resolved={resolved ? "true" : "false"}
         style={{ display: "flex", flexWrap: "wrap", gap: 6, marginLeft: "auto", minWidth: 0 }}
       >
-        {actionable && isReviewable(entry) && (
+        {showReview && (
           <ActionButton
             label="Review…"
             hint={entry.status === "active"
@@ -1097,7 +1167,7 @@ function RaceTopline() {
             onClick={() => setIntake({ slug: entry.slug })}
           />
         )}
-        {actionable && entry.status === "draft" && !entry.error && (
+        {showActivate && (
           <ActionButton
             label="Activate"
             hint="promote this draft to the race you are training for"
@@ -1107,7 +1177,7 @@ function RaceTopline() {
             onClick={() => void activate(entry.slug)}
           />
         )}
-        {actionable && isRefreshable(entry) && (
+        {showRefresh && (
           <ActionButton
             label="Refresh from sources… · paid"
             hint="re-read the site and manual · diff before anything is written"
@@ -1125,7 +1195,7 @@ function RaceTopline() {
             onClick={courseBuild.run}
           />
         )}
-        {actionable && canAddTuneUp(entry, trainingSlug) && (
+        {showAddTuneUp && (
           <ActionButton
             label="Add tune-up…"
             hint="name, date, distance, gain, optional gpx — free, no agent turn"
@@ -1143,11 +1213,18 @@ function RaceTopline() {
             hint={archiveTarget.status === "active"
               ? `${archiveTarget.short} · link the Strava run`
               : `${archiveTarget.short} · no activity linked`}
+            // Retiring the race is the most consequential thing in the app,
+            // and as a menu footer row it took some finding. On the strip it
+            // is on screen on every page load, so it is drawn a step quieter
+            // than the everyday actions beside it rather than at equal
+            // weight — the dialog behind it is still what actually guards it.
+            secondary
             disabled={anyBusy}
             onClick={() => setArchiveOpen(archiveTarget)}
           />
         )}
       </div>
+      )}
       {/* What the last strip action had to say — the build's reason, its ⚠,
           its ✓, or a refused activation. A live region: pressing a button
           here changes a line somewhere else on the strip, which a screen

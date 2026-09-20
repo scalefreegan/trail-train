@@ -1,6 +1,6 @@
 import {
   test, expect, ARCHIVED, DRAFT, MM,
-  chooseRace, openDashboard, openSwitcher, raceAction, raceActionLabels, raceActionNote,
+  chooseRace, openDashboard, openSwitcher, raceAction, raceActionLabels, raceActionNote, raceActions,
   setActiveRace, switcherButton, writeRawRaceFolder,
 } from './basecamp'
 
@@ -152,7 +152,7 @@ test('an archived race whose run is already linked offers no archive action at a
  * only button is the A race's own archive action, which is not about the
  * folder on screen at all.
  */
-test('a tune-up offers no actions of its own', async ({ page, request, trouble }) => {
+test('a tune-up offers no actions, no empty group, and copy that fits what it is', async ({ page, request, trouble }) => {
   const created = await request.post('/api/races', {
     data: {
       name: 'Topline Tune-Up 25K',
@@ -171,7 +171,15 @@ test('a tune-up offers no actions of its own', async ({ page, request, trouble }
   await setActiveRace(request, slug, 'view')
   await openDashboard(page)
 
-  expect(await raceActionLabels(page)).toEqual([])
+  // Browser check BUG 3. A tune-up is never activated — `kind: "b"` is
+  // refused the status by the schema and by validateActivation both — so
+  // "draft · not activated" announced an activation being withheld that was
+  // never on offer. And a labelled group with nothing in it is announced by
+  // a screen reader as exactly that.
+  await expect(page.getByText(/tune-up · viewing read-only/i)).toBeVisible()
+  await expect(page.getByText(new RegExp(`is a tune-up inside ${MM.name}`, 'i'))).toBeVisible()
+  await expect(page.getByText(/draft · not activated/i)).toHaveCount(0)
+  await expect(raceActions(page)).toHaveCount(0)
 
   expect(trouble.pageErrors).toEqual([])
 })
@@ -192,7 +200,10 @@ test('an orphaned tune-up offers no actions either', async ({ page, request, tro
   await setActiveRace(request, 'shell2-topline-orphan', 'view')
   await openDashboard(page)
 
-  expect(await raceActionLabels(page)).toEqual([])
+  // Its parent is not on disk, so there is no block to name — but it is
+  // still a tune-up, and still gets no group rather than an empty one.
+  await expect(page.getByText(/tune-up · viewing read-only/i)).toBeVisible()
+  await expect(raceActions(page)).toHaveCount(0)
 
   expect(trouble.pageErrors).toEqual([])
 })
@@ -263,7 +274,15 @@ test('Activate on a draft surfaces the server\'s refusal inline, and changes not
   await openDashboard(page)
 
   await raceAction(page, /^Activate$/).click()
-  await expect(page.getByText(/already active|unresolved field/i)).toBeVisible()
+  const note = raceActionNote(page)
+  await expect(note).toContainText(/already active|unresolved field/i)
+  // Browser check BUG 4: the server's array is [sentence, ...field paths], and
+  // joining the whole thing with " · " put a bullet straight after the colon
+  // that introduces the list. Whatever the refusal is, it must not read as a
+  // sentence a machine assembled.
+  await expect(note).not.toContainText(': ·')
+  await expect(note, 'the count and the instruction must agree')
+    .not.toContainText(/1 unresolved field — fill them in/i)
 
   const after = await (await request.get(`/api/races/${DRAFT.slug}?t=1`)).json()
   expect(after.race.status, 'a refused activation must not promote the folder').toBe('draft')

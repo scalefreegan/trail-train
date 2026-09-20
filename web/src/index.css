@@ -109,6 +109,20 @@ a { color: inherit; }
   color: var(--night);
 }
 
+/* Text that only assistive technology reads. The topline action hints were
+   `title`-only, which is a mouse-hover affordance and nothing else — on a
+   phone (a stated target of the change) "free, no agent turn" was simply
+   unreachable. Clipped rather than `display: none`, which would take it out
+   of the accessibility tree along with everything else. */
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
 /* the topline race actions (App.tsx's RaceTopline) — ordinary buttons in the
    page's tab order, so they need a real focus ring rather than the inline
    one the switcher's roving-focus rows paint on themselves. */
