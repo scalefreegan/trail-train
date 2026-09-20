@@ -184,6 +184,34 @@ move out. Version bump to 3 with a migration that writes them into the MM100 fol
 **Race switcher** (command bar, on the short code): active race, drafts, archived, "No race"
 (generic), and "New race…". Switching writes the pointer and triggers a full snapshot reload.
 
+> **Deviation (2026-09-20, owner request).** The switcher briefly grew a set of indented
+> action rows under each race — "↳ Review…", "↳ Refresh from sources…", "↳ Run course
+> again…", "↳ Add tune-up…" — plus an "Archive with result…" row in its footer. With six
+> race folders that is up to twenty rows to scroll past on a phone, and the loaded race's
+> own actions look exactly like five other races'. Those actions now live on the **topline
+> status strip** under the command bar (`RaceTopline` in `web/src/App.tsx`), about the one
+> race that is loaded, on every tab. The menu is back to races (tune-ups indented under
+> their A race) plus "New race…"; race-day mode keeps its own screen.
+>
+> The eligibility rules are unchanged — the strip asks the same predicates
+> (`isReviewable`, `isRefreshable`, `isRerunnable`, `canAddTuneUp`, `archiveTarget`) about
+> the folder on screen instead of about every folder in the list. Two consequences worth
+> stating:
+>
+> - **A draft gains an "Activate" button.** It drives the review screen's own activation
+>   path (status flip, then pointer) with no edits in front of it, and shows the server's
+>   refusal — the unresolved-fields gate, the single-active invariant, the missing-sun block
+>   — inline in the strip. Activate on the review screen is unchanged.
+> - **The archive action is not a question about the folder on screen.** `archiveTarget` is
+>   still "the race being trained for, or the archived race on screen with no activity
+>   linked", so the button rides along on every state and names the folder it would act on
+>   ("Archive with result… · MM100F"). A tune-up — nested or orphaned — offers nothing
+>   else, exactly as its menu row carried no action rows.
+>
+> In train mode the strip is new: it used to render only while browsing a race you are not
+> training for, and now says "active · training target" so the actions have somewhere to
+> live. Per-state coverage is `web/tests/topline.spec.ts`.
+
 **Config-driven panels.** `features` and `visual.panels` gate: crew sheet and crew column,
 drop-bag card, pacer flags, night bands, heat bands, climb comparison, model check. A crewless
 50k renders a race view with only the planner, runner card, and fuel card.

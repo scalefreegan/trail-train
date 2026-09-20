@@ -33,7 +33,7 @@ Non-goals: Tailscale/live crew page, Strava beacon, phone-GPS positioning, road/
 - Status: `RACE_STATUSES` stays `draft | active | archived` and **a B folder is never "active"** — "active" means "this is the training target", and only one folder may hold it. A tune-up is `draft` before its date and `archived` after it, and is browsed in view mode like any other non-active folder; `kind`, not a fourth status, is what gates it. The validator enforces this (a b with status "active" is a schema error), so a tune-up cannot take the block from the A race it sits inside. `weeks_out` is computed from the A race's date in the A race's own zone (`scripts/clock.mjs`), rounded to whole weeks; negative means the tune-up now falls after race day.
 - Quick form: `POST /api/races` creates a B folder (slug derived), validates, optional GPX upload → course build; "run intake" stays available.
 - Payload: `/api/race/active` lists `b_races[]` for the training race (slug, name, date, distance, gain, weeks_out). Facts/coach: `race.b_races[]` with the same fields; the readout prompt tells the coach to plan taper and recovery around each.
-- UI: switcher groups B-races under their A-race with "Add tune-up…"; trajectory shows a marker per B-race; viewing a B opens a reduced planner (station table if a course exists, ETAs, goal) with crew/drop-bag/caffeine gated off by default features.
+- UI: switcher groups B-races under their A-race; "Add tune-up…" is on the topline strip when the A race is loaded (2026-09-20 deviation — see PRD-modular-races §7); trajectory shows a marker per B-race; viewing a B opens a reduced planner (station table if a course exists, ETAs, goal) with crew/drop-bag/caffeine gated off by default features.
 
 ## 4. Live race day
 
@@ -55,7 +55,7 @@ Non-goals: Tailscale/live crew page, Strava beacon, phone-GPS positioning, road/
 ## 7. Frontend test suite
 
 - `web/tests/` Playwright config + fixtures: synthetic strava/oura/google-cal/coach/state/profile/goals JSON, `races/_fixtures/mm-like-100/` (small GPX, race.json, built course, nutrition) and the crewless 50k. The dev server and scripts honour `TRAIL_PROJECT_ROOT` so a test root can be pointed at a temp copy; a launcher starts vite on a free port against it. Headless agent calls honour `TRAIL_FAKE_AGENT=<path>` (agent-run.mjs returns canned output) so intake/plan/refresh flows are testable without spend. `TRAIL_FAKE_SYNC=1`, set unconditionally by the launcher for every server the suite starts, makes the dashboard's "resync" endpoint (`/api/refresh`) skip the four real strava/streams/oura/gcal sync scripts (which read real machine-level credentials) in favor of a no-op that still emits the same SSE step events — the coach step is unaffected, staying safe via `TRAIL_FAKE_AGENT` alone, as it always did.
-- Flows: generic load, switcher view/activate/generic, review save + acknowledge + activate, race-day hold, print light-pixel check, offline race-day, dialog a11y, archive, refresh diff with the fake agent, B-race quick form, crew export opens offline.
+- Flows: generic load, switcher view/activate/generic, review save + acknowledge + activate, race-day hold, print light-pixel check, offline race-day, dialog a11y, archive, refresh diff with the fake agent, B-race quick form, crew export opens offline, the topline action strip per race state.
 - `npm run test:ui`; `check:races` runs it (`--no-ui` to skip).
 
 ## 8. Cleanup
