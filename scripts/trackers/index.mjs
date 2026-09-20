@@ -55,6 +55,26 @@ export const CACHE_TTL_MS = 60_000;
 const tagged = (code, msg) => Object.assign(new Error(msg), { code });
 
 /**
+ * In-flight upstream fetches, keyed by the SAME cache instance a caller
+ * passes to pollTracker (round 3, resilience finding 11): a cold burst — the
+ * 60 s TTL cache has nothing yet, several browser tabs on the same race day
+ * all ask in the same tick — used to start one real fetch PER REQUEST rather
+ * than sharing the one already under way, which is exactly the moment a
+ * volunteer-run timing site is least able to take it. A WeakMap keyed on
+ * `cache` itself, not a field ON it, so a caller that passes no cache at all
+ * (a one-shot CLI call) gets no sharing either — consistent with "it just
+ * does not remember" below.
+ */
+const IN_FLIGHT = new WeakMap();
+
+/** This cache instance's in-flight map, created on first use. */
+function inFlightFor(cache) {
+  let m = IN_FLIGHT.get(cache);
+  if (!m) { m = new Map(); IN_FLIGHT.set(cache, m); }
+  return m;
+}
+
+/**
  * Which adapter handles this URL, or null when none does.
  * @param {string} url
  * @returns {object|null}
@@ -153,28 +173,48 @@ export async function pollTracker(o) {
     return { ...hit.body, cached: true, age_s: +((now - hit.at) / 1000).toFixed(1) };
   }
 
-  const at = new Date(now).toISOString();
-  const result = await adapter.fetchLastCheckpoint(
-    {
-      url: tracking.url,
-      bib: tracking.bib,
-      name: tracking.name,
-      stations: (race?.aid_stations ?? []).map((s) => s?.name).filter((n) => typeof n === "string"),
-      at,
-    },
-    fetchImpl,
-  );
-  // The adapter returns either a checkpoint object (a match) or a
-  // `{tracker: null, reason}` miss — unwrapped here so the endpoint's JSON
-  // carries `tracker` and `reason` as siblings rather than the client having
-  // to know which adapter-level shape it got.
-  const miss = result !== null && typeof result === "object" && "reason" in result;
-  const tracker = miss ? null : result;
-  const reason = miss ? result.reason : null;
+  // Join an upstream fetch this exact key already has under way rather than
+  // starting a second one — see IN_FLIGHT's doc above. Only ever set when a
+  // cache was actually passed, so this is a no-op for a one-shot CLI call.
+  const pending = cache ? inFlightFor(cache) : null;
+  const joined = pending?.get(key);
+  if (joined) {
+    return { ...(await joined), cached: true, age_s: 0 };
+  }
 
-  const body = { slug, source: adapter.id, tracker, reason, polled_at: at };
-  // A cache handed in as undefined (a one-shot CLI call) still works; it
-  // just does not remember.
-  cache?.set(key, { at: now, body });
-  return { ...body, cached: false, age_s: 0 };
+  const at = new Date(now).toISOString();
+  const fetchOnce = (async () => {
+    const result = await adapter.fetchLastCheckpoint(
+      {
+        url: tracking.url,
+        bib: tracking.bib,
+        name: tracking.name,
+        stations: (race?.aid_stations ?? []).map((s) => s?.name).filter((n) => typeof n === "string"),
+        at,
+      },
+      fetchImpl,
+    );
+    // The adapter returns either a checkpoint object (a match) or a
+    // `{tracker: null, reason}` miss — unwrapped here so the endpoint's JSON
+    // carries `tracker` and `reason` as siblings rather than the client
+    // having to know which adapter-level shape it got.
+    const miss = result !== null && typeof result === "object" && "reason" in result;
+    const tracker = miss ? null : result;
+    const reason = miss ? result.reason : null;
+    return { slug, source: adapter.id, tracker, reason, polled_at: at };
+  })();
+  pending?.set(key, fetchOnce);
+
+  try {
+    const body = await fetchOnce;
+    // A cache handed in as undefined (a one-shot CLI call) still works; it
+    // just does not remember.
+    cache?.set(key, { at: now, body });
+    return { ...body, cached: false, age_s: 0 };
+  } finally {
+    // Whether fetchOnce resolved or threw — a failure must not stay "in
+    // flight" forever, and must not be cached either (see the module doc
+    // above: the client backs off on failure on its own).
+    pending?.delete(key);
+  }
 }
