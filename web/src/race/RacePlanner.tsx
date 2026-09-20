@@ -686,7 +686,15 @@ export function RacePlanner() {
           normally nearly coincide but visibly don't here (round 4 finding 1).
           A tune-up's synthesized Finish takes the measured distance instead
           (build-course.mjs, round 5), so its one row agrees with the header
-          and the banner says which figure it is contradicting. */}
+          and the banner says which figure it is contradicting.
+
+          Round 5 confirm, finding 4: build-course.mjs only snaps total_mi to
+          the measured distance for `kind === "b" && lastStationIdx === 0` —
+          the quick form's own one-station shape. A hand-authored or
+          pre-v2 B-kind folder with more than one aid station keeps the
+          stale DECLARED mile on every row, same as an A race, so the
+          reassuring copy below is gated on that same one-station case
+          rather than on `tuneUp` alone. */}
       {raceConfig.unresolved?.includes("course.gpx") && (
         <div className="panel notch" style={{
           padding: "10px 16px", marginBottom: 10, borderColor: "var(--ember)",
@@ -694,7 +702,7 @@ export function RacePlanner() {
         }}>
           ⚠ course.gpx measures {u.dist(course.distance_mi, 1)} {u.distUnit} of the declared {u.dist(course.official_distance_mi, 1)} {u.distUnit}
           {" "}— far enough off to not be normal GPX drift. The chart above and the "seg" column below are read off
-          this GPX; {tuneUp
+          this GPX; {tuneUp && course.aid_stations.length === 1
             ? "the finish row uses the measured distance, so only the declared figure above is in doubt"
             : "the station miles are still the declared chart miles, so a pace or climb number that looks wrong may just be the wrong file uploaded"}. Re-check the GPX before trusting either.
         </div>
