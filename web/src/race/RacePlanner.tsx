@@ -12,6 +12,7 @@ import { FuelCard } from "./FuelCard";
 import { DropBagCard } from "./DropBagCard";
 import { fmtCarry } from "./nutrition";
 import { useRunCourseAgain } from "./runCourseAgain";
+import { courseHasCutoffs, cutoffSourceLabel } from "./cutoffSource";
 import { isTuneUp, type VisibleColumns } from "./features";
 import {
   projectRace, nightIntervals,
@@ -494,36 +495,15 @@ export function RacePlanner() {
   // the hold-back window is a fraction of THIS race (tt-yib.9), so the copy
   // that names its miles has to be computed, not typed
   const restraintWin = course ? restraintWindowMi(raceDistanceMi(course)) : null;
-  // "cutoffs from …" names the document they came from — same derivation as
-  // the crew sheet's cutoffSource (CrewSheet.tsx), duplicated here because
-  // the two views don't share a component. A plain expression (not
-  // useMemo): it has to run unconditionally above the early return below,
-  // and a scan of a handful of `sources` entries needs no memoizing.
-  // A quick-form tune-up writes cutoff_h: null on every station and no
-  // `sources` entry of its own (race-intake.mjs's quickCreateRace) — there
-  // never was a runner manual to name, so the fallback below must not be
-  // reached for one. Checked before the source lookup: no cutoff anywhere on
-  // the course means nothing to attribute (round 4 finding 12).
-  const hasCutoffs = course?.aid_stations?.some((s) => s.cutoff_h != null) ?? false;
-  const cutoffSource = (() => {
-    const sources = course?.sources ?? [];
-    const manual = sources.find((s) => /manual|guide|handbook/i.test(s.ref));
-    const ref = (manual ?? sources.find((s) => s.kind !== "gpx"))?.ref;
-    const fallback = `the runner manual${raceConfig.edition_year ? ` (${raceConfig.edition_year})` : ""}`;
-    if (!ref) return fallback;
-    const stripped = ref.replace(/\s*\([^)]*\)\s*$/, "");
-    // The common case is a manual's own PDF link — the caption's caps
-    // styling turns a 70-character URL into a wall of slug (round 2,
-    // draft finding 6: "CUTOFFS FROM HTTPS://…RUNNERS-MANUAL-2026…PDF").
-    // The hostname is the fact an athlete actually recognizes a source by;
-    // anything that isn't a URL at all (a bare document title) is short
-    // enough to print as-is.
-    try {
-      return new URL(stripped).hostname.replace(/^www\./, "");
-    } catch {
-      return stripped || fallback;
-    }
-  })();
+  // "cutoffs from …" names the document they came from — shared with the
+  // crew sheet's own footer (CrewSheet.tsx) via cutoffSource.ts, so the two
+  // views can never again disagree about whether there is a cutoff to
+  // attribute in the first place (round 4 finding 12). Plain expressions
+  // (not useMemo): they have to run unconditionally above the early return
+  // below, and a scan of a handful of `sources`/`aid_stations` entries needs
+  // no memoizing.
+  const hasCutoffs = course ? courseHasCutoffs(course) : false;
+  const cutoffSource = course ? cutoffSourceLabel(course, { editionYear: raceConfig.edition_year }) : "";
 
   if (missing || !course) {
     return (
