@@ -195,7 +195,9 @@ async function clickSubRowFor(page: Page, raceName: string, prefix: string) {
  * App.tsx gives a generic dashboard the "training" tab alone.
  */
 export async function openRaceTab(page: Page) {
-  await page.getByRole('button', { name: /^race$/i }).click()
+  // training/race/fuel are a tablist (round 3, resilience finding 12), not
+  // three plain buttons — role="tab", not the button element's implicit role.
+  await page.getByRole('tab', { name: /^race$/i }).click()
   await expect(page.getByText(/climb readiness — you vs/i)).toBeVisible()
 }
 

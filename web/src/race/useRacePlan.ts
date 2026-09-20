@@ -12,6 +12,10 @@ import { migrateLegacyKnobs } from "./knobMigration";
 import type { SunTimes } from "./nightWindow";
 import { DEFAULT_ACCLIMATION_DAYS } from "../contracts";
 import { DEFAULT_ALTITUDE_PCT, DEFAULT_CREW_KNOBS, defaultGoalH } from "../crew/crewData";
+import {
+  ACCLIMATION_DAYS_RANGE, ALTITUDE_PCT_RANGE, parsePersistedNullableNumber, parsePersistedNumber,
+  type NumberRange,
+} from "./persistedNumber";
 
 /* ------------------------------------------------------------------ */
 /*  Shared race-plan wiring.                                          */
@@ -49,13 +53,21 @@ import { DEFAULT_ALTITUDE_PCT, DEFAULT_CREW_KNOBS, defaultGoalH } from "../crew/
 /*  same paint, where an effect would flash the pre-resolution value.  */
 /* ------------------------------------------------------------------ */
 
-export function usePersistedNumber(key: string | null, initial: number) {
-  const read = (): number => {
-    if (key == null || typeof localStorage === "undefined") return initial;
-    const raw = localStorage.getItem(key);
-    const n = raw == null ? NaN : Number(raw);
-    return Number.isFinite(n) ? n : initial;
-  };
+// The stored-value clamp itself (parsePersistedNumber/parsePersistedNullableNumber,
+// ALTITUDE_PCT_RANGE, ACCLIMATION_DAYS_RANGE) lives in ./persistedNumber,
+// zero-import so scripts/use-race-plan.test.mjs can exercise it directly —
+// see that file's header. Re-exported here so nothing importing them from
+// this module (their original home) has to change.
+export {
+  clampToRange, parsePersistedNumber, parsePersistedNullableNumber,
+  ALTITUDE_PCT_RANGE, ACCLIMATION_DAYS_RANGE, type NumberRange,
+} from "./persistedNumber";
+
+export function usePersistedNumber(key: string | null, initial: number, range?: NumberRange) {
+  const read = (): number =>
+    key == null || typeof localStorage === "undefined"
+      ? initial
+      : parsePersistedNumber(localStorage.getItem(key), initial, range);
   const [state, setState] = useState(() => ({ key, initial, v: read() }));
   if (state.key !== key || state.initial !== initial) setState({ key, initial, v: read() });
   const set = (n: number) => {
@@ -72,14 +84,11 @@ export function usePersistedNumber(key: string | null, initial: number) {
  * must not read as "no override". Absent in storage — or cleared back to
  * absent — is null; every number, including 0, is a value.
  */
-export function usePersistedNullableNumber(key: string | null) {
-  const read = (): number | null => {
-    if (key == null || typeof localStorage === "undefined") return null;
-    const raw = localStorage.getItem(key);
-    if (raw == null || raw.trim() === "") return null;
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : null;
-  };
+export function usePersistedNullableNumber(key: string | null, range?: NumberRange) {
+  const read = (): number | null =>
+    key == null || typeof localStorage === "undefined"
+      ? null
+      : parsePersistedNullableNumber(localStorage.getItem(key), range);
   const [state, setState] = useState(() => ({ key, v: read() }));
   if (state.key !== key) setState({ key, v: read() });
   const set = (n: number | null) => {
@@ -291,13 +300,13 @@ export function useRacePlanInstance(race: RaceView, raceConfig: RaceConfig): Rac
   // published (scripts/altitude.mjs), 0 = off. A knob rather than a constant
   // because the curve is a population average and bead 02's back-test will
   // have an opinion about this athlete's own number.
-  const [altitude, setAltitude] = usePersistedNumber(knob("altitude_pct"), DEFAULT_ALTITUDE_PCT);
+  const [altitude, setAltitude] = usePersistedNumber(knob("altitude_pct"), DEFAULT_ALTITUDE_PCT, ALTITUDE_PCT_RANGE);
   // The athlete's own answer to "how long will you have been up there?",
   // overriding whatever the calendar derivation found. Nullable, not a
   // sentinel: 0 (fly in and run) is a legitimate override and has to be
   // distinguishable from "no override set".
   const [acclimationOverride, setAcclimationOverride] =
-    usePersistedNullableNumber(knob("acclimation_days"));
+    usePersistedNullableNumber(knob("acclimation_days"), ACCLIMATION_DAYS_RANGE);
   const [aidStopMin, setAidStopMin] = usePersistedNumber(knob("aid_stop_min"), DEFAULT_CREW_KNOBS.aidStopMin);
   const [crewStopMin, setCrewStopMin] = usePersistedNumber(knob("crew_stop_min"), DEFAULT_CREW_KNOBS.crewStopMin);
   const [stopOverrides, setStopOverride, clearStopOverrides] = usePersistedStops(knob("stop_overrides"));

@@ -142,6 +142,16 @@ export function useDialog({ onClose, locked, label }: {
     (first ?? el).focus();
   }, []);
 
+  // Lock the page behind the overlay from scrolling while this dialog is
+  // open (round 3, resilience finding 12) — restored to whatever it was
+  // (never assumed empty) on unmount, so two dialogs stacking one at a time
+  // still leaves the body scrollable exactly when the last one closes.
+  useEffect(() => {
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prevOverflow; };
+  }, []);
+
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
       if (!locked) onClose();

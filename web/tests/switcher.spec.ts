@@ -50,7 +50,7 @@ test('picking the 100-miler switches the whole dashboard to it, and generic take
   // drawn from races/<slug>/build/course.json's race_climbs, and the aid chart
   // only totals an elapsed time once the projection has real segments. Both
   // are empty-state text if /course.json 404s.
-  await page.getByRole('button', { name: /^race$/i }).click()
+  await page.getByRole('tab', { name: /^race$/i }).click()
   await expect(page.getByText(/climb readiness — you vs/i)).toBeVisible()
   await expect(page.getByText(/total elapsed at finish/i)).toBeVisible()
   await expect(page.getByRole('button', { name: /runner card/i })).toBeVisible()

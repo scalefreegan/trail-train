@@ -756,13 +756,41 @@ test("quickCreateRace: race day itself is not yet history", async (t) => {
   assert.equal(race.status, "draft");
 });
 
-test("quickCreateRace refuses a slug that is taken", async (t) => {
+test("quickCreateRace refuses a slug that is taken, in its OWN words — not the refresh:true message", async (t) => {
+  // Round 3, resilience finding 8: the quick form has no `refresh` field at
+  // all, so assertSlugAvailable's shared "pass refresh: true to re-intake it"
+  // wording sent the athlete looking for a control this dialog does not have.
   const root = await quickRoot(t);
   await quickCreateRace({ root, ...quickArgs() });
   await assert.rejects(
     quickCreateRace({ root, ...quickArgs() }),
-    (e) => e.code === "conflict" && /already exists/.test(e.message),
+    (e) => e.code === "conflict"
+      && e.message === 'a tune-up named "Jemez Mountain 50K" already exists for 2027 — pick another name'
+      && !/refresh/i.test(e.message),
   );
+});
+
+test("quickCreateRace: two tabs racing on the same brand-new name — one 201s, the loser gets the same friendly message", async (t) => {
+  // The plain slugExists() check above is a TOCTOU: two requests deriving the
+  // same slug can both pass it before either has written anything, so the
+  // real guard is assertSlugAvailable's O_EXCL claim — and THAT path used to
+  // hand back assertSlugAvailable's own generic wording instead of
+  // quickCreateRace's.
+  const root = await quickRoot(t);
+  const args = quickArgs({ name: "Two Tab Tuneup" });
+  const results = await Promise.allSettled([
+    quickCreateRace({ root, ...args }),
+    quickCreateRace({ root, ...args }),
+  ]);
+  const fulfilled = results.filter((r) => r.status === "fulfilled");
+  const rejected = results.filter((r) => r.status === "rejected");
+  assert.equal(fulfilled.length, 1, "exactly one folder should be created");
+  assert.equal(rejected.length, 1);
+  const e = rejected[0].reason;
+  assert.equal(e.code, "conflict");
+  assert.equal(e.message, 'a tune-up named "Two Tab Tuneup" already exists for 2027 — pick another name');
+  assert.doesNotMatch(e.message, /refresh/i, "the quick form has no refresh flag to point the athlete at");
+  assert.deepEqual(await fs.readdir(path.join(root, "races")), [PARENT.slug, "two-tab-tuneup-2027"]);
 });
 
 test("quickCreateRace: a filesystem problem during the slug claim is not relabelled a conflict", async (t) => {
@@ -820,6 +848,49 @@ test("quickCreateRace refuses a name or date it cannot make a folder from", asyn
   await assert.rejects(quickCreateRace({ root, ...quickArgs({ distance_mi: 0 }) }), (e) => e.code === "bad_request");
   const left = await fs.readdir(path.join(root, "races"));
   assert.deepEqual(left, [PARENT.slug]);
+});
+
+test("quickCreateRace refuses absurd distance, gain and dates — round 3, resilience finding 10", async (t) => {
+  const root = await quickRoot(t);
+
+  await assert.rejects(
+    quickCreateRace({ root, ...quickArgs({ distance_mi: 999_999 }) }),
+    (e) => e.code === "bad_request" && /500 mi ceiling/.test(e.message),
+  );
+  await assert.rejects(
+    quickCreateRace({ root, ...quickArgs({ gain_ft: 9_999_999 }) }),
+    (e) => e.code === "bad_request" && /100,000 ft ceiling/.test(e.message),
+  );
+  // exactly at the ceiling is fine — it is a ceiling, not a stricter bound
+  const { race } = await quickCreateRace({ root, ...quickArgs({ name: "At The Ceiling", distance_mi: 500, gain_ft: 100_000 }) });
+  assert.equal(race.distance_mi, 500);
+  assert.equal(race.gain_ft, 100_000);
+
+  // more than 3 years either side of the PARENT's date (2027-08-13)
+  await assert.rejects(
+    quickCreateRace({ root, ...quickArgs({ name: "Way Past Tuneup", date: "1990-01-01" }) }),
+    (e) => e.code === "bad_request" && /more than 3 years/.test(e.message) && /san-juan-softie-100-2027's date/.test(e.message),
+  );
+  await assert.rejects(
+    quickCreateRace({ root, ...quickArgs({ name: "Way Future Tuneup", date: "2999-12-31" }) }),
+    (e) => e.code === "bad_request" && /more than 3 years/.test(e.message),
+  );
+  // just inside 3 years of the parent's 2027-08-13 is fine
+  const { race: nearRace } = await quickCreateRace({ root, ...quickArgs({ name: "Just Inside", date: "2030-06-01" }) });
+  assert.equal(nearRace.date, "2030-06-01");
+
+  // a parent with no readable date falls back to "today" (`now`) as the anchor
+  const parentless = await quickRoot(t, { parent: { ...PARENT, date: undefined } });
+  await assert.rejects(
+    quickCreateRace({ root: parentless, ...quickArgs({ date: "2040-01-01" }) }),
+    (e) => e.code === "bad_request" && /more than 3 years/.test(e.message) && /today/.test(e.message),
+  );
+
+  // nothing left behind on disk by any refusal above
+  assert.deepEqual(
+    (await fs.readdir(path.join(root, "races"))).sort(),
+    [PARENT.slug, "at-the-ceiling-2027", "just-inside-2030"].sort(),
+  );
 });
 
 test("quickCreateRace copies an uploaded GPX into the folder as course.gpx", async (t) => {

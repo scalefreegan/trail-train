@@ -371,6 +371,76 @@ test("pollTracker: the second call inside the TTL is served from cache", async (
   assert.equal(impl.calls.length, 2);
 });
 
+test("pollTracker: a cold burst of simultaneous requests shares one upstream fetch", async () => {
+  // Round 3, resilience finding 11: the 60 s TTL cache has nothing on the
+  // FIRST tick, so several browser tabs on the same race day asking in the
+  // same tick used to each start their own fetch — exactly the moment a
+  // volunteer-run timing site is least able to take it.
+  const cache = createTrackerCache();
+  const impl = fetchStub(SPREAD);
+  const race = softieRace({ url: SPREAD_URL, bib: "999" });
+  const t0 = Date.parse("2026-08-14T21:22:00.000Z");
+
+  const results = await Promise.all(
+    Array.from({ length: 10 }, () => pollTracker({ slug: "softie", race, cache, fetchImpl: impl, now: t0 })),
+  );
+
+  assert.equal(impl.calls.length, 1, "ten simultaneous cold GETs must produce exactly one upstream fetch");
+  // one winner (the one that actually fetched), nine joiners
+  const winners = results.filter((r) => r.cached === false);
+  const joiners = results.filter((r) => r.cached === true);
+  assert.equal(winners.length, 1);
+  assert.equal(joiners.length, 9);
+  // everybody sees the SAME answer — one real poll, not nine different ones
+  for (const r of results) {
+    assert.equal(r.polled_at, new Date(t0).toISOString());
+    assert.deepEqual(r.tracker, winners[0].tracker);
+  }
+
+  // and the TTL cache behaves exactly as before once the burst has settled
+  const after = await pollTracker({ slug: "softie", race, cache, fetchImpl: impl, now: t0 + 1000 });
+  assert.equal(after.cached, true);
+  assert.equal(impl.calls.length, 1);
+});
+
+test("pollTracker: a cold burst across DIFFERENT keys still gets one fetch each", async () => {
+  // The in-flight map must not over-share: two different runners (different
+  // cache keys) asked in the same tick are two different upstream requests.
+  const cache = createTrackerCache();
+  const impl = fetchStub(SPREAD);
+  const t0 = Date.parse("2026-08-14T21:22:00.000Z");
+
+  const [a, b] = await Promise.all([
+    pollTracker({ slug: "softie", race: softieRace({ url: SPREAD_URL, bib: "999" }), cache, fetchImpl: impl, now: t0 }),
+    pollTracker({ slug: "softie", race: softieRace({ url: SPREAD_URL, bib: "902" }), cache, fetchImpl: impl, now: t0 }),
+  ]);
+  assert.equal(impl.calls.length, 2);
+  assert.equal(a.cached, false);
+  assert.equal(b.cached, false);
+  assert.equal(a.tracker.station, "Burnett #7");
+  assert.equal(b.tracker.station, "Finish");
+});
+
+test("pollTracker: a burst that fails together does not stay in flight, and is not cached", async () => {
+  const cache = createTrackerCache();
+  const race = softieRace({ url: SPREAD_URL, bib: "999" });
+  const t0 = Date.parse("2026-08-14T21:22:00.000Z");
+  let calls = 0;
+  const down = async () => { calls++; throw new Error("network down"); };
+
+  const results = await Promise.allSettled(
+    Array.from({ length: 5 }, () => pollTracker({ slug: "softie", race, cache, fetchImpl: down, now: t0 })),
+  );
+  assert.ok(results.every((r) => r.status === "rejected"), "every joiner must see the same failure, not hang");
+  assert.equal(calls, 1, "the burst still shares one upstream attempt even when it fails");
+
+  // and the failure is not cached — nor stuck "in flight" — so the next
+  // request tries again, same as the single-caller failure test above
+  const recovered = await pollTracker({ slug: "softie", race, cache, fetchImpl: fetchStub(SPREAD), now: t0 + 1000 });
+  assert.equal(recovered.cached, false);
+  assert.equal(recovered.tracker.station, "Burnett #7");
+});
+
 test("pollTracker: editing the bib invalidates the cache without a manual clear", async () => {
   const cache = createTrackerCache();
   const impl = fetchStub(SPREAD);
