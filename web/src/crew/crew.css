@@ -108,6 +108,14 @@ header { border-bottom: 3px solid var(--ink); padding-bottom: 10px; }
    the ordinary clamp footnote gets. */
 #cp-status.extreme { color: var(--bad); }
 #cp-status .extreme { font-style: normal; }
+/* Round 5 confirm, finding 1: checkpointMessage() wraps the extreme-pace
+   sentence in <strong class="extreme">, but `#cp-status.applied strong`
+   above (a direct rule on <strong>, not an inherited one) beats the
+   inherited color from `#cp-status.extreme` on its ancestor <p> regardless
+   of specificity math — a direct match always wins over inheritance. Target
+   the <strong> itself, with two classes' worth of specificity so this wins
+   outright rather than by source-order. */
+#cp-status.applied strong.extreme { color: var(--bad); }
 
 /* ---------------- the station table ---------------- */
 
