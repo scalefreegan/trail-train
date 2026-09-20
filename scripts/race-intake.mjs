@@ -855,12 +855,30 @@ export function buildRaceJson(draft, { slug, year, manifest = [], warnings = [],
   // tracker at all.
   const trackingUrl = typeof draft.links?.tracking === "string" ? draft.links.tracking.trim() : "";
   if (trackingUrl) {
-    race.tracking = { url: trackingUrl, bib: null, name: null };
-    provenance.tracking = {
-      by: PROVENANCE_BY,
-      at,
-      source: typeof draft.field_sources?.links === "string" ? draft.field_sources.links : "race-intake",
-    };
+    // Same http(s)-only gate race-edit.mjs applies to a hand-typed
+    // tracking.url (279-286): the URL decides which adapter the dev server
+    // fetches server-side, so a file:// or data: "tracker" the agent copied
+    // out of a page's markup verbatim would be read off the machine running
+    // the server. An agent-derived value is untrusted the same way a
+    // hand-typed one is — it just failed differently (a bad scheme, not a
+    // malicious one), so it goes into intake_warnings, same as any other
+    // hole the agent could not fill, rather than silently landing on
+    // race.json.
+    let validTrackingUrl = false;
+    try {
+      const parsed = new URL(trackingUrl);
+      validTrackingUrl = parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch { /* not a URL at all */ }
+    if (validTrackingUrl) {
+      race.tracking = { url: trackingUrl, bib: null, name: null };
+      provenance.tracking = {
+        by: PROVENANCE_BY,
+        at,
+        source: typeof draft.field_sources?.links === "string" ? draft.field_sources.links : "race-intake",
+      };
+    } else {
+      warnings.push(`links.tracking: ${JSON.stringify(trackingUrl)} is not an http(s) URL — dropped, not saved as the race's tracker`);
+    }
   }
   race.provenance = provenance;
   // A source that this run tried and failed to (re)fetch is kept, marked with
