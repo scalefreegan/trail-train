@@ -152,6 +152,12 @@ test.describe('tune-up fixes (round 4)', () => {
     // station row built from two different mile spaces.
     const banner = page.getByText(/course\.gpx measures/i)
     await expect(banner).toBeVisible()
+    // Round-5 confirmation NEW-1: once the tune-up's finish row takes the
+    // measured distance, the A-race sentence ("the station miles are still
+    // the declared chart miles") is false here — the banner must say which
+    // figure it is contradicting.
+    await expect(banner).toContainText(/finish row uses the measured distance/i)
+    await expect(banner).not.toContainText(/still the declared chart miles/i)
 
     // Round 4 confirm, ui1 PARTIAL #1: naming the mismatch wasn't enough —
     // the station row itself still read the pre-upload DECLARED distance

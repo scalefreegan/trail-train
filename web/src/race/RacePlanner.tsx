@@ -681,9 +681,12 @@ export function RacePlanner() {
           here too because a station table with no crew/drop-bag columns to
           fill the panel makes a bad GPX easy to miss otherwise: the header
           above and every "seg" cell in the table below are the MEASURED gpx
-          numbers, but each row's own mile column is race.json's DECLARED
-          chart mile (pacing.ts projectRace) — two spaces that normally
-          nearly coincide but visibly don't here (round 4 finding 1). */}
+          numbers. For an A race each row's own mile column is race.json's
+          DECLARED chart mile (pacing.ts projectRace) — two spaces that
+          normally nearly coincide but visibly don't here (round 4 finding 1).
+          A tune-up's synthesized Finish takes the measured distance instead
+          (build-course.mjs, round 5), so its one row agrees with the header
+          and the banner says which figure it is contradicting. */}
       {raceConfig.unresolved?.includes("course.gpx") && (
         <div className="panel notch" style={{
           padding: "10px 16px", marginBottom: 10, borderColor: "var(--ember)",
@@ -691,8 +694,9 @@ export function RacePlanner() {
         }}>
           ⚠ course.gpx measures {u.dist(course.distance_mi, 1)} {u.distUnit} of the declared {u.dist(course.official_distance_mi, 1)} {u.distUnit}
           {" "}— far enough off to not be normal GPX drift. The chart above and the "seg" column below are read off
-          this GPX; the station miles are still the declared chart miles, so a pace or climb number that looks wrong
-          may just be the wrong file uploaded. Re-check the GPX before trusting either.
+          this GPX; {tuneUp
+            ? "the finish row uses the measured distance, so only the declared figure above is in doubt"
+            : "the station miles are still the declared chart miles, so a pace or climb number that looks wrong may just be the wrong file uploaded"}. Re-check the GPX before trusting either.
         </div>
       )}
 
