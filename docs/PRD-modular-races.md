@@ -193,20 +193,28 @@ move out. Version bump to 3 with a migration that writes them into the MM100 fol
 > race that is loaded, on every tab. The menu is back to races (tune-ups indented under
 > their A race) plus "New race…"; race-day mode keeps its own screen.
 >
-> The eligibility rules are unchanged — the strip asks the same predicates
-> (`isReviewable`, `isRefreshable`, `isRerunnable`, `canAddTuneUp`, `archiveTarget`) about
-> the folder on screen instead of about every folder in the list. Two consequences worth
-> stating:
+> The eligibility predicates are unchanged — `isReviewable`, `isRefreshable`,
+> `isRerunnable`, `canAddTuneUp` — just asked about the folder on screen instead of about
+> every folder in the list. Two things did change:
 >
 > - **A draft gains an "Activate" button.** It drives the review screen's own activation
 >   path (status flip, then pointer) with no edits in front of it, and shows the server's
 >   refusal — the unresolved-fields gate, the single-active invariant, the missing-sun block
 >   — inline in the strip. Activate on the review screen is unchanged.
-> - **The archive action is not a question about the folder on screen.** `archiveTarget` is
->   still "the race being trained for, or the archived race on screen with no activity
->   linked", so the button rides along on every state and names the folder it would act on
->   ("Archive with result… · MM100F"). A tune-up — nested or orphaned — offers nothing
->   else, exactly as its menu row carried no action rows.
+> - **The archive action is now about the loaded race too.** As a menu FOOTER row it was a
+>   question about the whole list ("the race being trained for, or the archived race on
+>   screen with no activity linked"), which on a strip about the loaded race reads as an
+>   action belonging to a folder that is not on screen. So: "Archive with result…" only when
+>   the loaded race is the active A race, "Link result…" only when the loaded race is
+>   archived with no `strava_activity_id`, and nothing archive-shaped on a draft, a tune-up,
+>   or an archived race whose run is already linked. Both guards are kept — the folder's own
+>   `status` rather than the view-mode-null `trainingSlug`, and `kind !== "b"` — so the
+>   active race browsed read-only still offers it, and a hand-edited `kind:"b"` +
+>   `status:"active"` folder still offers nothing (ui3-resilience BUG 1).
+>
+> A tune-up — nested or orphaned — now offers nothing at all, exactly as its menu row
+> carried no action rows; its course still rebuilds from the panel's own "run course build"
+> empty state.
 >
 > In train mode the strip is new: it used to render only while browsing a race you are not
 > training for, and now says "active · training target" so the actions have somewhere to

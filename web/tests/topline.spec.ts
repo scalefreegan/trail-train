@@ -22,11 +22,14 @@ import {
  * any one of them cannot quietly widen or narrow what a folder can be made
  * to do.
  *
- * `archiveTarget` is the one rule that is NOT a question about the folder on
- * screen: it is "the race being trained for, or the archived race on screen
- * with no activity linked". mm-like-100 is active throughout this suite, so
- * its archive action rides along on every state below and names MM's own
- * short code — deliberately, and exactly as the menu's footer row did.
+ * `archiveTarget` is the one rule the move CHANGED (owner's call, 2026-09-20):
+ * as a menu footer row it was a question about the whole race list — "the race
+ * being trained for, or the archived race on screen with no activity linked" —
+ * which on a strip about the loaded race reads as an action belonging to a
+ * folder that is not on screen. It is now the loaded race or nothing: the
+ * active race (ending it), or an archived one that never got its activity
+ * linked. Its two guards are unchanged: the folder's own `status` rather than
+ * the view-mode-null `trainingSlug`, and `kind !== "b"`.
  */
 
 /* The labels as the page renders them — `.chip` is text-transform:
@@ -36,16 +39,20 @@ const ACTIVATE = 'ACTIVATE'
 const REFRESH = 'REFRESH FROM SOURCES… · PAID'
 const RERUN = 'RUN COURSE AGAIN…'
 const ADD_TUNE_UP = 'ADD TUNE-UP…'
-const ARCHIVE_MM = `ARCHIVE WITH RESULT… · ${MM.short}`
+const ARCHIVE = 'ARCHIVE WITH RESULT…'
+const LINK_RESULT = 'LINK RESULT…'
 
 test('a draft offers review, activate and a paid refresh — and nothing that needs a course or a block', async ({ page, request, trouble }) => {
   await setActiveRace(request, DRAFT.slug, 'view')
   await openDashboard(page)
 
-  expect(await raceActionLabels(page)).toEqual([REVIEW, ACTIVATE, REFRESH, ARCHIVE_MM])
+  expect(await raceActionLabels(page)).toEqual([REVIEW, ACTIVATE, REFRESH])
   // The strip says what the race IS, in the same words the old viewing
   // banner used.
   await expect(page.getByText(/draft · not activated/i)).toBeVisible()
+  // Nothing archive-shaped: a draft has never been run, and the active race
+  // is not what is on screen.
+  await expect(raceAction(page, /Archive with result…|Link result…/)).toHaveCount(0)
 
   expect(trouble.pageErrors).toEqual([])
 })
@@ -54,7 +61,7 @@ test('the active race in train mode offers review, refresh, a tune-up and its ow
   await setActiveRace(request, MM.slug, 'train')
   await openDashboard(page)
 
-  expect(await raceActionLabels(page)).toEqual([REVIEW, REFRESH, ADD_TUNE_UP, ARCHIVE_MM])
+  expect(await raceActionLabels(page)).toEqual([REVIEW, REFRESH, ADD_TUNE_UP, ARCHIVE])
   // Train mode had no strip at all before the actions needed one — this line
   // is new, and it is what tells the athlete the strip is not a warning.
   await expect(page.getByText(/active · training target/i)).toBeVisible()
@@ -78,23 +85,62 @@ test('the active race viewed read-only offers the same actions as train mode', a
   await setActiveRace(request, MM.slug, 'view')
   await openDashboard(page)
 
-  expect(await raceActionLabels(page)).toEqual([REVIEW, REFRESH, ADD_TUNE_UP, ARCHIVE_MM])
+  expect(await raceActionLabels(page)).toEqual([REVIEW, REFRESH, ADD_TUNE_UP, ARCHIVE])
   await expect(page.getByText(/active · viewing read-only/i)).toBeVisible()
 
   expect(trouble.pageErrors).toEqual([])
 })
 
-test('an archived race offers a refresh and a course rebuild, but no review and no tune-up', async ({ page, request, trouble }) => {
+/**
+ * An archived race gets a refresh and a course rebuild, never a review or a
+ * tune-up — and the archive half of the strip turns into "Link result…",
+ * because the archiving already happened and what is missing is the Strava
+ * run behind it. rimrock-50k is exactly that shape: its committed
+ * result.json carries a finish time and `strava_activity_id: null` (the same
+ * state mm-like-100 was left in by the v2 migration, archived long before
+ * its run was linked).
+ */
+test('an archived race with no activity linked offers a refresh, a rebuild and "Link result…"', async ({ page, request, trouble }) => {
+  const result = await (await request.get(`/api/races/${ARCHIVED.slug}/result?t=1`)).json()
+  expect(result.result?.strava_activity_id, 'the archived fixture should have no activity linked').toBeNull()
+
   await setActiveRace(request, ARCHIVED.slug, 'view')
   await openDashboard(page)
 
-  expect(await raceActionLabels(page)).toEqual([REFRESH, RERUN, ARCHIVE_MM])
+  expect(await raceActionLabels(page)).toEqual([REFRESH, RERUN, LINK_RESULT])
   // Its aid chart and tracker are done being edited (isReviewable is drafts
   // and the active race only), and an archived folder has no live block for
-  // a tune-up to sit inside.
+  // a tune-up to sit inside. It is also not the race that ends a block, so
+  // never "Archive with result…".
   await expect(raceAction(page, /Review…/)).toHaveCount(0)
   await expect(raceAction(page, /Add tune-up…/)).toHaveCount(0)
+  await expect(raceAction(page, /Archive with result…/)).toHaveCount(0)
   await expect(page.getByText(/archived · .* · read-only/i)).toBeVisible()
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * …and once the run IS linked there is nothing left to do to the folder at
+ * all. The activity id is injected into the same `/result` response the strip
+ * reads rather than written to races/_fixtures/rimrock-50k/result.json —
+ * that file is committed, and other specs assert on it.
+ *
+ * This is also the assertion that `useRaceResult`'s `resolved` flag exists
+ * for: a null result means "still asking" as much as "none linked", and
+ * offering the button before the answer lands flashes it on every load.
+ */
+test('an archived race whose run is already linked offers no archive action at all', async ({ page, request, trouble }) => {
+  await page.route(`**/api/races/${ARCHIVED.slug}/result*`, async (route) => {
+    const response = await route.fetch()
+    const data = await response.json() as { result: Record<string, unknown> | null }
+    await route.fulfill({ response, json: { result: { ...(data.result ?? {}), strava_activity_id: 987654321 } } })
+  })
+
+  await setActiveRace(request, ARCHIVED.slug, 'view')
+  await openDashboard(page)
+
+  expect(await raceActionLabels(page)).toEqual([REFRESH, RERUN])
 
   expect(trouble.pageErrors).toEqual([])
 })
@@ -125,7 +171,7 @@ test('a tune-up offers no actions of its own', async ({ page, request, trouble }
   await setActiveRace(request, slug, 'view')
   await openDashboard(page)
 
-  expect(await raceActionLabels(page)).toEqual([ARCHIVE_MM])
+  expect(await raceActionLabels(page)).toEqual([])
 
   expect(trouble.pageErrors).toEqual([])
 })
@@ -146,7 +192,39 @@ test('an orphaned tune-up offers no actions either', async ({ page, request, tro
   await setActiveRace(request, 'shell2-topline-orphan', 'view')
   await openDashboard(page)
 
-  expect(await raceActionLabels(page)).toEqual([ARCHIVE_MM])
+  expect(await raceActionLabels(page)).toEqual([])
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * Round 5 confirm, finding 5 — `canAddTuneUp` and `archiveTarget` both guard
+ * on `kind !== "b"` as well as on status, because a hand-edited or
+ * pre-migration folder can carry `kind: "b"` and `status: "active"` at once
+ * (ui3-resilience.md BUG 1's repro). `validateActivation` now refuses to ever
+ * WRITE that state, but it does not repair a folder that already has it, and
+ * GET /api/races reports the status verbatim with no read-time check.
+ *
+ * Intercepting `/api/races` and flipping the REAL active race's own `kind` is
+ * what puts the corrupted shape in front of the strip: since the actions
+ * became questions about the folder LOADED, the guards are only reachable
+ * through the loaded folder's own row. (`groups` is dropped so the client
+ * derives it via `flatGroups`, rather than this test hand-building the nested
+ * shape.) Review and Refresh are unaffected — neither rule mentions `kind`.
+ */
+test('a corrupted tune-up wrongly marked active is offered no archive and no tune-up', async ({ page, request, trouble }) => {
+  await setActiveRace(request, MM.slug, 'train')
+
+  await page.route('**/api/races*', async (route) => {
+    const response = await route.fetch()
+    const data = await response.json() as { races: Array<Record<string, unknown>> }
+    const races = data.races.map((r) => (r.slug === MM.slug ? { ...r, kind: 'b' } : r))
+    await route.fulfill({ response, json: { races } })
+  })
+
+  await openDashboard(page)
+
+  expect(await raceActionLabels(page)).toEqual([REVIEW, REFRESH])
 
   expect(trouble.pageErrors).toEqual([])
 })

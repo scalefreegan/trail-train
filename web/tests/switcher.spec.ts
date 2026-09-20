@@ -351,55 +351,6 @@ test('Run course again on a clean build still shows the tick', async ({ page, re
 })
 
 /**
- * Round 5 confirm, finding 5 — `archiveTarget`'s first branch
- * (`list.find((r) => r.status === "active")`) used to have no `kind !== "b"`
- * guard, unlike `canAddTuneUp`'s identical check just above it in App.tsx —
- * even though a hand-edited or pre-migration folder can carry `kind: "b"`
- * and `status: "active"` at once (ui3-resilience.md BUG 1's repro; the
- * normal activate path now refuses to ever WRITE that state, but does not
- * repair a folder that already has it).
- *
- * Every real fixture race sorts alphabetically after "mm-like-100" (the only
- * one GET /api/races ever reports with `status: "active"`), so a
- * `writeRawRaceFolder` decoy can never actually reach `list.find` before it —
- * this would make a real end-to-end repro depend on fixture slug luck rather
- * than on the guard itself. Intercepting the SAME `/api/races` response the
- * switcher already reads and splicing a corrupted tune-up in FRONT of the
- * real list exercises the exact array `archiveTarget` iterates, without
- * touching any fixture or the shared `writeRawRaceFolder` helper.
- */
-test('a corrupted tune-up wrongly marked active is skipped in favor of the real active race', async ({ page, request, trouble }) => {
-  await setActiveRace(request, MM.slug, 'train')
-
-  await page.route('**/api/races*', async (route) => {
-    const response = await route.fetch()
-    const data = await response.json() as { races: Array<Record<string, unknown>>; groups?: unknown }
-    // A tune-up (kind "b") wrongly carrying status "active" — the exact
-    // corrupted shape `validateActivation` now refuses to create, spliced in
-    // BEFORE the real active race so an unguarded `list.find` would hit it
-    // first. `groups` is dropped so the client derives it via `flatGroups`
-    // (App.tsx) instead of this test having to hand-build the nested shape.
-    const decoy = {
-      slug: 'r3sh-corrupt-active-b', name: 'R3SH Corrupt Active B', short: 'R3SHB',
-      status: 'active', date: '2027-05-01', visual: null, kind: 'b',
-      parent_slug: MM.slug, error: null,
-    }
-    await route.fulfill({ response, json: { races: [decoy, ...data.races] } })
-  })
-
-  await openDashboard(page)
-
-  // The button exists — for the real active race, not the decoy: it names
-  // MM's own short code, never the corrupted tune-up's.
-  const button = raceAction(page, archiveButton)
-  await expect(button).toBeVisible()
-  await expect(button).toContainText(MM.short)
-  await expect(button).not.toContainText('R3SHB')
-
-  expect(trouble.pageErrors).toEqual([])
-})
-
-/**
  * Round 3 sweep extension (r3-sweep.md, first HIGH) — the switcher row's
  * SECOND check: `ok: true` with a real course but non-empty `warnings` (a
  * course.gpx measuring far off the declared distance) must show a ⚠ hint,

@@ -802,9 +802,9 @@ const ACCENT_SWATCH = ["--lamp"] as const;
  * its localStorage fallback, and a strip that offered a paid re-intake based
  * on a cached row would be claiming more than it knows.
  */
-function useRaceList(): { races: RaceListEntry[] | null; grouped: RaceGroupEntry[] | null } {
+function useRaceGroups(): RaceGroupEntry[] | null {
   const { key } = useRefresh();
-  const [list, setList] = useState<{ races: RaceListEntry[]; grouped: RaceGroupEntry[] } | null>(null);
+  const [groups, setGroups] = useState<RaceGroupEntry[] | null>(null);
   useEffect(() => {
     let stale = false;
     fetch(`/api/races?t=${Date.now()}`)
@@ -812,11 +812,11 @@ function useRaceList(): { races: RaceListEntry[] | null; grouped: RaceGroupEntry
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return (await r.json()) as { races: RaceListEntry[]; groups?: RaceGroupEntry[] };
       })
-      .then((d) => { if (!stale) setList({ races: d.races, grouped: d.groups ?? flatGroups(d.races) }); })
+      .then((d) => { if (!stale) setGroups(d.groups ?? flatGroups(d.races)); })
       .catch(() => { /* status line only — see the doc comment above */ });
     return () => { stale = true; };
   }, [key]);
-  return { races: list?.races ?? null, grouped: list?.grouped ?? null };
+  return groups;
 }
 
 /** One action on the strip. A real <button> with a visible focus ring (the
@@ -864,7 +864,7 @@ function RaceTopline() {
   const { race, viewing } = useBlockConfig();
   const { slug: trainingSlug, viewing: onScreenSlug } = useActiveRace();
   const { reload } = useRefresh();
-  const { races, grouped } = useRaceList();
+  const grouped = useRaceGroups();
 
   /* The review screen on a folder already on disk, and — when the tune-up
      quick form hands over — the blank intake form with a parent attached.
@@ -889,7 +889,11 @@ function RaceTopline() {
 
   // An archived race with no activity linked still has a result to capture —
   // MM100 was archived by the migration long before its Strava run was.
-  const { result: viewedResult } = useRaceResult(viewing?.status === "archived" ? viewing.slug : null);
+  // `resolved` matters as much as `result` here: a null result is both "none
+  // linked" and "still asking", and offering "Link result…" during the fetch
+  // flashes it on every archived race that HAS one.
+  const { result: viewedResult, resolved: resultResolved } =
+    useRaceResult(viewing?.status === "archived" ? viewing.slug : null);
 
   /**
    * The row for the race on screen, as GET /api/races reports it — the same
@@ -906,34 +910,39 @@ function RaceTopline() {
   );
 
   /**
-   * The race an "Archive with result…" would act on: the one being trained
-   * for (archiving it is how a race ends), or — with nothing in training —
-   * the archived race on screen that never got its activity linked. Verbatim
-   * from the menu row it replaces, including both fixes it carries:
+   * The race an "Archive with result…" / "Link result…" would act on — the
+   * one on screen, or nothing.
    *
-   *  · `status === "active"`, never `trainingSlug` (useActiveRace().slug),
-   *    which reads null in BOTH generic mode and view mode and used to hide
-   *    the row the instant anything but the active race's own train-mode
+   * As a menu row this was a question about the whole RACE LIST ("the race
+   * being trained for, or the archived race on screen with no activity
+   * linked"), because it sat in the menu's footer rather than inside any
+   * race's block. On a strip that is about the race LOADED, that reads as an
+   * action belonging to the folder on screen when it is not — an "Archive
+   * MM100F" button while browsing a draft. Owner's call: narrow it to the
+   * loaded race, which is the only change to any eligibility rule here.
+   *
+   * Both guards the list-wide version carried are kept:
+   *
+   *  · the folder's OWN `status`, never `trainingSlug` (useActiveRace().slug),
+   *    which reads null in BOTH generic mode and view mode — gating on it
+   *    hid the row the instant anything but the active race's own train-mode
    *    screen was on screen (round 4 finding 5, the bug this shares with
-   *    canAddTuneUp).
-   *  · the `kind !== "b"` guard, because a hand-edited or pre-migration
-   *    folder can carry `kind: "b"` and `status: "active"` at once
-   *    (ui3-resilience.md BUG 1) and this must not point at a tune-up
-   *    (round 5 confirm, finding 5).
-   *
-   * It stays a question about the RACE LIST rather than about the folder on
-   * screen, so the button is offered on the strip whatever is loaded — and
-   * names the folder it would act on, since that is not always this one.
+   *    canAddTuneUp). The active race browsed read-only still offers it.
+   *  · `kind !== "b"`, because a hand-edited or pre-migration folder can
+   *    carry `kind: "b"` and `status: "active"` at once (ui3-resilience.md
+   *    BUG 1) and a tune-up is never the race that ends a block (round 5
+   *    confirm, finding 5).
    */
   const archiveTarget = useMemo(() => {
-    const list = races ?? [];
-    const active = list.find((r) => r.kind !== "b" && r.status === "active");
-    if (active) return active;
-    if (viewing?.status === "archived" && viewedResult?.strava_activity_id == null) {
-      return list.find((r) => r.slug === viewing.slug) ?? null;
-    }
+    if (!entry || entry.parent_missing || entry.kind === "b") return null;
+    // Ending a race is archiving it with its result.
+    if (entry.status === "active") return entry;
+    // …and an archived one that never got its activity linked can still have
+    // it attached. `resultResolved` keeps that off screen while the answer is
+    // still in flight — see the hook call above.
+    if (entry.status === "archived" && resultResolved && viewedResult?.strava_activity_id == null) return entry;
     return null;
-  }, [races, viewing, viewedResult]);
+  }, [entry, resultResolved, viewedResult]);
 
   /* An orphaned tune-up gets none of an A race's actions — no Review
      (nothing to activate it INTO), no Refresh (a quick-form tune-up has no
@@ -1102,11 +1111,9 @@ function RaceTopline() {
           <ActionButton
             // Which case archiveTarget matched — the active race (ending
             // it), or an already-archived one merely missing its activity
-            // link. The short code is in the label, not just the hint: the
-            // target is not always the race on screen.
-            label={archiveTarget.status === "active"
-              ? `Archive with result… · ${archiveTarget.short}`
-              : `Link result… · ${archiveTarget.short}`}
+            // link. No short code in the label any more: it is the race on
+            // screen, whose name the strip is already about.
+            label={archiveTarget.status === "active" ? "Archive with result…" : "Link result…"}
             hint={archiveTarget.status === "active"
               ? `${archiveTarget.short} · link the Strava run`
               : `${archiveTarget.short} · no activity linked`}

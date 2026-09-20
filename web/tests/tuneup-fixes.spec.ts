@@ -78,29 +78,29 @@ test.describe('tune-up fixes (round 4)', () => {
     // documented null in BOTH generic mode and view mode — so they went
     // false the instant anything but the active race's own TRAIN-mode screen
     // was on screen, even though nothing about the training target had
-    // changed (round 4 finding 5). Both are asked about the folder's own
+    // changed (round 4 finding 5). Both read the folder's own
     // `status === "active"` now.
     //
-    // Since the topline change these are actions on the race LOADED, so the
-    // two halves get the two states that reproduce the bug:
-    //
-    //  · "Add tune-up…" belongs to the A race, so the A race itself is put
-    //    on screen in VIEW mode (the pointer accepts it — validateActivation
-    //    only gates `mode: "train"`). trainingSlug is null throughout.
+    // Since the topline change, both are actions on the race LOADED, so the
+    // state that reproduces the bug is the A race itself opened read-only:
+    // the pointer accepts `mode: "view"` on an active race
+    // (validateActivation only gates `mode: "train"`), and `trainingSlug` is
+    // null throughout — exactly the condition that used to blank them.
     await setActiveRace(request, MM.slug, 'view')
     await openDashboard(page)
-    await expect(raceAction(page, /Add tune-up…/), 'the action should survive the active race being viewed read-only')
+    await expect(page.getByText(/active · viewing read-only/i)).toBeVisible()
+    await expect(raceAction(page, /Add tune-up…/), 'the tune-up action should survive the active race being viewed read-only')
+      .toBeVisible()
+    await expect(raceAction(page, /Archive with result…/), 'the archive action should survive it too')
       .toBeVisible()
 
-    //  · `archiveTarget` is a question about the race LIST, not about what is
-    //    loaded, so browsing the tune-up itself — a folder that is neither
-    //    active nor archived — must still offer MM's own archive action.
+    // …and browsing the tune-up itself offers neither: a B folder is not the
+    // race that ends a block, and it has no block of its own to hang one in.
     await setActiveRace(request, child.slug, 'view')
     await page.reload()
     await expect(page.getByText(/vitals — load × recovery/i)).toBeVisible()
-    const archive = raceAction(page, /Archive with result…/)
-    await expect(archive, 'the archive action should survive browsing a tune-up in view mode').toBeVisible()
-    await expect(archive, 'it acts on the active race, and says so').toContainText(MM.short)
+    await expect(raceAction(page, /Add tune-up…/)).toHaveCount(0)
+    await expect(raceAction(page, /Archive with result…/)).toHaveCount(0)
 
     expect(child.slug).toBeTruthy()
     expect(trouble.pageErrors).toEqual([])
