@@ -311,7 +311,14 @@ export type RaceResult = {
   finish_h: number | null;
   official_time: string | null;
   placement: string | null;
-  splits: { station: string; elapsed_h: number | null; source: "track" | "official" | "manual" }[];
+  // PR #24 review round 3: narrowed from "track" | "official" | "manual".
+  // scripts/race-result.mjs only ever produces "track" (splitsFromStream) or
+  // "official" (mergeOfficialSplits, which is ALSO what the archive dialog's
+  // free-text "official splits" box writes — there is no separate hand-entry
+  // path distinguishable from a scraped/typed official result; both are the
+  // one non-GPS override and both are "official"). See PRD-modular-races.md
+  // §15 for the deviation note.
+  splits: { station: string; elapsed_h: number | null; source: "track" | "official" }[];
   notes: string | null;
 };
 
