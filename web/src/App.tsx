@@ -1089,10 +1089,25 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
   // moves DOM focus itself on Arrow/Home/End, not just the selection state.
   const tabRefs = useRef<Partial<Record<AppView, HTMLButtonElement | null>>>({});
   // Which view's tab button DOM focus currently sits on, tracked via each
-  // button's own onFocus below (not document.activeElement — by the time an
-  // effect runs after a re-render, a tab that just unmounted has already had
-  // the browser drop focus to <body>, so activeElement can no longer tell us
-  // which tab it USED to be on).
+  // button's own onFocus/onBlur below (not document.activeElement — by the
+  // time an effect runs after a re-render, a tab that just unmounted has
+  // already had the browser drop focus to <body>, so activeElement can no
+  // longer tell us which tab it USED to be on).
+  //
+  // Round 6 confirm, finding 2: onFocus alone latches the LAST tab ever
+  // focused and never forgets it, rather than the tab CURRENTLY focused —
+  // if a keyboard user tabs off the tablist into something else entirely
+  // (a setting, a race-day input) and a background event later shrinks
+  // `views` out from under the tab they left, the recovery effect below
+  // used to yank focus back onto the tablist away from whatever the user
+  // had since moved on to. Clearing the ref on blur (guarded so an old
+  // tab's blur can never clobber a newer tab's focus — blur always fires
+  // before the next element's focus, but the guard is free insurance) means
+  // the effect only ever recovers focus when the vanishing tab still
+  // genuinely holds it. A tab that unmounts WHILE focused never fires its
+  // own blur (the browser drops focus straight to <body> without one), so
+  // the ref is still correctly set to it in exactly the case recovery is
+  // for.
   const focusedTabRef = useRef<AppView | null>(null);
   // Round 5 confirm, finding 3: `views` can shrink out from under the
   // currently focused tab (e.g. FUEL disappears the instant `activeRace`
@@ -1167,6 +1182,7 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
               className={"chip" + (view === v ? " active" : "")}
               onClick={() => setView(v)}
               onFocus={() => { focusedTabRef.current = v; }}
+              onBlur={() => { if (focusedTabRef.current === v) focusedTabRef.current = null; }}
               onKeyDown={(e) => {
                 let nextIdx: number | null = null;
                 if (e.key === "ArrowRight") nextIdx = (i + 1) % views.length;
