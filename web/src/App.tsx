@@ -1122,11 +1122,22 @@ function RaceTopline() {
           />
         )}
       </div>
+      {/* What the last strip action had to say — the build's reason, its ⚠,
+          its ✓, or a refused activation. A live region: pressing a button
+          here changes a line somewhere else on the strip, which a screen
+          reader would otherwise never hear, and the buttons never relabel
+          themselves to carry it. It is also the ONE element that renders
+          this text, which is what a test asserting the tick is absent has
+          to point at (a review found the first such assertion aimed at the
+          button group instead, where the tick could never have appeared). */}
       {note && (
-        <div style={{
-          flexBasis: "100%", fontSize: 11, lineHeight: 1.4, paddingTop: 2,
-          color: note.tone === "error" ? "var(--ember)" : note.tone === "warn" ? "var(--lamp)" : "var(--pine)",
-        }}>
+        <div
+          role="status"
+          style={{
+            flexBasis: "100%", fontSize: 11, lineHeight: 1.4, paddingTop: 2,
+            color: note.tone === "error" ? "var(--ember)" : note.tone === "warn" ? "var(--lamp)" : "var(--pine)",
+          }}
+        >
           {note.text}
         </div>
       )}

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
   test, expect, ARCHIVED, DRAFT, MM,
-  chooseRace, openDashboard, openSwitcher, raceAction, raceActions, setActiveRace, switcherButton,
+  chooseRace, openDashboard, openSwitcher, raceAction, raceActionNote, setActiveRace, switcherButton,
   writeRawRaceFolder,
 } from './basecamp'
 
@@ -329,8 +329,16 @@ test('Run course again on a race with no course.gpx shows the reason, not a fals
   await button.click()
   // No course.gpx and no links.gpx to fetch: the build answers ok: true with
   // course: null and this exact reason (scripts/race-build.mjs's `stop`).
-  await expect(page.getByText(/no course\.gpx in the folder and no http\(s\) links\.gpx/i)).toBeVisible()
-  await expect(raceActions(page)).not.toContainText(/rebuilt ✓/i)
+  //
+  // Both halves are asserted against the strip's outcome line itself, which
+  // is the one element that ever renders either of them. The first version
+  // of the no-tick half pointed at the button GROUP — where the tick could
+  // not have appeared under any circumstances, so it could never fail
+  // (found in review; the switcher-row design it was ported from did render
+  // the tick inside the element being asserted on).
+  const note = raceActionNote(page)
+  await expect(note).toContainText(/no course\.gpx in the folder and no http\(s\) links\.gpx/i)
+  await expect(note).not.toContainText(/rebuilt ✓/i)
 
   expect(trouble.pageErrors).toEqual([])
 })
@@ -345,7 +353,7 @@ test('Run course again on a clean build still shows the tick', async ({ page, re
   const button = await runCourseAgainButton(page, CLEAN_ARCHIVED.slug, request)
 
   await button.click()
-  await expect(page.getByText(/course rebuilt ✓/i)).toBeVisible()
+  await expect(raceActionNote(page)).toContainText(/course rebuilt ✓/i)
 
   expect(trouble.pageErrors).toEqual([])
 })
@@ -361,8 +369,9 @@ test('Run course again on a mismatched build shows a warning, not the tick', asy
   const button = await runCourseAgainButton(page, MISMATCH_ARCHIVED.slug, request)
 
   await button.click()
-  await expect(page.getByText(/⚠.*course\.gpx measures 29\.9 mi vs race\.json's 100 mi/i)).toBeVisible()
-  await expect(page.getByText(/rebuilt ✓/i)).toHaveCount(0)
+  const note = raceActionNote(page)
+  await expect(note).toContainText(/⚠.*course\.gpx measures 29\.9 mi vs race\.json's 100 mi/i)
+  await expect(note).not.toContainText(/rebuilt ✓/i)
 
   expect(trouble.pageErrors).toEqual([])
 })

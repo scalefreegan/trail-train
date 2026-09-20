@@ -155,6 +155,18 @@ export const raceAction = (page: Page, name: string | RegExp) =>
   raceActions(page).getByRole('button', { name })
 
 /**
+ * The strip's outcome line — the course build's reason / ⚠ / ✓, or a refused
+ * activation.
+ *
+ * It is a `role="status"` live region (App.tsx's RaceTopline), and it is the
+ * only element that renders this text: the action buttons never relabel
+ * themselves to carry it. Pointing at it matters — the first version of the
+ * "no false tick" assertion was aimed at the button group, where the tick
+ * could never have appeared, so it could never fail.
+ */
+export const raceActionNote = (page: Page) => page.getByRole('status')
+
+/**
  * Every action label the strip is currently offering, in render order.
  *
  * As RENDERED: the buttons wear the app's `.chip` class, which is
