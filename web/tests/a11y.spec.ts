@@ -3,7 +3,8 @@ import path from 'node:path'
 
 import {
   test, expect, CREWLESS, DRAFT, MM,
-  openDashboard, openPrintable, openRaceTab, openRefreshFor, openReviewFor, openSwitcher, setActiveRace,
+  openDashboard, openPrintable, openRaceTab, openRefreshFor, openReviewFor, openSwitcher,
+  raceAction, setActiveRace,
   type Page,
 } from './basecamp'
 
@@ -70,10 +71,12 @@ async function focusEdge(page: Page, edge: 'first' | 'last', focusable: string) 
  *
  * @param name the accessible name the dialog is expected to carry
  * @param restoresFocus whether the element that opened it still exists to
- *   receive focus back. A dialog opened from a switcher row cannot restore
+ *   receive focus back. A dialog opened from a switcher ROW cannot restore
  *   focus to it — the menu unmounts when the dialog opens, and a detached
- *   node's .focus() is a no-op — so only the dialogs opened from a button
- *   that stays on screen are held to it.
+ *   node's .focus() is a no-op. Since the per-race actions moved onto the
+ *   topline strip (App.tsx's RaceTopline), that is only "New race…": every
+ *   other dialog is now opened from a button that stays on screen behind the
+ *   overlay, and is held to focus restoration.
  */
 async function assertDialogContract(page: Page, name: string, { restoresFocus = false } = {}) {
   const dialog = page.getByRole('dialog', { name })
@@ -157,9 +160,10 @@ test.describe('dialog accessibility', () => {
   })
 
   test('the review dialog — the one that was left out of round 2', async ({ page, trouble }) => {
-    await openSwitcher(page)
     await openReviewFor(page, DRAFT.name)
-    await assertDialogContract(page, 'review · race')
+    // Opened from the topline strip's own button, which stays on screen —
+    // so this one is held to focus restoration now too.
+    await assertDialogContract(page, 'review · race', { restoresFocus: true })
     expect(trouble.pageErrors).toEqual([])
   })
 
@@ -174,30 +178,27 @@ test.describe('dialog accessibility', () => {
   })
 
   test('refresh from sources', async ({ page, trouble }) => {
-    await openSwitcher(page)
     await openRefreshFor(page, CREWLESS.name)
-    await assertDialogContract(page, `refresh from sources · ${CREWLESS.name}`)
+    await assertDialogContract(page, `refresh from sources · ${CREWLESS.name}`, { restoresFocus: true })
     expect(trouble.pageErrors).toEqual([])
   })
 
   test('archive with result', async ({ page, trouble }) => {
-    const menu = await openSwitcher(page)
     // Opened, walked and closed with Escape — never submitted. Archiving the
     // 100-miler would retire the race every other spec runs against.
-    await menu.getByRole('menuitem', { name: /Archive with result…/ }).click()
-    await assertDialogContract(page, 'archive with result')
+    await raceAction(page, /Archive with result…/).click()
+    await assertDialogContract(page, 'archive with result', { restoresFocus: true })
     expect(trouble.pageErrors).toEqual([])
   })
 
   test('the tune-up quick form', async ({ page, trouble }) => {
-    const menu = await openSwitcher(page)
-    // Only the race being trained for carries this row, which is why the
+    // Only the race being trained for carries this action, which is why the
     // beforeEach above points at the 100-miler.
-    await menu.getByRole('menuitem', { name: /Add tune-up…/ }).click()
+    await raceAction(page, /Add tune-up…/).click()
     // Named through aria-labelledby (its header), not aria-label — the other
     // half of the contract `useDialog` offers, and the half nothing else here
     // exercises except the refresh dialog.
-    await assertDialogContract(page, 'add tune-up')
+    await assertDialogContract(page, 'add tune-up', { restoresFocus: true })
     expect(trouble.pageErrors).toEqual([])
   })
 })

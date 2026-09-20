@@ -1,4 +1,4 @@
-import { test, expect, MM, openDashboard, openSwitcher, setActiveRace } from './basecamp'
+import { test, expect, MM, openDashboard, raceAction, setActiveRace } from './basecamp'
 
 /**
  * Flow 10 addendum — AddTuneUp.submit()'s re-entrancy guard.
@@ -37,8 +37,7 @@ test('three synchronous clicks on "add tune-up" produce exactly one POST', async
     })
   })
 
-  const menu = await openSwitcher(page)
-  await menu.getByRole('menuitem', { name: /Add tune-up…/ }).click()
+  await raceAction(page, /Add tune-up…/).click()
 
   const dialog = page.getByRole('dialog', { name: 'add tune-up' })
   await expect(dialog).toBeVisible()

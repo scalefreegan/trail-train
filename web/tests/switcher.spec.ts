@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
-  test, expect, ARCHIVED, DRAFT, MM, type Page,
-  chooseRace, openDashboard, openSwitcher, setActiveRace, switcherButton, writeRawRaceFolder,
+  test, expect, ARCHIVED, DRAFT, MM,
+  chooseRace, openDashboard, openSwitcher, raceAction, raceActions, setActiveRace, switcherButton,
+  writeRawRaceFolder,
 } from './basecamp'
 
 /**
@@ -20,7 +21,7 @@ test.beforeEach(async ({ request }) => {
   await setActiveRace(request, null)
 })
 
-const archiveRow = /Archive with result…/
+const archiveButton = /Archive with result…/
 
 test('the switcher lists every fixture race under its own group', async ({ page }) => {
   await openDashboard(page)
@@ -39,6 +40,35 @@ test('the switcher lists every fixture race under its own group', async ({ page 
 
   // Generic is the one currently checked, since beforeEach parked it there.
   await expect(menu.getByRole('menuitemradio', { name: /No race \(generic\)/ })).toBeChecked()
+})
+
+/**
+ * The topline change, from the menu's side: every "↳ …" action row and the
+ * archive row left it (App.tsx's RaceTopline owns them now), so what is left
+ * is "No race (generic)", the race folders with their tune-ups indented, and
+ * "New race…". A row that starts with "↳" here is the regression.
+ */
+test('the menu holds races and "New race…" only — no action rows at all', async ({ page, request, trouble }) => {
+  // The 100-miler in train mode: the state that used to carry the MOST rows
+  // (Review, Refresh, Add tune-up, plus the archive row in the footer).
+  await setActiveRace(request, MM.slug, 'train')
+  await openDashboard(page)
+  const menu = await openSwitcher(page)
+
+  const labels = await menu.locator('button').allInnerTexts()
+  expect(labels.filter((t) => t.startsWith('↳')), 'an action row is still in the menu').toEqual([])
+  for (const gone of [/Review…/, /Refresh from sources/, /Run course again/, /Add tune-up/, /Archive with result/, /Link result/]) {
+    await expect(menu.getByRole('menuitem', { name: gone }), `${gone} should have left the menu`).toHaveCount(0)
+  }
+
+  // "New race…" is the one menuitem left; everything else is a race radio.
+  await expect(menu.getByRole('menuitem')).toHaveCount(1)
+  await expect(menu.getByRole('menuitem', { name: /New race…/ })).toBeVisible()
+  // …and the actions are on the strip instead, not simply deleted.
+  await expect(raceAction(page, /Review…/)).toBeVisible()
+  await expect(raceAction(page, archiveButton)).toBeVisible()
+
+  expect(trouble.pageErrors).toEqual([])
 })
 
 test('picking the 100-miler switches the whole dashboard to it, and generic takes it back', async ({ page, request, trouble }) => {
@@ -261,22 +291,20 @@ async function writeMismatchArchivedFixture(): Promise<void> {
 }
 
 /**
- * Find the "↳ Run course again…" row that belongs to one race, the same way
- * basecamp.ts's own (unexported) clickSubRowFor locates a Review/Refresh row
- * — by finding the race's own row first and taking the next matching sub-row
- * before the next top-level race row. Returns the locator (not a click), so
- * a test can read the row's hint text both before and after acting on it.
+ * Put one archived race on screen and hand back its "Run course again…"
+ * button on the topline strip.
+ *
+ * This used to be a hunt through the open menu for the race's own "↳ Run
+ * course again…" sub-row (there was one per archived folder, all with the
+ * same accessible name). The strip has exactly one, about the race that is
+ * loaded, so naming the race means loading it.
  */
-async function runCourseAgainRowFor(page: Page, raceName: string) {
-  const rows = page.getByRole('menu', { name: 'race' }).locator('button')
-  const labels = await rows.allInnerTexts()
-  const raceIdx = labels.findIndex((t) => t.startsWith(raceName))
-  if (raceIdx < 0) throw new Error(`no switcher row for "${raceName}" in: ${JSON.stringify(labels)}`)
-  const endIdx = labels.findIndex((t, i) => i > raceIdx && !t.startsWith('↳'))
-  const limit = endIdx < 0 ? labels.length : endIdx
-  const hitIdx = labels.findIndex((t, i) => i > raceIdx && i < limit && t.startsWith('↳ Run course again'))
-  if (hitIdx < 0) throw new Error(`"${raceName}" has no "Run course again…" row in: ${JSON.stringify(labels.slice(raceIdx, limit))}`)
-  return rows.nth(hitIdx)
+async function runCourseAgainButton(page: import('./basecamp').Page, slug: string, request: import('@playwright/test').APIRequestContext) {
+  await setActiveRace(request, slug, 'view')
+  await openDashboard(page)
+  const button = raceAction(page, /Run course again…/)
+  await expect(button, `${slug} should offer a course rebuild on the strip`).toBeVisible()
+  return button
 }
 
 /**
@@ -292,17 +320,17 @@ async function runCourseAgainRowFor(page: Page, raceName: string) {
  * NOTHING to the folder, so it cannot corrupt the shared fixture for any
  * other spec.
  */
-test('Run course again on a race with no course.gpx shows the reason, not a false tick', async ({ page, trouble }) => {
-  await openDashboard(page)
-  await openSwitcher(page)
-  const row = await runCourseAgainRowFor(page, ARCHIVED.name)
-  await expect(row).toContainText(/rebuild course\.json from the stored gpx/i)
+test('Run course again on a race with no course.gpx shows the reason, not a false tick', async ({ page, request, trouble }) => {
+  const button = await runCourseAgainButton(page, ARCHIVED.slug, request)
+  // The long explanation the menu row carried on its second line is the
+  // button's title now — the strip keeps to one line where it fits.
+  await expect(button).toHaveAttribute('title', /rebuild course\.json from the stored gpx/i)
 
-  await row.click()
+  await button.click()
   // No course.gpx and no links.gpx to fetch: the build answers ok: true with
   // course: null and this exact reason (scripts/race-build.mjs's `stop`).
   await expect(page.getByText(/no course\.gpx in the folder and no http\(s\) links\.gpx/i)).toBeVisible()
-  await expect(row).not.toContainText(/rebuilt ✓/i)
+  await expect(raceActions(page)).not.toContainText(/rebuilt ✓/i)
 
   expect(trouble.pageErrors).toEqual([])
 })
@@ -312,14 +340,12 @@ test('Run course again on a race with no course.gpx shows the reason, not a fals
  * distance/gain mismatch) must still show the tick, so the fix above cannot
  * have been "never show success."
  */
-test('Run course again on a clean build still shows the tick', async ({ page, trouble }) => {
+test('Run course again on a clean build still shows the tick', async ({ page, request, trouble }) => {
   await writeCleanArchivedFixture()
-  await openDashboard(page)
-  await openSwitcher(page)
-  const row = await runCourseAgainRowFor(page, CLEAN_ARCHIVED.name)
+  const button = await runCourseAgainButton(page, CLEAN_ARCHIVED.slug, request)
 
-  await row.click()
-  await expect(row).toContainText(/course rebuilt ✓/i)
+  await button.click()
+  await expect(page.getByText(/course rebuilt ✓/i)).toBeVisible()
 
   expect(trouble.pageErrors).toEqual([])
 })
@@ -362,14 +388,13 @@ test('a corrupted tune-up wrongly marked active is skipped in favor of the real 
   })
 
   await openDashboard(page)
-  const menu = await openSwitcher(page)
 
-  // The row exists — for the real active race, not the decoy: its hint names
+  // The button exists — for the real active race, not the decoy: it names
   // MM's own short code, never the corrupted tune-up's.
-  const row = menu.getByRole('menuitem', { name: archiveRow })
-  await expect(row).toBeVisible()
-  await expect(row).toContainText(MM.short)
-  await expect(row).not.toContainText('R3SHB')
+  const button = raceAction(page, archiveButton)
+  await expect(button).toBeVisible()
+  await expect(button).toContainText(MM.short)
+  await expect(button).not.toContainText('R3SHB')
 
   expect(trouble.pageErrors).toEqual([])
 })
@@ -380,15 +405,13 @@ test('a corrupted tune-up wrongly marked active is skipped in favor of the real 
  * course.gpx measuring far off the declared distance) must show a ⚠ hint,
  * not the plain success tick.
  */
-test('Run course again on a mismatched build shows a warning, not the tick', async ({ page, trouble }) => {
+test('Run course again on a mismatched build shows a warning, not the tick', async ({ page, request, trouble }) => {
   await writeMismatchArchivedFixture()
-  await openDashboard(page)
-  await openSwitcher(page)
-  const row = await runCourseAgainRowFor(page, MISMATCH_ARCHIVED.name)
+  const button = await runCourseAgainButton(page, MISMATCH_ARCHIVED.slug, request)
 
-  await row.click()
-  await expect(row).toContainText(/⚠.*course\.gpx measures 29\.9 mi vs race\.json's 100 mi/i)
-  await expect(row).not.toContainText(/rebuilt ✓/i)
+  await button.click()
+  await expect(page.getByText(/⚠.*course\.gpx measures 29\.9 mi vs race\.json's 100 mi/i)).toBeVisible()
+  await expect(page.getByText(/rebuilt ✓/i)).toHaveCount(0)
 
   expect(trouble.pageErrors).toEqual([])
 })

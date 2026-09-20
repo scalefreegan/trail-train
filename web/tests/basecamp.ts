@@ -122,9 +122,8 @@ export async function openSwitcher(page: Page) {
  *
  * `getByRole('button')` finds nothing here: the rows are `<button>` elements
  * with an explicit `role="menuitemradio"`, and an explicit role replaces the
- * implicit one. The sub-rows under each race ("↳ Review…", "↳ Refresh from
- * sources…") are plain `menuitem`s, which is what keeps this from matching
- * them.
+ * implicit one. "New race…" — the only row left that is not a race — is a
+ * plain `menuitem`, which is what keeps this from matching it.
  *
  * Then waits for the menu to leave the DOM — AnimatePresence unmounts it
  * asynchronously, and a second click landing while it is still there hits a
@@ -136,57 +135,81 @@ export async function chooseRace(page: Page, name: string | RegExp) {
   await expect(menu).toBeHidden()
 }
 
+/* ------------------------------------------------------------------ */
+/*  The topline action strip                                           */
+/* ------------------------------------------------------------------ */
+
 /**
- * Click the "↳ Review…" row that belongs to one race.
+ * The per-race actions, as of the topline change.
  *
- * Every draft has its own Review row and they are indistinguishable by
- * accessible name, so this finds the race's row first and takes the next
- * Review row after it in menu order — which is exactly how they are rendered
- * (App.tsx emits race, Review…, Refresh… as siblings of one Fragment).
+ * They used to be "↳ …" rows inside the switcher menu, one set per race
+ * folder; they are now real buttons on the status strip under the command
+ * bar, about the ONE race that is loaded (App.tsx's RaceTopline). So every
+ * helper below loads the race first and then acts on it, where it used to
+ * find the race's row and take the next sub-row after it.
+ */
+export const raceActions = (page: Page) => page.getByRole('group', { name: 'race actions' })
+
+/** One action button on the strip, by (partial) label. */
+export const raceAction = (page: Page, name: string | RegExp) =>
+  raceActions(page).getByRole('button', { name })
+
+/**
+ * Every action label the strip is currently offering, in render order.
+ *
+ * As RENDERED: the buttons wear the app's `.chip` class, which is
+ * `text-transform: uppercase`, and `innerText` reports the transformed text.
+ * So the expectations read "REVIEW…", not "Review…" — the athlete's own view
+ * of the strip, and the thing that would change if the styling ever stopped
+ * shouting.
+ */
+export async function raceActionLabels(page: Page): Promise<string[]> {
+  // Waits for the strip itself rather than for any one button: a state with
+  // no actions at all (a tune-up, an orphan) is a legitimate answer here.
+  await expect(page.getByText(/^(active|draft|archived) · /i).first()).toBeVisible()
+  return (await raceActions(page).getByRole('button').allInnerTexts()).map((t) => t.trim())
+}
+
+/**
+ * Put one race on screen, through the switcher, whatever is loaded now.
+ *
+ * Tolerates the menu already being open — several specs call `openSwitcher`
+ * themselves before reaching for an action, and clicking the trigger again
+ * would close it.
+ */
+export async function loadRace(page: Page, name: string | RegExp) {
+  const menu = page.getByRole('menu', { name: 'race' })
+  if (!(await menu.isVisible())) await openSwitcher(page)
+  await chooseRace(page, name)
+}
+
+/**
+ * Load one race and open its review screen from the strip.
+ *
+ * Both drafts and the active race carry the button (App.tsx's
+ * `isReviewable`), and it is the only way back into a folder's aid chart,
+ * profile and unresolved fields once the intake dialog has been closed.
  */
 export async function openReviewFor(page: Page, raceName: string) {
-  await clickSubRowFor(page, raceName, '↳ Review')
+  await loadRace(page, new RegExp(raceName))
+  await raceAction(page, /Review…/).click()
   const dialog = page.getByRole('dialog', { name: 'review · race' })
   await expect(dialog).toBeVisible()
   return dialog
 }
 
 /**
- * Click the "↳ Refresh from sources…" row under one race, and wait for the
- * dialog it opens.
+ * Load one race and open its "Refresh from sources… · paid" dialog.
  *
- * Unlike Review, this row is offered for ANY parseable race (App.tsx's
- * `isRefreshable` is just `!r.error`) — draft, active or archived — so the
- * race has to be named to get the right one.
+ * Offered for ANY parseable race (App.tsx's `isRefreshable` is just
+ * `!r.error`) — draft, active or archived.
  */
 export async function openRefreshFor(page: Page, raceName: string) {
-  await clickSubRowFor(page, raceName, '↳ Refresh')
+  await loadRace(page, new RegExp(raceName))
+  await raceAction(page, /Refresh from sources/).click()
   const dialog = page.getByRole('dialog', { name: `refresh from sources · ${raceName}` })
   await expect(dialog).toBeVisible()
   return dialog
-}
-
-/**
- * Click the sub-row whose label starts with `prefix` under `raceName`.
- *
- * Every draft has its own "↳ Review…" row and every race its own "↳ Refresh
- * from sources…" row, all indistinguishable by accessible name, so this finds
- * the race's row first and takes the next matching sub-row after it in menu
- * order — which is exactly how they are rendered (App.tsx emits race, Review…,
- * Refresh…, Run course again… as siblings of one Fragment).
- */
-async function clickSubRowFor(page: Page, raceName: string, prefix: string) {
-  const rows = page.getByRole('menu', { name: 'race' }).locator('button')
-  const labels = await rows.allInnerTexts()
-  const raceIdx = labels.findIndex((t) => t.startsWith(raceName))
-  if (raceIdx < 0) throw new Error(`no switcher row for "${raceName}" in: ${JSON.stringify(labels)}`)
-  // The next race row ends this race's block — without that bound, a race
-  // missing the sub-row would silently click the NEXT race's one.
-  const endIdx = labels.findIndex((t, i) => i > raceIdx && !t.startsWith('↳'))
-  const limit = endIdx < 0 ? labels.length : endIdx
-  const hitIdx = labels.findIndex((t, i) => i > raceIdx && i < limit && t.startsWith(prefix))
-  if (hitIdx < 0) throw new Error(`"${raceName}" has no "${prefix}…" row in: ${JSON.stringify(labels.slice(raceIdx, limit))}`)
-  await rows.nth(hitIdx).click()
 }
 
 /**

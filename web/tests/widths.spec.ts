@@ -1,4 +1,4 @@
-import { test, expect, MM, openDashboard, openSwitcher, setActiveRace, type Page } from './basecamp'
+import { test, expect, MM, openDashboard, openSwitcher, raceActions, setActiveRace, type Page } from './basecamp'
 
 /**
  * Flow 12 — no horizontal scroll, at every width the app claims to support.
@@ -136,6 +136,41 @@ test.describe('no horizontal scroll', () => {
       expect(box, 'the switcher menu has no box').not.toBeNull()
       expect(box!.x, 'the menu hangs off the left edge').toBeGreaterThanOrEqual(0)
       expect(box!.x + box!.width, 'the menu hangs off the right edge').toBeLessThanOrEqual(width)
+
+      expect(trouble.pageErrors).toEqual([])
+    })
+  }
+
+  /**
+   * The topline action strip is the newest row of nowrap-shaped content in
+   * the app: a status line plus up to four buttons, one of them the
+   * 28-character "Refresh from sources… · paid". On a phone it has to WRAP
+   * under the status text rather than push the document sideways — the exact
+   * failure mode this file exists for, on the surface most likely to hit it.
+   *
+   * The 100-miler in train mode is the widest state (review + refresh +
+   * tune-up + archive), and every button is checked individually: the page
+   * can measure clean while one button still sticks out of a strip that
+   * clips it.
+   */
+  for (const width of [320, 390]) {
+    test(`the topline race actions wrap inside ${width}px`, async ({ page, trouble }) => {
+      await page.setViewportSize({ width, height: 900 })
+      await openDashboard(page)
+
+      const buttons = raceActions(page).getByRole('button')
+      const n = await buttons.count()
+      expect(n, 'the active race should offer its actions on the strip').toBeGreaterThan(0)
+      for (let i = 0; i < n; i++) {
+        const box = await buttons.nth(i).boundingBox()
+        const label = (await buttons.nth(i).innerText()).trim()
+        expect(box, `"${label}" has no box`).not.toBeNull()
+        expect(box!.x, `"${label}" hangs off the left edge at ${width}px`).toBeGreaterThanOrEqual(0)
+        expect(box!.x + box!.width, `"${label}" hangs off the right edge at ${width}px`).toBeLessThanOrEqual(width)
+      }
+
+      const { over, culprit } = await overflow(page)
+      expect(over, `the strip at ${width}px is ${over}px too wide — widest offender: ${culprit ?? 'none found'}`).toBeLessThanOrEqual(0)
 
       expect(trouble.pageErrors).toEqual([])
     })

@@ -1,4 +1,4 @@
-import { test, expect, ARCHIVED, MM, openDashboard, openSwitcher, setActiveRace } from './basecamp'
+import { test, expect, ARCHIVED, MM, openDashboard, raceAction, setActiveRace } from './basecamp'
 
 /**
  * Flow 6 — "Archive with result…": picking the Strava run that IS the race.
@@ -25,7 +25,13 @@ import { test, expect, ARCHIVED, MM, openDashboard, openSwitcher, setActiveRace 
  * else, and is tested here, is the dialog that decides WHAT gets sent.
  */
 
-const archiveRow = /Archive with result…/
+/* The archive action moved out of the switcher menu and onto the topline
+   strip with every other per-race action (App.tsx's RaceTopline). Its
+   eligibility rule did not change: it is still `archiveTarget` — the active
+   race, or the archived race on screen that never got its activity linked —
+   and the button still names the folder it would act on, since that is not
+   always the one loaded. */
+const archiveButton = /Archive with result…/
 
 test.beforeEach(async ({ page, request }) => {
   await setActiveRace(request, MM.slug, 'train')
@@ -33,8 +39,7 @@ test.beforeEach(async ({ page, request }) => {
 })
 
 async function openArchive(page: import('./basecamp').Page) {
-  const menu = await openSwitcher(page)
-  await menu.getByRole('menuitem', { name: archiveRow }).click()
+  await raceAction(page, archiveButton).click()
   const dialog = page.getByRole('dialog', { name: 'archive with result' })
   await expect(dialog).toBeVisible()
   return dialog
@@ -129,11 +134,12 @@ test('an already-archived, fully-linked race offers no "Link result…" for itse
   expect(result.result, 'the archived fixture should carry a result.json').not.toBeNull()
   expect(result.result.finish_h).toBeGreaterThan(0)
 
-  const menu = await openSwitcher(page)
-  // MM's own row, naming MM specifically — not a "Link result…" for the
+  // MM's own button, naming MM specifically — not a "Link result…" for the
   // browsed archive, which already has what it needs.
-  await expect(menu.getByRole('menuitem', { name: archiveRow })).toBeVisible()
-  await expect(menu.getByRole('menuitem', { name: /Link result…/ })).toHaveCount(0)
+  const button = raceAction(page, archiveButton)
+  await expect(button).toBeVisible()
+  await expect(button).toContainText(MM.short)
+  await expect(raceAction(page, /Link result…/)).toHaveCount(0)
 
   expect(trouble.pageErrors).toEqual([])
 })

@@ -1,5 +1,5 @@
 import type { APIRequestContext } from '@playwright/test'
-import { test, expect, MM, openDashboard, openSwitcher, openRaceTab, setActiveRace } from './basecamp'
+import { test, expect, MM, openDashboard, openRaceTab, raceAction, setActiveRace } from './basecamp'
 
 /**
  * Round-4 interactive-review fixes, tune-up lane (ui1-altitude-tuneups.md
@@ -69,27 +69,38 @@ test.describe('tune-up fixes (round 4)', () => {
     await setActiveRace(request, MM.slug, 'train')
   })
 
-  test('bug 5 — "Add tune-up…" stays offered while browsing a different folder in view mode', async ({ page, request, trouble }) => {
+  test('bug 5 — "Add tune-up…" and the archive action survive view mode', async ({ page, request, trouble }) => {
     const child = await createTuneUp(request, {
       name: 'View Mode Check 25K', date: weeksBeforeToday(4), distanceMi: 15, gainFt: 900,
     })
+
+    // Both rules used to be asked about `useActiveRace().slug`, which is
+    // documented null in BOTH generic mode and view mode — so they went
+    // false the instant anything but the active race's own TRAIN-mode screen
+    // was on screen, even though nothing about the training target had
+    // changed (round 4 finding 5). Both are asked about the folder's own
+    // `status === "active"` now.
+    //
+    // Since the topline change these are actions on the race LOADED, so the
+    // two halves get the two states that reproduce the bug:
+    //
+    //  · "Add tune-up…" belongs to the A race, so the A race itself is put
+    //    on screen in VIEW mode (the pointer accepts it — validateActivation
+    //    only gates `mode: "train"`). trainingSlug is null throughout.
+    await setActiveRace(request, MM.slug, 'view')
     await openDashboard(page)
-
-    // Browse the tune-up itself — canAddTuneUp used to compare the row
-    // against useActiveRace().slug, which is null in BOTH generic mode and
-    // this one (view mode), so the row vanished the instant anything but the
-    // active race's own train-mode screen was on-screen.
-    let menu = await openSwitcher(page)
-    await menu.getByRole('menuitemradio', { name: /View Mode Check 25K/ }).click()
-    await expect(menu).toBeHidden()
-
-    menu = await openSwitcher(page)
-    await expect(menu.getByRole('menuitem', { name: /Add tune-up…/ }), 'the row should survive browsing a tune-up in view mode')
+    await expect(raceAction(page, /Add tune-up…/), 'the action should survive the active race being viewed read-only')
       .toBeVisible()
-    // Same root cause, same fix, in `archiveTarget` — it also went null the
-    // instant anything but the active race's own screen was on-screen.
-    await expect(menu.getByRole('menuitem', { name: /Archive with result…/ }), 'the archive row should survive browsing a tune-up in view mode too')
-      .toBeVisible()
+
+    //  · `archiveTarget` is a question about the race LIST, not about what is
+    //    loaded, so browsing the tune-up itself — a folder that is neither
+    //    active nor archived — must still offer MM's own archive action.
+    await setActiveRace(request, child.slug, 'view')
+    await page.reload()
+    await expect(page.getByText(/vitals — load × recovery/i)).toBeVisible()
+    const archive = raceAction(page, /Archive with result…/)
+    await expect(archive, 'the archive action should survive browsing a tune-up in view mode').toBeVisible()
+    await expect(archive, 'it acts on the active race, and says so').toContainText(MM.short)
 
     expect(child.slug).toBeTruthy()
     expect(trouble.pageErrors).toEqual([])
@@ -198,8 +209,7 @@ test.describe('tune-up fixes (round 4)', () => {
 
   test('bug 10 & 13 — the disabled submit says why, and an absurd date is refused with a hint', async ({ page, trouble }) => {
     await openDashboard(page)
-    const menu = await openSwitcher(page)
-    await menu.getByRole('menuitem', { name: /Add tune-up…/ }).click()
+    await raceAction(page, /Add tune-up…/).click()
     const dialog = page.getByRole('dialog', { name: 'add tune-up' })
     await expect(dialog).toBeVisible()
 
@@ -255,8 +265,7 @@ test.describe('tune-up fixes (round 4)', () => {
   test('bug 6 — the quick form draft survives "run the full intake instead"', async ({ page, trouble }) => {
     await openDashboard(page)
 
-    let menu = await openSwitcher(page)
-    await menu.getByRole('menuitem', { name: /Add tune-up…/ }).click()
+    await raceAction(page, /Add tune-up…/).click()
     let dialog = page.getByRole('dialog', { name: 'add tune-up' })
     await dialog.getByLabel('name').fill('Carryover Check 50k')
     await dialog.getByLabel('date').fill(weeksBeforeToday(5))
@@ -271,8 +280,7 @@ test.describe('tune-up fixes (round 4)', () => {
 
     // Reopen the quick form on the same parent — the typed values used to be
     // gone for good at this point (round 4 finding 6).
-    menu = await openSwitcher(page)
-    await menu.getByRole('menuitem', { name: /Add tune-up…/ }).click()
+    await raceAction(page, /Add tune-up…/).click()
     dialog = page.getByRole('dialog', { name: 'add tune-up' })
     await expect(dialog.getByLabel('name')).toHaveValue('Carryover Check 50k')
     await expect(dialog.getByLabel('distance mi')).toHaveValue('31')
