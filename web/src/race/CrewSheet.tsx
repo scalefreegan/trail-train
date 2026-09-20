@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useUnits } from "../data";
 import { fmtElapsed, type projectRace } from "./pacing";
 import { gmapsDirectionsUrl } from "./links";
+import { courseHasCutoffs, cutoffSourceLabel } from "./cutoffSource";
 import type { Course, CrewBase } from "./types";
 import { useRacePlan } from "./useRacePlan";
 import { useDialog } from "./dialogChrome";
@@ -110,7 +111,7 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
   onClose: () => void;
 }) {
   const u = useUnits();
-  const { race, sun } = useRacePlan();
+  const { race, raceConfig, sun } = useRacePlan();
   const base = crewBase?.base ?? null;
   const drives = crewBase?.drives ?? {};
   const emergency = crewBase?.emergency ?? course.crew_info?.emergency ?? [];
@@ -127,13 +128,17 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
   // the organizer's crew manual); the fallbacks are true of any trail ultra.
   const drivingNote = course.crew_info?.driving
     ?? "see the official crew guide for driving directions; never block access roads.";
-  // "cutoffs from …" names the document they came from: the first manual-ish
-  // source in race.json, minus its parenthetical scope note.
-  const cutoffSource = useMemo(() => {
-    const manual = (course.sources ?? []).find((s) => /manual|guide|handbook/i.test(s.ref));
-    const ref = (manual ?? (course.sources ?? []).find((s) => s.kind !== "gpx"))?.ref;
-    return ref ? ref.replace(/\s*\([^)]*\)\s*$/, "") : "the official runner manual";
-  }, [course.sources]);
+  // "cutoffs from …" names the document they came from — shared with
+  // RacePlanner.tsx's station-table footer via cutoffSource.ts, so a
+  // crewed race with no cutoff on any station (round 4 finding 12's cause,
+  // observed on a tune-up but not exclusive to one) gets the same honest
+  // "no cutoffs" treatment here instead of a fabricated "the official
+  // runner manual".
+  const hasCutoffs = useMemo(() => courseHasCutoffs(course), [course]);
+  const cutoffSource = useMemo(
+    () => cutoffSourceLabel(course, { editionYear: raceConfig.edition_year }),
+    [course, raceConfig.edition_year],
+  );
 
   const crewNames = course.aid_stations.filter((s) => s.crew || s.crew_only).map((s) => s.name);
   const dropNames = course.aid_stations.filter((s) => s.drop_bag).map((s) => s.name);
@@ -323,7 +328,8 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
             : "sun unknown — run the course build after setting the date."}
           {" "}<b>If the runner drops:</b> they must report to an aid station captain — never leave the course unreported.<br />
           <span style={{ color: MUTED }}>
-            ETAs from Basecamp's pacing model (best/worst = ± model band); cutoffs from {cutoffSource}.
+            ETAs from Basecamp's pacing model (best/worst = ± model band);{" "}
+            {hasCutoffs ? <>cutoffs from {cutoffSource}.</> : "no cutoffs on this course."}
             {" "}GPS links open Google Maps driving directions from the base — coordinates are the station point, not the parking area.
             {" "}Drive times are OSRM road estimates; forest-road conditions vary, so verify against the official Crew Guide and add buffer.
           </span>
