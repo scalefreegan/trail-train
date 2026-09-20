@@ -1,4 +1,4 @@
-import { test, expect, ARCHIVED, MM, openDashboard, setActiveRace, type Page } from './basecamp'
+import { test, expect, ARCHIVED, MM, openDashboard, setActiveRace, switcherButton, type Page } from './basecamp'
 
 /**
  * Flow 8 — race day with the laptop gone, and the archive you were reading
@@ -75,7 +75,20 @@ test.describe('race day offline', () => {
     //    trained for, and it must not move what the offline cache answers.
     await setActiveRace(request, ARCHIVED.slug, 'view')
     await page.goto('/')
-    await expect(page.getByText(/vitals — load × recovery/i)).toBeVisible()
+    // `/#/race-day` → `/` differs only in its hash, so this is a hash change
+    // in the SAME document: the dashboard remounts and paints from the
+    // payload already in memory (the 100-miler's) while the refetch that
+    // notices the moved pointer is still in flight. Waiting for the vitals
+    // panel therefore proves nothing about WHICH race is loaded — it was
+    // winning the race against that refetch by luck, and any change to what
+    // else the dashboard fetches on mount tips it (the topline strip's own
+    // GET /api/races did exactly that, and this test caught it).
+    //
+    // Wait for the app to say it is showing the archived race instead. The
+    // command-bar chip is the app's own statement of what is loaded, and it
+    // cannot read RR50K until the view-mode payload has landed — which is
+    // the precondition the cache assertions below actually depend on.
+    await expect(switcherButton(page)).toContainText(new RegExp(ARCHIVED.short, 'i'))
 
     // The bookkeeping the fix turns on, read straight out of localStorage.
     const keys = await page.evaluate(() => ({
