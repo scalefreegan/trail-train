@@ -45,7 +45,15 @@ export default defineConfig({
     // here asserts on an animation, and a half-faded element is the classic
     // source of a flaky click.
     reducedMotion: 'reduce',
-    trace: 'retain-on-failure',
+    // No trace. `retain-on-failure` made Playwright 1.63's trace writer race
+    // its own artifact cleanup at context close (`browserContext.close:
+    // ENOENT … .playwright-artifacts-0/traces/resources/*.jsonl`), which
+    // aborted the worker and left 20+ tests "did not run" roughly one run in
+    // five — twice in one afternoon on unrelated tests (a11y's new-race
+    // dialog, topline's build-note switch), never reproducible alone. With
+    // retries at 0 a trace was rarely opened anyway; the failure screenshot
+    // and error-context.md stay, and check:races must be deterministic.
+    trace: 'off',
     screenshot: 'only-on-failure',
   },
 
