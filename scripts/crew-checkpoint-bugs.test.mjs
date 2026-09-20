@@ -158,6 +158,18 @@ test("bug 5: an implausibly fast split (well under a quarter of the plan's movin
   const html = renderCrewPage(data, LIVE, outcome.result, checkpointMessage(outcome.result));
   assert.match(html, /class="applied extreme"/, "the status line should carry the loud extreme-pace class");
   assert.match(html, /under a quarter/i);
+  // v2 review confirm-ui2 N1: the extreme sentence used to end with its own
+  // "." right before the outer template's ". Everything below…", producing
+  // a visible ".." in the rendered text. The pre-existing <em> "capped"
+  // variant already omits its own trailing period for exactly this reason
+  // (checkpointMessage's `paceNote` branch below) — the <strong> extreme
+  // sentence must follow the same convention: one full stop, not two.
+  const message = checkpointMessage(outcome.result);
+  assert.ok(
+    !message.includes(".. Everything below"),
+    `extreme-pace message has a doubled full stop: ${message}`,
+  );
+  assert.match(message, /not extrapolated from it<\/strong>\. Everything below/);
 });
 
 test("bug 5: an ordinary, close-to-plan split gets neither the clamp nor the extreme-pace flag", () => {
