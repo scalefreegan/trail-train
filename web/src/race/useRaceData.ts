@@ -126,26 +126,44 @@ export function useCrewBase() {
     an error string, so the projection never silently swaps to the fallback
     grade model mid-session. Entries are validated — a hand-corrupted file
     reads as a load failure, not as a curve. */
+/** Not namespaced by slug: the pace-vs-grade fit is the athlete's own, the
+    same file whichever race is on screen — same reasoning as StravaProvider's
+    STRAVA_CACHE_KEY in providers.tsx. */
+const PACE_GRADE_CACHE_KEY = "pace-grade";
+
 export function usePaceGrade() {
   const { key: refreshKey } = useRefresh();
   const [data, setData] = useState<PaceGradeCurve>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let stale = false;
+    // v2 review ui2 #1: the projection needs this curve offline exactly as
+    // much as it needs course.json, but until now nothing cached it — a
+    // reload with the server unreachable fell back to the fallback grade
+    // model silently mid-race. Same fallback shape as useCourse/useCrewBase:
+    // a load failure (never a 404, which means "not fitted yet") reaches for
+    // the last copy that DID load rather than blanking the curve.
+    const fallback = (message: string) => {
+      if (stale) return;
+      const cached = cacheGet<PaceGradeCurve>(PACE_GRADE_CACHE_KEY);
+      if (cached) { setData(cached); setError(`${message} — showing the last saved copy`); }
+      else setError(message);
+    };
     fetch(`/pace-grade.json?t=${Date.now()}`)
       .then(async (r) => {
         if (stale) return;
         if (r.status === 404) { setData(null); setError(null); return; }
-        if (!r.ok) { setError(`pace-grade.json failed to load (HTTP ${r.status})`); return; }
+        if (!r.ok) { fallback(`pace-grade.json failed to load (HTTP ${r.status})`); return; }
         const d = await r.json().catch(() => { throw new Error("parse"); });
         const valid = d && Array.isArray(d.curve) && d.curve.length > 0 &&
           d.curve.every((p: { g: unknown; mult: unknown }) =>
             Number.isFinite(p.g) && Number.isFinite(p.mult) && (p.mult as number) > 0);
-        if (!valid) { if (!stale) setError("pace-grade.json invalid — using previous curve or fallback"); return; }
+        if (!valid) { fallback("pace-grade.json invalid — using previous curve or fallback"); return; }
         if (stale) return;
+        cachePut(PACE_GRADE_CACHE_KEY, d);
         setData(d); setError(null);
       })
-      .catch(() => { if (!stale) setError("pace-grade.json corrupt or unreadable"); });
+      .catch(() => fallback("pace-grade.json corrupt or unreadable"));
     return () => { stale = true; };
   }, [refreshKey]);
   return { paceGrade: data, error };

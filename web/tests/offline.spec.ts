@@ -29,8 +29,20 @@ import { test, expect, ARCHIVED, MM, openDashboard, setActiveRace, type Page } f
  * load with the laptop unreachable is out of scope by design.
  */
 
-/** The endpoints a sleeping laptop takes with it. */
-const DATA_ENDPOINTS = ['/api/race/active', '/course.json', '/crew-base.json', '/nutrition.json']
+/** The endpoints a sleeping laptop takes with it.
+ *
+ * /strava.json and /pace-grade.json were missing here until v2 review ui2
+ * #1: the projection needs a Strava pace fit as much as it needs
+ * course.json, but this list never knocked either of them out, so this
+ * whole file kept passing while offline race-day rendered no plan at all —
+ * only the "offline" banner, never a NEXT · STATION card. See the assertion
+ * added right after the offline reload below, which is the one that would
+ * have caught it.
+ */
+const DATA_ENDPOINTS = [
+  '/api/race/active', '/course.json', '/crew-base.json', '/nutrition.json',
+  '/strava.json', '/pace-grade.json',
+]
 
 /** Stations that belong to the 100-miler and to no other fixture race —
     "Lantern Draw", "Quartz Bench" and "Pinyon Gate" are in both charts, so
@@ -89,6 +101,12 @@ test.describe('race day offline', () => {
     // The race being RUN comes back, stamped as cached…
     await expect(page.getByText(/offline — showing the last plan this phone loaded/i)).toBeVisible()
     await expect(page.getByText(new RegExp(`${MM.short} · race day`, 'i'))).toBeVisible()
+
+    // …and it actually IS a plan, not just the banner claiming one: the
+    // projection needs a cached Strava pace fit (and course.json) to render
+    // a next station at all. This is the assertion that would have failed
+    // while /strava.json and /pace-grade.json bypassed the offline cache.
+    await expect(page.getByText(/^next · station \d+$/i)).toBeVisible()
 
     // …with its own aid chart, not the archive's.
     const body = await page.locator('body').innerText()
