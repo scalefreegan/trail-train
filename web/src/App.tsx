@@ -189,8 +189,16 @@ type RaceListEntry = {
     parent slug names a folder that is not on disk any more, and the row below
     renders it with the TUNE-UP marker and none of an A race's own actions
     rather than promoting it to a draft it never was (round 3, resilience
-    finding 4). */
-type RaceGroupEntry = RaceListEntry & { b_races: RaceListEntry[]; parent_missing?: true };
+    finding 4). `parent_missing_reason` distinguishes a parent slug that
+    names nothing on disk ("not_found") from one that names a real folder
+    which is itself a tune-up, never a valid parent ("parent_is_tune_up") —
+    round 3 resilience NEW-1. Either way `b_races` is always empty for an
+    orphan; it is never a nesting target for anything else. */
+type RaceGroupEntry = RaceListEntry & {
+  b_races: RaceListEntry[];
+  parent_missing?: true;
+  parent_missing_reason?: "not_found" | "parent_is_tune_up";
+};
 
 /** An older dev server (or a cache written before v2) answers with the flat
     list only: every folder then stands on its own, which is the v1 menu. */
@@ -687,7 +695,11 @@ function RaceSwitcher() {
                         // promoted it to a top-level A-shaped row looked
                         // exactly like a fresh draft the athlete never made.
                         : entry.parent_missing
-                          ? `tune-up · ${entry.short}${entry.date ? ` · ${entry.date}` : ""} · read-only · parent "${entry.parent_slug ?? "?"}" not found`
+                          ? `tune-up · ${entry.short}${entry.date ? ` · ${entry.date}` : ""} · read-only · ${
+                              entry.parent_missing_reason === "parent_is_tune_up"
+                                ? `parent "${entry.parent_slug ?? "?"}" is itself a tune-up`
+                                : `parent "${entry.parent_slug ?? "?"}" not found`
+                            }`
                           : `${entry.short}${entry.date ? ` · ${entry.date}` : ""}${entry.status === "active" ? "" : " · read-only"}`}
                       swatch={entry.error ? null : (
                         <ThemePreview visual={entry.visual} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round />
@@ -754,8 +766,14 @@ function RaceSwitcher() {
                     {/* the tune-ups inside this race's block, oldest first —
                         indented, and always browsed rather than trained for:
                         a B folder is never "active" (PRD-v2 §3), so picking
-                        one is a view-mode switch whatever its status says */}
-                    {entry.b_races.map((b) => (
+                        one is a view-mode switch whatever its status says.
+                        Gated on !parent_missing too: an orphan's own b_races
+                        (if it somehow had any) are never legitimate nested
+                        children — groupRaces never populates them, but this
+                        keeps the render honest even if that ever changes
+                        (round 3 resilience NEW-1 — a chained orphan used to
+                        render twice, once here and once as its own row). */}
+                    {!entry.parent_missing && entry.b_races.map((b) => (
                       <SwitcherRow
                         key={b.slug}
                         {...itemProps("race", b.slug)}

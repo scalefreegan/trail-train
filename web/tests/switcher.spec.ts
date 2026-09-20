@@ -1,4 +1,7 @@
-import { test, expect, ARCHIVED, DRAFT, MM, chooseRace, openDashboard, openSwitcher, setActiveRace, switcherButton } from './basecamp'
+import {
+  test, expect, ARCHIVED, DRAFT, MM,
+  chooseRace, openDashboard, openSwitcher, setActiveRace, switcherButton, writeRawRaceFolder,
+} from './basecamp'
 
 /**
  * Flow 2 — the race switcher: generic → the MM-like 100 → back to generic.
@@ -67,6 +70,66 @@ test('picking the 100-miler switches the whole dashboard to it, and generic take
   expect((await (await request.get('/api/race/active?t=2')).json()).active).toBeNull()
 
   expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * Round 3 resilience NEW-1 / round 4 confirm — a tune-up whose parent_slug
+ * names ANOTHER tune-up (never an A race, and possibly gone entirely) used
+ * to render twice: once as its own top-level orphan row, and again nested
+ * under the other orphan's row with no "parent not found" warning at all
+ * (groupRaces let an orphan's own entry double as a nesting target). Worse,
+ * `rowsFor` always counts an orphan as exactly one row, so once a second
+ * row rendered for it uncounted, every race below it in menu order got a
+ * roving-focus cursor one off from where it actually rendered — the
+ * switcher opened with focus on the WRONG race.
+ *
+ * scripts/race-config.mjs's groupRaces now only ever nests a tune-up onto a
+ * genuine A race (never onto another tune-up's entry), so this reproduces
+ * the exact two-folder shape confirm-ui3 used and checks both halves: no
+ * duplicate row, and the cursor lands on the race actually being browsed.
+ *
+ * The two folders are written directly to races/ (writeRawRaceFolder) —
+ * quickCreateRace refuses a tune-up whose parent is itself a tune-up, so
+ * this shape can only exist via a hand-edited (or pre-v2) folder, never
+ * through the app's own create path.
+ */
+test('a tune-up chained onto another tune-up renders once, orphaned, and does not shift the cursor', async ({ page, request }) => {
+  await writeRawRaceFolder('shell2-chain-orphan-parent', {
+    schema_version: 1, kind: 'b', parent_slug: 'shell2-no-such-race',
+    status: 'draft', name: 'Shell2 Orphan Parent', short: 'S2OP', date: '2027-04-10',
+    distance_mi: 10, gain_ft: 500,
+  })
+  await writeRawRaceFolder('shell2-chain-orphan-child', {
+    schema_version: 1, kind: 'b', parent_slug: 'shell2-chain-orphan-parent',
+    status: 'draft', name: 'Shell2 Chain Orphan Child', short: 'S2OC', date: '2027-04-20',
+    distance_mi: 12, gain_ft: 600,
+  })
+
+  // Browsing a real, unrelated draft — its own row, alphabetically, sorts
+  // after both shell2- folders above (drafts group, slug order) — is what
+  // exposes the off-by-one: the bug shifted every row below the duplicate.
+  await setActiveRace(request, DRAFT.slug, 'view')
+  await openDashboard(page)
+  const menu = await openSwitcher(page)
+
+  // No duplicate: exactly one row for the chained orphan, not one at the
+  // top level and one nested under the other orphan.
+  await expect(menu.getByRole('menuitemradio', { name: /Shell2 Chain Orphan Child/ })).toHaveCount(1)
+  await expect(menu.getByRole('menuitemradio', { name: /Shell2 Orphan Parent/ })).toHaveCount(1)
+
+  // Both are their own top-level orphan rows with a reason, never silently
+  // nested — the child's parent IS a real row, just not an A race.
+  await expect(menu.getByRole('menuitemradio', { name: /Shell2 Chain Orphan Child/ }))
+    .toContainText(/parent "shell2-chain-orphan-parent" is itself a tune-up/)
+  await expect(menu.getByRole('menuitemradio', { name: /Shell2 Orphan Parent/ }))
+    .toContainText(/parent "shell2-no-such-race" not found/)
+
+  // The cursor: DRAFT is the race actually being browsed (currentSlug), so
+  // focus must land on ITS row, not on whatever rendered one slot earlier
+  // because an orphan's row count was miscounted.
+  const focused = await page.evaluate(() => document.activeElement?.textContent ?? null)
+  expect(focused).toContain(DRAFT.name)
+  expect(focused).not.toContain('Shell2')
 })
 
 test('an archived race opens read-only, without moving the training pointer', async ({ page, request, trouble }) => {

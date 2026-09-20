@@ -792,31 +792,54 @@ export function bRacesFor(races, parent) {
  * the rows came in (the flat list stays the source of truth for status,
  * errors and the palette swatch — this only says what nests under what).
  *
- * An orphan B — one whose parent_slug names a folder that is not in this list
- * at all — is kept at the TOP level rather than dropped. A race that has
- * fallen out of its block still exists on disk, and a menu that silently
- * omits it looks exactly like a deleted folder. It is still a tune-up,
- * though — flagged `parent_missing: true` so a consumer (the switcher) can
- * keep its TUNE-UP marker and reduced action set instead of rendering it as
- * an ordinary A race with Review/Activate/Refresh rows it never earned.
+ * A tune-up's parent MUST be a real A race. An orphan B — one whose
+ * parent_slug names a folder that is not in this list at all, OR names
+ * another B race rather than an A race — is kept at the TOP level rather
+ * than dropped or nested. A race that has fallen out of its block still
+ * exists on disk, and a menu that silently omits it looks exactly like a
+ * deleted folder. It is still a tune-up, though — flagged
+ * `parent_missing: true` (with `parent_missing_reason` saying why) so a
+ * consumer (the switcher) can keep its TUNE-UP marker and reduced action
+ * set instead of rendering it as an ordinary A race with Review/Activate/
+ * Refresh rows it never earned.
+ *
+ * A B chained onto another B (round 3 resilience NEW-1) used to be nested
+ * under that other B's entry — which itself carries no legitimate b_races
+ * of its own — so the child rendered TWICE: once as its own top-level
+ * orphan row, and again nested under the other orphan with no warning.
+ * That also threw off rowsFor/cursorForSlug's row counts, since an orphan
+ * is counted as exactly one row. Nesting now only ever happens onto a slug
+ * that is a genuine A race (`aSlugs`), never onto another B's entry.
  * @template {{slug: string, kind?: string, parent_slug?: string|null}} T
  * @param {T[]} rows
- * @returns {(T & {b_races: T[], parent_missing?: true})[]}
+ * @returns {(T & {b_races: T[], parent_missing?: true, parent_missing_reason?: "not_found"|"parent_is_tune_up"})[]}
  */
 export function groupRaces(rows) {
   const list = Array.isArray(rows) ? rows : [];
   const isB = (r) => r.kind === "b" && typeof r.parent_slug === "string" && r.parent_slug;
-  const parents = new Set(list.filter((r) => !isB(r)).map((r) => r.slug));
+  // Only a true A race (kind !== "b") is ever a valid nesting target —
+  // never another B, and never an orphan's own synthesized entry.
+  const aSlugs = new Set(list.filter((r) => r.kind !== "b").map((r) => r.slug));
+  const bySlug = new Map(list.map((r) => [r.slug, r]));
+  const missingReason = (parentSlug) => {
+    const p = bySlug.get(parentSlug);
+    return p && p.kind === "b" ? "parent_is_tune_up" : "not_found";
+  };
   const out = [];
   const byParent = new Map();
   for (const row of list) {
-    if (isB(row) && parents.has(row.parent_slug)) continue;
-    const entry = isB(row) ? { ...row, b_races: [], parent_missing: true } : { ...row, b_races: [] };
+    if (isB(row) && aSlugs.has(row.parent_slug)) continue;
+    const entry = isB(row)
+      ? { ...row, b_races: [], parent_missing: true, parent_missing_reason: missingReason(row.parent_slug) }
+      : { ...row, b_races: [] };
     out.push(entry);
-    byParent.set(row.slug, entry);
+    // Only a real A race's entry is registered as a nesting target — an
+    // orphan (parent_missing) never becomes a "parent" for anything else,
+    // however its own parent_slug happened to resolve.
+    if (!isB(row)) byParent.set(row.slug, entry);
   }
   for (const row of list) {
-    if (!isB(row)) continue;
+    if (!isB(row) || !aSlugs.has(row.parent_slug)) continue;
     const parent = byParent.get(row.parent_slug);
     if (parent) parent.b_races.push({ ...row, b_races: [] });
   }

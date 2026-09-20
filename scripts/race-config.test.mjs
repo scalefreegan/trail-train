@@ -628,7 +628,38 @@ test("groupRaces flags an orphan tune-up as parent_missing rather than an ordina
   assert.equal(orphan.slug, "stray-50k-2027");
   assert.equal(orphan.kind, "b");
   assert.equal(orphan.parent_missing, true);
+  assert.equal(orphan.parent_missing_reason, "not_found");
   assert.deepEqual(orphan.b_races, []);
+});
+
+test("groupRaces orphans a B chained onto another B, never nests it, and never renders it twice", () => {
+  // round 3 resilience NEW-1: chain-tuneup-2027's parent_slug names
+  // orphan-tuneup-2027 — a real row in the list, but itself a tune-up, not
+  // an A race. It must come out as its own top-level orphan (never nested
+  // under the other orphan, which would otherwise duplicate the row and
+  // throw off rowsFor/cursorForSlug's row counts).
+  const list = [
+    { slug: "san-juan-softie-100-2027", kind: "a", parent_slug: null, date: "2027-08-13" },
+    { slug: "orphan-tuneup-2027", kind: "b", parent_slug: "no-such-race-2099", date: "2027-04-10" },
+    { slug: "chain-tuneup-2027", kind: "b", parent_slug: "orphan-tuneup-2027", date: "2027-04-20" },
+  ];
+  const grouped = groupRaces(list);
+  // Exactly one row per input race — no duplicates.
+  assert.deepEqual(grouped.map((g) => g.slug), [
+    "san-juan-softie-100-2027",
+    "orphan-tuneup-2027",
+    "chain-tuneup-2027",
+  ]);
+  const orphan = grouped.find((g) => g.slug === "orphan-tuneup-2027");
+  const chain = grouped.find((g) => g.slug === "chain-tuneup-2027");
+  assert.equal(orphan.parent_missing, true);
+  assert.equal(orphan.parent_missing_reason, "not_found");
+  assert.deepEqual(orphan.b_races, [], "an orphan is never a nesting target for another B");
+  assert.equal(chain.parent_missing, true);
+  assert.equal(chain.parent_missing_reason, "parent_is_tune_up");
+  assert.deepEqual(chain.b_races, []);
+  // The A race's own block is unaffected.
+  assert.deepEqual(grouped[0].b_races, []);
 });
 
 test("validateSingleActive is unaffected by tune-ups", async (t) => {
