@@ -9,19 +9,25 @@ import { test, expect, MM, openDashboard, setActiveRace } from './basecamp'
  * `!r.ok`/404 branches in useCourse() were already graceful, and it logged
  * anyway, drowning real signal on every view.
  *
- * useCourse() (web/src/race/useRaceData.ts) now recognizes this ahead of
- * time via courseAvailability.ts's isKnownCourseless — race.kind === "b"
- * with no {kind:"gpx"} entry in race.sources, a signal already on the
- * active-race payload, not a new probe — and never issues the fetch at
- * all. The empty state ("no course data yet") still renders, from the same
- * `missing` flag, just without the network round trip that used to produce
- * the console noise.
+ * useCourse() (web/src/race/useRaceData.ts) recognizes this ahead of time via
+ * courseAvailability.ts's isKnownCourseless — race.kind === "b" with no
+ * {kind:"gpx"} entry in race.sources, a signal already on the active-race
+ * payload, not a new probe — and never issues the fetch at all. The empty
+ * state ("no course data yet") still renders, from the same `missing` flag,
+ * just without the network round trip that used to produce the console
+ * noise.
+ *
+ * /nutrition.json is the same bug's other half (useNutrition, in
+ * nutrition.ts): a quick-form tune-up never gets a nutrition.json either —
+ * PRD-v2 §3's reduced planner hides fuel entirely for one — so it 404'd on
+ * every view too. useNutrition() now checks the same isKnownCourseless
+ * signal and skips that fetch as well.
  *
  * The tune-up is created here rather than as a committed fixture: nothing
  * under races/_fixtures/ is a "b" race yet, and POSTing with no `gpx` field
  * is the exact request AddTuneUp.tsx's quick form sends for this case.
  */
-test('viewing a course-less tune-up makes no /course.json request and logs no console errors', async ({ page, request, trouble }) => {
+test('viewing a course-less tune-up makes no /course.json or /nutrition.json request, and logs no console errors', async ({ page, request, trouble }) => {
   const created = await request.post('/api/races', {
     data: {
       name: 'Courseless Probe 10K',
@@ -34,13 +40,15 @@ test('viewing a course-less tune-up makes no /course.json request and logs no co
   expect(created.ok(), await created.text()).toBeTruthy()
   const { slug } = await created.json()
 
-  // Every request the page makes from here on — the exact fetch this bug is
-  // about not making, not just its console-visible side effect.
+  // Every request the page makes from here on — the exact fetches this bug
+  // is about not making, not just their console-visible side effects.
   const requestedPaths: string[] = []
   page.on('request', (r) => { requestedPaths.push(new URL(r.url()).pathname) })
 
   await setActiveRace(request, slug, 'view')
   await openDashboard(page)
+  // training/race/fuel is a role="tablist" of role="tab" buttons (round 3,
+  // resilience finding 12), not plain buttons.
   await page.getByRole('tab', { name: /^race$/i }).click()
 
   // The empty state still renders — from the derived `missing` flag now,
@@ -48,26 +56,12 @@ test('viewing a course-less tune-up makes no /course.json request and logs no co
   // absence, it renders the same honest "nothing here" it always did.
   await expect(page.getByText(/no course data yet/i)).toBeVisible()
 
-  // The direct proof: the fetch this bug is about never happens at all, not
-  // just that its console-visible side effect is hidden.
+  // The direct proof: neither fetch this bug is about ever happens at all,
+  // not just that its console-visible side effect is hidden.
   expect(requestedPaths, 'no /course.json request should have been made at all').not.toContain('/course.json')
-  expect(trouble.httpErrors, 'no 4xx/5xx naming course.json').toEqual(
-    trouble.httpErrors.filter((e) => !e.includes('/course.json')),
+  expect(requestedPaths, 'no /nutrition.json request should have been made at all').not.toContain('/nutrition.json')
+  expect(trouble.httpErrors, 'no 4xx/5xx naming course.json or nutrition.json').toEqual(
+    trouble.httpErrors.filter((e) => !e.includes('/course.json') && !e.includes('/nutrition.json')),
   )
-
-  // Not a blanket "no console output": /nutrition.json is the exact same
-  // bug's other half (useNutrition, in nutrition.ts — a different lane's
-  // file, per the assignment) and still 404s today, so Chrome still logs its
-  // own generic "Failed to load resource" line for it, with no filename in
-  // the text to distinguish it from course.json's (checked by hand: as of
-  // this fix, httpErrors is exactly `['404 /nutrition.json']` and
-  // consoleErrors exactly one matching "Failed to load resource… 404"
-  // line). Asserted tolerantly rather than as an exact list, so this test
-  // doesn't need editing the day nutrition.ts's owner applies the same fix:
-  // every httpError still standing must be /nutrition.json's, never
-  // course.json's or anything unexpected.
-  for (const e of trouble.httpErrors) {
-    expect(e, `unexpected http error: ${e}`).toBe('404 /nutrition.json')
-  }
   expect(trouble.pageErrors).toEqual([])
 })

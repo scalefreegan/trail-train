@@ -7,6 +7,7 @@ import { raceClockH } from "./pacing";
 import type { projectRace } from "./pacing";
 import { dailyOverlap, nightOverlapH, type SunTimes } from "./nightWindow";
 import { friendlyFetchError } from "./dialogChrome";
+import { isKnownCourseless } from "./courseAvailability";
 
 // The config shape, its defaults and its validator live next door — re-exported
 // here so every existing `from "./nutrition"` import keeps working.
@@ -37,12 +38,21 @@ export function useNutrition() {
   // names, which in view mode (tt-yib.7) is the archived race being
   // browsed rather than the training target. Keying the cache on the
   // training slug would file one race's course under another's name.
-  const { viewing: slug, resolved } = useActiveRace();
+  const { viewing: slug, resolved, activeRace } = useActiveRace();
   const [cfg, setCfg] = useState<NutritionConfig>(DEFAULT_NUTRITION);
   const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<NutritionSource>("default");
+  // v2 review ui1 #14, the nutrition half (see courseAvailability.ts): a
+  // tune-up the quick form creates without a GPX never gets a nutrition.json
+  // either — PRD-v2 §3's reduced planner hides fuel entirely for one — so
+  // this fetch 404s on every view for that folder's whole life, and Chrome
+  // logs the failed request to the console no matter how gracefully the
+  // response is handled. Same fix as useCourse(): skip asking when the
+  // answer is already known, derived into the return value below rather
+  // than via setState in the effect.
+  const knownCourseless = isKnownCourseless(activeRace?.race);
   useEffect(() => {
-    if (!resolved) return;
+    if (!resolved || knownCourseless) return;
     let stale = false;
     // cached per slug like the other race payloads: without it an offline
     // race-day reload silently swaps this race's tuning for the generic
@@ -81,8 +91,10 @@ export function useNutrition() {
       // file is fine, the server just is not there to serve it.
       .catch((e) => fallback(e instanceof TypeError ? friendlyFetchError(e) : "nutrition.json corrupt or unreadable"));
     return () => { stale = true; };
-  }, [refreshKey, resolved, slug]);
-  return { nutrition: cfg, error, source };
+  }, [refreshKey, resolved, slug, knownCourseless]);
+  return knownCourseless
+    ? { nutrition: DEFAULT_NUTRITION, error: null, source: "default" as NutritionSource }
+    : { nutrition: cfg, error, source };
 }
 
 export type FuelSegment = {
