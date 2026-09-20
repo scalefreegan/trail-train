@@ -183,6 +183,19 @@ export function friendlyFetchError(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** Just the network-vs-everything-else classification friendlyFetchError
+    already makes, factored out for a caller that builds its OWN fallback
+    message around it rather than wanting the whole formatted string — a bare
+    `.catch(() => …)` (data.ts's offline-cache paths, and the equivalent ones
+    in useRaceData.ts / nutrition.ts) used to throw the error away entirely
+    and print a fixed "…corrupt or unreadable" even when the real cause was
+    the dev server being unreachable (ui3-resilience BUG 6). Returns "" for
+    anything that is not a network failure, so a caller reads
+    `netMessage(e) || "some other, more specific fallback"`. */
+export function netMessage(e: unknown): string {
+  return e instanceof TypeError ? "server unreachable — is Basecamp running?" : "";
+}
+
 export const inputStyle: CSSProperties = {
   background: "var(--night-deep)", border: "1px solid var(--edge-bright)",
   color: "var(--mist)", fontSize: 12.5, padding: "7px 10px", outline: "none",
