@@ -1241,6 +1241,28 @@ function settingsApi(): Plugin {
           }
           if (req.method !== 'PUT') { res.statusCode = 405; res.end('GET or PUT required'); return }
           if (crossSiteBlocked(req, res)) return
+          // PR #24 review round 4: the body must be fully read (and size
+          // capped) BEFORE the lock below is acquired — otherwise a slow or
+          // oversized client (e.g. a multi-MB paste into a context/notes
+          // field) would hold SETTINGS_LOCK_KEY for however long buffering
+          // and parsing takes, 409ing every other tab's save for that whole
+          // span. Same streamed 413-before-parse shape as every other
+          // body-reading route in this file — raceSwitchApi/ACTIVATE_LOCK_KEY
+          // is this lock's own precedent, though that route's cap runs
+          // inside its lock; here the read happens first so an oversized
+          // request never holds the lock at all.
+          const BODY_MAX_BYTES = 512 * 1024
+          const chunks: Buffer[] = []
+          let total = 0
+          for await (const c of req) {
+            total += (c as Buffer).byteLength
+            if (total > BODY_MAX_BYTES) { json(413, { error: 'request body too large' }); return }
+            chunks.push(c as Buffer)
+          }
+          let body: Record<string, unknown>
+          try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
+          catch { json(400, { error: 'bad json' }); return }
+
           // PR #24 review round 3: config/state.json, config/profile.json and
           // config/goals.json are each read-modify-written here; without a
           // lock two concurrent PUTs (two tabs, or a double-submit) both read
@@ -1252,12 +1274,6 @@ function settingsApi(): Plugin {
             return
           }
           try {
-            const chunks: Buffer[] = []
-            for await (const c of req) chunks.push(c as Buffer)
-            let body: Record<string, unknown>
-            try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }
-            catch { json(400, { error: 'bad json' }); return }
-
             const { error, prefs, context, calendar, physiology, goals } = validate(body)
             if (error) { json(400, { error }); return }
 
