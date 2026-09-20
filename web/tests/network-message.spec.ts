@@ -1,4 +1,4 @@
-import { test, expect } from './basecamp'
+import { test, expect, MM, openDashboard, openRaceTab, setActiveRace } from './basecamp'
 
 /**
  * ui3-resilience BUG 6 — data.ts's own instance.
@@ -25,6 +25,35 @@ test('a network-unreachable /api/race/active reports "server unreachable", not "
 
   await expect(page.getByText(/server unreachable — is basecamp running\?/i)).toBeVisible()
   await expect(page.getByText(/corrupt or unreadable/i)).toHaveCount(0)
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * ui3-resilience BUG 6, residual half (confirm-ui2/ui3): useClimbs and
+ * usePhysiology (useRaceData.ts) still funneled a dead server into
+ * "climbs.json corrupt or unreadable" / "athlete profile unreadable —
+ * planning against 75 kg defaults" via a bare `.catch(() => …)` that threw
+ * the actual error away, exactly the bug course.json/crew-base.json/
+ * pace-grade.json were already fixed for in the same file. Both now go
+ * through loadFailureMessage(e, …), same as those three.
+ *
+ * (useRaceResult's identical `.catch(() => …)` for result.json was fixed
+ * the same way, but no component ever renders that hook's `error` — see
+ * useRaceData.ts — so there is nothing to assert on screen for it; the
+ * fix there is a code-level match to the other three, not a UI behavior.)
+ */
+test('a dead server reading climbs.json / api/settings reports "server unreachable", not "corrupt/unreadable"', async ({ page, request, trouble }) => {
+  await setActiveRace(request, MM.slug, 'train')
+  await page.route('**/climbs.json*', (route) => route.abort('failed'))
+  await page.route('**/api/settings*', (route) => route.abort('failed'))
+  await openDashboard(page)
+  await openRaceTab(page)
+
+  await expect(page.getByText(/server unreachable — is basecamp running\?/i).first()).toBeVisible()
+  await expect(page.getByText(/climbs\.json corrupt or unreadable/i)).toHaveCount(0)
+  await expect(page.getByText(/athlete profile unreadable/i)).toHaveCount(0)
+  await expect(page.getByText(/result\.json corrupt or unreadable/i)).toHaveCount(0)
 
   expect(trouble.pageErrors).toEqual([])
 })

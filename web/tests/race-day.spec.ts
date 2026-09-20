@@ -85,6 +85,37 @@ test('picking a station stages it, SET commits it, AUTO hands it back to the clo
   expect(trouble.pageErrors).toEqual([])
 })
 
+test('an unparsable WHERE AM I entry names the unit the toggle is actually showing', async ({ page, trouble }) => {
+  // v2 review confirm-ui1 NEW #3: a bare number in the free-mile box reads
+  // in whatever unit the toggle currently shows (default here is metric —
+  // UnitsProvider falls back to "metric" with nothing in localStorage), but
+  // the unparsable-entry copy used to hardcode "try a mile number" even in
+  // KM·M mode, telling the runner the wrong thing about the box she's
+  // staring at.
+  const miInput = page.getByPlaceholder(/^mile \(/i)
+  await expect(miInput).toHaveAttribute('placeholder', 'mile (km)')
+
+  await miInput.fill('banana')
+  await page.getByRole('button', { name: /^set$/i }).click()
+  await expect(page.getByText(/can't read "banana"/i)).toBeVisible()
+  await expect(page.getByText(/try a bare km number/i)).toBeVisible()
+  await expect(page.getByText(/try a bare mi number/i)).toHaveCount(0)
+
+  // Toggle to imperial (the switch lives on the dashboard, not race-day) and
+  // repeat: the same box, the same copy, now naming "mi" instead.
+  await page.evaluate(() => localStorage.setItem('units', 'imperial'))
+  await page.reload()
+  const miInputImperial = page.getByPlaceholder(/^mile \(/i)
+  await expect(miInputImperial).toHaveAttribute('placeholder', 'mile (mi)')
+  await miInputImperial.fill('banana')
+  await page.getByRole('button', { name: /^set$/i }).click()
+  await expect(page.getByText(/can't read "banana"/i)).toBeVisible()
+  await expect(page.getByText(/try a bare mi number/i)).toBeVisible()
+  await expect(page.getByText(/try a bare km number/i)).toHaveCount(0)
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
 test('the hold survives a reload, and ← dashboard leaves race-day mode', async ({ page }) => {
   const select = stationSelect(page)
   const value = await select.locator('option', { hasText: /^Tin Cup/ }).getAttribute('value')

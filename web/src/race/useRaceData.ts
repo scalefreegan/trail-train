@@ -194,7 +194,7 @@ export function useClimbs() {
         const d = await r.json().catch(() => { throw new Error("parse"); });
         setData(d); setMissing(false); setError(null);
       })
-      .catch(() => { setMissing(false); setError("climbs.json corrupt or unreadable"); });
+      .catch((e) => { setMissing(false); setError(loadFailureMessage(e, "climbs.json corrupt or unreadable")); });
   }, [refreshKey]);
   return { climbs: data, missing, error };
 }
@@ -287,8 +287,13 @@ export function usePhysiology() {
         });
         setError(null);
       })
-      .catch(() => {
-        if (!stale) setError(`athlete profile unreadable — planning against ${DEFAULT_PHYSIOLOGY.body_kg} kg defaults`);
+      .catch((e) => {
+        if (!stale) {
+          setError(loadFailureMessage(
+            e,
+            `athlete profile unreadable — planning against ${DEFAULT_PHYSIOLOGY.body_kg} kg defaults`,
+          ));
+        }
       });
     return () => { stale = true; };
   }, [refreshKey]);
@@ -337,7 +342,7 @@ export function useRaceResult(slug: string | null) {
         setData(((d as { result?: RaceResult | null }).result) ?? null);
         setError(null);
       })
-      .catch(() => { if (!stale) setError("result.json corrupt or unreadable"); });
+      .catch((e) => { if (!stale) setError(loadFailureMessage(e, "result.json corrupt or unreadable")); });
     return () => { stale = true; };
   }, [slug, refreshKey]);
   // With no slug there is nothing to report — including whatever the last

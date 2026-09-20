@@ -613,7 +613,12 @@ export function RaceDay() {
                   // Unparsable: leave the text so the runner can fix it,
                   // rather than clearing a box that never took the entry.
                   setWhereAmIError(
-                    `can't read "${miDraft.trim()}" — try a mile number, "mile 50", "50 mi", "80 km", or a station name`,
+                    // v2 review confirm-ui1 NEW #3: a bare number is read in
+                    // whatever unit the toggle currently shows (u.distUnit,
+                    // matching parseWhereAmI/resolveHold's own rule) — in
+                    // KM·M mode "try a mile number" told the runner the
+                    // wrong thing about the box she was staring at.
+                    `can't read "${miDraft.trim()}" — try a bare ${u.distUnit} number, "mile 50", "50 mi", "80 km", or a station name`,
                   );
                 }
               }}

@@ -278,7 +278,7 @@ export function checkpointMessage(cp: CheckpointResult): string {
   const paceNote = cp.extremePace
     ? ` <strong class="extreme">⚠ that has her covering the leg into ${esc(cp.station)} in under a quarter of` +
       ` the model's planned moving time — check the clock before trusting this split. The pace carried forward` +
-      ` is capped; the times below are held to the checkpoint, not extrapolated from it.</strong>`
+      ` is capped; the times below are held to the checkpoint, not extrapolated from it</strong>`
     : cp.clamped
       ? ` <em>· that split is far enough off the model that the pace carried forward is capped —` +
         ` the times below are held to the checkpoint, not extrapolated from it</em>`
