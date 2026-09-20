@@ -1,4 +1,7 @@
-import { test, expect, ARCHIVED, MM, openDashboard, setActiveRace, switcherButton, type Page } from './basecamp'
+import {
+  test, expect, ARCHIVED, MM,
+  chooseRace, openDashboard, openSwitcher, setActiveRace, switcherButton, type Page,
+} from './basecamp'
 
 /**
  * Flow 8 — race day with the laptop gone, and the archive you were reading
@@ -159,3 +162,57 @@ test.describe('race day offline', () => {
     expect(trouble.pageErrors).toEqual([])
   })
 })
+
+/**
+ * Two `/api/race/active` responses in flight at once, landing out of order.
+ *
+ * A refresh pulse replaces the module-level in-flight request in data.ts but
+ * does not cancel the fetch already running — so the older one still resolves
+ * and its `.then` still runs. The writes it makes (`cachePut`,
+ * `setLastCachedSlug`, `setLastTrainSlug`, `pruneActiveRaceCache`) are
+ * last-writer-wins against localStorage, and unlike each hook's own `stale`
+ * flag there is nobody to notice they are stale. The consequence is not
+ * cosmetic: `last-cached-slug` is what the offline fallback reads on the
+ * ridge, so the phone could come back showing the race it was switched away
+ * from.
+ *
+ * Forced here by delaying only the responses that name the 100-miler, then
+ * switching to the archived race while that one is still in flight. Without
+ * the sequence guard in `requestActiveRace`, MM's late response overwrites
+ * the archived race's bookkeeping and this reads "mm-like-100".
+ */
+test('a late /api/race/active response for the previous race does not overwrite the current one', async ({ page, request, trouble }) => {
+  await setActiveRace(request, null)
+  await openDashboard(page)
+
+  await page.route('**/api/race/active*', async (route) => {
+    const response = await route.fetch()
+    const data = await response.json() as { mode?: string; active?: string | null; viewing?: string | null }
+    const slug = data.mode === 'view' ? data.viewing : data.active
+    // Only the 100-miler is slow, so the ARCHIVED response below overtakes it.
+    if (slug === MM.slug) await new Promise((r) => setTimeout(r, 1500))
+    await route.fulfill({ response, json: data })
+  })
+
+  // Pulse 1: point at the 100-miler. choose() POSTs the pointer and bumps the
+  // refresh key, so a (slow) /api/race/active goes out and stays in flight.
+  await openSwitcher(page)
+  await chooseRace(page, new RegExp(MM.name))
+
+  // Pulse 2, while that one is still running: the archived race, which comes
+  // back immediately.
+  await openSwitcher(page)
+  await chooseRace(page, new RegExp(ARCHIVED.name))
+  await expect(switcherButton(page)).toContainText(new RegExp(ARCHIVED.short, 'i'))
+
+  // Long enough for the 100-miler's response to have landed too, second.
+  await page.waitForTimeout(2000)
+
+  const lastCached = await page.evaluate(() =>
+    localStorage.getItem('bc.cache.race-active.last-cached-slug'))
+  expect(lastCached, "a stale response rewrote what the phone thinks it last loaded")
+    .toBe(ARCHIVED.slug)
+
+  expect(trouble.pageErrors).toEqual([])
+})
+

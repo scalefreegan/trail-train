@@ -481,8 +481,32 @@ function activeRaceFallback(message: string): ActiveRaceResult {
  */
 let activeRaceRequest: { key: number; p: Promise<ActiveRaceResult> } | null = null;
 
+/**
+ * Which issued request is which, and how far the SHARED offline bookkeeping
+ * has got.
+ *
+ * A new pulse replaces `activeRaceRequest`, but it does not cancel the fetch
+ * already in flight — that one still resolves, and its `.then` still runs.
+ * Responses can therefore land out of order, and the writes below
+ * (`cachePut`, `setLastCachedSlug`, `setLastTrainSlug`, `pruneActiveRaceCache`)
+ * are last-writer-wins against localStorage with no owner to notice. So a slow
+ * response for the race you just switched AWAY from could land after the fast
+ * one for the race now on screen and leave `last-cached-slug` — which is what
+ * the offline fallback reads on the ridge (see activeRaceFallback above) —
+ * naming a race the phone is not showing.
+ *
+ * Each consumer's own `stale` flag already protects its component state; this
+ * protects the one thing that outlives every component. The stale response is
+ * still handed back to whoever awaited that particular promise: it is a
+ * truthful answer to the question THAT caller asked, just no longer the
+ * newest answer, and discarding it is the awaiting hook's job, not this one's.
+ */
+let activeRaceSeq = 0;
+let activeRaceWrittenSeq = 0;
+
 function requestActiveRace(key: number): Promise<ActiveRaceResult> {
   if (!activeRaceRequest || activeRaceRequest.key !== key) {
+    const seq = ++activeRaceSeq;
     activeRaceRequest = {
       key,
       p: fetch(`/api/race/active?t=${Date.now()}`)
@@ -496,13 +520,21 @@ function requestActiveRace(key: number): Promise<ActiveRaceResult> {
           // (mode !== "view") updates `lastTrainSlug`, so browsing an
           // archived race can never make it the offline fallback's answer.
           const ownSlug = data.mode === "view" ? (data.viewing ?? null) : (data.active ?? null);
-          cachePut(activeRaceCacheKey(ownSlug), data);
-          setLastCachedSlug(ownSlug);
-          if (data.mode !== "view") setLastTrainSlug(ownSlug);
-          // Bound the cache to what actually matters offline: the athlete's
-          // real training target and whatever was just looked at — not every
-          // race the switcher has ever been pointed at (see pruneActiveRaceCache).
-          pruneActiveRaceCache([getLastTrainSlug() ?? null, ownSlug]);
+          // Out-of-order guard (see activeRaceSeq above): only the newest
+          // response that has actually landed may write the shared offline
+          // bookkeeping. An older one still returns its data to its own
+          // awaiter; it just may not rewrite what "the last race this phone
+          // loaded" means for everybody.
+          if (seq > activeRaceWrittenSeq) {
+            activeRaceWrittenSeq = seq;
+            cachePut(activeRaceCacheKey(ownSlug), data);
+            setLastCachedSlug(ownSlug);
+            if (data.mode !== "view") setLastTrainSlug(ownSlug);
+            // Bound the cache to what actually matters offline: the athlete's
+            // real training target and whatever was just looked at — not every
+            // race the switcher has ever been pointed at (see pruneActiveRaceCache).
+            pruneActiveRaceCache([getLastTrainSlug() ?? null, ownSlug]);
+          }
           return { kind: "ok", data };
         })
         // A rejected json() lands here too — that one really is "corrupt",
