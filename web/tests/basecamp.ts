@@ -1,4 +1,6 @@
 import { test as base, expect, type Page, type APIRequestContext } from '@playwright/test'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 
 /**
  * The suite's `test`: the real one plus the two things every Basecamp flow
@@ -215,4 +217,32 @@ export async function openPrintable(page: Page, button: RegExp, dialogName: stri
   const dialog = page.getByRole('dialog', { name: dialogName })
   await expect(dialog).toBeVisible()
   return dialog
+}
+
+/**
+ * Write a raw races/<slug>/race.json straight onto the shared per-run
+ * project root, bypassing POST /api/races entirely.
+ *
+ * Some shapes cannot come from the app or its API at all — quickCreateRace
+ * refuses a tune-up whose parent is itself a tune-up (round 3 resilience
+ * NEW-1's "a B chained onto another B") — so the only way to put that shape
+ * in front of the switcher is to write the folder directly, the same way
+ * confirm-ui3's browser session reproduced it. `listRaces` (scripts/
+ * race-config.mjs) reads race.json raw with no schema validation, so this
+ * only needs the fields the switcher/groupRaces actually read.
+ *
+ * Every slug this writes MUST start with `shell2-` (enforced here) — one
+ * server and one project root serve the whole suite (see global-setup.ts),
+ * so a collision with another spec's fixture would corrupt its run, not
+ * just this one. Nothing removes the folder afterward: the temp root is
+ * discarded whole in global teardown, and every other spec's own listing
+ * assertions name specific races rather than asserting an exhaustive count.
+ */
+export async function writeRawRaceFolder(slug: string, race: Record<string, unknown>): Promise<void> {
+  if (!slug.startsWith('shell2-')) throw new Error(`writeRawRaceFolder: "${slug}" must start with "shell2-"`)
+  const root = process.env.TRAIL_TEST_PROJECT_ROOT
+  if (!root) throw new Error('writeRawRaceFolder: TRAIL_TEST_PROJECT_ROOT is unset — global setup did not run')
+  const dir = path.join(root, 'races', slug)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(path.join(dir, 'race.json'), JSON.stringify({ slug, ...race }, null, 2))
 }

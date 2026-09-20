@@ -127,6 +127,14 @@ export function AddTuneUp({ parentSlug, parentName, parentTimezone, parentDate, 
   const distanceNum = Number(distance);
   const gainNum = Number(gain);
   const dateOk = /^\d{4}-\d{2}-\d{2}$/.test(date.trim());
+  // Round 4 confirm, new finding 2: `Number("") === 0`, so a blank field
+  // sailed straight through the `gainNum >= 0` gate — the one field on this
+  // form where 0 is a legitimate, explicitly-typed value, so the gate alone
+  // can't tell "athlete typed 0" from "athlete typed nothing". A blank gain
+  // used to write `gain_ft: 0` with `provenance.gain_ft.by: "user"`, i.e. a
+  // flat-course claim the athlete never made. Require the field non-blank,
+  // same as every other required field on this form.
+  const gainOk = gain.trim().length > 0 && Number.isFinite(gainNum) && gainNum >= 0;
 
   /* Whole weeks between this date and the A race's, counted the way
      scripts/race-config.mjs's weeksOut does (calendar days / 7, rounded):
@@ -158,7 +166,7 @@ export function AddTuneUp({ parentSlug, parentName, parentTimezone, parentDate, 
   const canSubmit = !busy && !uploading &&
     name.trim().length > 0 && dateOk && !dateTooFar &&
     Number.isFinite(distanceNum) && distanceNum > 0 &&
-    Number.isFinite(gainNum) && gainNum >= 0;
+    gainOk;
 
   // Round 4, finding 10: the button just went from grey to grey with no
   // explanation of which of the five fields it was still waiting on. Checked
@@ -169,7 +177,7 @@ export function AddTuneUp({ parentSlug, parentName, parentTimezone, parentDate, 
     : !dateOk ? "pick a date"
     : dateTooFar ? `that date is ${Math.round(yearsFromParent!)} years from ${parentName} — check the year`
     : !(Number.isFinite(distanceNum) && distanceNum > 0) ? "distance mi must be greater than 0"
-    : !(Number.isFinite(gainNum) && gainNum >= 0) ? "gain ft must be 0 or more"
+    : !gainOk ? "gain ft must be 0 or more"
     : null;
 
   const upload = async (files: FileList | null) => {

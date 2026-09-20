@@ -150,7 +150,32 @@ test.describe('tune-up fixes (round 4)', () => {
 
     // bug 1: the planner names the mismatch instead of silently presenting a
     // station row built from two different mile spaces.
-    await expect(page.getByText(/course\.gpx measures/i)).toBeVisible()
+    const banner = page.getByText(/course\.gpx measures/i)
+    await expect(banner).toBeVisible()
+
+    // Round 4 confirm, ui1 PARTIAL #1: naming the mismatch wasn't enough —
+    // the station row itself still read the pre-upload DECLARED distance
+    // next to a climb/pace already derived from the real GPX. The row's own
+    // distance must now come from the built course, same as the banner's
+    // "measures X km" figure — both go through the app's own u.dist(mi, 1),
+    // so the two rendered strings must be the literal same number: one row,
+    // one number, not "the banner knows but the row still doesn't".
+    const bannerText = await banner.innerText()
+    const measuredKm = bannerText.match(/measures ([\d,.]+) km/i)?.[1]
+    expect(measuredKm, bannerText).toBeTruthy()
+
+    // .race-table's direct-child divs are [header, one row per station, a
+    // totals footer] — a tune-up has exactly one station ("Finish", the
+    // quick form's only synthesized one), so index 1 is it. (.last() would
+    // grab the totals footer instead — it also renders inside .race-table,
+    // and its own label text ends in "…at finish".)
+    const stationRow = page.locator('.race-table > div').nth(1)
+    await expect(stationRow.getByText('Finish', { exact: true })).toBeVisible()
+    const rowDistance = await stationRow.locator('> span').first().innerText()
+    expect(
+      rowDistance,
+      `the Finish row's distance (${rowDistance} km) must equal the course-measured distance the banner cites (${measuredKm} km), not the declared 10 mi`,
+    ).toBe(measuredKm)
 
     // bug 4: no nutrition.json was ever written for this folder, so the
     // print button behind DEFAULT_NUTRITION must stay off, same as the fuel
@@ -189,9 +214,18 @@ test.describe('tune-up fixes (round 4)', () => {
     await dialog.getByLabel('date').fill(weeksBeforeToday(3))
     await expect(dialog.getByText(/distance mi must be/i)).toBeVisible()
 
-    // A blank gain ft is a valid 0 (a flat course is not an error), so
-    // distance is the last thing standing between here and enabled.
     await dialog.getByLabel('distance mi').fill('6.2')
+    // Round 4 confirm, NEW #2: a blank gain ft used to sail straight through
+    // this gate (`Number("") === 0` against a `gainNum >= 0` check) and get
+    // written as `gain_ft: 0` with `provenance.gain_ft.by: "user"` — a
+    // flat-course claim the athlete never typed. It must disable submit with
+    // its own hint, same as every other required field on this form.
+    await expect(dialog.getByText(/gain ft must be/i)).toBeVisible()
+    await expect(submit).toBeDisabled()
+
+    // 0 typed EXPLICITLY is a legitimate flat-course claim, not a blank —
+    // and enables submit.
+    await dialog.getByLabel('gain ft').fill('0')
     await expect(submit).toBeEnabled()
 
     // Gain still has its own floor — typed negative, it disables again with
@@ -201,6 +235,12 @@ test.describe('tune-up fixes (round 4)', () => {
     await expect(submit).toBeDisabled()
     await dialog.getByLabel('gain ft').fill('300')
     await expect(submit).toBeEnabled()
+
+    // Blanking a previously-valid gain re-disables it — the guard holds
+    // after a valid value too, not just on the field's first render.
+    await dialog.getByLabel('gain ft').fill('')
+    await expect(dialog.getByText(/gain ft must be/i)).toBeVisible()
+    await expect(submit).toBeDisabled()
 
     await dialog.getByRole('button', { name: /close esc/i }).click()
     expect(trouble.pageErrors).toEqual([])

@@ -476,6 +476,25 @@ export async function buildCourse(root, slug, opts = {}) {
       base.gpx_mi = +measuredDist.toFixed(3);
       base.lat = +end.lat.toFixed(5);
       base.lon = +end.lon.toFixed(5);
+      // A tune-up's single "Finish" station is SYNTHESIZED by
+      // quickCreateRace from the quick form's declared distance_mi — a
+      // pre-upload guess, not a runner's manual's own aid-chart mile
+      // (round 4 confirm, ui1 PARTIAL #1). RacePlanner's distance column
+      // reads a station's total_mi verbatim (pacing.ts's seg_mi does too),
+      // while its climb/pace are already derived from gpx_mi — so once a
+      // real course.gpx exists, leaving total_mi at the pre-upload guess
+      // let a bad upload (e.g. 3x the declared distance) show one row with
+      // the OLD declared distance next to a climb and pace computed from
+      // the wildly different real track. Snapping total_mi to the measured
+      // distance here makes distance, climb and pace agree in that one row.
+      // The declared distance_mi stays untouched on race.json itself — the
+      // banner above still cites it, from `official_distance_mi`.
+      // An A race's aid chart is the manual's own authored miles between
+      // real, physically distinct stations, never synthesized — that path
+      // is untouched (kind !== "b" here, or more than one station).
+      if (race.kind === "b" && lastStationIdx === 0) {
+        base.total_mi = +measuredDist.toFixed(3);
+      }
       log(`  ${a.name.padEnd(16)} official ${a.total_mi.toFixed(1)} → track end ${measuredDist.toFixed(2)} mi (finish)`);
       return base;
     }

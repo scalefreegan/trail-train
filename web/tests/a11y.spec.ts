@@ -198,3 +198,91 @@ test.describe('dialog accessibility', () => {
     expect(trouble.pageErrors).toEqual([])
   })
 })
+
+/**
+ * Round 4 confirm, PARTIAL #12 — the TRAINING/RACE/FUEL nav got
+ * `role="tablist"`/`role="tab"` (round 3, resilience finding 12) but none of
+ * the keyboard contract that role promises: both tabs carried `tabindex=0`,
+ * ArrowLeft/Right/Home/End moved nothing, and there was no `aria-controls`/
+ * `role="tabpanel"` pair. A screen reader announces "tab list, tab 1 of 3"
+ * and a keyboard user reaches for the arrow keys — this is what they should
+ * find now: roving tabindex, arrow keys that wrap and activate (this app's
+ * choice of automatic activation — Home/End too), and aria-controls naming
+ * a real, currently-rendered tabpanel.
+ */
+test.describe('view tablist', () => {
+  test.beforeEach(async ({ request }) => {
+    // A race active throughout: "race" and "fuel" only exist with one.
+    await setActiveRace(request, MM.slug, 'train')
+  })
+
+  test('roving tabindex, arrow/Home/End move focus and activate, aria-controls names a live tabpanel', async ({ page, trouble }) => {
+    await openDashboard(page)
+
+    const training = page.getByRole('tab', { name: /^training$/i })
+    const race = page.getByRole('tab', { name: /^race$/i })
+    const fuel = page.getByRole('tab', { name: /^fuel$/i })
+    await expect(page.getByRole('tablist', { name: 'view' }).getByRole('tab')).toHaveCount(3)
+
+    // Only the selected tab sits in the page's Tab order — the other two are
+    // reachable by arrow key, not by Tab, per the roving-tabindex pattern.
+    await expect(training).toHaveAttribute('tabindex', '0')
+    await expect(race).toHaveAttribute('tabindex', '-1')
+    await expect(fuel).toHaveAttribute('tabindex', '-1')
+
+    await training.focus()
+    await page.keyboard.press('ArrowRight')
+    await expect(race).toBeFocused()
+    await expect(race).toHaveAttribute('aria-selected', 'true')
+    await expect(training).toHaveAttribute('tabindex', '-1')
+    await expect(race).toHaveAttribute('tabindex', '0')
+    // Moving focus also activates (this app's chosen, consistent model) —
+    // the view actually switched, not just the visual selection.
+    await expect(page.getByText(/climb readiness — you vs/i)).toBeVisible()
+
+    await page.keyboard.press('ArrowRight')
+    await expect(fuel).toBeFocused()
+    await expect(fuel).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByText(/^nutrition plan$/i).first()).toBeVisible()
+
+    // Wraps forward past the last tab…
+    await page.keyboard.press('ArrowRight')
+    await expect(training).toBeFocused()
+    await expect(training).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByText(/vitals — load × recovery/i)).toBeVisible()
+
+    // …and backward past the first.
+    await page.keyboard.press('ArrowLeft')
+    await expect(fuel).toBeFocused()
+    await expect(fuel).toHaveAttribute('aria-selected', 'true')
+
+    // Home / End jump straight to the ends.
+    await page.keyboard.press('Home')
+    await expect(training).toBeFocused()
+    await expect(training).toHaveAttribute('aria-selected', 'true')
+
+    await page.keyboard.press('End')
+    await expect(fuel).toBeFocused()
+    await expect(fuel).toHaveAttribute('aria-selected', 'true')
+
+    // aria-controls names a role="tabpanel" that actually exists right now
+    // and is labelled by the tab that's currently selected — not a promise
+    // pointing at nothing.
+    const controlsId = await fuel.getAttribute('aria-controls')
+    expect(controlsId, 'the selected tab has no aria-controls').toBeTruthy()
+    const panel = page.locator(`#${controlsId}`)
+    await expect(panel).toHaveAttribute('role', 'tabpanel')
+    const fuelTabId = await fuel.getAttribute('id')
+    await expect(panel).toHaveAttribute('aria-labelledby', fuelTabId ?? '')
+
+    // Enter/Space on a Tab-reached tab still work — these stay native
+    // <button>s, so this was already true and must stay true.
+    await page.keyboard.press('Home')
+    await expect(training).toBeFocused()
+    await race.focus()
+    await page.keyboard.press('Enter')
+    await expect(race).toHaveAttribute('aria-selected', 'true')
+
+    expect(trouble.pageErrors).toEqual([])
+  })
+})

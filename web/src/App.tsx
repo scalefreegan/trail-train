@@ -189,8 +189,16 @@ type RaceListEntry = {
     parent slug names a folder that is not on disk any more, and the row below
     renders it with the TUNE-UP marker and none of an A race's own actions
     rather than promoting it to a draft it never was (round 3, resilience
-    finding 4). */
-type RaceGroupEntry = RaceListEntry & { b_races: RaceListEntry[]; parent_missing?: true };
+    finding 4). `parent_missing_reason` distinguishes a parent slug that
+    names nothing on disk ("not_found") from one that names a real folder
+    which is itself a tune-up, never a valid parent ("parent_is_tune_up") —
+    round 3 resilience NEW-1. Either way `b_races` is always empty for an
+    orphan; it is never a nesting target for anything else. */
+type RaceGroupEntry = RaceListEntry & {
+  b_races: RaceListEntry[];
+  parent_missing?: true;
+  parent_missing_reason?: "not_found" | "parent_is_tune_up";
+};
 
 /** An older dev server (or a cache written before v2) answers with the flat
     list only: every folder then stands on its own, which is the v1 menu. */
@@ -687,7 +695,11 @@ function RaceSwitcher() {
                         // promoted it to a top-level A-shaped row looked
                         // exactly like a fresh draft the athlete never made.
                         : entry.parent_missing
-                          ? `tune-up · ${entry.short}${entry.date ? ` · ${entry.date}` : ""} · read-only · parent "${entry.parent_slug ?? "?"}" not found`
+                          ? `tune-up · ${entry.short}${entry.date ? ` · ${entry.date}` : ""} · read-only · ${
+                              entry.parent_missing_reason === "parent_is_tune_up"
+                                ? `parent "${entry.parent_slug ?? "?"}" is itself a tune-up`
+                                : `parent "${entry.parent_slug ?? "?"}" not found`
+                            }`
                           : `${entry.short}${entry.date ? ` · ${entry.date}` : ""}${entry.status === "active" ? "" : " · read-only"}`}
                       swatch={entry.error ? null : (
                         <ThemePreview visual={entry.visual} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round />
@@ -754,8 +766,14 @@ function RaceSwitcher() {
                     {/* the tune-ups inside this race's block, oldest first —
                         indented, and always browsed rather than trained for:
                         a B folder is never "active" (PRD-v2 §3), so picking
-                        one is a view-mode switch whatever its status says */}
-                    {entry.b_races.map((b) => (
+                        one is a view-mode switch whatever its status says.
+                        Gated on !parent_missing too: an orphan's own b_races
+                        (if it somehow had any) are never legitimate nested
+                        children — groupRaces never populates them, but this
+                        keeps the render honest even if that ever changes
+                        (round 3 resilience NEW-1 — a chained orphan used to
+                        render twice, once here and once as its own row). */}
+                    {!entry.parent_missing && entry.b_races.map((b) => (
                       <SwitcherRow
                         key={b.slug}
                         {...itemProps("race", b.slug)}
@@ -1018,6 +1036,9 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
     const id = setInterval(() => force((n) => n + 1), 20_000);
     return () => clearInterval(id);
   }, []);
+  // Roving-tabindex focus targets, keyed by view — the WAI-ARIA tabs pattern
+  // moves DOM focus itself on Arrow/Home/End, not just the selection state.
+  const tabRefs = useRef<Partial<Record<AppView, HTMLButtonElement | null>>>({});
 
   return (
     <header style={{
@@ -1042,15 +1063,43 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
             three independent toggles, so a screen reader needs the tablist
             role and each button's selected state (round 3, resilience
             finding 12) rather than three plain buttons it has no way to
-            relate to each other. */}
+            relate to each other.
+
+            Round 4 confirm, PARTIAL #12: the role was there but none of the
+            keyboard contract it promises — no roving tabindex (both tabs
+            carried tabindex=0), ArrowLeft/Right/Home/End moved nothing, and
+            there was no aria-controls/role=tabpanel pair. Full WAI-ARIA tabs
+            pattern below: roving tabindex (only the selected tab is in the
+            page Tab order), arrow keys move AND activate (automatic
+            activation — Enter/Space also work for free, since these stay
+            native <button>s), Home/End jump to the ends with no wrap needed
+            there, and each tab's aria-controls names the one tabpanel
+            AppBody renders for the active view (see its `role="tabpanel"`
+            wrapper). */}
         <div role="tablist" aria-label="view" style={{ display: "flex", gap: 6 }}>
-          {views.map((v) => (
+          {views.map((v, i) => (
             <button
               key={v}
+              ref={(el) => { tabRefs.current[v] = el; }}
+              id={`tab-${v}`}
               role="tab"
               aria-selected={view === v}
+              aria-controls={`tabpanel-${v}`}
+              tabIndex={view === v ? 0 : -1}
               className={"chip" + (view === v ? " active" : "")}
               onClick={() => setView(v)}
+              onKeyDown={(e) => {
+                let nextIdx: number | null = null;
+                if (e.key === "ArrowRight") nextIdx = (i + 1) % views.length;
+                else if (e.key === "ArrowLeft") nextIdx = (i - 1 + views.length) % views.length;
+                else if (e.key === "Home") nextIdx = 0;
+                else if (e.key === "End") nextIdx = views.length - 1;
+                if (nextIdx == null) return;
+                e.preventDefault();
+                const next = views[nextIdx];
+                setView(next);
+                tabRefs.current[next]?.focus();
+              }}
             >
               {VIEW_LABEL[v]}
             </button>
@@ -3383,47 +3432,63 @@ function AppBody() {
           <main style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
             {/* on every view: the race on screen is not the one being trained for */}
             <ViewingBanner />
-            {activeView === "training" ? (
-              <>
-                {/* no race, no ribbon: there is no course, countdown or
-                    elevation profile to put in it (PRD §6) */}
-                {race && <RaceRibbon race={race} readOnly={!!viewing} />}
-                <div key={`vitals-${key}`}><VitalsBand /></div>
-                <div key={`traj-${key}`}><Trajectory /></div>
-                <div key={`road-${key}`}><RoadAhead /></div>
-                <div key={`log-${key}`}><LogTable /></div>
-                <SetupDrawer />
-              </>
-            ) : activeView === "race" ? (
-              <div key={`race-${key}`}>
-                {/* the boundary sits OUTSIDE the provider: useRacePlanInstance
-                    computes the whole plan (course, projection, fuel) during
-                    RacePlanScope's render, so a bad folder throws before any
-                    child below the provider ever mounts (tt bug fix-sun-null). */}
-                <RaceErrorBoundary slug={viewingSlug}>
-                  {/* one shared plan instance — planner sliders and the model
-                      check must never disagree on the same screen. The climb
-                      comparison takes no sliders, but it reads its visual.panels
-                      gate off the same instance rather than fetching the active
-                      race a second time, so it lives inside the provider too. */}
-                  <RacePlanProvider>
-                    <ClimbComparison />
-                    <RacePlanner />
-                    <ModelCheck />
-                  </RacePlanProvider>
-                </RaceErrorBoundary>
-              </div>
-            ) : (
-              <div key={`fuel-${key}`}>
-                <RaceErrorBoundary slug={viewingSlug}>
-                  {/* single consumer, but useRacePlan requires the provider —
-                      a fallback instance was the divergence footgun */}
-                  <RacePlanProvider>
-                    <NutritionPlan />
-                  </RacePlanProvider>
-                </RaceErrorBoundary>
-              </div>
-            )}
+            {/* CommandBar's tablist points aria-controls at THIS element —
+                one dynamically-swapped panel rather than three permanently
+                mounted ones (each view already unmounts/remounts its own
+                subtree via `key`, RaceErrorBoundary and RacePlanProvider
+                below, and keeping all three alive at once would multiply
+                that machinery for no reader-visible benefit). The id/
+                aria-labelledby pair always names the CURRENTLY selected
+                tab, matching the APG's single-panel SPA pattern. */}
+            <div
+              role="tabpanel"
+              id={`tabpanel-${activeView}`}
+              aria-labelledby={`tab-${activeView}`}
+              tabIndex={0}
+              style={{ display: "flex", flexDirection: "column", minWidth: 0 }}
+            >
+              {activeView === "training" ? (
+                <>
+                  {/* no race, no ribbon: there is no course, countdown or
+                      elevation profile to put in it (PRD §6) */}
+                  {race && <RaceRibbon race={race} readOnly={!!viewing} />}
+                  <div key={`vitals-${key}`}><VitalsBand /></div>
+                  <div key={`traj-${key}`}><Trajectory /></div>
+                  <div key={`road-${key}`}><RoadAhead /></div>
+                  <div key={`log-${key}`}><LogTable /></div>
+                  <SetupDrawer />
+                </>
+              ) : activeView === "race" ? (
+                <div key={`race-${key}`}>
+                  {/* the boundary sits OUTSIDE the provider: useRacePlanInstance
+                      computes the whole plan (course, projection, fuel) during
+                      RacePlanScope's render, so a bad folder throws before any
+                      child below the provider ever mounts (tt bug fix-sun-null). */}
+                  <RaceErrorBoundary slug={viewingSlug}>
+                    {/* one shared plan instance — planner sliders and the model
+                        check must never disagree on the same screen. The climb
+                        comparison takes no sliders, but it reads its visual.panels
+                        gate off the same instance rather than fetching the active
+                        race a second time, so it lives inside the provider too. */}
+                    <RacePlanProvider>
+                      <ClimbComparison />
+                      <RacePlanner />
+                      <ModelCheck />
+                    </RacePlanProvider>
+                  </RaceErrorBoundary>
+                </div>
+              ) : (
+                <div key={`fuel-${key}`}>
+                  <RaceErrorBoundary slug={viewingSlug}>
+                    {/* single consumer, but useRacePlan requires the provider —
+                        a fallback instance was the divergence footgun */}
+                    <RacePlanProvider>
+                      <NutritionPlan />
+                    </RacePlanProvider>
+                  </RaceErrorBoundary>
+                </div>
+              )}
+            </div>
           </main>
 
           {/* the coach — persistent rail (hidden, not unmounted, when collapsed) */}
