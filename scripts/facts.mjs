@@ -585,14 +585,25 @@ export async function loadFactsFromRoot(projectRoot) {
   const ouraPath    = path.join(projectRoot, "web", "public", "oura.json");
   const calPath     = path.join(projectRoot, "web", "public", "google-cal.json");
   const [strava, cross, oura, cal, profile, state] = await Promise.all([
-    fs.readFile(stravaPath, "utf8").then(JSON.parse).catch(() => null),
+    fs.readFile(stravaPath, "utf8").then(JSON.parse).catch((e) => {
+      // absent is expected (pre-first-sync); anything else deserves a trace —
+      // same ENOENT-vs-other distinction as cross-train.json just below.
+      if (e.code !== "ENOENT") console.warn(`${stravaPath} unreadable: ${e.message}`);
+      return null;
+    }),
     fs.readFile(crossPath,  "utf8").then(JSON.parse).catch((e) => {
       // absent is expected (pre-first-sync); anything else deserves a trace
       if (e.code !== "ENOENT") console.warn(`cross-train.json unreadable: ${e.message}`);
       return null;
     }),
-    fs.readFile(ouraPath,   "utf8").then(JSON.parse).catch(() => null),
-    fs.readFile(calPath,    "utf8").then(JSON.parse).catch(() => null),
+    fs.readFile(ouraPath,   "utf8").then(JSON.parse).catch((e) => {
+      if (e.code !== "ENOENT") console.warn(`${ouraPath} unreadable: ${e.message}`);
+      return null;
+    }),
+    fs.readFile(calPath,    "utf8").then(JSON.parse).catch((e) => {
+      if (e.code !== "ENOENT") console.warn(`${calPath} unreadable: ${e.message}`);
+      return null;
+    }),
     loadProfile(projectRoot),
     loadState(projectRoot),
   ]);
