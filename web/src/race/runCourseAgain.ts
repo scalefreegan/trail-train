@@ -35,7 +35,23 @@ export function useRunCourseAgain(slug: string | null, onDone: () => void): RunC
     setBusy(true);
     setError(null);
     runStage("/api/race-intake/build", { slug }, () => {}, new AbortController().signal)
-      .then(() => { setDone(true); onDone(); })
+      .then((result) => {
+        // `ok: true` is not "there is now a course to show" — a folder with
+        // no course.gpx and no http(s) links.gpx answers this way too:
+        // `course: null` plus a warning naming the reason (round 4 finding
+        // 2). Calling onDone() unconditionally used to make this a dead
+        // button on exactly that folder — the caller's refetch just re-404s,
+        // so the panel comes back byte-identical with no error, no toast, no
+        // sign the click did anything. Surface the server's own reason
+        // instead, the same way an actual exception already does below.
+        if (result.course == null) {
+          const warnings = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
+          setError(warnings[0] ?? "the build finished without a course to show");
+          return;
+        }
+        setDone(true);
+        onDone();
+      })
       .catch((e: Error) => setError(e.message))
       .finally(() => setBusy(false));
   }, [slug, busy, onDone]);
