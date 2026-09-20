@@ -159,3 +159,73 @@ test('an active race offers Review, and its tracker URL/bib save as tracking.url
 
   expect(trouble.pageErrors).toEqual([])
 })
+
+/**
+ * Round 3 finding 2 — `linksTrackingSeed` (RaceIntake.tsx) used to reseed
+ * tracking.url from race.links.tracking (mm-like-100's fixture has one:
+ * "…/mesa-monster-100/live") any time race.tracking.url read falsy, which is
+ * exactly what a DELIBERATE clear leaves on disk (applyRaceEdit normalizes
+ * "" to null). So a save days later that only touched the bib silently put
+ * the abandoned tracker link right back — this pins the fix: once url has
+ * been saved at all, even as a clear, a later bib-only save must leave it
+ * alone, across a full reload (a fresh mount, not just in-session state).
+ */
+test('clearing the tracker url is durable — a later bib-only save does not resurrect it from the seed', async ({ page, request, trouble }) => {
+  // A known starting point, independent of what the previous test left
+  // behind: url is really set, not merely absent.
+  await request.put(`/api/races/${MM.slug}`, {
+    data: { tracking: { url: 'https://example.invalid/mesa-monster-100/prior-tracker', bib: null, name: null } },
+  })
+
+  await setActiveRace(request, MM.slug, 'train')
+  await openDashboard(page)
+  await openSwitcher(page)
+  let dialog = await openReviewFor(page, MM.name)
+
+  // Clear it — the athlete's deliberate call to stop tracking here.
+  await dialog.getByLabel('tracker url').fill('')
+  await dialog.getByRole('button', { name: /^save edits$/i }).click()
+  await expect(dialog.getByRole('button', { name: /^save edits$/i })).toBeDisabled()
+
+  let review = await (await request.get(`/api/races/${MM.slug}?t=1`)).json()
+  expect(review.race.tracking?.url).toBeFalsy()
+
+  // Full reload — a fresh mount, `trackingEdit` starts null again, exactly
+  // the shape a NEW session (or just reopening the dialog) leaves behind.
+  await page.reload()
+  await openSwitcher(page)
+  dialog = await openReviewFor(page, MM.name)
+
+  // The seed must not be back: race.links.tracking is still the live URL
+  // above, but url has already been decided (cleared), so neither the copy
+  // nor the field itself should offer it.
+  await expect(dialog.getByText(/seeded below from this folder's own tracking link/i)).toBeHidden()
+  await expect(dialog.getByLabel('tracker url')).toHaveValue('')
+
+  // Touch ONLY the bib.
+  const putBodies: string[] = []
+  page.on('request', (req) => {
+    if (req.method() === 'PUT' && new URL(req.url()).pathname === `/api/races/${MM.slug}`) {
+      putBodies.push(req.postData() ?? '')
+    }
+  })
+  await dialog.getByLabel('tracker bib').fill('99')
+  await dialog.getByRole('button', { name: /^save edits$/i }).click()
+  await expect(dialog.getByRole('button', { name: /^save edits$/i })).toBeDisabled()
+
+  expect(putBodies, 'the bib save did not PUT /api/races/mm-like-100').toHaveLength(1)
+  const body = JSON.parse(putBodies[0]) as { tracking?: { url?: string | null; bib?: string } }
+  // The regression: this used to carry `url: '…/mesa-monster-100/live'`
+  // (the seed) even though the athlete only edited the bib.
+  expect(body.tracking?.url).toBeUndefined()
+  expect(body.tracking?.bib).toBe('99')
+
+  review = await (await request.get(`/api/races/${MM.slug}?t=2`)).json()
+  expect(review.race.tracking?.url).toBeFalsy()
+  expect(review.race.tracking?.bib).toBe('99')
+
+  // Cleanup: see the file-header comment on the test above this one.
+  await request.put(`/api/races/${MM.slug}`, { data: { tracking: { url: null, bib: null, name: null } } })
+
+  expect(trouble.pageErrors).toEqual([])
+})
