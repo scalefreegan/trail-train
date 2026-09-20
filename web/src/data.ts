@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { isValidTimeZone, raceStart } from "./race/clock";
+import { netMessage } from "./race/dialogChrome";
 import {
   activeRaceCacheKey, cacheGet, cachePut,
   getLastCachedSlug, getLastTrainSlug, pruneActiveRaceCache, setLastCachedSlug, setLastTrainSlug,
@@ -504,8 +505,13 @@ function requestActiveRace(key: number): Promise<ActiveRaceResult> {
           pruneActiveRaceCache([getLastTrainSlug() ?? null, ownSlug]);
           return { kind: "ok", data };
         })
-        // a rejected json() lands here too: unparseable is corrupt, not absent
-        .catch(() => activeRaceFallback("active race config corrupt or unreadable")),
+        // A rejected json() lands here too — that one really is "corrupt",
+        // but the fetch() call itself rejecting (dev server unreachable —
+        // killed, crashed, a phone that lost the LAN) is a different failure
+        // that used to be reported with the same fixed "corrupt or
+        // unreadable" wording regardless (ui3-resilience BUG 6). netMessage
+        // tells the two apart from the error alone.
+        .catch((e: unknown) => activeRaceFallback(netMessage(e) || "active race config corrupt or unreadable")),
     };
   }
   return activeRaceRequest.p;
