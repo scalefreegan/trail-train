@@ -213,3 +213,35 @@ test('bug 6: an out-of-order checkpoint is refused and names the later station',
   await offline.close()
   expect(trouble.pageErrors).toEqual([])
 })
+
+/**
+ * Bug 7 (review round 3, ui3-resilience.md) — with the dev server down, the
+ * "⇩ export crew page" button showed the raw browser exception ("Failed to
+ * fetch") in its status line instead of a sentence an athlete would
+ * understand. ExportButton.tsx now runs the same friendlyFetchError()
+ * translation the intake dialogs and the race switcher already use for the
+ * identical failure.
+ */
+test('bug 7: a dead server on export shows a friendly message, not the raw fetch exception', async ({ page, trouble }) => {
+  await setActiveRace(page.request, MM.slug, 'train')
+  await openDashboard(page)
+  await openRaceTab(page)
+
+  // Only the export POST goes down — everything else about the page (which
+  // is already loaded) keeps working, matching what a crashed/killed dev
+  // server actually looks like mid-session rather than a first load.
+  await page.route('**/crew-export', (route) => route.abort('failed'))
+
+  const button = page.getByRole('button', { name: /export crew page/i })
+  await button.click()
+
+  await expect(page.getByText(/server unreachable — is basecamp running\?/i)).toBeVisible()
+  await expect(page.getByText(/failed to fetch/i)).toHaveCount(0)
+
+  // The button already returns to idle/pressable on any error — still true,
+  // and worth pinning so a future regression here is caught too.
+  await expect(button).toBeEnabled()
+  await expect(button).toHaveText(/⇩ export crew page/i)
+
+  expect(trouble.pageErrors).toEqual([])
+})

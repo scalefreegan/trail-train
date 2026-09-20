@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useRacePlan } from "../race/useRacePlan";
+import { friendlyFetchError } from "../race/dialogChrome";
 import type { CrewKnobs } from "./crewData";
 
 /* ------------------------------------------------------------------ */
@@ -72,7 +73,11 @@ export function CrewExportButton() {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       setState({ phase: "idle" });
     } catch (e) {
-      setState({ phase: "error", message: (e as Error).message || "export failed" });
+      // A dead dev server throws a bare `TypeError: Failed to fetch`, which
+      // is a JS runtime detail, not something to show a crew chief pressing
+      // this button from the planner (bug 7, review round 3). Same helper
+      // the intake dialogs and the race switcher use for the same failure.
+      setState({ phase: "error", message: friendlyFetchError(e) || "export failed" });
     }
   };
 
