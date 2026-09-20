@@ -4,6 +4,7 @@ import { cacheGet, cachePut, slugKey } from "./offlineCache";
 import type { ClimbsSnapshot, Course, CrewBase, TrackerCheckpoint, TrackerResponse } from "./types";
 import type { PaceGradeCurve } from "./pacing";
 import { PHYSIOLOGY_FIELDS } from "../contracts";
+import { loadFailureMessage } from "./loadFailureMessage";
 
 /* Snapshot hooks for the Race views — same provider-less pattern as
    useGoogleCal (data.ts): fetch keyed on the refresh pulse.
@@ -70,7 +71,7 @@ export function useCourse() {
         if (stale) return;
         setData(d); setMissing(false); setError(null);
       })
-      .catch(() => fallback("course.json corrupt or unreadable"));
+      .catch((e) => fallback(loadFailureMessage(e, "course.json corrupt or unreadable")));
     return () => { stale = true; };
   }, [refreshKey, resolved, slug]);
   return { course: data, missing, error };
@@ -114,7 +115,7 @@ export function useCrewBase() {
         if (stale) return;
         setData(d); setError(null);
       })
-      .catch(() => fallback("crew-base.json corrupt or unreadable"));
+      .catch((e) => fallback(loadFailureMessage(e, "crew-base.json corrupt or unreadable")));
     return () => { stale = true; };
   }, [refreshKey, resolved, slug]);
   return { crewBase: data, error };
@@ -163,7 +164,7 @@ export function usePaceGrade() {
         cachePut(PACE_GRADE_CACHE_KEY, d);
         setData(d); setError(null);
       })
-      .catch(() => fallback("pace-grade.json corrupt or unreadable"));
+      .catch((e) => fallback(loadFailureMessage(e, "pace-grade.json corrupt or unreadable")));
     return () => { stale = true; };
   }, [refreshKey]);
   return { paceGrade: data, error };
