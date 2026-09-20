@@ -158,9 +158,12 @@ test.describe('no horizontal scroll', () => {
       await page.setViewportSize({ width, height: 900 })
       await openDashboard(page)
 
+      // The strip's actions depend on its own GET /api/races, which lands
+      // after the panels openDashboard() waits for — so wait for a button
+      // rather than sampling a count the moment vitals paint.
       const buttons = raceActions(page).getByRole('button')
+      await expect(buttons.first(), 'the active race should offer its actions on the strip').toBeVisible()
       const n = await buttons.count()
-      expect(n, 'the active race should offer its actions on the strip').toBeGreaterThan(0)
       for (let i = 0; i < n; i++) {
         const box = await buttons.nth(i).boundingBox()
         const label = (await buttons.nth(i).innerText()).trim()

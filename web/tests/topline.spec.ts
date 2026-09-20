@@ -1,7 +1,7 @@
 import {
   test, expect, ARCHIVED, DRAFT, MM,
-  openDashboard, openSwitcher, raceAction, raceActionLabels, setActiveRace, switcherButton,
-  writeRawRaceFolder,
+  chooseRace, openDashboard, openSwitcher, raceAction, raceActionLabels, raceActionNote,
+  setActiveRace, switcherButton, writeRawRaceFolder,
 } from './basecamp'
 
 /**
@@ -314,6 +314,134 @@ test('the simplified menu still keeps its keyboard contract', async ({ page, req
   await page.keyboard.press('Escape')
   await expect(menu).toBeHidden()
   await expect(switcherButton(page)).toBeFocused()
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/* ------------------------------------------------------------------ */
+/*  What the strip REMEMBERS across a race switch                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The strip's outcome line belongs to the race it was produced for.
+ *
+ * `RaceTopline` lives in `<main>`, above the tabpanels — and unlike the
+ * RACE/FUEL tabpanels a few lines below it, it was mounted once and never
+ * remounted when the race on screen changed. It holds `useRunCourseAgain`'s
+ * `done`/`warnings`/`error` and its own `activateError`, so a build outcome
+ * (or a refused activation) survived a switch and rendered under a race the
+ * athlete had never touched: "course rebuilt ✓", or a build-failure
+ * sentence, attached to the wrong folder. Found in review; nothing covered
+ * it, because every other build test opens one race and never switches.
+ *
+ * The fix is the `key` the tabpanels already use — and it also makes
+ * `runCourseAgain.ts`'s slug-keyed `resultStore` do its job here, which is
+ * the second half of this test: switching BACK brings the right note back,
+ * rather than simply forgetting everything.
+ *
+ * rimrock-50k is the fixture with no `course.gpx` and no `links.gpx`, so its
+ * build answers `ok: true, course: null` with a reason and writes nothing to
+ * the folder (scripts/race-build.test.mjs's own "unresolved, not a failure"
+ * case) — safe to run against the shared root.
+ */
+test('a build note stays with the race it was built for, across a switch and back', async ({ page, request, trouble }) => {
+  await setActiveRace(request, ARCHIVED.slug, 'view')
+  await openDashboard(page)
+
+  await raceAction(page, /Run course again…/).click()
+  const note = raceActionNote(page)
+  await expect(note).toContainText(/no course\.gpx in the folder and no http\(s\) links\.gpx/i)
+
+  // Switch to a different race — the active 100-miler, which has no course
+  // rebuild of its own and has never been built in this page load.
+  await openSwitcher(page)
+  await chooseRace(page, new RegExp(MM.name))
+  await expect(page.getByText(/active · training target/i)).toBeVisible()
+  await expect(note, "the previous race's build note followed the switch").toHaveCount(0)
+
+  // …and back. The note is the archived race's own again — recovered from
+  // runCourseAgain.ts's resultStore, keyed by slug, which is exactly what
+  // that store exists for.
+  await openSwitcher(page)
+  await chooseRace(page, new RegExp(ARCHIVED.name))
+  await expect(raceActionNote(page)).toContainText(/no course\.gpx in the folder and no http\(s\) links\.gpx/i)
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * A refused activation is a note too, and leaks the same way.
+ */
+test('a refused activation does not follow the switch to another race', async ({ page, request, trouble }) => {
+  await setActiveRace(request, DRAFT.slug, 'view')
+  await openDashboard(page)
+
+  await raceAction(page, /^Activate$/).click()
+  await expect(raceActionNote(page)).toContainText(/already active|unresolved field/i)
+
+  await openSwitcher(page)
+  await chooseRace(page, new RegExp(ARCHIVED.name))
+  await expect(page.getByText(/archived · .* · read-only/i)).toBeVisible()
+  await expect(raceActionNote(page), "the draft's refusal followed the switch").toHaveCount(0)
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * A PARTIAL activation — the status flip lands, the pointer POST then fails
+ * — must leave the strip agreeing with the disk.
+ *
+ * The strip's `activate()` is "the review screen's activate() minus its
+ * pending-edits PUT", and it had dropped one more thing: the review screen
+ * calls `load(...)` on a refused pointer move, re-reading the race so its own
+ * state matches the server. The strip only set the error, so `useRaceGroups`
+ * still said `draft` and went on offering Activate for a folder that was
+ * already `active` on disk — one more click would re-POST the flip against a
+ * race that had already taken it.
+ *
+ * Both requests are intercepted rather than let through, because the real
+ * server cannot produce this state: mm-like-100 holds `status: "active"` for
+ * the whole suite, so a genuine status POST on a draft is refused by the
+ * single-active invariant long before any pointer move. `/api/races` is
+ * rewritten to report the folder the way the disk WOULD after the flip, so
+ * the re-read has something true to find and nothing is written anywhere.
+ * `setActiveRace` goes through the APIRequestContext, not the page, so it is
+ * untouched by these routes.
+ */
+test('a partial activation re-reads the race list, so Activate stops being offered', async ({ page, request, trouble }) => {
+  let flipped = false
+
+  await page.route('**/api/races*', async (route) => {
+    const response = await route.fetch()
+    const data = await response.json() as { races: Array<Record<string, unknown>>; groups?: Array<Record<string, unknown>> }
+    if (!flipped) { await route.fulfill({ response, json: data }); return }
+    const promote = (r: Record<string, unknown>) => (r.slug === DRAFT.slug ? { ...r, status: 'active' } : r)
+    await route.fulfill({ response, json: { races: data.races.map(promote), groups: data.groups?.map(promote) } })
+  })
+  await page.route(`**/api/races/${DRAFT.slug}/status`, async (route) => {
+    flipped = true
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) })
+  })
+  await page.route('**/api/race/activate', (route) => route.fulfill({
+    status: 500, contentType: 'application/json',
+    body: JSON.stringify({ error: 'the dev server went away mid-request' }),
+  }))
+
+  await setActiveRace(request, DRAFT.slug, 'view')
+  await openDashboard(page)
+  expect(await raceActionLabels(page)).toEqual([REVIEW, ACTIVATE, REFRESH])
+
+  await raceAction(page, /^Activate$/).click()
+  await expect(raceActionNote(page)).toContainText(/the folder is active but the pointer did not move/i)
+
+  // The re-read: the strip stops offering to activate a folder that has
+  // already taken the flip, and picks up the actions that status earns.
+  await expect(raceAction(page, /^Activate$/)).toHaveCount(0)
+  expect(await raceActionLabels(page)).toEqual([REVIEW, REFRESH, ADD_TUNE_UP, ARCHIVE])
+
+  // …and the error survives its own reload: the strip is keyed on the loaded
+  // slug, which a failed pointer move did not change.
+  await expect(raceActionNote(page)).toContainText(/the folder is active but the pointer did not move/i)
 
   expect(trouble.pageErrors).toEqual([])
 })

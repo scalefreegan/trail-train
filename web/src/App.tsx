@@ -968,6 +968,11 @@ function RaceTopline() {
     busyRef.current = true;
     setActivating(true);
     setActivateError(null);
+    // Whether the FIRST of the two writes landed. Everything after it — the
+    // pointer move succeeding, failing, or throwing — happens against a
+    // folder whose status has already changed on disk, so the strip owes
+    // itself a re-read either way (see the `finally` below).
+    let promoted = false;
     try {
       // The review screen's own activate(), minus its pending-edits PUT
       // (there are no edits here): promote the folder, then move the
@@ -987,6 +992,7 @@ function RaceTopline() {
         setActivateError((body.errors ?? [body.error ?? `HTTP ${res.status}`]).join(" · "));
         return;
       }
+      promoted = true;
       const ptr = await fetch("/api/race/activate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -997,12 +1003,24 @@ function RaceTopline() {
         setActivateError(`the folder is active but the pointer did not move: ${b.error ?? `HTTP ${ptr.status}`}`);
         return;
       }
-      reload();
     } catch (e) {
       setActivateError(friendlyFetchError(e));
     } finally {
       busyRef.current = false;
       setActivating(false);
+      // The review screen calls `load(...)` on a refused pointer move for
+      // exactly this reason, and the strip used to drop it: with the status
+      // POST landed and the pointer POST failed (a network blip, the dev
+      // server restarting mid-request), `useRaceGroups` still said "draft"
+      // and the strip went on offering Activate for a folder that had
+      // already taken the flip — a second click would re-POST it. One pulse
+      // covers both outcomes: on success it is the refetch every panel needs
+      // anyway, and on a partial failure it is the re-sync. The strip is
+      // keyed on the loaded SLUG rather than on this pulse, so a reload here
+      // cannot wipe the error it is being called alongside — and after a
+      // SUCCESSFUL activation the pointer really did move, so the remount
+      // that follows is the correct one.
+      if (promoted) reload();
     }
   }, [reload]);
 
@@ -3623,7 +3641,10 @@ function AppBody() {
   const { race, viewing } = useBlockConfig();
   // the slug ON SCREEN, for the crash boundary's message and its "back to
   // generic mode" pointer reset — same source useRacePlanInstance itself reads.
-  const { activeRace, viewing: viewingSlug } = useActiveRace();
+  // `resolved` gates the topline strip below: until the payload lands there is
+  // no slug to key it on, and mounting it early only costs a GET /api/races
+  // that the very next render throws away.
+  const { activeRace, viewing: viewingSlug, resolved: raceResolved } = useActiveRace();
   const hash = useHashRoute();
   const [view, setViewState] = useState<AppView>(() => {
     // validate rather than cast — a stale or hand-edited key would otherwise
@@ -3665,8 +3686,28 @@ function AppBody() {
           {/* main column */}
           <main style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
             {/* on every view: what this race is, and everything that can be
-                done to it (the switcher's old "↳ …" rows) */}
-            <RaceTopline />
+                done to it (the switcher's old "↳ …" rows).
+
+                Keyed on the slug ON SCREEN, the same way the RACE/FUEL
+                tabpanels below are keyed on the refresh pulse and for the
+                same reason: the strip holds per-race state that must not
+                outlive the race it describes. A course build's outcome
+                ("course rebuilt ✓", a ⚠, the reason a null-course build
+                gave) and a refused activation both used to survive a switch
+                and render under a folder the athlete had never touched.
+                Remounting also lets runCourseAgain.ts's slug-keyed
+                `resultStore` do its job here, which is the behaviour its own
+                header comment assumes of every caller — switching back to a
+                race brings ITS note back, rather than showing another
+                race's.
+
+                Not rendered until `useActiveRace` has resolved: `viewingSlug`
+                is null until then, so an early mount would key as generic,
+                render nothing (RaceTopline returns null with no race), fire
+                its own GET /api/races, and be torn down by the remount the
+                moment the real slug arrived. Gating costs nothing visible —
+                the strip has nothing to say before the payload either. */}
+            {raceResolved && <RaceTopline key={viewingSlug ?? "__generic__"} />}
             {/* CommandBar's tablist points aria-controls at THIS element —
                 one dynamically-swapped panel rather than three permanently
                 mounted ones (each view already unmounts/remounts its own
