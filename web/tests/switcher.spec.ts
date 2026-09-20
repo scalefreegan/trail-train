@@ -1,5 +1,7 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import {
-  test, expect, ARCHIVED, DRAFT, MM,
+  test, expect, ARCHIVED, DRAFT, MM, type Page,
   chooseRace, openDashboard, openSwitcher, setActiveRace, switcherButton, writeRawRaceFolder,
 } from './basecamp'
 
@@ -93,7 +95,7 @@ test('picking the 100-miler switches the whole dashboard to it, and generic take
  * this shape can only exist via a hand-edited (or pre-v2) folder, never
  * through the app's own create path.
  */
-test('a tune-up chained onto another tune-up renders once, orphaned, and does not shift the cursor', async ({ page, request }) => {
+test('a tune-up chained onto another tune-up renders once, orphaned, and does not shift the cursor', async ({ page, request, trouble }) => {
   await writeRawRaceFolder('shell2-chain-orphan-parent', {
     schema_version: 1, kind: 'b', parent_slug: 'shell2-no-such-race',
     status: 'draft', name: 'Shell2 Orphan Parent', short: 'S2OP', date: '2027-04-10',
@@ -130,6 +132,12 @@ test('a tune-up chained onto another tune-up renders once, orphaned, and does no
   const focused = await page.evaluate(() => document.activeElement?.textContent ?? null)
   expect(focused).toContain(DRAFT.name)
   expect(focused).not.toContain('Shell2')
+
+  // Round 3 finding 4: every other test in this file checks the page never
+  // threw — this one wrote two hand-rolled folders shaped to trip exactly
+  // the double-render/off-by-one bug the header comment describes, which is
+  // precisely the kind of edit most likely to surface a render exception.
+  expect(trouble.pageErrors).toEqual([])
 })
 
 test('an archived race opens read-only, without moving the training pointer', async ({ page, request, trouble }) => {
@@ -146,6 +154,131 @@ test('an archived race opens read-only, without moving the training pointer', as
   expect(active.mode).toBe('view')
   expect(active.active).toBeNull()
   expect(active.viewing).toBe(ARCHIVED.slug)
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/* ------------------------------------------------------------------ */
+/*  Round 3 finding 1 — "Run course again…"'s false tick               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Write races/r3rd-clean-archived-50k/ straight onto the shared temp root —
+ * a real course.gpx and a race.json whose declared distance_mi/gain_ft are
+ * the same pairing scripts/race-build.test.mjs's own "a GPX within normal
+ * drift of race.json's distance_mi (and gain) raises nothing" test uses
+ * against the identical synthetic track, so this build is known to come back
+ * `ok: true` with a real course AND zero warnings — the clean half of
+ * finding 1, as distinct from ARCHIVED (rimrock-50k)'s no-gpx half.
+ *
+ * Single "Finish" aid station on purpose: race-build.mjs's matcher only ever
+ * special-cases the LAST station as the finish line (no waypoint needed,
+ * never unresolved) — with just one station it is both first and last, so
+ * the build cannot also raise an aid-station-matching warning and muddy the
+ * "clean build" signal this test wants.
+ */
+const CLEAN_ARCHIVED = { slug: 'r3rd-clean-archived-50k', name: 'R3RD Clean Archived 50K' }
+
+function syntheticCourseGpx(): string {
+  const LAT0 = 34.0
+  const LON0 = -111.0
+  const DEG_PER_TENTH_MI = 0.1 / 69.09
+  const TRACK_PTS = 300
+  const trk = Array.from({ length: TRACK_PTS }, (_, i) => {
+    const lat = LAT0 + i * DEG_PER_TENTH_MI
+    const ele = 2000 + i * 0.4 + Math.sin(i / 20) * 3
+    return `<trkpt lat="${lat}" lon="${LON0}"><ele>${ele.toFixed(1)}</ele></trkpt>`
+  }).join('\n')
+  return `<?xml version="1.0"?>\n<gpx version="1.1">\n<trk><name>t</name><trkseg>\n${trk}\n</trkseg></trk>\n</gpx>`
+}
+
+async function writeCleanArchivedFixture(): Promise<void> {
+  const root = process.env.TRAIL_TEST_PROJECT_ROOT
+  if (!root) throw new Error('writeCleanArchivedFixture: TRAIL_TEST_PROJECT_ROOT is unset — global setup did not run')
+  const dir = path.join(root, 'races', CLEAN_ARCHIVED.slug)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(path.join(dir, 'course.gpx'), syntheticCourseGpx())
+  await fs.writeFile(path.join(dir, 'race.json'), JSON.stringify({
+    schema_version: 1,
+    slug: CLEAN_ARCHIVED.slug,
+    status: 'archived',
+    name: CLEAN_ARCHIVED.name,
+    short: 'R3RDCA',
+    edition_year: 2027,
+    date: '2027-06-12',
+    start_time: '06:00',
+    timezone: 'America/Denver',
+    distance_mi: 30,
+    gain_ft: 399,
+    cutoff_h: null,
+    aid_stations: [
+      { name: 'Finish', total_mi: 30, cutoff_h: null, crew: false, drop_bag: false },
+    ],
+    race_climbs: [],
+    links: {},
+  }, null, 2))
+}
+
+/**
+ * Find the "↳ Run course again…" row that belongs to one race, the same way
+ * basecamp.ts's own (unexported) clickSubRowFor locates a Review/Refresh row
+ * — by finding the race's own row first and taking the next matching sub-row
+ * before the next top-level race row. Returns the locator (not a click), so
+ * a test can read the row's hint text both before and after acting on it.
+ */
+async function runCourseAgainRowFor(page: Page, raceName: string) {
+  const rows = page.getByRole('menu', { name: 'race' }).locator('button')
+  const labels = await rows.allInnerTexts()
+  const raceIdx = labels.findIndex((t) => t.startsWith(raceName))
+  if (raceIdx < 0) throw new Error(`no switcher row for "${raceName}" in: ${JSON.stringify(labels)}`)
+  const endIdx = labels.findIndex((t, i) => i > raceIdx && !t.startsWith('↳'))
+  const limit = endIdx < 0 ? labels.length : endIdx
+  const hitIdx = labels.findIndex((t, i) => i > raceIdx && i < limit && t.startsWith('↳ Run course again'))
+  if (hitIdx < 0) throw new Error(`"${raceName}" has no "Run course again…" row in: ${JSON.stringify(labels.slice(raceIdx, limit))}`)
+  return rows.nth(hitIdx)
+}
+
+/**
+ * Round 3 finding 1 — the switcher's own "Run course again…" row was a
+ * hand-rolled call to the build SSE endpoint that passed `() => {}` as
+ * onEvent and never looked at the `done` payload, so `ok: true, course:
+ * null` (no course.gpx, no reachable links.gpx to fetch one from —
+ * scripts/race-build.mjs's own "stop" path) still closed out with "course
+ * rebuilt ✓". ARCHIVED (rimrock-50k) is exactly that shape already — no
+ * course.gpx file, and `links` carries only `site`, never `gpx` — and is
+ * safe to build against here: race-build.mjs's own test ("no course.gpx and
+ * no links.gpx: unresolved, not a failure") confirms this path writes
+ * NOTHING to the folder, so it cannot corrupt the shared fixture for any
+ * other spec.
+ */
+test('Run course again on a race with no course.gpx shows the reason, not a false tick', async ({ page, trouble }) => {
+  await openDashboard(page)
+  await openSwitcher(page)
+  const row = await runCourseAgainRowFor(page, ARCHIVED.name)
+  await expect(row).toContainText(/rebuild course\.json from the stored gpx/i)
+
+  await row.click()
+  // No course.gpx and no links.gpx to fetch: the build answers ok: true with
+  // course: null and this exact reason (scripts/race-build.mjs's `stop`).
+  await expect(page.getByText(/no course\.gpx in the folder and no http\(s\) links\.gpx/i)).toBeVisible()
+  await expect(row).not.toContainText(/rebuilt ✓/i)
+
+  expect(trouble.pageErrors).toEqual([])
+})
+
+/**
+ * The other half of finding 1 — a clean build (a real course.gpx, no
+ * distance/gain mismatch) must still show the tick, so the fix above cannot
+ * have been "never show success."
+ */
+test('Run course again on a clean build still shows the tick', async ({ page, trouble }) => {
+  await writeCleanArchivedFixture()
+  await openDashboard(page)
+  await openSwitcher(page)
+  const row = await runCourseAgainRowFor(page, CLEAN_ARCHIVED.name)
+
+  await row.click()
+  await expect(row).toContainText(/course rebuilt ✓/i)
 
   expect(trouble.pageErrors).toEqual([])
 })
