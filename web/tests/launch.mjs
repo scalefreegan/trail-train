@@ -10,6 +10,18 @@
 // gitignored Strava/Oura/calendar snapshots — and the save, acknowledge and
 // activate flows would WRITE into their real race folders.
 //
+// TRAIL_PROJECT_ROOT alone is not enough to keep every network-shaped
+// endpoint sandboxed, though: TRAIL_FAKE_AGENT (below) covers headless
+// `claude` spawns, and TRAIL_FAKE_SYNC (set unconditionally in
+// attemptStart, with a fail-loud assertion right below it) covers the
+// dashboard's "resync" endpoint (/api/refresh), whose four sync steps
+// otherwise spawn scripts/sync-strava.mjs / sync-streams.mjs / sync-oura.mjs
+// / sync-google-cal.mjs against REAL, machine-level credentials
+// (~/.config/strava-mcp/config.json and friends) that TRAIL_PROJECT_ROOT
+// does not scope at all — a test that clicks "resync" without this seam
+// makes real network calls with the developer's own accounts (round 5
+// confirm, finding 3's fix report).
+//
 // Temp root layout, and why each piece is what it is:
 //
 //   <tmp>/config/           real files   — the pointer, profile and goals the
@@ -301,20 +313,39 @@ export async function buildCrewShell() {
  */
 async function attemptStart(port, { root, fakeAgentFile, crewShell }) {
   const baseURL = `http://127.0.0.1:${port}`
+  const env = {
+    ...process.env,
+    TRAIL_PROJECT_ROOT: root,
+    // Hardcoded, not threaded through as an option: there is no caller of
+    // startServer/attemptStart that has ANY legitimate reason to run a real
+    // sync-strava.mjs/sync-oura.mjs/sync-google-cal.mjs/sync-streams.mjs
+    // against real machine-level credentials (~/.config/strava-mcp/
+    // config.json and friends) — that happened once, by accident, when a
+    // test clicked the dashboard's real "resync" button (round 5 confirm,
+    // finding 3's fix report). vite.config.ts's /api/refresh route reads
+    // this the same way it already reads TRAIL_FAKE_AGENT for the coach
+    // step, and replaces the four sync steps with a no-op that still emits
+    // the same SSE events.
+    TRAIL_FAKE_SYNC: '1',
+    ...(fakeAgentFile ? { TRAIL_FAKE_AGENT: fakeAgentFile } : {}),
+    ...(crewShell ? { TRAIL_CREW_SHELL: crewShell } : {}),
+    // The dev API's own console.warn about a stale sign-in etc. is noise
+    // here, and a real `claude` spawn must never happen from a test.
+    TRAIL_COACH_MODEL: 'fixture-model',
+  }
+  // Belt and braces: TRAIL_FAKE_SYNC is set unconditionally two lines above,
+  // so this can only fire if a future edit reorders the object above and
+  // lets an inherited value clobber it — fail loudly here rather than let a
+  // test server silently regain the ability to run real syncs.
+  if (env.TRAIL_FAKE_SYNC !== '1') {
+    throw new Error('[launch] refusing to start vite for the test suite without TRAIL_FAKE_SYNC=1 — this would let /api/refresh run real syncs')
+  }
   const proc = spawn(
     process.execPath,
     [path.join(WEB_DIR, 'node_modules', 'vite', 'bin', 'vite.js'), '--port', String(port), '--host', '127.0.0.1', '--strictPort'],
     {
       cwd: WEB_DIR,
-      env: {
-        ...process.env,
-        TRAIL_PROJECT_ROOT: root,
-        ...(fakeAgentFile ? { TRAIL_FAKE_AGENT: fakeAgentFile } : {}),
-        ...(crewShell ? { TRAIL_CREW_SHELL: crewShell } : {}),
-        // The dev API's own console.warn about a stale sign-in etc. is noise
-        // here, and a real `claude` spawn must never happen from a test.
-        TRAIL_COACH_MODEL: 'fixture-model',
-      },
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     },

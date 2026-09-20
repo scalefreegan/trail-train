@@ -317,12 +317,42 @@ function refreshApi(): Plugin {
           { id: 'coach',   label: 'running coach',         script: 'scripts/coach.mjs',           args: [] },
         ] as const
 
+        /* TRAIL_FAKE_SYNC — a test seam alongside TRAIL_FAKE_AGENT (see the
+           chat handler's own copy of that comment below), set unconditionally
+           by web/tests/launch.mjs for every server the Playwright suite
+           starts. Round 5 confirm, finding 3's fix report: a test that clicks
+           the real "resync" button reaches this loop and spawns the real
+           sync-strava.mjs/sync-streams.mjs/sync-oura.mjs/sync-google-cal.mjs
+           against real machine-level credentials
+           (~/.config/strava-mcp/config.json and friends) — TRAIL_FAKE_AGENT
+           only ever covered the coach step's OWN inner spawn (coach.mjs calls
+           agent-run.mjs, which reads it directly), never these four. With the
+           var set, the four sync steps below become a no-op that still emits
+           the same 'step'/start and 'step'/done SSE events (so the resync
+           button's UI states — pending → running → done — are unchanged and
+           still exercised) instead of touching the network at all. `coach`
+           is deliberately excluded: it keeps running for real, staying safe
+           via its own TRAIL_FAKE_AGENT check inside agent-run.mjs, exactly as
+           it already did before this seam existed. */
+        const FAKE_SYNC = (process.env.TRAIL_FAKE_SYNC || '').trim() === '1'
+        const FAKE_SYNC_STEPS = new Set(['strava', 'streams', 'oura', 'gcal'])
+
         let aborted = false
         req.on('close', () => { aborted = true })
 
         const runStep = (s: typeof steps[number]) =>
           new Promise<{ ok: boolean; code: number | null; stderr: string }>((resolve) => {
             send('step', { id: s.id, status: 'start', label: s.label })
+
+            if (FAKE_SYNC && FAKE_SYNC_STEPS.has(s.id)) {
+              const line = '[refresh] TRAIL_FAKE_SYNC — sync steps skipped'
+              console.log(line)
+              send('log', { id: s.id, line })
+              send('step', { id: s.id, status: 'done', code: 0 })
+              resolve({ ok: true, code: 0, stderr: '' })
+              return
+            }
+
             const proc = spawn('node', [path.join(projectRoot, s.script), ...s.args], {
               cwd: projectRoot,
               env: { ...process.env, TRAIL_UNITS: units },
