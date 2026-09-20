@@ -275,6 +275,13 @@ test.describe('view tablist', () => {
     const fuelTabId = await fuel.getAttribute('id')
     await expect(panel).toHaveAttribute('aria-labelledby', fuelTabId ?? '')
 
+    // Round 5 confirm, finding 2 — AppBody renders exactly one tabpanel at a
+    // time (the active view's), so the other two, non-selected tabs must NOT
+    // carry an aria-controls naming an id that is not in the DOM. Checked
+    // here with fuel selected: training/race are the non-selected ones.
+    expect(await training.getAttribute('aria-controls'), 'a non-selected tab must not point at a nonexistent tabpanel').toBeNull()
+    expect(await race.getAttribute('aria-controls'), 'a non-selected tab must not point at a nonexistent tabpanel').toBeNull()
+
     // Enter/Space on a Tab-reached tab still work — these stay native
     // <button>s, so this was already true and must stay true.
     await page.keyboard.press('Home')
@@ -282,6 +289,69 @@ test.describe('view tablist', () => {
     await race.focus()
     await page.keyboard.press('Enter')
     await expect(race).toHaveAttribute('aria-selected', 'true')
+
+    expect(trouble.pageErrors).toEqual([])
+  })
+
+  /**
+   * Round 5 confirm, finding 3 — `views` can shrink out from under the
+   * currently focused tab (FUEL disappears the instant the active race
+   * becomes a tune-up with no nutrition.json, `fuelViewHidden`) with no view
+   * change initiated by the user themselves — a background refresh landing
+   * mid-poll is exactly this case. React unmounts that tab's <button>, and
+   * per standard DOM behavior a focused element being removed silently drops
+   * focus to <body> with no recovery. `/api/race/active` is intercepted so a
+   * "resync" (a real user action, but one that does not itself touch DOM
+   * focus — `HTMLElement.click()` fires the click handler without moving
+   * focus the way a real pointer click would) is what flips fuel off, so the
+   * only thing that ever touches the FUEL tab's focus is the shrink itself.
+   *
+   * `/api/refresh` is intercepted and aborted rather than let through: it is
+   * the dashboard's real "resync everything" endpoint, which spawns the
+   * genuine sync-strava.mjs/sync-oura.mjs/sync-google-cal.mjs/coach.mjs
+   * scripts against real external services and real machine-level
+   * credentials (`~/.config/strava-mcp/config.json`) — TRAIL_FAKE_AGENT only
+   * short-circuits the coach step's own CLI spawn, not the sync scripts.
+   * RefreshProvider's `refresh()` bumps its `key` (which is all `views`
+   * actually needs re-fetched) in a `finally`, which runs whether the fetch
+   * resolved or was aborted, so aborting it gets the exact same client-side
+   * effect with no real network call ever leaving the browser.
+   */
+  test('focus moves to the selected tab, not <body>, when the focused tab disappears out from under it', async ({ page, trouble }) => {
+    let corrupt = false
+    await page.route('**/api/race/active*', async (route) => {
+      const response = await route.fetch()
+      const data = await response.json()
+      if (corrupt && data?.race) {
+        data.race = { ...data.race, kind: 'b' }
+        data.nutrition = null
+      }
+      await route.fulfill({ response, json: data })
+    })
+    await page.route('**/api/refresh', (route) => route.abort('failed'))
+
+    await openDashboard(page)
+    const fuel = page.getByRole('tab', { name: /^fuel$/i })
+    await fuel.click()
+    await expect(fuel).toBeFocused()
+    await expect(fuel).toHaveAttribute('aria-selected', 'true')
+
+    // Flip the served payload, then trigger the SAME refresh pulse a
+    // background poll would — via a programmatic click, which (unlike a
+    // real pointer click) does not itself move DOM focus off the fuel tab.
+    corrupt = true
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('button')].find((b) => /resync|syncing/i.test(b.textContent ?? ''))
+      btn?.click()
+    })
+
+    await expect(fuel).toHaveCount(0)
+    // The tablist fell back to training (the first view still offered) —
+    // and focus followed it there instead of the tab vanishing into <body>.
+    const training = page.getByRole('tab', { name: /^training$/i })
+    await expect(training).toHaveAttribute('aria-selected', 'true')
+    await expect(training).toBeFocused()
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(false)
 
     expect(trouble.pageErrors).toEqual([])
   })

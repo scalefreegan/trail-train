@@ -1050,6 +1050,26 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
   // Roving-tabindex focus targets, keyed by view — the WAI-ARIA tabs pattern
   // moves DOM focus itself on Arrow/Home/End, not just the selection state.
   const tabRefs = useRef<Partial<Record<AppView, HTMLButtonElement | null>>>({});
+  // Which view's tab button DOM focus currently sits on, tracked via each
+  // button's own onFocus below (not document.activeElement — by the time an
+  // effect runs after a re-render, a tab that just unmounted has already had
+  // the browser drop focus to <body>, so activeElement can no longer tell us
+  // which tab it USED to be on).
+  const focusedTabRef = useRef<AppView | null>(null);
+  // Round 5 confirm, finding 3: `views` can shrink out from under the
+  // currently focused tab (e.g. FUEL disappears the instant `activeRace`
+  // becomes a tune-up with no nutrition.json, mid-poll, with no view change
+  // initiated by the user). React then unmounts that tab's <button>, and per
+  // standard DOM behavior a focused element being removed silently drops
+  // focus to <body> — the next Tab press starts from the top of the page
+  // instead of back in the tablist. When that happens, move focus to the
+  // tab that IS still selected rather than leaving it stranded.
+  useEffect(() => {
+    if (focusedTabRef.current != null && !views.includes(focusedTabRef.current)) {
+      tabRefs.current[view]?.focus();
+      focusedTabRef.current = view;
+    }
+  }, [views, view]);
 
   return (
     <header style={{
@@ -1086,7 +1106,16 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
             native <button>s), Home/End jump to the ends with no wrap needed
             there, and each tab's aria-controls names the one tabpanel
             AppBody renders for the active view (see its `role="tabpanel"`
-            wrapper). */}
+            wrapper).
+
+            Round 5 confirm, finding 2: AppBody renders exactly ONE tabpanel
+            at a time — the active view's — so a non-selected tab's
+            aria-controls would always name an id that is not in the DOM,
+            which violates the attribute's own contract. The APG's
+            single-dynamically-rendered-panel variant explicitly allows
+            omitting aria-controls on a tab when there is nothing for it to
+            point at; that is the choice made here, rather than rendering all
+            three panels (hidden) just to give every tab a target. */}
         <div role="tablist" aria-label="view" style={{ display: "flex", gap: 6 }}>
           {views.map((v, i) => (
             <button
@@ -1095,10 +1124,11 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
               id={`tab-${v}`}
               role="tab"
               aria-selected={view === v}
-              aria-controls={`tabpanel-${v}`}
+              aria-controls={view === v ? `tabpanel-${v}` : undefined}
               tabIndex={view === v ? 0 : -1}
               className={"chip" + (view === v ? " active" : "")}
               onClick={() => setView(v)}
+              onFocus={() => { focusedTabRef.current = v; }}
               onKeyDown={(e) => {
                 let nextIdx: number | null = null;
                 if (e.key === "ArrowRight") nextIdx = (i + 1) % views.length;
