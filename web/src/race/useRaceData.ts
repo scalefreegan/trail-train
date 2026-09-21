@@ -331,10 +331,18 @@ export type RaceResult = {
  *
  * Same failure semantics as the snapshot hooks above: an absent result is a
  * `null`, not an error, and a real failure keeps whatever was loaded.
+ *
+ * `resolved` says whether the answer for THIS slug is in yet, which a null
+ * `result` cannot: it is both "still asking" and "there is none". A caller
+ * that offers an action on the strength of "no result linked" — App.tsx's
+ * topline "Link result…" — must not offer it during the fetch, or an
+ * archived race that HAS its result flashes the button on every load. It is
+ * derived from the stored answer being keyed by the slug it was fetched for,
+ * rather than a second piece of state set from inside the effect.
  */
 export function useRaceResult(slug: string | null) {
   const { key: refreshKey } = useRefresh();
-  const [data, setData] = useState<RaceResult | null>(null);
+  const [data, setData] = useState<{ slug: string; result: RaceResult | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!slug) return;
@@ -342,19 +350,28 @@ export function useRaceResult(slug: string | null) {
     fetch(`/api/races/${encodeURIComponent(slug)}/result?t=${Date.now()}`)
       .then(async (r) => {
         if (stale) return;
-        if (r.status === 404) { setData(null); setError(null); return; }
+        if (r.status === 404) { setData({ slug, result: null }); setError(null); return; }
         if (!r.ok) { setError(`result.json failed to load (HTTP ${r.status})`); return; }
         const d = await r.json().catch(() => { throw new Error("parse"); });
         if (stale) return;
-        setData(((d as { result?: RaceResult | null }).result) ?? null);
+        setData({ slug, result: ((d as { result?: RaceResult | null }).result) ?? null });
         setError(null);
       })
       .catch((e) => { if (!stale) setError(loadFailureMessage(e, "result.json corrupt or unreadable")); });
     return () => { stale = true; };
   }, [slug, refreshKey]);
   // With no slug there is nothing to report — including whatever the last
-  // slug left behind, which belonged to a different race.
-  return { result: slug ? data : null, error: slug ? error : null };
+  // slug left behind, which belonged to a different race. The same check
+  // covers a slug that has CHANGED and whose own fetch has not landed: the
+  // stored answer is another race's until it does. A failed reload of a slug
+  // already answered keeps that answer (and `resolved`), as documented above.
+  const forThisSlug = slug != null && data?.slug === slug;
+  return {
+    result: forThisSlug ? data.result : null,
+    error: slug ? error : null,
+    /** the answer for `slug` is in — false while asking, and with no slug */
+    resolved: forThisSlug,
+  };
 }
 
 /* ------------------------------------------------------------------ */

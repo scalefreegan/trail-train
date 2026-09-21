@@ -1,4 +1,4 @@
-import { test, expect, ARCHIVED, MM, openDashboard, openSwitcher, setActiveRace } from './basecamp'
+import { test, expect, ARCHIVED, MM, openDashboard, raceAction, setActiveRace } from './basecamp'
 
 /**
  * Flow 6 — "Archive with result…": picking the Strava run that IS the race.
@@ -25,7 +25,13 @@ import { test, expect, ARCHIVED, MM, openDashboard, openSwitcher, setActiveRace 
  * else, and is tested here, is the dialog that decides WHAT gets sent.
  */
 
-const archiveRow = /Archive with result…/
+/* The archive action moved out of the switcher menu and onto the topline
+   strip with every other per-race action (App.tsx's RaceTopline), and was
+   narrowed with it: it is about the race LOADED, never about some other
+   folder in the list. So it is offered on the active race (ending it) and on
+   an archived race that never got its activity linked ("Link result…"), and
+   nowhere else. */
+const archiveButton = /Archive with result…/
 
 test.beforeEach(async ({ page, request }) => {
   await setActiveRace(request, MM.slug, 'train')
@@ -33,8 +39,7 @@ test.beforeEach(async ({ page, request }) => {
 })
 
 async function openArchive(page: import('./basecamp').Page) {
-  const menu = await openSwitcher(page)
-  await menu.getByRole('menuitem', { name: archiveRow }).click()
+  await raceAction(page, archiveButton).click()
   const dialog = page.getByRole('dialog', { name: 'archive with result' })
   await expect(dialog).toBeVisible()
   return dialog
@@ -105,35 +110,51 @@ test('a DNS needs no activity at all, and a malformed finish time blocks the sub
   expect(trouble.pageErrors).toEqual([])
 })
 
-test('an already-archived, fully-linked race offers no "Link result…" for itself — but the still-active race is still offered its own archive row', async ({ page, request, trouble }) => {
+test('a browsed archive offers to LINK its run, never to archive the race being trained for', async ({ page, request, trouble }) => {
   // rimrock-50k came out of races/_fixtures already archived, with a
-  // result.json beside its race.json. Browsing it must not offer to LINK a
-  // result it already has.
+  // result.json that carries a finish time and `strava_activity_id: null` —
+  // an archived race whose Strava run was never attached. That is the
+  // "Link result…" case, and it is what browsing it must offer.
   //
-  // It also must not make the "Archive with result…" row for the race
-  // actually being trained for (MM, still `status: "active"` on disk —
-  // `beforeEach` never moves it, and this test's own `setActiveRace` call
-  // only changes the pointer's MODE/slug, never any folder's own status)
-  // disappear. `archiveTarget` used to key its first branch on
-  // `useActiveRace().slug`, documented null in BOTH generic mode and this
-  // one (view mode) — the exact cause `canAddTuneUp` had — so it went null,
-  // and the row vanished, the instant anything but MM's own train-mode
-  // screen was on screen (round 4 finding 5, same fix shape as
-  // canAddTuneUp: the race's own `status === "active"`, not the
-  // view-mode-null training slug).
+  // What it must NOT offer is MM's own "Archive with result…": the strip is
+  // about the race loaded, and MM is not on screen. (Before the topline
+  // change this was a menu footer row about the whole list, so MM's row
+  // showed here.)
+  //
+  // The last assertion is the one with history. `archiveTarget` used to key
+  // its first branch on `useActiveRace().slug`, documented null in BOTH
+  // generic mode and view mode — the exact cause `canAddTuneUp` had — so it
+  // went null the instant anything but MM's own train-mode screen was on
+  // screen (round 4 finding 5). The fix was to read the folder's own
+  // `status === "active"`, and that is still what decides it.
   await setActiveRace(request, ARCHIVED.slug, 'view')
-  await page.reload()
-  await expect(page.getByText(/vitals — load × recovery/i)).toBeVisible()
+  // Waiting on the result fetch itself, not just on the page painting: an
+  // absent-count assertion passes on its first try, so it can only catch a
+  // button that appears LATER if the thing that would make it appear has
+  // already happened. "Link result…" is gated on useRaceResult's `resolved`
+  // — before that, a null result means "still asking", not "none linked".
+  await Promise.all([
+    page.waitForResponse((r) => r.url().includes(`/api/races/${ARCHIVED.slug}/result`)),
+    page.reload(),
+  ])
+  await expect(page.getByText(/archived · .* · read-only/i)).toBeVisible()
 
   const result = await (await request.get(`/api/races/${ARCHIVED.slug}/result?t=1`)).json()
   expect(result.result, 'the archived fixture should carry a result.json').not.toBeNull()
   expect(result.result.finish_h).toBeGreaterThan(0)
+  expect(result.result.strava_activity_id, 'and no activity linked to it').toBeNull()
 
-  const menu = await openSwitcher(page)
-  // MM's own row, naming MM specifically — not a "Link result…" for the
-  // browsed archive, which already has what it needs.
-  await expect(menu.getByRole('menuitem', { name: archiveRow })).toBeVisible()
-  await expect(menu.getByRole('menuitem', { name: /Link result…/ })).toHaveCount(0)
+  // Its own run to link, and nothing on MM's behalf.
+  await expect(raceAction(page, /Link result…/)).toBeVisible()
+  await expect(raceAction(page, archiveButton)).toHaveCount(0)
+
+  // …and the race actually being trained for still has its own, on its own
+  // screen. `status: "active"` is untouched on disk throughout: `beforeEach`
+  // never moves it, and `setActiveRace` only changes the pointer.
+  await setActiveRace(request, MM.slug, 'train')
+  await page.reload()
+  await expect(page.getByText(/vitals — load × recovery/i)).toBeVisible()
+  await expect(raceAction(page, archiveButton)).toBeVisible()
 
   expect(trouble.pageErrors).toEqual([])
 })

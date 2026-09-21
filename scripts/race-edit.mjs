@@ -754,7 +754,13 @@ export function validateStatusTransition(race, req, { unresolved = [], otherActi
   const missing = open.filter((p) => !acked.has(p));
   if (missing.length) {
     return fail([
-      `${missing.length} unresolved field${missing.length > 1 ? "s" : ""} — fill them in or acknowledge each one before activating:`,
+      // Both halves agree on the count: "1 unresolved field — fill THEM in
+      // or acknowledge EACH ONE" read as a sentence assembled by a machine,
+      // which is exactly what the athlete then distrusts about the rest of
+      // the refusal (browser check BUG 4).
+      missing.length === 1
+        ? "1 unresolved field — fill it in or acknowledge it before activating:"
+        : `${missing.length} unresolved fields — fill them in or acknowledge each one before activating:`,
       ...missing,
     ]);
   }

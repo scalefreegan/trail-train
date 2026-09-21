@@ -1,4 +1,4 @@
-import { test, expect, MM, openDashboard, openSwitcher, setActiveRace } from './basecamp'
+import { test, expect, MM, openDashboard, openSwitcher, raceAction, setActiveRace } from './basecamp'
 
 /**
  * Flow 10 — the tune-up quick form (PRD-v2 §3).
@@ -38,10 +38,11 @@ test('the quick form adds a tune-up inside the A race\'s block, with no agent tu
     if (r.method() === 'POST') posts.push(new URL(r.url()).pathname)
   })
 
-  const menu = await openSwitcher(page)
-  // Only the race being TRAINED for is offered this row — `canAddTuneUp` in
-  // App.tsx. A draft or an archive has no live block for a tune-up to sit in.
-  await menu.getByRole('menuitem', { name: /Add tune-up…/ }).click()
+  // Only the race being TRAINED for is offered this action — `canAddTuneUp`
+  // in App.tsx. A draft or an archive has no live block for a tune-up to sit
+  // in. It is on the topline strip now (RaceTopline), about the race loaded,
+  // rather than an indented row inside that race's menu block.
+  await raceAction(page, /Add tune-up…/).click()
 
   const dialog = page.getByRole('dialog', { name: 'add tune-up' })
   await expect(dialog).toBeVisible()

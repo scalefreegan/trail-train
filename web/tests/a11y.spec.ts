@@ -3,7 +3,8 @@ import path from 'node:path'
 
 import {
   test, expect, CREWLESS, DRAFT, MM,
-  openDashboard, openPrintable, openRaceTab, openRefreshFor, openReviewFor, openSwitcher, setActiveRace,
+  openDashboard, openPrintable, openRaceTab, openRefreshFor, openReviewFor, openSwitcher,
+  raceAction, raceActions, setActiveRace,
   type Page,
 } from './basecamp'
 
@@ -70,10 +71,12 @@ async function focusEdge(page: Page, edge: 'first' | 'last', focusable: string) 
  *
  * @param name the accessible name the dialog is expected to carry
  * @param restoresFocus whether the element that opened it still exists to
- *   receive focus back. A dialog opened from a switcher row cannot restore
+ *   receive focus back. A dialog opened from a switcher ROW cannot restore
  *   focus to it — the menu unmounts when the dialog opens, and a detached
- *   node's .focus() is a no-op — so only the dialogs opened from a button
- *   that stays on screen are held to it.
+ *   node's .focus() is a no-op. Since the per-race actions moved onto the
+ *   topline strip (App.tsx's RaceTopline), that is only "New race…": every
+ *   other dialog is now opened from a button that stays on screen behind the
+ *   overlay, and is held to focus restoration.
  */
 async function assertDialogContract(page: Page, name: string, { restoresFocus = false } = {}) {
   const dialog = page.getByRole('dialog', { name })
@@ -157,9 +160,10 @@ test.describe('dialog accessibility', () => {
   })
 
   test('the review dialog — the one that was left out of round 2', async ({ page, trouble }) => {
-    await openSwitcher(page)
     await openReviewFor(page, DRAFT.name)
-    await assertDialogContract(page, 'review · race')
+    // Opened from the topline strip's own button, which stays on screen —
+    // so this one is held to focus restoration now too.
+    await assertDialogContract(page, 'review · race', { restoresFocus: true })
     expect(trouble.pageErrors).toEqual([])
   })
 
@@ -174,30 +178,67 @@ test.describe('dialog accessibility', () => {
   })
 
   test('refresh from sources', async ({ page, trouble }) => {
-    await openSwitcher(page)
     await openRefreshFor(page, CREWLESS.name)
-    await assertDialogContract(page, `refresh from sources · ${CREWLESS.name}`)
+    await assertDialogContract(page, `refresh from sources · ${CREWLESS.name}`, { restoresFocus: true })
     expect(trouble.pageErrors).toEqual([])
   })
 
   test('archive with result', async ({ page, trouble }) => {
-    const menu = await openSwitcher(page)
     // Opened, walked and closed with Escape — never submitted. Archiving the
     // 100-miler would retire the race every other spec runs against.
-    await menu.getByRole('menuitem', { name: /Archive with result…/ }).click()
-    await assertDialogContract(page, 'archive with result')
+    await raceAction(page, /Archive with result…/).click()
+    await assertDialogContract(page, 'archive with result', { restoresFocus: true })
+    expect(trouble.pageErrors).toEqual([])
+  })
+
+  /**
+   * Browser check BUG 1 — the one flow the topline change is built around:
+   * Review… → acknowledge → SAVE EDITS → Escape back to the strip → Activate.
+   *
+   * SAVE EDITS disables itself the moment there are no pending edits left, and
+   * the browser drops focus from a disabled element to <body> silently. That
+   * put focus outside the dialog with nothing to put it back, and `useDialog`'s
+   * Escape lived on a React onKeyDown on the dialog element — so Escape became
+   * a no-op while the header still advertised "CLOSE ESC", the focus trap was
+   * gone, and one Tab re-entered the dialog landing on ACTIVATE.
+   *
+   * Pre-existing (dialogChrome.ts is untouched by the topline diff), but the
+   * strip's Review… button is now the primary way into this dialog.
+   */
+  test('Escape still closes the review dialog after a save has disabled the focused button', async ({ page, request, trouble }) => {
+    const dialog = await openReviewFor(page, MM.name)
+
+    await dialog.getByLabel('tracker bib').fill('7')
+    const save = dialog.getByRole('button', { name: /^save edits$/i })
+    await save.click()
+    await expect(save).toBeDisabled()
+
+    // The precondition the bug needs, asserted rather than assumed: the save
+    // button disabled itself out from under focus and the browser dropped
+    // focus to <body>, outside the dialog entirely.
+    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('BODY')
+
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    // …and focus comes back to the strip button that opened it, so the next
+    // Tab starts where the athlete left off rather than at the top of the page.
+    await expect(raceAction(page, /Review…/)).toBeFocused()
+
+    // Cleanup: this is the shared 100-miler fixture; race-day specs poll its
+    // tracker fields.
+    await request.put(`/api/races/${MM.slug}`, { data: { tracking: { url: null, bib: null, name: null } } })
+
     expect(trouble.pageErrors).toEqual([])
   })
 
   test('the tune-up quick form', async ({ page, trouble }) => {
-    const menu = await openSwitcher(page)
-    // Only the race being trained for carries this row, which is why the
+    // Only the race being trained for carries this action, which is why the
     // beforeEach above points at the 100-miler.
-    await menu.getByRole('menuitem', { name: /Add tune-up…/ }).click()
+    await raceAction(page, /Add tune-up…/).click()
     // Named through aria-labelledby (its header), not aria-label — the other
     // half of the contract `useDialog` offers, and the half nothing else here
     // exercises except the refresh dialog.
-    await assertDialogContract(page, 'add tune-up')
+    await assertDialogContract(page, 'add tune-up', { restoresFocus: true })
     expect(trouble.pageErrors).toEqual([])
   })
 })
@@ -213,6 +254,56 @@ test.describe('dialog accessibility', () => {
  * choice of automatic activation — Home/End too), and aria-controls naming
  * a real, currently-rendered tabpanel.
  */
+/**
+ * Browser check BUG 5 — the strip's action hints were `title`-only.
+ *
+ * In the switcher these same strings were VISIBLE, as each row's second line.
+ * `title` shows on mouse hover and nowhere else: not on the phone the change
+ * is partly justified by ("twenty rows to scroll past"), and not to a screen
+ * reader. It matters most for the cost signal — "· paid" is in a label, but
+ * the reassurance that the others are "free, no agent turn" had no other way
+ * to reach anyone.
+ */
+test.describe('topline action hints', () => {
+  test.beforeEach(async ({ request }) => {
+    await setActiveRace(request, MM.slug, 'train')
+  })
+
+  test('every action button carries its hint as a description, not just a title', async ({ page, trouble }) => {
+    await openDashboard(page)
+    const buttons = raceActions(page).getByRole('button')
+    await expect(buttons.first()).toBeVisible()
+
+    const n = await buttons.count()
+    expect(n, 'the active race should offer actions to describe').toBeGreaterThan(0)
+    for (let i = 0; i < n; i++) {
+      const button = buttons.nth(i)
+      const label = (await button.innerText()).trim()
+      const title = await button.getAttribute('title')
+      expect(title, `"${label}" lost its title`).toBeTruthy()
+
+      // The description a screen reader actually announces, resolved through
+      // aria-describedby to a real element with the same text.
+      const describedBy = await button.getAttribute('aria-describedby')
+      expect(describedBy, `"${label}" has no aria-describedby`).toBeTruthy()
+      // `CSS.escape` is a browser global, not a Node one, and useId's ids
+      // contain colons — so resolve the reference in the page, the way the
+      // accessibility tree does.
+      const describedText = await page.evaluate(
+        (id) => document.getElementById(id)?.textContent ?? null,
+        describedBy!,
+      )
+      expect(describedText, `"${label}"'s aria-describedby points at nothing`).not.toBeNull()
+      expect(describedText!.trim(), `"${label}"'s description does not match its title`).toBe(title!.trim())
+    }
+
+    // The free/paid distinction specifically — the thing title-only hid.
+    await expect(raceAction(page, /Add tune-up…/)).toHaveAttribute('title', /free, no agent turn/i)
+
+    expect(trouble.pageErrors).toEqual([])
+  })
+})
+
 test.describe('view tablist', () => {
   test.beforeEach(async ({ request }) => {
     // A race active throughout: "race" and "fuel" only exist with one.

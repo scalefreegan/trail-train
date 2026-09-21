@@ -152,6 +152,42 @@ export function useDialog({ onClose, locked, label }: {
     return () => { document.body.style.overflow = prevOverflow; };
   }, []);
 
+  /**
+   * Escape and the trap, at DOCUMENT level too — for when focus is not in the
+   * dialog any more and nobody moved it.
+   *
+   * `onKeyDown` below is a React handler on the dialog element, so it only
+   * fires while focus is inside. Focus can leave on its own: setting
+   * `disabled` on the element that currently has it drops focus to <body>,
+   * silently, with no focusout a trap could react to. "SAVE EDITS" does
+   * exactly that — it disables itself once there are no pending edits left —
+   * and after it, Escape was dead (the dialog's own header still said
+   * "CLOSE ESC"), the trap was gone, and a single Tab re-entered the dialog
+   * on ACTIVATE, putting an accidental activation two keystrokes from a
+   * keyboard user who thought they had closed the thing.
+   *
+   * This handler only acts when focus is OUTSIDE the dialog; while it is
+   * inside, the React handler owns the keys as before. Tab from outside pulls
+   * focus back to the dialog's own first (or last, shifted) control rather
+   * than letting it walk into the page behind a modal overlay.
+   */
+  useEffect(() => {
+    const onDocKeyDown = (e: globalThis.KeyboardEvent) => {
+      const el = dialogRef.current;
+      if (!el || el.contains(document.activeElement)) return;
+      if (e.key === "Escape") {
+        if (!locked) { e.preventDefault(); onClose(); }
+        return;
+      }
+      if (e.key !== "Tab") return;
+      e.preventDefault();
+      const nodes = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((n) => n.offsetParent !== null);
+      (nodes[e.shiftKey ? nodes.length - 1 : 0] ?? el).focus();
+    };
+    document.addEventListener("keydown", onDocKeyDown);
+    return () => document.removeEventListener("keydown", onDocKeyDown);
+  }, [locked, onClose]);
+
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
       if (!locked) onClose();

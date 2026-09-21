@@ -184,6 +184,42 @@ move out. Version bump to 3 with a migration that writes them into the MM100 fol
 **Race switcher** (command bar, on the short code): active race, drafts, archived, "No race"
 (generic), and "New race…". Switching writes the pointer and triggers a full snapshot reload.
 
+> **Deviation (2026-09-20, owner request).** The switcher briefly grew a set of indented
+> action rows under each race — "↳ Review…", "↳ Refresh from sources…", "↳ Run course
+> again…", "↳ Add tune-up…" — plus an "Archive with result…" row in its footer. With six
+> race folders that is up to twenty rows to scroll past on a phone, and the loaded race's
+> own actions look exactly like five other races'. Those actions now live on the **topline
+> status strip** under the command bar (`RaceTopline` in `web/src/App.tsx`), about the one
+> race that is loaded, on every tab. The menu is back to races (tune-ups indented under
+> their A race) plus "New race…"; race-day mode keeps its own screen.
+>
+> The eligibility predicates are unchanged — `isReviewable`, `isRefreshable`,
+> `isRerunnable`, `canAddTuneUp` — just asked about the folder on screen instead of about
+> every folder in the list. Two things did change:
+>
+> - **A draft gains an "Activate" button.** It drives the review screen's own activation
+>   path (status flip, then pointer) with no edits in front of it, and shows the server's
+>   refusal — the unresolved-fields gate, the single-active invariant, the missing-sun block
+>   — inline in the strip. Activate on the review screen is unchanged.
+> - **The archive action is now about the loaded race too.** As a menu FOOTER row it was a
+>   question about the whole list ("the race being trained for, or the archived race on
+>   screen with no activity linked"), which on a strip about the loaded race reads as an
+>   action belonging to a folder that is not on screen. So: "Archive with result…" only when
+>   the loaded race is the active A race, "Link result…" only when the loaded race is
+>   archived with no `strava_activity_id`, and nothing archive-shaped on a draft, a tune-up,
+>   or an archived race whose run is already linked. Both guards are kept — the folder's own
+>   `status` rather than the view-mode-null `trainingSlug`, and `kind !== "b"` — so the
+>   active race browsed read-only still offers it, and a hand-edited `kind:"b"` +
+>   `status:"active"` folder still offers nothing (ui3-resilience BUG 1).
+>
+> A tune-up — nested or orphaned — now offers nothing at all, exactly as its menu row
+> carried no action rows; its course still rebuilds from the panel's own "run course build"
+> empty state.
+>
+> In train mode the strip is new: it used to render only while browsing a race you are not
+> training for, and now says "active · training target" so the actions have somewhere to
+> live. Per-state coverage is `web/tests/topline.spec.ts`.
+
 **Config-driven panels.** `features` and `visual.panels` gate: crew sheet and crew column,
 drop-bag card, pacer flags, night bands, heat bands, climb comparison, model check. A crewless
 50k renders a race view with only the planner, runner card, and fuel card.
