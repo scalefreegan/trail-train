@@ -12,6 +12,8 @@ web/test-results/
 web/playwright-report/
 web/blob-report/
 web/.playwright/
+# Console logs the Playwright MCP browser tool writes into the repo root.
+.playwright-mcp/
 
 # Local caches — Strava altitude streams fetched by `npm run sync:streams`.
 .cache/
