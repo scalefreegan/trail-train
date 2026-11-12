@@ -1,4 +1,4 @@
-# Basecamp (née Trail Almanac)
+# Basecamp (née Trail Train)
 
 ![Basecamp demo (blurred to hide personal data)](docs/demo.gif)
 
