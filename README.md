@@ -1,5 +1,7 @@
 # Basecamp (née Trail Almanac)
 
+![Basecamp demo (blurred to hide personal data)](docs/demo.gif)
+
 A personal, local-hosted React dashboard for ultra training. Pulls live data
 from Strava and Oura, plots it against a configurable training block, and
 delegates coaching to a headless Claude Code agent that has read access to
@@ -754,5 +756,5 @@ git.
 
 ## Tech
 
-React 19 · Vite · TypeScript · Motion · headless `claude -p`. Fraunces +
-Instrument Sans + JetBrains Mono. ~2.6k LOC `App.tsx`.
+React 19 · Vite · TypeScript · Motion · headless `claude -p`. Bricolage
+Grotesque + Archivo + Spline Sans Mono.
