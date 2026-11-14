@@ -1,52 +1,47 @@
-# Basecamp (née Trail Train)
+<h1 align="center">Basecamp</h1>
 
-![Basecamp demo (blurred to hide personal data)](docs/demo.gif)
+<p align="center"><b>A local ultra-training dashboard that plots your Strava and Oura data against a race plan.</b></p>
+<p align="center">A headless Claude Code agent reads every snapshot and acts as your coach. Formerly <i>Trail Train</i>.</p>
 
-A personal, local-hosted React dashboard for ultra training. Pulls live data
-from Strava and Oura, plots it against a configurable training block, and
-delegates coaching to a headless Claude Code agent that has read access to
-every snapshot.
+<p align="center">
+  <img src="https://img.shields.io/badge/React-19-61dafb?style=flat-square" alt="React 19">
+  <img src="https://img.shields.io/badge/TypeScript-Vite-3178c6?style=flat-square" alt="TypeScript, Vite">
+  <img src="https://img.shields.io/badge/Node-%E2%89%A522.18-339933?style=flat-square" alt="Node 22.18+">
+  <img src="https://img.shields.io/badge/coach-Claude%20Code-d97757?style=flat-square" alt="Coach: Claude Code">
+  <img src="https://img.shields.io/badge/status-personal%20project-lightgrey?style=flat-square" alt="Personal project">
+</p>
 
-A **race is a folder**, not a hard-coded assumption. Everything race-specific
-— name, date, timezone, aid chart, cutoffs, climbs, crew rules, fueling —
-lives in `races/<slug>/`, and `config/active-race.json` points at the one in
-play. Point it somewhere else and the whole app follows: countdown, course
-profile, pacing model, crew sheet, fuel plan, coach prompts.
+<p align="center">
+  <img src="docs/hero.png" alt="Basecamp: a training dashboard with a course elevation profile, load and recovery sparklines, and a coach panel" width="800">
+  <br>
+  <sub><i>Strava and Oura on one pre-dawn dashboard, measured against the race plan.</i></sub>
+</p>
+<!-- TODO: generate docs/hero.png from docs/hero-image-prompt.md -->
 
-With no active race the app runs in **generic mode**: the race panels hide and
-training is driven by `config/goals.json` (event class, horizon, phase, volume
-band) on a rolling block instead of a fixed countdown. Finished races are
-archived in place and stay readable.
+## Features
 
-## What's in it
+- **Local and personal.** Runs on your laptop; your Strava and Oura snapshots and OAuth tokens never enter git.
+- **A race is a folder.** Everything race-specific (name, date, timezone, aid chart, cutoffs, climbs, crew rules, fueling) lives in `races/<slug>/`. `config/active-race.json` points at the one in play, and the countdown, course profile, pacing model, crew sheet, fuel plan and coach prompts all follow it.
+- **Generic mode.** With no active race the race panels hide and training is driven by `config/goals.json` (event class, horizon, phase, volume band) instead of a fixed countdown. Finished races are archived in place and stay readable.
+- **Live data.** Strava, Oura and Google Calendar sync, with a one-click resync that streams progress.
+- **Headless Claude coach.** Deterministic flags plus a structured readout and chat from `claude -p` on your existing subscription, with no API key.
+- **Race-week tooling.** Pacing with an altitude and acclimation model, fuel plan, tune-up (B) races, a phone race-day view with live tracking, and an offline single-file crew page.
 
-A single integrated ops surface — pre-dawn "basecamp" dark theme, headlamp
-amber accent — instead of a sectioned scroll:
+## How it works
 
-- **Command bar** — block week, race countdown, streaming resync status, and
-  the imperial/metric toggle, always pinned on top.
-- **Race ribbon** — countdown plus the course elevation profile with aid
-  stations, compressed into one band. Hidden in generic mode.
-- **Vitals** — load and recovery in one grammar: 7d distance/vert, ACR,
-  block-vs-plan, readiness, HRV, RHR, sleep — each with a 30-day sparkline
-  and trend delta, plus last night's sleep stages inline.
-- **Trajectory** — the cumulative actual-vs-plan chart for the block with
-  projection, expected/actual/delta stats embedded in the panel.
-- **The road ahead** — next 14 calendar days (Google Calendar, classified)
-  fused with the agent's next-6-weeks `plan_blocks` and key sessions.
-- **The log** — every Strava run, clickable, paginated. A second **other**
-  tab lists non-run activities (rides, hikes, strength, …) — visible to you
-  and the coach agent, but never counted in vitals, trajectory, or pacing,
-  which stay runs-only.
-- **The coach** — a persistent sticky rail: deterministic flags
-  (acute:chronic load, HRV trend, RHR drift, sleep debt, block delta), the
-  structured readout from a headless `claude -p` session, and the chat —
-  visible alongside everything as you scroll.
+A single integrated ops surface (pre-dawn dark theme, headlamp-amber accent) rather than a sectioned scroll:
 
-Imperial / metric toggle (persisted), one-click resync that streams
-progress; set in Bricolage Grotesque, Archivo, and Spline Sans Mono.
+- **Command bar**: block week, race countdown, streaming resync status and the imperial/metric toggle, pinned on top.
+- **Race ribbon**: countdown plus the course elevation profile with aid stations. Hidden in generic mode.
+- **Vitals**: 7d distance/vert, acute:chronic load, block-vs-plan, readiness, HRV, RHR and sleep, each with a 30-day sparkline and trend delta, plus last night's sleep stages.
+- **Trajectory**: cumulative actual-vs-plan chart for the block, with projection.
+- **The road ahead**: next 14 calendar days (Google Calendar, classified) fused with the agent's next-6-weeks `plan_blocks` and key sessions.
+- **The log**: every Strava run, clickable and paginated. An **other** tab lists non-run activities, visible to you and the coach but never counted in vitals, trajectory or pacing.
+- **The coach**: a sticky rail with deterministic flags (acute:chronic load, HRV trend, RHR drift, sleep debt, block delta), the readout from a headless `claude -p` session, and the chat.
 
-## Setup
+Data flows in through `npm run sync:*` scripts that write snapshots to `web/public/`; `npm run coach` computes facts from them and prompts Claude with the full context. Set in Bricolage Grotesque, Archivo and Spline Sans Mono.
+
+## Get started
 
 ```bash
 cd web
@@ -455,6 +450,8 @@ Leave them out and the plan still builds, against impersonal defaults (75 kg,
 20 mi) it tells you it is using. Race-week lodging and emergency numbers are
 NOT here — they live in `races/<slug>/crew.private.json`.
 
+## Data sources
+
 The dashboard initially shows empty states. Connect each data source:
 
 ### Strava
@@ -526,6 +523,8 @@ work blocks, appointments. Setup mirrors Oura's OAuth dance:
 Events are classified locally (race / travel / appointment / training /
 work / other) and the upcoming 14 days are surfaced to the agent so it
 won't propose a key session on a day you're flying.
+
+## The coach
 
 ### Claude coach (headless agent)
 
@@ -756,5 +755,4 @@ git.
 
 ## Tech
 
-React 19 · Vite · TypeScript · Motion · headless `claude -p`. Bricolage
-Grotesque + Archivo + Spline Sans Mono.
+React 19 · Vite · TypeScript · Motion · headless `claude -p`.
