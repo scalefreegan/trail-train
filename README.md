@@ -243,15 +243,16 @@ whose block it sits inside.
   weeks, so a block planned from Durango reads the same on a laptop anywhere.
   Negative means the tune-up now falls *after* race day, which the coach
   should see rather than have hidden.
-- **Where it shows up.** The race switcher groups tune-ups under their A race
-  with an *Add tune-up…* row; the trajectory chart marks each one; the
+- **Where it shows up.** The race switcher groups tune-ups under their A race;
+  *Add tune-up…* is an action on the topline strip while the A race is loaded;
+  the trajectory chart marks each one; the
   dashboard payload and the coach's facts both carry `b_races[]` from the same
   helper, so the menu, the chart and the prompt cannot describe different
   races. Opening one gives a reduced planner — station table if it has a
   course, ETAs and a goal — with crew, drop bags, pacers and night defaulted
   off.
 
-The quick form (*Add tune-up…*) is `POST /api/races`: name, date, distance,
+The quick form (*Add tune-up…* on the topline strip) is `POST /api/races`: name, date, distance,
 gain and an optional GPX. It derives the slug, validates the folder and builds
 the course if a GPX came with it. No agent turn is involved — "run intake" is
 still there for a race worth researching properly.
@@ -363,6 +364,13 @@ npx playwright test -c tests/playwright.config.ts print.spec  # one file
 | `widths.spec.ts` | 320 / 390 / 768 / 1024 / 1280, four views, no sideways scroll |
 | `b-race.spec.ts` | the tune-up quick form, and no agent turn behind it |
 | `chat.spec.ts` | a coach turn, and the race state the browser sends with it |
+| `topline.spec.ts` | the per-race action strip under the command bar, state by state |
+| `add-tuneup-reentry.spec.ts` | the tune-up form's double-submit guard |
+| `tuneup-fixes.spec.ts` | tune-up regressions found in review |
+| `course-availability.spec.ts` | a tune-up with no GPX: no failed course fetch, no console noise |
+| `network-message.spec.ts` | an unreachable dev server is reported as such, not as a corrupt race config |
+| `settings-lock.spec.ts` | concurrent `PUT /api/settings` calls don't lose an edit |
+| `launch-retry.spec.ts` | the test launcher's port-collision retry |
 
 Two of them are worth knowing about before you read them.
 
@@ -406,6 +414,9 @@ that possible, and both are inert when unset:
   independently: set, it answers with the file's text through the same SSE
   path, and nothing is spawned. Global setup sets it for the whole run, so no
   test can reach a real spawn even by accident.
+- **`TRAIL_FAKE_SYNC=1`** — `/api/refresh` skips the Strava, Oura and Google
+  Calendar sync steps, so a test can never hit a real account. The launcher sets
+  it unconditionally and refuses to start vite without it.
 - **`TRAIL_CREW_SHELL=<file>`** — the prebuilt single-file crew shell the crew
   export renders into, instead of running `vite build` per request. The suite
   builds it once from the checkout's `web/` (~25 ms) and passes it down, since
@@ -465,7 +476,10 @@ npm run sync:strava
 ```
 
 Writes `web/public/strava.json` (runs) and `web/public/cross-train.json`
-(everything else) for the dashboard to read. Only runs feed the metrics;
+(everything else) for the dashboard to read. A second sync,
+`npm run sync:streams`, fetches and caches altitude streams for recent runs
+and writes `web/public/climbs.json`, which feeds the race view's
+training-climbs-vs-race comparison. Only runs feed the metrics;
 non-run activities surface in the log's "other" tab and in the coach
 agent's context.
 
@@ -596,14 +610,14 @@ profile in `race.json`. Skip with `--no-weather` if you ever need to.
 
 ## Live resync
 
-The masthead **resync all** button POSTs to `/api/refresh`, which runs all
-three scripts sequentially and streams progress via SSE. The chat input in
+The masthead **resync all** button POSTs to `/api/refresh`, which runs the
+sync scripts sequentially and streams progress via SSE. The chat input in
 § IV / The Coach hits `/api/chat`, which spawns a fresh `claude -p` for each
 turn with the full conversation history + the latest snapshots in scope.
 Both endpoints are dev-only Vite middleware.
 
 ```bash
-npm run sync:all     # strava + oura
+npm run sync:all     # strava + oura + google calendar
 npm run coach        # regenerate readout + plan
 ```
 
@@ -714,13 +728,10 @@ Anything that's *not* in git lives only on your laptop and would be lost if it
 dies. Three layers of safety:
 
 **1. Tagged clean release on the remote.** `v0.1.0-rc.1` is an annotated tag
-at the first scrubbed snapshot, and `backup/<date>-clean` is an immutable
-branch at the same SHA. Both live on `origin` — pull them back any time:
+at the first scrubbed snapshot, and it lives on `origin` — pull it back any time:
 ```bash
 git fetch --tags
 git checkout v0.1.0-rc.1
-# or
-git checkout -b restore origin/backup/2026-05-27-clean
 ```
 
 **2. Local snapshot backups.** One command copies your personal data
