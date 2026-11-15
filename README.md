@@ -1,30 +1,54 @@
-<h1 align="center">Basecamp</h1>
-
-<p align="center"><b>A local ultra-training dashboard that plots your Strava and Oura data against a race plan.</b></p>
-<p align="center">A headless Claude Code agent reads every snapshot and acts as your coach. Formerly <i>Trail Train</i>.</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/React-19-61dafb?style=flat-square" alt="React 19">
-  <img src="https://img.shields.io/badge/TypeScript-Vite-3178c6?style=flat-square" alt="TypeScript, Vite">
-  <img src="https://img.shields.io/badge/Node-%E2%89%A522.18-339933?style=flat-square" alt="Node 22.18+">
-  <img src="https://img.shields.io/badge/coach-Claude%20Code-d97757?style=flat-square" alt="Coach: Claude Code">
-  <img src="https://img.shields.io/badge/status-personal%20project-lightgrey?style=flat-square" alt="Personal project">
-</p>
-
-<p align="center">
-  <img src="docs/hero.png" alt="Basecamp: a training dashboard with a course elevation profile, load and recovery sparklines, and a coach panel" width="800">
-  <br>
-  <sub><i>Strava and Oura on one pre-dawn dashboard, measured against the race plan.</i></sub>
-</p>
-
 ## Features
 
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/race-view.png" alt="The race ribbon with the course elevation profile above eight load and recovery vitals" width="100%">
+      <br><sub><i>Race countdown, course profile and vitals.</i></sub>
+      <h3>A race is a folder</h3>
+      <p>Everything race-specific (name, date, aid chart, cutoffs, climbs, crew rules, fueling) lives in <code>races/&lt;slug&gt;/</code>, and the countdown, course profile and coach prompts follow it. Vitals show load and recovery from Strava and Oura, each with a 30-day sparkline.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/trajectory.png" alt="Cumulative distance, actual against plan, over a 12-week block" width="100%">
+      <br><sub><i>Cumulative distance across the block, actual against plan.</i></sub>
+      <h3>Actual vs plan</h3>
+      <p>Expected, actual, delta and projected-this-week sit above a cumulative chart of the block, switchable between distance and vert and between cumulative and weekly.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/race-planner.png" alt="The race planner with best, expected and worst finish times over the elevation and pace profile" width="100%">
+      <br><sub><i>Best, expected and worst finish over the course.</i></sub>
+      <h3>Race-week pacing</h3>
+      <p>A pacing model with an altitude and acclimation curve projects best, expected and worst ETAs for every aid station, with knobs for fatigue, hold-back, stops and a goal time.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/crew-sheet.png" alt="The printer-friendly crew sheet with a station table of ETAs, cutoffs and access" width="100%">
+      <br><sub><i>The crew sheet: ETAs, cutoffs and access for every station.</i></sub>
+      <h3>Crew page</h3>
+      <p>A light, printer-friendly handout with ETAs, cutoffs, stops, access, drive times and GPS for each aid station. The planner also exports an offline single-file crew page.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/coach.png" alt="The coach rail with computed flags and a short chat exchange" width="100%">
+      <br><sub><i>The coach rail, mid-conversation.</i></sub>
+      <h3>Headless Claude coach</h3>
+      <p>Deterministic flags, a structured readout and chat come from <code>claude -p</code> on your existing subscription, with no API key. The coach sees the same snapshots as the dashboard.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/race-day-phone.png" alt="The phone race-day view showing the next station, ETA range and pick-up list" width="100%">
+      <br><sub><i>Race day on a phone.</i></sub>
+      <h3>Race day on your phone</h3>
+      <p>A phone view at <code>#/race-day</code> shows the next station, best, expected and worst ETAs, what to pick up, and the stations after it.</p>
+    </td>
+  </tr>
+</table>
+
 - **Local and personal.** Runs on your laptop; your Strava and Oura snapshots and OAuth tokens never enter git.
-- **A race is a folder.** Everything race-specific (name, date, timezone, aid chart, cutoffs, climbs, crew rules, fueling) lives in `races/<slug>/`. `config/active-race.json` points at the one in play, and the countdown, course profile, pacing model, crew sheet, fuel plan and coach prompts all follow it.
 - **Generic mode.** With no active race the race panels hide and training is driven by `config/goals.json` (event class, horizon, phase, volume band) instead of a fixed countdown. Finished races are archived in place and stay readable.
 - **Live data.** Strava, Oura and Google Calendar sync, with a one-click resync that streams progress.
-- **Headless Claude coach.** Deterministic flags plus a structured readout and chat from `claude -p` on your existing subscription, with no API key.
-- **Race-week tooling.** Pacing with an altitude and acclimation model, fuel plan, tune-up (B) races, a phone race-day view with live tracking, and an offline single-file crew page.
+- **Race-week tooling.** Fuel plan, tune-up (B) races and live tracking alongside the pacing, crew and phone views above.
 
 ## How it works
 
