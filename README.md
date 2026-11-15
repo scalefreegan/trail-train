@@ -16,7 +16,6 @@
   <br>
   <sub><i>Strava and Oura on one pre-dawn dashboard, measured against the race plan.</i></sub>
 </p>
-<!-- TODO: generate docs/hero.png from docs/hero-image-prompt.md -->
 
 ## Features
 
