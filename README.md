@@ -809,3 +809,7 @@ git.
 ## Tech
 
 React 19 · Vite · TypeScript · Motion · headless `claude -p`.
+
+## License
+
+[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). You may use, change and share Basecamp, but if you distribute it or run a changed version as a network service, you must offer its users the complete source under the same license.
