@@ -1,3 +1,22 @@
+<h1 align="center">Basecamp</h1>
+
+<p align="center"><b>A local ultra-training dashboard that plots your Strava and Oura data against a race plan.</b></p>
+<p align="center">A headless Claude Code agent reads every snapshot and acts as your coach. Formerly <i>Trail Train</i>.</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/React-19-61dafb?style=flat-square" alt="React 19">
+  <img src="https://img.shields.io/badge/TypeScript-Vite-3178c6?style=flat-square" alt="TypeScript, Vite">
+  <img src="https://img.shields.io/badge/Node-%E2%89%A522.18-339933?style=flat-square" alt="Node 22.18+">
+  <img src="https://img.shields.io/badge/coach-Claude%20Code-d97757?style=flat-square" alt="Coach: Claude Code">
+  <img src="https://img.shields.io/badge/status-personal%20project-lightgrey?style=flat-square" alt="Personal project">
+</p>
+
+<p align="center">
+  <img src="docs/hero.png" alt="Basecamp: a training dashboard with a course elevation profile, load and recovery sparklines, and a coach panel" width="800">
+  <br>
+  <sub><i>Strava and Oura on one pre-dawn dashboard, measured against the race plan.</i></sub>
+</p>
+
 ## Features
 
 <table>
