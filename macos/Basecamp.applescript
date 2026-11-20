@@ -16,6 +16,8 @@
 -- faceless Cocoa applet that can actually receive the one-time Documents
 -- prompt and stays alive exactly as long as the server does. This applet is
 -- the Dock face: Quit pkills vite, which unwinds npm → helper.
+-- A fresh launch restarts the server (stopExistingServer), so opening the
+-- app always runs the checkout's current code.
 --
 -- The server runs on the FIXED port below (strictPort in vite.config.ts), so
 -- health checks and the dashboard URL are deterministic.
@@ -27,7 +29,11 @@ property dashUrl : "http://localhost:38100"
 -- clone of this repo elsewhere, or an editor whose argv held the path. The
 -- vite process argv carries this absolute path. (It still, by design, stops a
 -- server for THIS repo you started by hand — one repo, one server.)
-property killPattern : "/Users/brooks/Documents/git/trail-train/web/node_modules/.bin/vite"
+-- ($| --) anchors the end: still matches a vite launched with arguments
+-- (--host), while excluding `vite build` / `vite preview` (their first arg is
+-- a subcommand), and the pattern no longer matches its own text in the
+-- `sh -c "pgrep -f ..."` line that stopExistingServer's check runs.
+property killPattern : "/Users/brooks/Documents/git/trail-train/web/node_modules/.bin/vite($| --)"
 property wasUp : false
 
 on serverUp()
@@ -58,6 +64,20 @@ on startServer()
 	end repeat
 end startServer
 
+-- A test or automation Chrome (the Playwright MCP's, with its profile under
+-- ~/Library/Caches/ms-playwright*, or anything started with a remote-debugging
+-- flag) is also "Google Chrome" to AppleScript, and a tell can land in it: a
+-- tab there has no real microphone or speakers. While one is running, Chrome
+-- isn't scripted at all.
+on testChromeRunning()
+	try
+		do shell script "pgrep -f " & quoted form of "Google Chrome.*(ms-playwright|--remote-debugging-p(ipe|ort))"
+		return true
+	on error
+		return false
+	end try
+end testChromeRunning
+
 on openDashboard()
 	-- Prefer focusing a tab already on this app over opening a new one: plain
 	-- `open` hands off to the default browser (Chrome), which always makes a
@@ -68,6 +88,14 @@ on openDashboard()
 	-- Security > Automation).
 	-- handled: true once Chrome has focused or opened a tab, so an error
 	-- after that point never falls back into a second, duplicate tab
+	if testChromeRunning() then
+		-- Hand the URL to the user's own Chrome: a new instance on the default
+		-- profile passes it to the running one (Chrome's per-profile
+		-- singleton) and exits, or becomes the user's Chrome if none is up.
+		-- Always a new tab, but never one in the test browser.
+		do shell script "open -n -a 'Google Chrome' --args " & quoted form of dashUrl
+		return
+	end if
 	set handled to false
 	try
 		tell application "Google Chrome"
@@ -133,7 +161,50 @@ on openDashboard()
 	if not handled then do shell script "open " & quoted form of dashUrl
 end openDashboard
 
+-- A fresh launch (the icon clicked while the Dock app isn't running) means
+-- "give me the app as it is now", so a server already on the port from
+-- this checkout is stopped first and a new one started: otherwise a
+-- server left running for days (a manual `npm run dev`, or one that outlived
+-- its Dock icon) keeps serving whatever it loaded, and quitting and
+-- reopening the app changes nothing. Only a server matching killPattern
+-- (this checkout's vite) is stopped: a worktree's server, or a stranger on
+-- the port, is never touched. A click while the app is running (reopen)
+-- still just focuses the tab.
+on stopExistingServer()
+	try
+		do shell script "pgrep -f " & quoted form of killPattern
+	on error
+		return -- none of ours running
+	end try
+	try
+		do shell script "echo " & quoted form of ("[launcher] fresh launch: stopping the running server " & (current date)) & " >> ~/Library/Logs/Basecamp.log"
+	end try
+	try
+		do shell script "pkill -f " & quoted form of killPattern
+	end try
+	-- wait for it to let go of the port (TERM first, KILL after 10 s)
+	repeat with i from 1 to 30
+		if not portBound() then return
+		if i = 20 then
+			try
+				do shell script "pkill -9 -f " & quoted form of killPattern
+			end try
+		end if
+		delay 0.5
+	end repeat
+end stopExistingServer
+
+on portBound()
+	try
+		do shell script "lsof -nP -iTCP:38100 -sTCP:LISTEN -t"
+		return true
+	on error
+		return false
+	end try
+end portBound
+
 on run
+	stopExistingServer()
 	if not serverUp() then
 		startServer()
 		if serverUp() then
