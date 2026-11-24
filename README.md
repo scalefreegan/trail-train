@@ -692,6 +692,30 @@ course profile this phone loaded, labelled as such; that cache is
 `localStorage`, **not** a service worker, so the *first* load of the day
 still needs the server reachable.
 
+### On your tailnet
+
+For standing access from your own devices, away from home included, serve
+the dashboard to your private tailnet with Tailscale instead of `--host`.
+The server stays on loopback; `tailscale serve` terminates HTTPS and proxies
+to it:
+
+```bash
+tailscale serve --bg --https=38100 http://localhost:38100
+```
+
+Then name that exact origin in `TRAIL_TAILNET_ORIGINS`, in the shell or in
+the gitignored repo-root `.env.local` (which is what Basecamp.app's server
+sees), and restart the server:
+
+```bash
+TRAIL_TAILNET_ORIGINS=https://<mac>.<tailnet>.ts.net:38100
+```
+
+Same rules as `TRAIL_ALLOWED_ORIGINS`: comma-separated exact origins, no
+wildcard, read at startup. There is still no auth, so every device on your
+tailnet can drive the dashboard; do not use `tailscale funnel`, which would
+put it on the public internet.
+
 ### Live tracking and the manual checkpoint
 
 Race day can follow the timing company instead of the clock. Put the race's
