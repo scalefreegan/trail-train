@@ -74,6 +74,11 @@ function stationFlags(s: StationProjection["station"], cols: VisibleColumns) {
 
 const H = 320;
 const PAD = { top: 56, right: 16, bottom: 26, left: 46 };
+/* below this measured chart width, a dozen-plus aid-station name labels packed
+   onto the x axis start overlapping each other illegibly (a phone's ~360px
+   chart vs. desktop's 800px+) — the station table beneath the chart
+   already prints every name, so the chart itself drops to dots-only. */
+const STATION_LABEL_MIN_WIDTH = 480;
 /* pace trace strip below the profile — same x-axis, own y-scale
    (faster at the top, Strava-style; slower dips down) */
 const PACE_TOP = H + 6;
@@ -214,10 +219,19 @@ function ProfileChart({ course, proj, night }: {
               <line x1={xAt(p.mi)} x2={xAt(p.mi)} y1={labelY + 3} y2={yAt(p.ele_ft)} stroke="var(--edge-bright)" strokeWidth="1" strokeDasharray="1 3" />
               <circle cx={xAt(p.mi)} cy={yAt(p.ele_ft)} r="2.6"
                 fill="var(--night)" strokeWidth="1.4"
-                stroke={s.crew || s.crew_only ? "var(--pine)" : s.water_only ? "var(--creek)" : "var(--mist-dim)"} />
-              <text x={xAt(p.mi) + 4} y={labelY} fill="var(--mist-dim)" style={{ font: "8.5px var(--font-mono)", letterSpacing: "0.06em" }}>
-                {s.name.toLowerCase()}
-              </text>
+                stroke={s.crew || s.crew_only ? "var(--pine)" : s.water_only ? "var(--creek)" : "var(--mist-dim)"}>
+                {/* a phone-width chart hides the printed name below (not
+                    enough x-resolution for a dozen names in ~320px without
+                    overlapping) — the station table underneath has every
+                    name already. The <title> is a hover tooltip only, so
+                    it helps a narrow desktop window, not a touch screen. */}
+                {width < STATION_LABEL_MIN_WIDTH && <title>{s.name}</title>}
+              </circle>
+              {width >= STATION_LABEL_MIN_WIDTH && (
+                <text x={xAt(p.mi) + 4} y={labelY} fill="var(--mist-dim)" style={{ font: "8.5px var(--font-mono)", letterSpacing: "0.06em" }}>
+                  {s.name.toLowerCase()}
+                </text>
+              )}
               {/* cutoff tick on the baseline */}
               {s.cutoff_h != null && (
                 <rect
@@ -1112,7 +1126,14 @@ export function RacePlanner() {
                   : "sun unknown — run the course build after setting the date"}
               </span>
             </div>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+            {/* flexWrap + maxWidth: this cluster is 4-5 print/export buttons
+                with whiteSpace:nowrap labels. flexShrink:0 alone (its old
+                value) kept them on one unbreakable row that overflowed the
+                panel on a phone — up to 428px past the right edge — which
+                also stretched .race-table's shared scroll container, forcing
+                the station rows below to scroll sideways to match. Wrapping
+                here keeps that overflow local to this row. */}
+            <span style={{ display: "inline-flex", flexWrap: "wrap", alignItems: "center", gap: 10, maxWidth: "100%" }}>
               {Object.keys(stopOverrides).length > 0 && (
                 <button className="chip" style={{ fontSize: 8 }} onClick={clearStopOverrides}>
                   reset {Object.keys(stopOverrides).length} custom stop{Object.keys(stopOverrides).length > 1 ? "s" : ""}

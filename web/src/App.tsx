@@ -2275,7 +2275,8 @@ function Trajectory() {
     <section>
       <SectionTag
         right={hasTargets ? (
-          // SectionTag's own row is a non-wrapping flex (atoms.tsx) — at
+          // SectionTag's own row is a non-wrapping flex above 600px, and was
+          // at every width when this was written (atoms.tsx) — at
           // 320/390 the title plus four un-shrinkable chip buttons in one
           // line ran the document 417px wide. flexWrap here lets the two
           // button groups drop to a second line (or scroll if they still
@@ -2743,32 +2744,30 @@ function RoadAhead() {
           return (
             <motion.div
               key={w.wk}
+              className="plan-week-row"
               initial={{ opacity: 0, x: -8 }} whileInView={{ opacity: 1, x: 0 }} viewport={{ once: true }}
               transition={{ duration: 0.35, delay: i * 0.05 }}
               style={{
-                display: "grid",
-                gridTemplateColumns: "70px minmax(0,1.2fr) minmax(0,1fr) 120px",
-                gap: 16,
                 alignItems: "center",
                 padding: "13px 18px",
                 borderTop: i > 0 ? "1px solid var(--edge)" : "none",
                 background: isNow ? "var(--lamp-glow)" : isRace ? "rgba(240, 102, 77, 0.06)" : "transparent",
               }}
             >
-              <div>
+              <div className="pwr-week">
                 <div className="eyebrow" style={{ fontSize: 8, color: isNow || isNext ? "var(--lamp)" : isRace ? "var(--ember)" : "var(--mist-mute)" }}>
                   {isNow ? "now" : isNext ? "next" : isRace ? "race" : `+${offset} wk`}
                 </div>
                 <div className="numerals" style={{ fontSize: 19, fontWeight: 600, marginTop: 1 }}>w{String(w.wk).padStart(2, "0")}</div>
               </div>
-              <div style={{ minWidth: 0 }}>
+              <div className="pwr-title" style={{ minWidth: 0 }}>
                 <div className="display" style={{ fontSize: 15, fontWeight: 600 }}>
                   {w.label}
                   {w.quality != null && <span className="numerals" style={{ fontSize: 10, color: "var(--mist-mute)", marginLeft: 8 }}>Q{w.quality}</span>}
                 </div>
                 <div style={{ fontSize: 12, color: "var(--mist-dim)", marginTop: 3, lineHeight: 1.45 }}>{w.focus}</div>
               </div>
-              <div style={{ minWidth: 0 }}>
+              <div className={w.key_session ? "pwr-key" : "pwr-key pwr-key-empty"} style={{ minWidth: 0 }}>
                 {w.key_session ? (
                   <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--mist-dim)", lineHeight: 1.45, borderLeft: "2px solid var(--lamp)", paddingLeft: 8 }}>
                     <span className="eyebrow" style={{ fontSize: 7.5, color: "var(--lamp)", display: "block" }}>key session</span>
@@ -2778,7 +2777,7 @@ function RoadAhead() {
                   <span style={{ fontSize: 11, color: "var(--edge-bright)", fontFamily: "var(--font-mono)" }}>—</span>
                 )}
               </div>
-              <div>
+              <div className="pwr-stats">
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                   <span className="numerals" style={{ fontSize: 14, fontWeight: 600 }}>{u.dist(w.dist_mi, 0)}<span style={{ fontSize: 9, color: "var(--mist-mute)" }}> {u.distUnit}</span></span>
                   <span className="numerals" style={{ fontSize: 11, color: "var(--mist-dim)" }}>{u.elev(w.elev_ft)}<span style={{ fontSize: 9, color: "var(--mist-mute)" }}> {u.elevUnit}↑</span></span>

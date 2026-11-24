@@ -196,12 +196,18 @@ function BandRow({ label, hint, value, step, onChange }: {
   return (
     <div>
       <Hint style={{ marginTop: 0, marginBottom: 4 }}>{label}</Hint>
+      {/* flex:1 1 0 + minWidth:0 (not a fixed width:88): this row sits in a
+          grid column that's ~161px wide once the goals section's "1fr 1fr"
+          grid only has a phone's ~337px to split — two 88px-floor inputs plus
+          the gap and the dash needed ~200px and couldn't shrink, widening the
+          whole grid (and everything spanning it, "event class" included)
+          past the dialog's right edge. */}
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <input type="number" min={0} step={step} className="numerals" aria-label={`${label} low`}
-          style={{ ...inputStyle, width: 88 }} value={value[0]} onChange={(e) => set(0, e.target.value)} />
+          style={{ ...inputStyle, flex: "1 1 0", minWidth: 0, maxWidth: 88 }} value={value[0]} onChange={(e) => set(0, e.target.value)} />
         <span style={{ color: "var(--mist-mute)", fontSize: 12 }}>–</span>
         <input type="number" min={0} step={step} className="numerals" aria-label={`${label} high`}
-          style={{ ...inputStyle, width: 88 }} value={value[1]} onChange={(e) => set(1, e.target.value)} />
+          style={{ ...inputStyle, flex: "1 1 0", minWidth: 0, maxWidth: 88 }} value={value[1]} onChange={(e) => set(1, e.target.value)} />
       </div>
       <Hint>{hint}</Hint>
     </div>
@@ -451,12 +457,27 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
       {loadError ?? "loading…"}
     </p>
   ) : (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: "8px 48px" }}>
+    // minmax(min(420px, 100%), 1fr): the plain 420px floor forced this grid
+    // wider than the dialog on a phone (dialog is width: min(1240px, 100%)),
+    // and the dialog's content div only sets overflowY — a mixed overflow-x/
+    // overflow-y resolves overflow-x to "auto" too, so the grid didn't spill
+    // past the dialog, it just made the WHOLE form horizontally scrollable,
+    // clipping every field and hint off the right edge on a phone. min()
+    // lets the track settle to 100% (one column) once 420px doesn't fit.
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(420px, 100%), 1fr))", gap: "8px 48px" }}>
       {/* left column: who you are + how the coach should read things */}
       <div style={{ minWidth: 0 }}>
         <Block>
           <Eyebrow>preferences</Eyebrow>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          {/* minmax(0, 1fr), not bare 1fr: a bare "1fr" track's automatic
+              minimum is its item's min-content size, not 0 — so on a phone
+              this column stayed pinned to the "phase" <select>'s widest
+              option (the real culprit; Chromium ignores a percentage width
+              when sizing a grid item's min-content contribution) regardless
+              of the input's own width:100%, pushing every field and hint in
+              the dialog off the right edge. Same fix applied to the two
+              "1fr 1fr" grids below (physiology, goals). */}
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14 }}>
             <label style={{ gridColumn: "1 / -1" }}>
               <Hint style={{ marginTop: 0, marginBottom: 4 }}>training philosophy</Hint>
               <input style={{ ...inputStyle, width: "100%" }} value={form.training_philosophy}
@@ -467,16 +488,19 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
               <input style={{ ...inputStyle, width: "100%" }} value={form.weekly_rest_day}
                 onChange={(e) => patch({ weekly_rest_day: e.target.value })} />
             </label>
+            {/* flex:1 1 0 + minWidth:0 on the labels (not the inputs' old
+                fixed width:80): at this column's phone width (~133px) two
+                80px inputs plus the 14px gap no longer fit. */}
             <div style={{ display: "flex", gap: 14 }}>
-              <label>
+              <label style={{ flex: "0 1 80px", minWidth: 0 }}>
                 <Hint style={{ marginTop: 0, marginBottom: 4 }}>fuel kcal/h</Hint>
-                <input type="number" min={0} max={1000} className="numerals" style={{ ...inputStyle, width: 80 }}
+                <input type="number" min={0} max={1000} className="numerals" style={{ ...inputStyle, width: "100%", maxWidth: 80 }}
                   value={form.nutrition_target_kcal_per_hour}
                   onChange={(e) => patch({ nutrition_target_kcal_per_hour: e.target.value === "" ? "" : Number(e.target.value) })} />
               </label>
-              <label>
+              <label style={{ flex: "0 1 80px", minWidth: 0 }}>
                 <Hint style={{ marginTop: 0, marginBottom: 4 }}>heat °C</Hint>
-                <input type="number" min={-10} max={50} className="numerals" style={{ ...inputStyle, width: 80 }}
+                <input type="number" min={-10} max={50} className="numerals" style={{ ...inputStyle, width: "100%", maxWidth: 80 }}
                   value={form.heat_threshold_c}
                   onChange={(e) => patch({ heat_threshold_c: e.target.value === "" ? "" : Number(e.target.value) })} />
               </label>
@@ -498,7 +522,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
           {physiologyNote && (
             <p style={{ fontSize: 11.5, color: "var(--lamp)", marginBottom: 10 }}>{physiologyNote}</p>
           )}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14 }}>
             {PHYSIOLOGY_META.map(({ key, label, hint, min, max, step }) => (
               <label key={key}>
                 <Hint style={{ marginTop: 0, marginBottom: 4 }}>{label}</Hint>
@@ -525,7 +549,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
           {goalsError && (
             <p style={{ fontSize: 11.5, color: "var(--ember)", marginBottom: 10 }}>{goalsError}</p>
           )}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14 }}>
             <label style={{ gridColumn: "1 / -1" }}>
               <Hint style={{ marginTop: 0, marginBottom: 4 }}>event class</Hint>
               <input style={{ ...inputStyle, width: "100%" }} maxLength={200} value={form.goals.event_class}
@@ -604,7 +628,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                   border: "1px solid var(--edge)", borderLeft: `2px solid ${expired ? "var(--edge-bright)" : "var(--lamp)"}`,
                   padding: "10px 12px 12px", opacity: expired ? 0.5 : 1, background: "var(--night-deep)",
                 }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 8 }}>
                     <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--mist-mute)" }}>until</span>
                     <input
                       type="date" value={t.expires} className="numerals"
@@ -634,7 +658,7 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
             })}
             {/* add card */}
             <div style={{ border: "1px dashed var(--edge-bright)", padding: "10px 12px 12px" }}>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 8 }}>
                 <span className="eyebrow" style={{ fontSize: 8.5, color: "var(--mist-mute)" }}>new note · until</span>
                 <input
                   type="date" value={newNote.expires} className="numerals"

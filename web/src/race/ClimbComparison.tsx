@@ -23,6 +23,12 @@ function gradeColor(pct: number): string {
 
 const H = 280;
 const PAD = { top: 20, right: 20, bottom: 34, left: 40 };
+/* below this measured width, race climbs that cluster at similar length/grade
+   print their name labels on top of each other (no collision avoidance on
+   this scatter) — worse the narrower the plot gets. The climb cards below
+   the scatter print every name; the marker's <title> still names it on
+   mouse hover, but on a touch screen the diamonds are unlabelled. */
+const CLIMB_LABEL_MIN_WIDTH = 480;
 
 /* Strava stores start_date_local as a fake-Z timestamp — "…T06:00:00Z" means
    6:00 LOCAL wall time, not UTC. Strip the trailing Z so the browser parses it
@@ -160,12 +166,14 @@ function ClimbScatter({ training, raceClimbs, now }: { training: TrainingClimb[]
                   {c.label} · {u.dist(c.length_mi)} {u.distUnit} · +{u.elev(c.gain_ft)} {u.elevUnit} · avg {c.avg_grade_pct.toFixed(1)}% · max {c.max_grade_pct.toFixed(0)}%
                 </title>
               </motion.rect>
-              <text
-                x={x + 8} y={y + 3} fill="var(--lamp)"
-                style={{ font: "9px var(--font-mono)", letterSpacing: "0.05em" }}
-              >
-                {c.label.toLowerCase()}
-              </text>
+              {width >= CLIMB_LABEL_MIN_WIDTH && (
+                <text
+                  x={x + 8} y={y + 3} fill="var(--lamp)"
+                  style={{ font: "9px var(--font-mono)", letterSpacing: "0.05em" }}
+                >
+                  {c.label.toLowerCase()}
+                </text>
+              )}
             </g>
           );
         })}

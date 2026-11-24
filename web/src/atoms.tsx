@@ -7,7 +7,11 @@ import { useMemo } from "react";
 
 export function SectionTag({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
   return (
-    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, margin: "26px 0 10px" }}>
+    // .section-tag (index.css) lets this row wrap at ≤600px only: on a phone
+    // a wide `right` (the race planner's sliders) otherwise squeezes the
+    // title into a sliver that wraps one word per line. Above 600px the row
+    // stays non-wrapping, so `right` keeps its place at the right edge.
+    <div className="section-tag" style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, margin: "26px 0 10px" }}>
       <span className="eyebrow" style={{ color: "var(--lamp)", display: "inline-flex", alignItems: "center", gap: 8 }}>
         <span style={{ width: 5, height: 5, background: "var(--lamp)", transform: "rotate(45deg)", display: "inline-block" }} />
         {children}
