@@ -530,7 +530,7 @@ function crewNotesHtml(data: CrewData): string {
       ? `<ol class="rules">${info.rules.map((r) => `<li>${esc(r)}</li>`).join("")}</ol>`
       : "") +
     directionsHtml(data) +
-    `<p class="fineprint">ETAs are Basecamp's pacing model (best/worst are the fit's ± band); cutoffs are from` +
+    `<p class="fineprint">ETAs are Trail Train's pacing model (best/worst are the fit's ± band); cutoffs are from` +
     ` ${esc(cutoffSource)}. Drive times are road estimates from the base — forest roads vary, so add buffer and` +
     ` trust the official crew guide over this sheet where they disagree.</p>` +
     `</section>`

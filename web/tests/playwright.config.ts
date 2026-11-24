@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test'
 
 /**
- * `npm run test:ui` — the browser half of Basecamp's tests.
+ * `npm run test:ui` — the browser half of Trail Train's tests.
  *
  * Run from web/: `npx playwright test -c tests/playwright.config.ts`.
  *
@@ -37,7 +37,7 @@ export default defineConfig({
 
   use: {
     ...devices['Desktop Chrome'],
-    // baseURL is overridden per test in tests/basecamp.ts — the real one is
+    // baseURL is overridden per test in tests/trail-train.ts — the real one is
     // only known once global setup has picked a free port.
     baseURL: 'http://127.0.0.1:0',
     viewport: { width: 1440, height: 900 },

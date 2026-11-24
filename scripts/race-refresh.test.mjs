@@ -126,7 +126,7 @@ async function cannedPlan() {
  * @returns {Promise<{tmp: string, dir: string, race: object}>}
  */
 async function fixtureRace(t, { raceOver = {} } = {}) {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-refresh-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-refresh-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
   const dir = path.join(tmp, "races", SLUG);
   await fs.mkdir(path.join(dir, "sources"), { recursive: true });
@@ -207,7 +207,7 @@ test("a refresh writes nothing outside .refresh/", async (t) => {
 /* ------------------------- loadShadowRace (finding #3) ------------------- */
 
 test("loadShadowRace: no race.json at all reads as null — the ENOENT case runRefresh reports as no diff", async (t) => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-shadow-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-shadow-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
   const shadow = path.join(tmp, SHADOW);
   await fs.mkdir(shadow, { recursive: true });
@@ -215,7 +215,7 @@ test("loadShadowRace: no race.json at all reads as null — the ENOENT case runR
 });
 
 test("loadShadowRace: a race.json that is not valid JSON propagates instead of reading as \"nothing to diff\"", async (t) => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-shadow-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-shadow-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
   const shadow = path.join(tmp, SHADOW);
   await fs.mkdir(shadow, { recursive: true });
@@ -339,7 +339,7 @@ test("accept applies exactly the merged files and takes the shadow away", async 
 });
 
 test("accept copies course.gpx and build/course.json BEFORE the merged JSON — an interruption between them is repaired by a re-run", async (t) => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-accept-order-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-accept-order-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
   const dir = path.join(tmp, "races", SLUG);
   const shadow = path.join(dir, SHADOW);
@@ -398,7 +398,7 @@ test("accept copies course.gpx and build/course.json BEFORE the merged JSON — 
 });
 
 test("accept promotes course.gpx via temp+rename — a blocked rename leaves the live file untouched, not truncated", async (t) => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-accept-atomic-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-accept-atomic-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
   const dir = path.join(tmp, "races", SLUG);
   const shadow = path.join(dir, SHADOW);
@@ -516,7 +516,7 @@ test("re-intaking the archived MM100 against its own race.json yields an empty d
   if (!live) return t.skip(`races/${MM100}/ not in this checkout`);
   const race = JSON.parse(live);
 
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-refresh-mm100-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-refresh-mm100-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
   const dir = path.join(tmp, "races", MM100);
   await fs.mkdir(dir, { recursive: true });

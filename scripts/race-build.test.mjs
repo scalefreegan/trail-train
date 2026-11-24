@@ -107,7 +107,7 @@ const tmpRoots = [];
  * write-backs.
  */
 async function makeRoot(slug, { withGpx = true, race = draftRace(slug) } = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-race-build-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-race-build-"));
   tmpRoots.push(root);
   const dir = path.join(root, "races", slug);
   await fs.mkdir(dir, { recursive: true });
@@ -315,7 +315,7 @@ test("a non-http links.gpx is not fetched", async () => {
 /* ------------------------------ MM100 ----------------------------------- */
 
 test("the archived MM100 folder rebuilds to a byte-identical race.json", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-race-build-mm100-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-race-build-mm100-"));
   tmpRoots.push(root);
   const dir = path.join(root, "races", MM100);
   await fs.mkdir(dir, { recursive: true });
@@ -347,7 +347,7 @@ test("the archived MM100 folder rebuilds to a byte-identical race.json", async (
 
 test("MM100's stations resolve from names alone, gpx_wpt stripped", async () => {
   // The acceptance bar from the bead: ≥ 13 of 15 by name, no authored hints.
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-race-build-mm100-bare-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-race-build-mm100-bare-"));
   tmpRoots.push(root);
   const dir = path.join(root, "races", MM100);
   await fs.mkdir(dir, { recursive: true });

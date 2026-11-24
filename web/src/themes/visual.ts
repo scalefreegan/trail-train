@@ -22,7 +22,7 @@
 /* ------------------------------------------------------------------ */
 
 import {
-  BASECAMP_DEFAULT,
+  TRAIL_TRAIN_DEFAULT,
   THEME_PRESET_NAMES,
   resolveTheme,
   type ThemePreset,
@@ -49,7 +49,7 @@ const FONT_TOKENS = ["--font-display", "--font-body", "--font-mono"] as const;
 
 /** The accent must stay visible on the field it sits on: WCAG's floor for
     large text and graphical objects. Below this a race has not themed
-    Basecamp, it has hidden it. */
+    Trail Train, it has hidden it. */
 export const ACCENT_MIN_CONTRAST = 3;
 
 /** Hero images: what the dev-server's asset endpoint will serve. Mirrored in
@@ -167,7 +167,7 @@ export function deriveAccent(accent: string): Pick<ThemeTokens, (typeof ACCENT_T
 
 /* ---------------------------- resolution -------------------------------- */
 
-export const DEFAULT_PRESET: ThemePreset = "basecamp-default";
+export const DEFAULT_PRESET: ThemePreset = "trail-train-default";
 
 export function isThemePreset(name: unknown): name is ThemePreset {
   return typeof name === "string" && (THEME_PRESET_NAMES as readonly string[]).includes(name);
@@ -189,7 +189,7 @@ export function resolveVisual(visual: VisualInput | null | undefined): {
   const overrides = (visual?.overrides ?? {}) as Partial<ThemeTokens>;
   const known: Partial<ThemeTokens> = {};
   for (const [name, value] of Object.entries(overrides)) {
-    if (name in BASECAMP_DEFAULT && typeof value === "string") {
+    if (name in TRAIL_TRAIN_DEFAULT && typeof value === "string") {
       known[name as keyof ThemeTokens] = value;
     }
   }
@@ -247,7 +247,7 @@ export function visualErrors(visual: unknown): string[] {
     if (!isPlainObject(overrides)) errs.push("visual.overrides must be an object of theme tokens");
     else {
       for (const [name, value] of Object.entries(overrides)) {
-        if (!(name in BASECAMP_DEFAULT)) {
+        if (!(name in TRAIL_TRAIN_DEFAULT)) {
           errs.push(`visual.overrides.${name} is not a theme token`);
           continue;
         }

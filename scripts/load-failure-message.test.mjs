@@ -28,7 +28,7 @@ const { loadFailureMessage } = await import("../web/src/race/loadFailureMessage.
 
 test("a network-level failure (fetch's own TypeError) reads as server-unreachable, matching the switcher's wording", () => {
   const msg = loadFailureMessage(new TypeError("Failed to fetch"), "course.json corrupt or unreadable");
-  assert.equal(msg, "server unreachable — is Basecamp running?");
+  assert.equal(msg, "server unreachable — is Trail Train running?");
 });
 
 test("a genuine parse failure keeps the corrupt wording", () => {

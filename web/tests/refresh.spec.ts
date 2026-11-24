@@ -1,4 +1,4 @@
-import { test, expect, CREWLESS, openDashboard, openRefreshFor, openSwitcher, setActiveRace } from './basecamp'
+import { test, expect, CREWLESS, openDashboard, openRefreshFor, openSwitcher, setActiveRace } from './trail-train'
 
 /**
  * Flow 9 — "Refresh from sources", end to end, with no agent and no internet.

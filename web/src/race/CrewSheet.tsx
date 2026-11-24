@@ -328,7 +328,7 @@ export function CrewSheet({ course, proj, crewBase, onClose }: {
             : "sun unknown — run the course build after setting the date."}
           {" "}<b>If the runner drops:</b> they must report to an aid station captain — never leave the course unreported.<br />
           <span style={{ color: MUTED }}>
-            ETAs from Basecamp's pacing model (best/worst = ± model band);{" "}
+            ETAs from Trail Train's pacing model (best/worst = ± model band);{" "}
             {hasCutoffs ? <>cutoffs from {cutoffSource}.</> : "no cutoffs on this course."}
             {" "}GPS links open Google Maps driving directions from the base — coordinates are the station point, not the parking area.
             {" "}Drive times are OSRM road estimates; forest-road conditions vary, so verify against the official Crew Guide and add buffer.

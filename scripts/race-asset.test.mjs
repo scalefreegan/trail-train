@@ -15,7 +15,7 @@ import {
   resolveRaceAsset,
 } from "./race-asset.mjs";
 
-const ROOT = "/tmp/basecamp-root";
+const ROOT = "/tmp/trail-train-root";
 const SLUG = "mogollon-monster-100-2026";
 const DIR = path.join(ROOT, "races", SLUG);
 const HERO = "hero.jpg";

@@ -1,4 +1,4 @@
-import { test, expect, ARCHIVED, MM, openDashboard, raceAction, setActiveRace } from './basecamp'
+import { test, expect, ARCHIVED, MM, openDashboard, raceAction, setActiveRace } from './trail-train'
 
 /**
  * Flow 6 — "Archive with result…": picking the Strava run that IS the race.
@@ -38,7 +38,7 @@ test.beforeEach(async ({ page, request }) => {
   await openDashboard(page)
 })
 
-async function openArchive(page: import('./basecamp').Page) {
+async function openArchive(page: import('./trail-train').Page) {
   await raceAction(page, archiveButton).click()
   const dialog = page.getByRole('dialog', { name: 'archive with result' })
   await expect(dialog).toBeVisible()

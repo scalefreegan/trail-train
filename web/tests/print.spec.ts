@@ -1,10 +1,10 @@
-import { test, expect, MM, openDashboard, openPrintable, openRaceTab, setActiveRace } from './basecamp'
+import { test, expect, MM, openDashboard, openPrintable, openRaceTab, setActiveRace } from './trail-train'
 import { describePages, hasGhostscript, printPages } from './paper'
 
 /**
  * Flow 5 — what the printable documents actually put on paper.
  *
- * Basecamp is a dark app. Every document meant for a printer — the three 3×5
+ * Trail Train is a dark app. Every document meant for a printer — the three 3×5
  * cards and the crew sheet — is a light-paper component that only comes out
  * right because `@media print` in index.css undoes the app's `color-scheme:
  * dark`, blanks the body background and hides `#root` so the portalled sheet

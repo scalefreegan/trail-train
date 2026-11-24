@@ -1,7 +1,7 @@
 /* ------------------------------------------------------------------ */
 /*  Per-race theme presets.                                            */
 /*                                                                    */
-/*  Basecamp has one identity — pre-dawn trailhead, layered dark       */
+/*  Trail Train has one identity — pre-dawn trailhead, layered dark   */
 /*  surfaces, one accent that reads as a light source. A race does not */
 /*  get a new brand; it gets a variation on that one. So every preset  */
 /*  keeps the same token structure and the same three typefaces, and   */
@@ -11,7 +11,7 @@
 /*  The tokens are exactly the custom properties `web/src/index.css`   */
 /*  defines on `:root`, keyed by their CSS names, so applying a preset */
 /*  is a loop of setProperty and nothing else — no CSS-in-JS, no       */
-/*  parallel naming scheme to keep in sync. `basecamp-default` holds   */
+/*  parallel naming scheme to keep in sync. `trail-train-default` holds*/
 /*  today's values byte-for-byte (a test parses index.css and fails on */
 /*  drift); the other four are sparse and inherit the rest from it.   */
 /* ------------------------------------------------------------------ */
@@ -54,7 +54,7 @@ export type ThemeTokens = {
 };
 
 export type ThemePreset =
-  | "basecamp-default"
+  | "trail-train-default"
   | "desert"
   | "alpine"
   | "forest"
@@ -62,7 +62,7 @@ export type ThemePreset =
 
 /** Menu order for pickers — the house palette first, then warm → dark. */
 export const THEME_PRESET_NAMES: readonly ThemePreset[] = [
-  "basecamp-default",
+  "trail-train-default",
   "desert",
   "alpine",
   "forest",
@@ -73,7 +73,7 @@ export const THEME_PRESET_NAMES: readonly ThemePreset[] = [
  * Today's palette, byte-identical to `:root` in `web/src/index.css`.
  * Generic (no active race) mode uses this.
  */
-export const BASECAMP_DEFAULT: ThemeTokens = {
+export const TRAIL_TRAIN_DEFAULT: ThemeTokens = {
   "--night": "#0c110e",
   "--night-deep": "#090d0b",
   "--panel": "#111813",
@@ -195,10 +195,10 @@ const NIGHT: Partial<ThemeTokens> = {
 
 /**
  * Every preset, keyed by the name a race's `visual.theme_preset` carries.
- * All but `basecamp-default` are sparse — they override only what changes.
+ * All but `trail-train-default` are sparse — they override only what changes.
  */
 export const THEME_PRESETS: Record<ThemePreset, Partial<ThemeTokens>> = {
-  "basecamp-default": BASECAMP_DEFAULT,
+  "trail-train-default": TRAIL_TRAIN_DEFAULT,
   desert: DESERT,
   alpine: ALPINE,
   forest: FOREST,
@@ -213,7 +213,7 @@ export function resolveTheme(
   preset: ThemePreset,
   overrides: Partial<ThemeTokens> = {},
 ): ThemeTokens {
-  return { ...BASECAMP_DEFAULT, ...THEME_PRESETS[preset], ...overrides };
+  return { ...TRAIL_TRAIN_DEFAULT, ...THEME_PRESETS[preset], ...overrides };
 }
 
 /**
@@ -236,7 +236,7 @@ export function applyTheme(
 export function clearTheme(
   root: HTMLElement = document.documentElement,
 ): void {
-  for (const name of Object.keys(BASECAMP_DEFAULT)) {
+  for (const name of Object.keys(TRAIL_TRAIN_DEFAULT)) {
     root.style.removeProperty(name);
   }
 }

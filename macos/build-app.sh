@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Build Basecamp.app from the AppleScript launcher + icon and install it to
+# Build Trail Train.app from the AppleScript launcher + icon and install it to
 # /Applications (admin-group writable, no sudo; Launchpad and Spotlight pick
 # it up, and it appears in Finder's Applications favorite).
 #
@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP_NAME="Basecamp"
+APP_NAME="Trail Train"
 # /Applications so the app shows up where every other app lives (Finder's
 # sidebar favorite, Launchpad, Spotlight); admin-group writable, no sudo
 DEST="/Applications/$APP_NAME.app"
@@ -21,7 +21,7 @@ ICON_PNG="icon-1024.png"
 # 1. compile the stay-open applet (-s = stay open after run handler)
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
-osacompile -s -o "$BUILD_DIR/$APP_NAME.app" Basecamp.applescript
+osacompile -s -o "$BUILD_DIR/$APP_NAME.app" TrailTrain.applescript
 
 # 1b. kill osacompile's baked-in icon pipeline: modern macOS resolves the
 # icon via CFBundleIconName -> Assets.car (which ships the generic scroll
@@ -47,14 +47,14 @@ PLIST="$BUILD_DIR/$APP_NAME.app/Contents/Info.plist"
 # app's existing tab instead of opening a new one). macOS only shows the
 # Automation prompt for an app that carries a usage string; without one the
 # events are refused silently (-1743) and every click falls back to a new tab.
-/usr/libexec/PlistBuddy -c "Add :NSAppleEventsUsageDescription string Basecamp focuses the Chrome tab it already has open instead of opening a new one." "$PLIST" 2>/dev/null \
-  || /usr/libexec/PlistBuddy -c "Set :NSAppleEventsUsageDescription Basecamp focuses the Chrome tab it already has open instead of opening a new one." "$PLIST"
+/usr/libexec/PlistBuddy -c "Add :NSAppleEventsUsageDescription string Trail Train focuses the Chrome tab it already has open instead of opening a new one." "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :NSAppleEventsUsageDescription Trail Train focuses the Chrome tab it already has open instead of opening a new one." "$PLIST"
 /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string $APP_NAME" "$PLIST" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$PLIST"
-/usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.scalefreegan.basecamp" "$PLIST" 2>/dev/null \
-  || /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.scalefreegan.basecamp" "$PLIST"
+/usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.scalefreegan.trailtrain" "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.scalefreegan.trailtrain" "$PLIST"
 
-# 3b. helper app: "Basecamp Server.app" — a faceless bundle that keeps the
+# 3b. helper app: "Trail Train Server.app" — a faceless bundle that keeps the
 # dev server as its child. Its executable is a COMPILED shim (server-shim.c)
 # that execs server-runner.sh from Resources. History, because this doctrine
 # has now inverted twice: pre-26.6.2, the script-as-executable bundle was the
@@ -62,14 +62,14 @@ PLIST="$BUILD_DIR/$APP_NAME.app/Contents/Info.plist"
 # denied; macOS 26.6.2 flipped it — a script executable runs as /bin/zsh (a
 # platform binary tccd will neither prompt for nor match a grant to), so no
 # NEW grant could ever be established (silent deny, no prompt, Full Disk
-# Access rows never matching). Basecamp outlived the update only because its
+# Access rows never matching). Trail Train outlived the update only because its
 # pre-update grant row kept being honored; wine-guide, whose row was lost,
 # died and proved the mechanism (2026-08-29). A real Mach-O restores a
 # promptable identity.
-HELPER="Basecamp Server"
+HELPER="Trail Train Server"
 HELPER_APP="$BUILD_DIR/$APP_NAME.app/Contents/Helpers/$HELPER.app"
 mkdir -p "$HELPER_APP/Contents/MacOS" "$HELPER_APP/Contents/Resources"
-clang -O2 -o "$HELPER_APP/Contents/MacOS/BasecampServer" server-shim.c
+clang -O2 -o "$HELPER_APP/Contents/MacOS/TrailTrainServer" server-shim.c
 cp server-runner.sh "$HELPER_APP/Contents/Resources/server-runner.sh"
 chmod +x "$HELPER_APP/Contents/Resources/server-runner.sh"
 cp "$BUILD_DIR/$APP_NAME.app/Contents/Resources/applet.icns" "$HELPER_APP/Contents/Resources/helper.icns"
@@ -79,8 +79,8 @@ cat > "$HELPER_APP/Contents/Info.plist" <<PLIST_EOF
 <plist version="1.0"><dict>
   <key>CFBundleName</key><string>$HELPER</string>
   <key>CFBundleDisplayName</key><string>$HELPER</string>
-  <key>CFBundleIdentifier</key><string>com.scalefreegan.basecamp.server</string>
-  <key>CFBundleExecutable</key><string>BasecampServer</string>
+  <key>CFBundleIdentifier</key><string>com.scalefreegan.trailtrain.server</string>
+  <key>CFBundleExecutable</key><string>TrailTrainServer</string>
   <key>CFBundleIconFile</key><string>helper</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSUIElement</key><true/>
@@ -105,4 +105,4 @@ touch "$DEST"
 killall Dock 2>/dev/null || true
 
 echo "installed $DEST"
-echo "launch:  open -a $APP_NAME     quit: right-click the Dock icon → Quit (stops the server)"
+echo "launch:  open -a \"$APP_NAME\"     quit: right-click the Dock icon → Quit (stops the server)"

@@ -13,7 +13,7 @@
 /*  training target; in view mode it is the archived or draft folder   */
 /*  being browsed (tt-yib.7), because the point of browsing a race is  */
 /*  seeing it. Generic mode has no race and therefore no override —    */
-/*  it clears back to :root, which IS basecamp-default.                */
+/*  it clears back to :root, which IS trail-train-default.            */
 /*                                                                    */
 /*  Nothing is persisted. The pointer is the only state; a reload      */
 /*  re-derives the palette from it.                                    */

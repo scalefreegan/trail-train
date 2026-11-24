@@ -658,7 +658,7 @@ test("the style reference is shown as shape, with the athlete's mass stripped ou
 test("a style reference that exists but is unreadable warns instead of planning silently unguided", async (t) => {
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-plan-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
 
   const slug = "future-race-2027";
@@ -682,7 +682,7 @@ test("a style reference that exists but is unreadable warns instead of planning 
 test("a checkout with no style-reference folder at all plans silently — that is the ordinary, expected case", async (t) => {
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-plan-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
   const slug = "future-race-2027";
   await fs.cp(path.join(ROOT, "races", MM100), path.join(tmp, "races", slug), { recursive: true });
@@ -712,7 +712,7 @@ test("an undated race is told there is no block, and still asked for the rest", 
 test("planRace --dry-run assembles the prompt and writes nothing", async (t) => {
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-plan-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
 
   const slug = "future-race-2027";
@@ -758,7 +758,7 @@ test("planRace --dry-run assembles the prompt and writes nothing", async (t) => 
 test("a full run writes the three files, stamps them, and keeps the owner's edits", async (t) => {
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-plan-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
 
   const slug = "future-race-2027";
@@ -836,7 +836,7 @@ test("a concurrent archive/edit that finishes during the agent turn survives pla
   // must carry every other field — status included — through untouched.
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-concurrent-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-plan-concurrent-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
 
   const slug = "future-race-2027";
@@ -880,7 +880,7 @@ test("a concurrent archive/edit that finishes during the agent turn survives pla
 test("user-owned block targets survive a re-plan — the agent's proposal is a warning, not a write", async (t) => {
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-plan-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
 
   const slug = "future-race-2027";
@@ -921,7 +921,7 @@ test("user-owned block targets survive a re-plan — the agent's proposal is a w
 test("a failure partway through the three-file write says which files already landed", async (t) => {
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-plan-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
 
   const slug = "future-race-2027";
@@ -963,7 +963,7 @@ test("a failure partway through the three-file write says which files already la
 test("a race with no date gets its nutrition and notes, but no block.json", async (t) => {
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-plan-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
 
   const slug = "undated-race-2027";
@@ -992,7 +992,7 @@ test("a race with no date gets its nutrition and notes, but no block.json", asyn
 test("output that breaks the contract writes nothing at all", async (t) => {
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-plan-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
 
   const slug = "future-race-2027";
@@ -1031,7 +1031,7 @@ test("output that breaks the contract writes nothing at all", async (t) => {
 test("a stage-3 reply that isn't JSON at all is parked the same way, not silently dropped", async (t) => {
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-plan-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
 
   const slug = "future-race-2027";
@@ -1058,7 +1058,7 @@ test("a stage-3 reply that isn't JSON at all is parked the same way, not silentl
 test("a dateless race is refused before the agent turn unless the caller opts in", async (t) => {
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-plan-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
   const slug = "undated-race-2027";
   const dir = path.join(tmp, "races", slug);
@@ -1078,7 +1078,7 @@ test("a dateless race is refused before the agent turn unless the caller opts in
 test("planRace refuses a real-looking but unconfirmed date the same as no date at all", async (t) => {
   const mm = await mm100();
   if (!mm) return t.skip(`races/${MM100}/ not in this checkout`);
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-plan-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-plan-"));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
   const slug = "guessed-date-race-2027";
   const dir = path.join(tmp, "races", slug);

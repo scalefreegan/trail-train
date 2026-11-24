@@ -1,4 +1,4 @@
-import { test, expect, MM, openDashboard, raceAction, setActiveRace } from './basecamp'
+import { test, expect, MM, openDashboard, raceAction, setActiveRace } from './trail-train'
 
 /**
  * Flow 10 addendum — AddTuneUp.submit()'s re-entrancy guard.

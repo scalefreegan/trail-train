@@ -1,5 +1,5 @@
 import type { APIRequestContext } from '@playwright/test'
-import { test, expect, MM, openDashboard, openRaceTab, raceAction, setActiveRace } from './basecamp'
+import { test, expect, MM, openDashboard, openRaceTab, raceAction, setActiveRace } from './trail-train'
 
 /**
  * Round-4 interactive-review fixes, tune-up lane (ui1-altitude-tuneups.md
