@@ -266,6 +266,12 @@ a { color: inherit; }
 .race-table > .race-grid.no-fuel { min-width: 908px; }
 .race-table > .race-grid.no-fuel.has-actual { min-width: 989px; }
 
+.plan-week-row {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1.2fr) minmax(0, 1fr) 120px;
+  gap: 16px;
+}
+
 .climb-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -412,6 +418,25 @@ a { color: inherit; }
      to scroll on every phone — the narrow template fits natively */
   .race-table > .race-grid { min-width: 0; }
   .climb-grid { grid-template-columns: repeat(2, 1fr); }
+
+  /* the road ahead's per-week row: at the desktop 4-track template, "focus"
+     and "key session" each got squeezed to ~60px on a phone — narrow enough
+     that prose text wraps one (sometimes half of one) word per line and the
+     row runs for a full extra screen of height. Two tracks instead of four:
+     the week badge sits beside the title, then key-session and the stats
+     bar each take the full row width below it. */
+  .plan-week-row {
+    grid-template-columns: 56px 1fr;
+    grid-template-areas:
+      "wk title"
+      "key key"
+      "stats stats";
+    row-gap: 10px;
+  }
+  .plan-week-row > .pwr-week { grid-area: wk; }
+  .plan-week-row > .pwr-title { grid-area: title; }
+  .plan-week-row > .pwr-key { grid-area: key; }
+  .plan-week-row > .pwr-stats { grid-area: stats; }
 }
 
 /* ---- ≤ 600px ---- */
