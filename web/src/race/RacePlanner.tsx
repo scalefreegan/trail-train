@@ -74,9 +74,9 @@ function stationFlags(s: StationProjection["station"], cols: VisibleColumns) {
 
 const H = 320;
 const PAD = { top: 56, right: 16, bottom: 26, left: 46 };
-/* below this measured plot width, a dozen-plus aid-station name labels packed
-   onto the x axis start overlapping each other illegibly (a phone's ~300-340px
-   plot area vs. desktop's 800px+) — the station table beneath the chart
+/* below this measured chart width, a dozen-plus aid-station name labels packed
+   onto the x axis start overlapping each other illegibly (a phone's ~360px
+   chart vs. desktop's 800px+) — the station table beneath the chart
    already prints every name, so the chart itself drops to dots-only. */
 const STATION_LABEL_MIN_WIDTH = 480;
 /* pace trace strip below the profile — same x-axis, own y-scale
@@ -223,8 +223,8 @@ function ProfileChart({ course, proj, night }: {
                 {/* a phone-width chart hides the printed name below (not
                     enough x-resolution for a dozen names in ~320px without
                     overlapping) — the station table underneath has every
-                    name already, but the dot itself still needs SOME way to
-                    say which station it is, for a press-and-hold. */}
+                    name already. The <title> is a hover tooltip only, so
+                    it helps a narrow desktop window, not a touch screen. */}
                 {width < STATION_LABEL_MIN_WIDTH && <title>{s.name}</title>}
               </circle>
               {width >= STATION_LABEL_MIN_WIDTH && (

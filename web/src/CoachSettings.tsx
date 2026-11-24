@@ -204,10 +204,10 @@ function BandRow({ label, hint, value, step, onChange }: {
           past the dialog's right edge. */}
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <input type="number" min={0} step={step} className="numerals" aria-label={`${label} low`}
-          style={{ ...inputStyle, flex: "1 1 0", minWidth: 0 }} value={value[0]} onChange={(e) => set(0, e.target.value)} />
+          style={{ ...inputStyle, flex: "1 1 0", minWidth: 0, maxWidth: 88 }} value={value[0]} onChange={(e) => set(0, e.target.value)} />
         <span style={{ color: "var(--mist-mute)", fontSize: 12 }}>–</span>
         <input type="number" min={0} step={step} className="numerals" aria-label={`${label} high`}
-          style={{ ...inputStyle, flex: "1 1 0", minWidth: 0 }} value={value[1]} onChange={(e) => set(1, e.target.value)} />
+          style={{ ...inputStyle, flex: "1 1 0", minWidth: 0, maxWidth: 88 }} value={value[1]} onChange={(e) => set(1, e.target.value)} />
       </div>
       <Hint>{hint}</Hint>
     </div>
@@ -492,15 +492,15 @@ export default function CoachSettings({ onClose }: { onClose: () => void }) {
                 fixed width:80): at this column's phone width (~133px) two
                 80px inputs plus the 14px gap no longer fit. */}
             <div style={{ display: "flex", gap: 14 }}>
-              <label style={{ flex: "1 1 0", minWidth: 0 }}>
+              <label style={{ flex: "0 1 80px", minWidth: 0 }}>
                 <Hint style={{ marginTop: 0, marginBottom: 4 }}>fuel kcal/h</Hint>
-                <input type="number" min={0} max={1000} className="numerals" style={{ ...inputStyle, width: "100%" }}
+                <input type="number" min={0} max={1000} className="numerals" style={{ ...inputStyle, width: "100%", maxWidth: 80 }}
                   value={form.nutrition_target_kcal_per_hour}
                   onChange={(e) => patch({ nutrition_target_kcal_per_hour: e.target.value === "" ? "" : Number(e.target.value) })} />
               </label>
-              <label style={{ flex: "1 1 0", minWidth: 0 }}>
+              <label style={{ flex: "0 1 80px", minWidth: 0 }}>
                 <Hint style={{ marginTop: 0, marginBottom: 4 }}>heat °C</Hint>
-                <input type="number" min={-10} max={50} className="numerals" style={{ ...inputStyle, width: "100%" }}
+                <input type="number" min={-10} max={50} className="numerals" style={{ ...inputStyle, width: "100%", maxWidth: 80 }}
                   value={form.heat_threshold_c}
                   onChange={(e) => patch({ heat_threshold_c: e.target.value === "" ? "" : Number(e.target.value) })} />
               </label>

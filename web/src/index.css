@@ -437,10 +437,19 @@ a { color: inherit; }
   .plan-week-row > .pwr-title { grid-area: title; }
   .plan-week-row > .pwr-key { grid-area: key; }
   .plan-week-row > .pwr-stats { grid-area: stats; }
+  /* a week with no key session: drop the row rather than give a lone dash
+     its own line (and a second row-gap) between the title and the bar */
+  .plan-week-row:has(> .pwr-key-empty) {
+    grid-template-areas:
+      "wk title"
+      "stats stats";
+  }
+  .plan-week-row > .pwr-key-empty { display: none; }
 }
 
 /* ---- ≤ 600px ---- */
 @media (max-width: 600px) {
+  .section-tag { flex-wrap: wrap; }
   .vitals-band { grid-template-columns: repeat(2, 1fr); }
   .horizon-days { grid-template-columns: repeat(2, 1fr); }
   .log-grid {

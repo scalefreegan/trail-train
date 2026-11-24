@@ -2275,7 +2275,8 @@ function Trajectory() {
     <section>
       <SectionTag
         right={hasTargets ? (
-          // SectionTag's own row is a non-wrapping flex (atoms.tsx) — at
+          // SectionTag's own row is a non-wrapping flex above 600px, and was
+          // at every width when this was written (atoms.tsx) — at
           // 320/390 the title plus four un-shrinkable chip buttons in one
           // line ran the document 417px wide. flexWrap here lets the two
           // button groups drop to a second line (or scroll if they still
@@ -2766,7 +2767,7 @@ function RoadAhead() {
                 </div>
                 <div style={{ fontSize: 12, color: "var(--mist-dim)", marginTop: 3, lineHeight: 1.45 }}>{w.focus}</div>
               </div>
-              <div className="pwr-key" style={{ minWidth: 0 }}>
+              <div className={w.key_session ? "pwr-key" : "pwr-key pwr-key-empty"} style={{ minWidth: 0 }}>
                 {w.key_session ? (
                   <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--mist-dim)", lineHeight: 1.45, borderLeft: "2px solid var(--lamp)", paddingLeft: 8 }}>
                     <span className="eyebrow" style={{ fontSize: 7.5, color: "var(--lamp)", display: "block" }}>key session</span>

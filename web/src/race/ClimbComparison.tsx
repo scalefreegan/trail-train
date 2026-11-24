@@ -25,9 +25,9 @@ const H = 280;
 const PAD = { top: 20, right: 20, bottom: 34, left: 40 };
 /* below this measured width, race climbs that cluster at similar length/grade
    print their name labels on top of each other (no collision avoidance on
-   this scatter) — worse the narrower the plot gets. The marker's <title>
-   still names it on hover/press; nothing else on the page repeats these
-   names, so the label itself isn't dropped, only deferred to hover. */
+   this scatter) — worse the narrower the plot gets. The climb cards below
+   the scatter print every name; the marker's <title> still names it on
+   mouse hover, but on a touch screen the diamonds are unlabelled. */
 const CLIMB_LABEL_MIN_WIDTH = 480;
 
 /* Strava stores start_date_local as a fake-Z timestamp — "…T06:00:00Z" means
