@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
+import { parseEnv } from 'node:util'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { GOAL_PHASES, PHYSIOLOGY_FIELDS } from './src/contracts'
 
@@ -90,12 +91,32 @@ function parseAllowedOrigins(raw: string | undefined): string[] {
       // Origin header, which is always bare scheme://host:port
       out.push(u.origin)
     } catch {
-      console.warn(`[dev-api] TRAIL_ALLOWED_ORIGINS: ignoring "${spec}" — not an http(s) origin (expected e.g. http://192.168.1.42:38100)`)
+      console.warn(`[dev-api] allowed origins: ignoring "${spec}" — not an http(s) origin (expected e.g. http://192.168.1.42:38100)`)
     }
   }
   return out
 }
-const ALLOWED_ORIGINS = new Set(parseAllowedOrigins(process.env.TRAIL_ALLOWED_ORIGINS))
+// TRAIL_TAILNET_ORIGINS is the standing counterpart, for `tailscale serve`
+// (README, "On your tailnet"): the same exact-origin list, e.g.
+// "https://my-mac.my-tailnet.ts.net:38100". Unlike the race-day allowance it
+// may live in the repo-root .env.local (gitignored): the server stays on
+// loopback with Tailscale as the one way in, the arrangement is meant to
+// outlast any one command, and Basecamp.app starts the server without a shell
+// that could carry the variable. The real environment wins over the file.
+function tailnetOrigins(): string | undefined {
+  const fromEnv = process.env.TRAIL_TAILNET_ORIGINS
+  if (fromEnv?.trim()) return fromEnv
+  try {
+    const text = fs.readFileSync(path.resolve(__dirname, '..', '.env.local'), 'utf8')
+    return parseEnv(text).TRAIL_TAILNET_ORIGINS
+  } catch {
+    return undefined // no file: nothing configured
+  }
+}
+const ALLOWED_ORIGINS = new Set([
+  ...parseAllowedOrigins(process.env.TRAIL_ALLOWED_ORIGINS),
+  ...parseAllowedOrigins(tailnetOrigins()),
+])
 // The Host header carries no scheme and the guard already strips the port,
 // so the host check needs the hostnames on their own.
 const ALLOWED_HOSTS = new Set([...ALLOWED_ORIGINS].map((o) => new URL(o).hostname))
