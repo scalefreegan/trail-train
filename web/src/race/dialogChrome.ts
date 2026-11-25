@@ -225,7 +225,7 @@ export function useDialog({ onClose, locked, label }: {
     dialog that hits the dev API directly (RaceIntake's save/activate, the
     race switcher) rather than each re-deriving its own copy. */
 export function friendlyFetchError(e: unknown): string {
-  if (e instanceof TypeError) return "server unreachable — is Basecamp running?";
+  if (e instanceof TypeError) return "server unreachable — is Trail Train running?";
   return e instanceof Error ? e.message : String(e);
 }
 
@@ -239,7 +239,7 @@ export function friendlyFetchError(e: unknown): string {
     anything that is not a network failure, so a caller reads
     `netMessage(e) || "some other, more specific fallback"`. */
 export function netMessage(e: unknown): string {
-  return e instanceof TypeError ? "server unreachable — is Basecamp running?" : "";
+  return e instanceof TypeError ? "server unreachable — is Trail Train running?" : "";
 }
 
 export const inputStyle: CSSProperties = {

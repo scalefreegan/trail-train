@@ -1,7 +1,7 @@
 import {
   test, expect, ARCHIVED, MM,
   chooseRace, openDashboard, openSwitcher, setActiveRace, switcherButton, type Page,
-} from './basecamp'
+} from './trail-train'
 
 /**
  * Flow 8 — race day with the laptop gone, and the archive you were reading

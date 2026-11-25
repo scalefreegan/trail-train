@@ -23,7 +23,7 @@ import { GOAL_PHASES, PHYSIOLOGY_FIELDS } from './src/contracts'
 // write files, with no auth — fine for a localhost tool, EXCEPT that a
 // browser will happily send a cross-origin "simple" POST (Content-Type
 // text/plain needs no preflight) from any page the user has open, so a
-// hostile tab could blind-fire /api/chat or /api/refresh at us. The Basecamp
+// hostile tab could blind-fire /api/chat or /api/refresh at us. The Trail Train
 // launcher sharpens this: a fixed, README-published port that is up all day.
 // So reject any request whose Origin is not this same loopback server. A
 // missing Origin is allowed — that is a non-browser caller (curl, an internal
@@ -101,7 +101,7 @@ function parseAllowedOrigins(raw: string | undefined): string[] {
 // "https://my-mac.my-tailnet.ts.net:38100". Unlike the race-day allowance it
 // may live in the repo-root .env.local (gitignored): the server stays on
 // loopback with Tailscale as the one way in, the arrangement is meant to
-// outlast any one command, and Basecamp.app starts the server without a shell
+// outlast any one command, and Trail Train.app starts the server without a shell
 // that could carry the variable. The real environment wins over the file.
 function tailnetOrigins(): string | undefined {
   const fromEnv = process.env.TRAIL_TAILNET_ORIGINS
@@ -2920,7 +2920,7 @@ function raceIntakeApi(): Plugin {
         try {
           // One dir per upload: two manuals named manual.pdf must not collide,
           // and the intake copies out of here rather than moving.
-          const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'basecamp-intake-upload-'))
+          const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trail-train-intake-upload-'))
           const dest = path.join(dir, name)
           fs.writeFileSync(dest, body)
           json(res, 200, { name, path: dest, bytes: body.byteLength })
@@ -3386,7 +3386,7 @@ export default defineConfig({
   // Fixed, memorable, deliberately unusual port. The 5173 default collides
   // with every other Vite project on the machine, and a colliding neighbor
   // silently claims the port so this app hops to 5174+ — which breaks the
-  // Basecamp.app launcher's health check and any bookmark. strictPort makes a
+  // Trail Train.app launcher's health check and any bookmark. strictPort makes a
   // genuine conflict fail LOUDLY instead of hopping; if 38100 is ever taken,
   // something is actually wrong.
   server: {
@@ -3396,7 +3396,7 @@ export default defineConfig({
     // is the deliberate opt-in (README → "Race day on your phone").
     //
     // Vite's own Host-header check already accepts bare IPs, so a LAN
-    // address needs nothing here; a NAME (basecamp.local) does, and only
+    // address needs nothing here; a NAME (trail-train.local) does, and only
     // the ones TRAIL_ALLOWED_ORIGINS already named get it. Omitted entirely
     // when the list is empty so the default config is byte-identical.
     ...(ALLOWED_HOSTS.size > 0 ? { allowedHosts: [...ALLOWED_HOSTS] } : {}),

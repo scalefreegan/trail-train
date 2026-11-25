@@ -40,7 +40,7 @@ import type { ActiveRaceResponse, RaceKind } from "./race/types";
 import { isTuneUp } from "./race/features";
 
 /* ================================================================== */
-/*  BASECAMP — pre-dawn ops surface for ultra training                 */
+/*  TRAIL TRAIN — pre-dawn ops surface for ultra training             */
 /*  command bar · race ribbon · vitals band · trajectory ·             */
 /*  road ahead (plan ∪ calendar) · log — with the coach as a           */
 /*  persistent rail that never leaves your side.                       */
@@ -597,7 +597,7 @@ function RaceSwitcher() {
               {...itemProps("generic")}
               label="No race (generic)"
               hint="train toward your goals"
-              swatch={<ThemePreview visual={null} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round label="basecamp palette" />}
+              swatch={<ThemePreview visual={null} tokens={ACCENT_SWATCH} size={SWATCH_DOT} round label="trail train palette" />}
               disabled={busy != null}
               busy={busy === "__generic__"}
               onSelect={() => choose(null, "train")}
@@ -1380,7 +1380,7 @@ function CommandBar({ view, setView, railOpen, toggleRail }: {
             <circle cx="12" cy="3" r="1.6" fill="var(--lamp)" />
           </svg>
           <span className="display" style={{ fontSize: 17, letterSpacing: "-0.02em" }}>
-            Basecamp
+            Trail Train
           </span>
           <RaceSwitcher />
         </div>
@@ -3663,7 +3663,7 @@ function SetupDrawer() {
     <footer style={{ marginTop: 40, borderTop: "1px solid var(--edge)", paddingTop: 18 }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 6 }}>
         <span className="eyebrow">connections · tokens stay local</span>
-        <span className="eyebrow" style={{ fontSize: 8.5 }}>basecamp · set in bricolage grotesque + spline sans mono</span>
+        <span className="eyebrow" style={{ fontSize: 8.5 }}>trail train · set in bricolage grotesque + spline sans mono</span>
       </div>
       <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
         {items.map((it) => {
@@ -3709,7 +3709,7 @@ function SetupDrawer() {
         })}
       </ul>
       <div style={{ display: "flex", justifyContent: "space-between", padding: "14px 0 0" }}>
-        <span className="eyebrow" style={{ fontSize: 8.5 }}>© basecamp · one race at a time</span>
+        <span className="eyebrow" style={{ fontSize: 8.5 }}>© trail train · one race at a time</span>
         <span className="eyebrow" style={{ fontSize: 8.5 }}>strava · oura · google calendar · claude code</span>
       </div>
     </footer>

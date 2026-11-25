@@ -1,7 +1,7 @@
 // Theme preset tests.
 //
 // Two jobs:
-//   1. basecamp-default must stay byte-identical to `:root` in index.css.
+//   1. trail-train-default must stay byte-identical to `:root` in index.css.
 //      The CSS is parsed with a regex rather than imported, so editing one
 //      side and not the other fails here instead of drifting silently.
 //   2. Every preset must stay readable — WCAG contrast on body, muted and
@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import {
-  BASECAMP_DEFAULT,
+  TRAIL_TRAIN_DEFAULT,
   THEME_PRESET_NAMES,
   THEME_PRESETS,
   resolveTheme,
@@ -48,17 +48,17 @@ test("index.css :root parses into a non-trivial token map", () => {
   );
 });
 
-test("basecamp-default matches :root in index.css exactly", () => {
+test("trail-train-default matches :root in index.css exactly", () => {
   assert.deepEqual(
-    Object.keys(BASECAMP_DEFAULT).sort(),
+    Object.keys(TRAIL_TRAIN_DEFAULT).sort(),
     Object.keys(ROOT_TOKENS).sort(),
     "token names drifted between presets.ts and index.css",
   );
   for (const [name, value] of Object.entries(ROOT_TOKENS)) {
     assert.equal(
-      BASECAMP_DEFAULT[name],
+      TRAIL_TRAIN_DEFAULT[name],
       value,
-      `${name}: index.css has "${value}", presets.ts has "${BASECAMP_DEFAULT[name]}"`,
+      `${name}: index.css has "${value}", presets.ts has "${TRAIL_TRAIN_DEFAULT[name]}"`,
     );
   }
 });
@@ -71,20 +71,20 @@ test("every preset name resolves and overrides only known tokens", () => {
   for (const name of THEME_PRESET_NAMES) {
     for (const token of Object.keys(THEME_PRESETS[name])) {
       assert.ok(
-        token in BASECAMP_DEFAULT,
+        token in TRAIL_TRAIN_DEFAULT,
         `preset ${name} sets unknown token ${token}`,
       );
     }
   }
 });
 
-test("presets keep the Basecamp typefaces", () => {
+test("presets keep the Trail Train typefaces", () => {
   for (const name of THEME_PRESET_NAMES) {
     const tokens = resolveTheme(name);
     for (const font of ["--font-display", "--font-body", "--font-mono"]) {
       assert.equal(
         tokens[font],
-        BASECAMP_DEFAULT[font],
+        TRAIL_TRAIN_DEFAULT[font],
         `preset ${name} changed ${font} — presets are palette variations, not new brands`,
       );
     }

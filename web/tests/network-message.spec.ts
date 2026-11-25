@@ -1,4 +1,4 @@
-import { test, expect, MM, openDashboard, openRaceTab, setActiveRace } from './basecamp'
+import { test, expect, MM, openDashboard, openRaceTab, setActiveRace } from './trail-train'
 
 /**
  * ui3-resilience BUG 6 — data.ts's own instance.
@@ -23,7 +23,7 @@ test('a network-unreachable /api/race/active reports "server unreachable", not "
   await page.route('**/api/race/active*', (route) => route.abort('failed'))
   await page.goto('/#/race-day')
 
-  await expect(page.getByText(/server unreachable — is basecamp running\?/i)).toBeVisible()
+  await expect(page.getByText(/server unreachable — is trail train running\?/i)).toBeVisible()
   await expect(page.getByText(/corrupt or unreadable/i)).toHaveCount(0)
 
   expect(trouble.pageErrors).toEqual([])
@@ -50,7 +50,7 @@ test('a dead server reading climbs.json / api/settings reports "server unreachab
   await openDashboard(page)
   await openRaceTab(page)
 
-  await expect(page.getByText(/server unreachable — is basecamp running\?/i).first()).toBeVisible()
+  await expect(page.getByText(/server unreachable — is trail train running\?/i).first()).toBeVisible()
   await expect(page.getByText(/climbs\.json corrupt or unreadable/i)).toHaveCount(0)
   await expect(page.getByText(/athlete profile unreadable/i)).toHaveCount(0)
   await expect(page.getByText(/result\.json corrupt or unreadable/i)).toHaveCount(0)

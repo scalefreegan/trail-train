@@ -109,7 +109,7 @@ const MAX_SPAN_DAYS = 14;
 /** localStorage key for one race's last checkpoint. Per slug: a crew chief
     with two sheets open must not have one race's split move the other. */
 export function checkpointKey(slug: string): string {
-  return `basecamp.crew.${slug}.checkpoint`;
+  return `trail-train.crew.${slug}.checkpoint`;
 }
 
 /**

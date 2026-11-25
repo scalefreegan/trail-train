@@ -1,4 +1,4 @@
-import { test, expect, MM, setActiveRace } from './basecamp'
+import { test, expect, MM, setActiveRace } from './trail-train'
 
 /**
  * Flow 4 — race-day mode's position hold, at `#/race-day` on a phone.

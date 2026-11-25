@@ -1,11 +1,11 @@
-# PRD — Basecamp as a modular, race-pluggable training app
+# PRD — Trail Train as a modular, race-pluggable training app
 
 Status: implemented 2026-09-18 (branch modular-races) · author: Aaron Brooks (interview-driven, written by Claude)
 Scope owner: Aaron · Validation case: San Juan Softie 100, August 2027
 
 ## 1. Summary
 
-Basecamp was built for one race. The Mogollon Monster 100 (MM100) is asserted in four
+Trail Train was built for one race. The Mogollon Monster 100 (MM100) is asserted in four
 independent places (state defaults, facts fallback, client defaults, the course config),
 the coach prompts carry the race as literal prose, the block is a fixed 20 weeks ending
 at "RACE", and there is no null-race path anywhere in the UI.
@@ -38,7 +38,7 @@ across races; block targets and plan blocks belong to the race (or to the generi
 | Visuals | Accent + name/short, hero image, panel selection, full theme override via presets + agent suggestion |
 | MM100 | Archive as `races/mogollon-monster-100-2026/` with the 33.27 h result |
 | Results | Strava activity + splits from track crossings, manual override from official results |
-| Theme source | Named Basecamp-family presets; intake suggests one; per-token override in review |
+| Theme source | Named Trail Train presets; intake suggests one; per-token override in review |
 | Altitude | Structured elevation range + altitude flag → coach guidance and a projection caveat. No pacing-math change in v1 |
 | Race switcher | Command-bar menu on the race short code |
 | Re-intake | Merge preserving hand edits; per-field provenance; diff shown before accept |
@@ -229,14 +229,14 @@ Friday; MM100 was a Saturday).
 
 **Trajectory**: x-axis from `block.total_weeks`; the terminal marker is labelled with `short`.
 
-**Theme**: presets under `web/src/themes/` (basecamp-default, desert, alpine, forest, night).
+**Theme**: presets under `web/src/themes/` (trail-train-default, desert, alpine, forest, night).
 `visual.theme_preset` selects; `visual.overrides` may set individual tokens. Accent and hero per race.
 
 **Race-day mode**: a phone-width route (`/race-day`) showing now-time, next station, ETA band,
 cutoff margin, what to pick up (from the fuel plan), and crew ETA. Reads the same projection.
 Printable cards remain.
 
-**Title and health check**: `index.html` title becomes "Basecamp"; the Mac app health check
+**Title and health check**: `index.html` title becomes "Trail Train"; the Mac app health check
 matches that instead of the race name. Footer string and the port rationale are de-raced.
 
 ## 8. Intake (agentic)
@@ -337,7 +337,7 @@ with track splits, archived race view, phone race-day route, backup coverage.
 - Intake accuracy on image-only aid charts; mitigated by the review gate and unresolved-field list.
 - GPX waypoint names rarely match manual station names; the validator must offer a mapping UI.
 - Sun times need coordinates + date + timezone; compute, don't transcribe.
-- Theme overrides can drift the Basecamp identity; presets are the guardrail.
+- Theme overrides can drift the Trail Train identity; presets are the guardrail.
 - Open: should generic-mode weekly targets be coach-proposed or user-set? Default: coach proposes, user accepts.
 - Open: keep `config/race-course.json` as a legacy path during Phase 1, or hard-cut? Default: hard-cut after migration.
 

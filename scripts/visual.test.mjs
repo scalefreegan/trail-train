@@ -21,7 +21,7 @@ import {
   visualErrors,
 } from "../web/src/themes/visual.ts";
 import {
-  BASECAMP_DEFAULT,
+  TRAIL_TRAIN_DEFAULT,
   THEME_PRESET_NAMES,
   resolveTheme,
 } from "../web/src/themes/presets.ts";
@@ -45,7 +45,7 @@ test("every preset name is accepted; anything else is not", () => {
   for (const name of THEME_PRESET_NAMES) {
     assert.deepEqual(visualErrors({ theme_preset: name }), [], `preset ${name} should validate`);
   }
-  for (const bad of ["neon", "DESERT", "", null, 3, "basecamp"]) {
+  for (const bad of ["neon", "DESERT", "", null, 3, "trail-train"]) {
     const errs = visualErrors({ theme_preset: bad });
     assert.equal(errs.length, 1, `preset ${JSON.stringify(bad)} should be refused`);
     assert.match(errs[0], /theme_preset/);
@@ -146,13 +146,13 @@ test("the exported predicates agree with the validator", () => {
 test("no visual block resolves to the house palette", () => {
   const { preset, tokens } = resolveVisual(undefined);
   assert.equal(preset, DEFAULT_PRESET);
-  assert.deepEqual(tokens, BASECAMP_DEFAULT);
+  assert.deepEqual(tokens, TRAIL_TRAIN_DEFAULT);
 });
 
 test("an unknown preset falls back rather than throwing", () => {
   const { preset, tokens } = resolveVisual({ theme_preset: "neon" });
   assert.equal(preset, DEFAULT_PRESET);
-  assert.deepEqual(tokens, BASECAMP_DEFAULT);
+  assert.deepEqual(tokens, TRAIL_TRAIN_DEFAULT);
 });
 
 test("resolution layers preset, then accent, then overrides", () => {
@@ -176,7 +176,7 @@ test("resolution layers preset, then accent, then overrides", () => {
 test("resolution never changes the typefaces", () => {
   const { tokens } = resolveVisual({ theme_preset: "night", accent: "#7fd3f0" });
   for (const font of ["--font-display", "--font-body", "--font-mono"]) {
-    assert.equal(tokens[font], BASECAMP_DEFAULT[font]);
+    assert.equal(tokens[font], TRAIL_TRAIN_DEFAULT[font]);
   }
 });
 

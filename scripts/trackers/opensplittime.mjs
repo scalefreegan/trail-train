@@ -410,7 +410,7 @@ export async function fetchLastCheckpoint(req, fetchImpl = fetch) {
       }
       res = await fetchImpl(current, {
         redirect: "manual",
-        headers: { accept: "text/html", "user-agent": "trail-train/basecamp tracker" },
+        headers: { accept: "text/html", "user-agent": "trail-train tracker" },
         signal: AbortSignal.timeout(remaining),
       });
       if (!REDIRECT_STATUSES.has(res?.status)) break;

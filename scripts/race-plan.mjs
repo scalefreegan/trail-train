@@ -701,7 +701,7 @@ export function mergeRaceUpdates(race, out, { at = new Date().toISOString() } = 
 
 /* -------------------------------- prompt -------------------------------- */
 
-export const PLAN_SYSTEM_PROMPT = `You are the race-planning agent inside Basecamp, a personal ultra-training
+export const PLAN_SYSTEM_PROMPT = `You are the race-planning agent inside Trail Train, a personal ultra-training
 dashboard. A race folder already exists: its course, aid chart and cutoffs were read from the
 organizer's own sources and snapped to the GPX. Your job is the next question — what the
 athlete DOES about this race — and you answer it once, as ONE JSON object.

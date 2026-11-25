@@ -1,5 +1,5 @@
 #!/bin/zsh
-# The real work of "Basecamp Server.app" (LSUIElement — faceless). Runs the
+# The real work of "Trail Train Server.app" (LSUIElement — faceless). Runs the
 # dev server with this process as its parent. Since macOS 26.6.2 this script
 # is NOT the bundle's executable — a compiled shim (server-shim.c) execs it,
 # because tccd stopped attributing TCC to script-executable bundles (the
@@ -11,10 +11,10 @@
 # the real work starts.
 cd /
 REPO="/Users/brooks/Documents/git/trail-train"
-LOG="$HOME/Library/Logs/Basecamp.log"
+LOG="$HOME/Library/Logs/TrailTrain.log"
 : > "$LOG"
 {
-  echo "basecamp server starting $(date)"
-  cd "$REPO/web" || { echo "cannot read $REPO — grant Basecamp Server access in System Settings > Privacy & Security > Files and Folders"; exit 1; }
+  echo "trail-train server starting $(date)"
+  cd "$REPO/web" || { echo "cannot read $REPO — grant Trail Train Server access in System Settings > Privacy & Security > Files and Folders"; exit 1; }
   exec /bin/zsh -lc 'exec npm run dev'
 } >> "$LOG" 2>&1 < /dev/null

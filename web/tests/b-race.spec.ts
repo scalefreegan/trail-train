@@ -1,4 +1,4 @@
-import { test, expect, MM, openDashboard, openSwitcher, raceAction, setActiveRace } from './basecamp'
+import { test, expect, MM, openDashboard, openSwitcher, raceAction, setActiveRace } from './trail-train'
 
 /**
  * Flow 10 — the tune-up quick form (PRD-v2 §3).

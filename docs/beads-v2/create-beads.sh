@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail; cd "$(dirname "$0")/../.."; D=docs/beads-v2
-EPIC=$(bd create --silent --title="Basecamp v2: altitude, tune-ups, live race day, crew export, chat context, UI tests, cleanup" --type=epic --priority=1 --labels=v2 --body-file=$D/00.md); echo "EPIC=$EPIC"
+EPIC=$(bd create --silent --title="Trail Train v2: altitude, tune-ups, live race day, crew export, chat context, UI tests, cleanup" --type=epic --priority=1 --labels=v2 --body-file=$D/00.md); echo "EPIC=$EPIC"
 mk(){ bd create --silent --parent="$EPIC" --type="$3" --priority="$4" --labels="v2,$5" --title="$2" --body-file=$D/$1.md; }
 B01=$(mk 01 "Altitude pacing term: model, projection, slider, model check" feature 1 w1)
 B02=$(mk 02 "Acclimation inputs (home elevation, calendar arrival) + altitude calibration" feature 2 w2)

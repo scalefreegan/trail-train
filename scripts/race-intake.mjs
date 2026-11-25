@@ -258,7 +258,7 @@ async function fetchResource(url) {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       // Some race sites 403 a bare fetch; a normal UA is not a trick, it is
       // the same request the owner's browser makes.
-      headers: { "user-agent": "Mozilla/5.0 (Macintosh) Basecamp-race-intake/1" },
+      headers: { "user-agent": "Mozilla/5.0 (Macintosh) trail-train-race-intake/1" },
     });
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.byteLength > MAX_RESOURCE_BYTES) {
@@ -565,13 +565,13 @@ const CONTRACT = `{
   "crew_info": { "rules": [], "cell_strategy": "", "station_notes": { "Cross Mountain": "" }, "start_notes": "", "driving": {} },
   "coach_notes": { "terrain": "", "climate": "", "altitude": "", "key_demands": "", "race_week": "" },
   "links": { "site": "", "manual": "", "gpx": "", "tracking": "", "results": "", "map": "" },
-  "visual": { "theme_preset": "basecamp-default | desert | alpine | forest | night" },
+  "visual": { "theme_preset": "trail-train-default | desert | alpine | forest | night" },
   "field_sources": { "aid_stations": "runner-manual-2026.pdf p11", "cutoff_h": "sanjuansoftie.com/course" },
   "unresolved": ["date", "aid_stations[3].cutoff_h"],
   "review_notes": "one paragraph for the human reviewer: what was transcribed from an image, what is a prior-year figure, what to double-check"
 }`;
 
-const SYSTEM_PROMPT = `You are the race-intake agent inside Basecamp, a personal ultra-training dashboard.
+const SYSTEM_PROMPT = `You are the race-intake agent inside Trail Train, a personal ultra-training dashboard.
 
 Your job: read a trail ultramarathon's own sources — its website, its runner manual, its
 GPX, its results and tracking pages — and return ONE JSON object describing the race.
@@ -1307,7 +1307,7 @@ export async function runIntake({
   // Stage everything in a temp dir: the folder name depends on the race NAME,
   // which only the agent can tell us. The cache moves into races/<slug>/sources/
   // once we know where it belongs.
-  const staging = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-intake-"));
+  const staging = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-intake-"));
   const sourcesDir = path.join(staging, "sources");
   await fs.mkdir(sourcesDir, { recursive: true });
   // Set when a failure left the only copy of the agent's output in staging.

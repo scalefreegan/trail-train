@@ -98,7 +98,7 @@ async function fetchGpx(url) {
       redirect: "follow",
       signal: AbortSignal.timeout(GPX_TIMEOUT_MS),
       // Same UA the intake fetch uses — some race sites 403 a bare fetch.
-      headers: { "user-agent": "Mozilla/5.0 (Macintosh) Basecamp-race-intake/1" },
+      headers: { "user-agent": "Mozilla/5.0 (Macintosh) trail-train-race-intake/1" },
     });
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
     const buf = Buffer.from(await res.arrayBuffer());

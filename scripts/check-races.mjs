@@ -673,7 +673,7 @@ async function checkTuneUps(root) {
     return { status: "SKIP", reason: `${FIXTURE_RACES_REL}/ is not in this checkout`, detail: [], info: [] };
   }
 
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-check-races-b-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-check-races-b-"));
   try {
     // listRaces skips `_`-prefixed folders, which is exactly why the fixtures
     // are never a race the app can open — so they are copied out to a root
@@ -955,7 +955,7 @@ async function checkReferenceRebuild(root) {
     };
   }
 
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "basecamp-check-races-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "trail-train-check-races-"));
   try {
     const dir = path.join(tmp, "races", REFERENCE_SLUG);
     await fs.mkdir(dir, { recursive: true });
@@ -1109,7 +1109,7 @@ async function liveSourceDiff(dir, race) {
       const res = await fetch(s.ref, {
         redirect: "follow",
         signal: AbortSignal.timeout(25_000),
-        headers: { "user-agent": "Mozilla/5.0 (Macintosh) Basecamp-race-intake/1" },
+        headers: { "user-agent": "Mozilla/5.0 (Macintosh) trail-train-race-intake/1" },
       });
       if (!res.ok) {
         out.push(`HTTP ${res.status}  ${s.ref}`);
@@ -1378,7 +1378,7 @@ async function main() {
   const ui = skipReason === null;
   const say = (line = "") => console.log(line);
 
-  say(`── Basecamp race harness ──  ${ROOT}`);
+  say(`── Trail Train race harness ──  ${ROOT}`);
   if (live) say("--live: the draft's sources will be re-fetched over the network.");
   if (!ui) say(`${skipReason}: the browser flows will be skipped.`);
   say();

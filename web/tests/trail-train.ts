@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 
 /**
- * The suite's `test`: the real one plus the two things every Basecamp flow
+ * The suite's `test`: the real one plus the two things every Trail Train flow
  * needs — the run-time baseURL, and a running tally of everything the page
  * complained about.
  */

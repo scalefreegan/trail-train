@@ -1,4 +1,4 @@
-import { test, expect, MM, openDashboard, setActiveRace } from './basecamp'
+import { test, expect, MM, openDashboard, setActiveRace } from './trail-train'
 
 /**
  * v2 review ui1 #14 — a tune-up the quick form creates without a GPX has no

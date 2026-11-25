@@ -7,7 +7,7 @@
 // (no prompt, and a manually added Full Disk Access row never matches the
 // accessor). Measured on this machine 2026-08-29, in wine-guide, where the
 // same helper shape (lifted from this repo) died the first time its grant was
-// re-established post-update; Basecamp's survived only because tccd kept
+// re-established post-update; Trail Train's survived only because tccd kept
 // honoring the pre-update grant row. Before that update the script-executable
 // shape was the one that worked — this doctrine has now inverted once in each
 // direction. A compiled shim gives tccd a promptable identity again, and
@@ -30,6 +30,6 @@ int main(void) {
   char script[PATH_MAX];
   snprintf(script, sizeof script, "%s/../Resources/server-runner.sh", dirname(dir));
   execl("/bin/zsh", "zsh", script, (char *)NULL);
-  perror("basecamp server shim: execl /bin/zsh");
+  perror("trail-train server shim: execl /bin/zsh");
   return 127;
 }

@@ -1,4 +1,4 @@
-import { test, expect, MM, openDashboard, openSwitcher, raceActions, setActiveRace, type Page } from './basecamp'
+import { test, expect, MM, openDashboard, openSwitcher, raceActions, setActiveRace, type Page } from './trail-train'
 
 /**
  * Flow 12 — no horizontal scroll, at every width the app claims to support.

@@ -2,7 +2,7 @@ import {
   test, expect, ARCHIVED, DRAFT, MM,
   chooseRace, openDashboard, openSwitcher, raceAction, raceActionLabels, raceActionNote, raceActions,
   setActiveRace, switcherButton, writeRawRaceFolder,
-} from './basecamp'
+} from './trail-train'
 
 /**
  * Flow 13 — the topline action strip.

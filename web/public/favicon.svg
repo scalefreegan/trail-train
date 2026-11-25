@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-  <!-- Basecamp mark: headlamp-amber ridgeline on the app's night field -->
+  <!-- Trail Train mark: headlamp-amber ridgeline on the app's night field -->
   <rect x="1" y="1" width="62" height="62" rx="14" fill="#0c110e" stroke="#35453a" stroke-width="2"/>
   <path d="M6 50 L23 20 L32 35 L41 13 L58 50 Z" fill="#ffb454"/>
   <path d="M32 35 L41 13 L58 50 L37 50 Z" fill="#cc7a1f"/>

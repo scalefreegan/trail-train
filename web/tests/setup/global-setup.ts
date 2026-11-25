@@ -7,7 +7,7 @@ import { FAKE_AGENT_FILE, buildCrewShell, freePort, makeProjectRoot, startServer
  * Playwright spawns its workers after global setup returns, so an env var set
  * here is inherited by every one of them — which is the only way to get a
  * port that was not known when playwright.config.ts was evaluated into
- * `use.baseURL`. web/tests/basecamp.ts reads it back.
+ * `use.baseURL`. web/tests/trail-train.ts reads it back.
  *
  * TRAIL_FAKE_AGENT is set for the whole run, pointing at the canned stage-1
  * reply in tests/fixtures/agent/. It is what makes the refresh flow testable —

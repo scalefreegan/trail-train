@@ -1,4 +1,4 @@
-# PRD v2 — Basecamp after modular races
+# PRD v2 — Trail Train after modular races
 
 Status: **implemented 2026-09-19 (branch `v2`)** · author: Aaron Brooks (interview-driven, written by Claude)
 Where the build differs from this document, see §10 — Changelog of deviations. §1–§9 are left as they were written on the day of the interview.

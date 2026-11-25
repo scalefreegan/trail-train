@@ -1,4 +1,4 @@
--- Basecamp launcher: a stay-open Dock app wrapping the trail-train dev server.
+-- Trail Train launcher: a stay-open Dock app wrapping the trail-train dev server.
 --
 -- Why this shape: the dashboard is not a static site — its coach chat, resync
 -- and settings endpoints are Vite dev-server middleware that spawn node
@@ -12,7 +12,7 @@
 --      dies with a silent EPERM (the repo lives under ~/Documents).
 --   2. Only Cocoa processes are offered TCC permission dialogs — a plain
 --      shell-script bundle is silently denied, no prompt ever.
--- So the server runs as the BLOCKING child of "Basecamp Server.app", a
+-- So the server runs as the BLOCKING child of "Trail Train Server.app", a
 -- faceless Cocoa applet that can actually receive the one-time Documents
 -- prompt and stays alive exactly as long as the server does. This applet is
 -- the Dock face: Quit pkills vite, which unwinds npm → helper.
@@ -45,7 +45,7 @@ on serverUp()
 	-- (tt-yib.5: it used to be the race name, which changes per race).
 	try
 		set body to do shell script "curl -s --max-time 2 " & dashUrl
-		return body contains "Basecamp"
+		return body contains "Trail Train"
 	on error
 		return false
 	end try
@@ -55,7 +55,7 @@ on startServer()
 	-- -g: launch in the background, never stealing focus. The helper nests
 	-- inside THIS bundle (Contents/Helpers/), so resolve it from path to me —
 	-- one visible app in /Applications, and the pair can never split up.
-	set helperPath to POSIX path of (path to me) & "Contents/Helpers/Basecamp Server.app"
+	set helperPath to POSIX path of (path to me) & "Contents/Helpers/Trail Train Server.app"
 	do shell script "open -g " & quoted form of helperPath
 	-- cold node_modules can take a while; poll rather than hope
 	repeat 60 times
@@ -151,10 +151,10 @@ on openDashboard()
 		-- log why, since from the outside a refusal looks exactly like "it
 		-- still opens a new tab"
 		try
-			do shell script "echo " & quoted form of ("[launcher] Chrome tab focus failed (" & errNum & "): " & errMsg) & " >> ~/Library/Logs/Basecamp.log"
+			do shell script "echo " & quoted form of ("[launcher] Chrome tab focus failed (" & errNum & "): " & errMsg) & " >> ~/Library/Logs/TrailTrain.log"
 		end try
 		if errNum is -1743 then
-			display notification "Allow Basecamp to control Google Chrome (System Settings > Privacy & Security > Automation) so a click returns to its open tab." with title "Basecamp"
+			display notification "Allow Trail Train to control Google Chrome (System Settings > Privacy & Security > Automation) so a click returns to its open tab." with title "Trail Train"
 		end if
 	end try
 	-- Chrome unreachable or Automation refused: the old behavior, never nothing
@@ -177,7 +177,7 @@ on stopExistingServer()
 		return -- none of ours running
 	end try
 	try
-		do shell script "echo " & quoted form of ("[launcher] fresh launch: stopping the running server " & (current date)) & " >> ~/Library/Logs/Basecamp.log"
+		do shell script "echo " & quoted form of ("[launcher] fresh launch: stopping the running server " & (current date)) & " >> ~/Library/Logs/TrailTrain.log"
 	end try
 	try
 		do shell script "pkill -f " & quoted form of killPattern
@@ -209,9 +209,9 @@ on run
 		startServer()
 		if serverUp() then
 			set wasUp to true
-			display notification "Server running at " & dashUrl with title "Basecamp"
+			display notification "Server running at " & dashUrl with title "Trail Train"
 		else
-			display notification "Server failed to start — see ~/Library/Logs/Basecamp.log (a Documents permission prompt may be waiting)" with title "Basecamp"
+			display notification "Server failed to start — see ~/Library/Logs/TrailTrain.log (a Documents permission prompt may be waiting)" with title "Trail Train"
 			quit
 		end if
 	else

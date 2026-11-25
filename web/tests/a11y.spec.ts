@@ -6,7 +6,7 @@ import {
   openDashboard, openPrintable, openRaceTab, openRefreshFor, openReviewFor, openSwitcher,
   raceAction, raceActions, setActiveRace,
   type Page,
-} from './basecamp'
+} from './trail-train'
 
 /**
  * Flow 7 — every dialog in the app, held to the same four promises.

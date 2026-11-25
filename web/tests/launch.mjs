@@ -1,4 +1,4 @@
-// The Playwright suite's project root: a throwaway copy of Basecamp's data
+// The Playwright suite's project root: a throwaway copy of Trail Train's data
 // side, and a vite dev server pointed at it.
 //
 // The app under test is the REAL one — web/src, web/vite.config.ts and

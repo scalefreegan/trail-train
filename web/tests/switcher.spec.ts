@@ -4,7 +4,7 @@ import {
   test, expect, ARCHIVED, DRAFT, MM,
   chooseRace, openDashboard, openSwitcher, raceAction, raceActionNote, setActiveRace, switcherButton,
   writeRawRaceFolder,
-} from './basecamp'
+} from './trail-train'
 
 /**
  * Flow 2 — the race switcher: generic → the MM-like 100 → back to generic.
@@ -299,7 +299,7 @@ async function writeMismatchArchivedFixture(): Promise<void> {
  * same accessible name). The strip has exactly one, about the race that is
  * loaded, so naming the race means loading it.
  */
-async function runCourseAgainButton(page: import('./basecamp').Page, slug: string, request: import('@playwright/test').APIRequestContext) {
+async function runCourseAgainButton(page: import('./trail-train').Page, slug: string, request: import('@playwright/test').APIRequestContext) {
   await setActiveRace(request, slug, 'view')
   await openDashboard(page)
   const button = raceAction(page, /Run course again…/)

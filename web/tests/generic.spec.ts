@@ -1,4 +1,4 @@
-import { test, expect, openDashboard, setActiveRace, switcherButton } from './basecamp'
+import { test, expect, openDashboard, setActiveRace, switcherButton } from './trail-train'
 
 /**
  * Flow 1 — generic load.
@@ -18,7 +18,7 @@ test.beforeEach(async ({ request }) => {
 test('the generic dashboard renders every panel with a clean console', async ({ page, trouble }) => {
   await openDashboard(page)
 
-  await expect(page).toHaveTitle('Basecamp')
+  await expect(page).toHaveTitle('Trail Train')
 
   // The four panels, by their section tags. Deliberately NOT getByRole
   // ('heading'): the titles are rendered by a <SectionTag> span, and the only

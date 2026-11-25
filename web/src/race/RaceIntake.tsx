@@ -518,7 +518,7 @@ export default function RaceIntake({ slug: openAt = null, parentSlug = null, onC
                     <Hint>
                       {themePreset
                         ? <ThemePreview visual={{ theme_preset: themePreset }} size={10} />
-                        : "presets keep one Basecamp identity — a race varies its hue, not its brand"}
+                        : "presets keep one Trail Train identity — a race varies its hue, not its brand"}
                     </Hint>
                   </label>
                 </div>

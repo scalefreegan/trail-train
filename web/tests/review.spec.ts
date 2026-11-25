@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { test, expect, DRAFT, MM, openDashboard, openReviewFor, openSwitcher, setActiveRace } from './basecamp'
+import { test, expect, DRAFT, MM, openDashboard, openReviewFor, openSwitcher, setActiveRace } from './trail-train'
 
 /**
  * Flow 3 — the review screen: fill a field, acknowledge another, save.

@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-import { test, expect, MM, openDashboard, openRaceTab, setActiveRace } from './basecamp'
-import type { Page } from './basecamp'
+import { test, expect, MM, openDashboard, openRaceTab, setActiveRace } from './trail-train'
+import type { Page } from './trail-train'
 import type { BrowserContext, TestInfo } from '@playwright/test'
 
 /** "9:48p" / "12:11a+1" (fmtRaceClock's own format, day marker and all) →
@@ -173,7 +173,7 @@ test('bug 4: a refused checkpoint submit leaves the applied checkpoint untouched
 
   const tableBefore = await offline.locator('#stations tbody').innerHTML()
   const captionBefore = await offline.locator('#stations caption').innerText()
-  const storageKey = 'basecamp.crew.mm-like-100.checkpoint'
+  const storageKey = 'trail-train.crew.mm-like-100.checkpoint'
   const storedBefore = await offline.evaluate((k) => localStorage.getItem(k), storageKey)
   expect(storedBefore).not.toBeNull()
 
@@ -323,7 +323,7 @@ test('bug 7: a dead server on export shows a friendly message, not the raw fetch
   const button = page.getByRole('button', { name: /export crew page/i })
   await button.click()
 
-  await expect(page.getByText(/server unreachable — is basecamp running\?/i)).toBeVisible()
+  await expect(page.getByText(/server unreachable — is trail train running\?/i)).toBeVisible()
   await expect(page.getByText(/failed to fetch/i)).toHaveCount(0)
 
   // The button already returns to idle/pressable on any error — still true,

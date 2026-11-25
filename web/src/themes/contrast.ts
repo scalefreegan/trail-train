@@ -3,7 +3,7 @@
 /*                                                                    */
 /*  Used by the preset tests (and, later, by the intake preview) to    */
 /*  prove that a race's palette is still readable: a race may recolor  */
-/*  Basecamp, it may not make it unreadable. No DOM, no canvas — just  */
+/*  Trail Train, it may not make it unreadable. No DOM, no canvas — just*/
 /*  the sRGB relative-luminance formula from WCAG 2.1 §Relative        */
 /*  luminance and the contrast ratio (L1 + 0.05) / (L2 + 0.05).       */
 /* ------------------------------------------------------------------ */

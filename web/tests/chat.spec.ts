@@ -28,7 +28,7 @@
  * ON SCREEN rather than the one in config/active-race.json.
  */
 
-import { MM, expect, openDashboard, setActiveRace, test } from './basecamp'
+import { MM, expect, openDashboard, setActiveRace, test } from './trail-train'
 
 /** A string that appears in the canned agent reply and nowhere in the app. */
 const CANNED_MARKER = /Invented for tests · nowhere real/
